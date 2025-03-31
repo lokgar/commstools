@@ -15,5 +15,28 @@ However, to fully realize potential of the toolkit for larger projects, especial
 The following structure is suggested:
 
 ```bash
-...
+<project_root>/
+├── experiments                              # Top-level directory for experiments
+│  └── exp_01                                # Specific experiment
+│     ├── analysis                           # Analysis notebooks/scripts and output files
+│     │  ├── 00-process-captures.ipynb
+│     │  └── 01-plot-constellations.ipynb
+│     ├── configs                            # CommsTools setup configuration files
+│     │  ├── rx.yaml
+│     │  └── tx.yaml
+│     ├── data                               # All data files
+│     │  ├── postproc                        # Post-processed data
+│     │  │  ├── recovered_symbols.npy
+│     │  │  └── recovered_symbols_meta.yaml
+│     │  ├── raw                             # Raw data
+│     │  │  ├── capture_from_adc.bin
+│     │  │  └── capture_from_adc_meta.yaml
+│     │  └── waveform                        # Waveform used in the experiment 
+│     │     ├── waveform_binary.bin
+│     │     └── waveform_meta.yaml
+│     ├── scripts                            # Scripts for running experiment
+│     │  ├── generate_waveform.py
+│     │  └── process_capture.py
+│     └── README.md                          # Experiment description
+└── README.md                                # Top-level project description
 ```
