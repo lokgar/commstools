@@ -1,0 +1,20 @@
+# Example Generation Config
+job_id: gen_16qam_32g_01
+system:
+  samplerate_dac_hz: 92e9
+  samplerate_adc_hz: 92e9 # Assume same for loopback sim
+  symbolrate_baud: 32e9
+  resolution_dac_bits: 14
+  resolution_adc_bits: 14
+  center_frequency_hz: 191.3e12
+modulation:
+  format: 16qam
+pulse_shape:
+  type: rrc
+  rolloff: 0.05
+  span_symbols: 64
+prbs_order: 15
+num_symbols: 65536 # 2^16
+oversampling_factor: 2 # 2 samples/symbol relative to symbol rate
+output_dtype: npy # Save as npy for easy loading in processing
+seed: 20240314

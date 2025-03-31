@@ -1,0 +1,31 @@
+# Example Processing Config
+job_id: proc_16qam_32g_lms_01
+system: # Optional: Can be defined here or loaded from metadata
+  # sample_rate_dac_hz: 92e9 # Often needed for reference
+  sample_rate_adc_hz: 92e9
+  symbol_rate_baud: 32e9
+input_dtype: npy # Matches the output format of generation example
+input_file_path: "data/generated/gen_16qam_32g_01_seq.npy" # Placeholder - OVERRIDE VIA SCRIPT ARG
+associated_metadata_path: "data/generated/gen_16qam_32g_01_meta.yaml" # Placeholder - OVERRIDE VIA SCRIPT ARG
+output_dir: "data/processed/proc_16qam_32g_lms_01" # Placeholder - OVERRIDE VIA SCRIPT ARG
+save_intermediate: false
+seed: 1999
+dsp_chain:
+  - type: resample
+    target_osr: 2 # Assume input is already 2 Sps, but maybe needed if ADC rate != target rate
+  - type: cd_compensation
+    fiber_length_km: 80
+    dispersion_ps_nm_km: 17.0
+    center_wavelength_nm: 1550.0
+  # - type: timing_recovery # Placeholder for a timing block
+  #   method: gardner
+  #   param: value
+  - type: lms_equalizer
+    num_taps: 41 # Example for DP-16QAM (might need MIMO version)
+    step_size: 5e-4
+    num_iterations_train: 16384 # Train on first 16k symbols
+    mode: training # Start in training mode
+  - type: calculate_metrics
+    metrics: [evm, ber] # Calculate EVM and BER
+    # reference_sequence_path: "path/to/reference_bits.npy" # Needs path to original bits
+    skip_symbols_start: 16384 # Skip training symbols for metrics
