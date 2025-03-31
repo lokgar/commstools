@@ -34,7 +34,7 @@ The following structure is suggested:
 │     │  └── waveform                        # Waveform used in the experiment 
 │     │     ├── waveform_binary.bin
 │     │     └── waveform_meta.yaml
-│     ├── scripts                            # Scripts for running experiment
+│     ├── scripts                            # Scripts for running the experiment
 │     │  ├── generate_waveform.py
 │     │  └── process_capture.py
 │     └── README.md                          # Experiment description
