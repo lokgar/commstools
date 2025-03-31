@@ -15,7 +15,7 @@ However, to fully realize potential of the toolkit for larger projects, especial
 The following structure is suggested:
 
 ```bash
-<project_root>/
+PROJECT_ROOT
 ├── experiments                              # Top-level directory for experiments
 │  └── exp_01                                # Specific experiment
 │     ├── analysis                           # Analysis notebooks/scripts and output files
