@@ -40,9 +40,6 @@ class WaveformParams(BaseModel):
     system: SystemParams
     modulation: ModulationParams
     pulse_shape: PulseShapeParams
-    prbs_order: Optional[int] = Field(
-        15, gt=0, description="Order of PRBS data sequence, if used (None for random)"
-    )
     num_symbols: int = Field(
         2**16, gt=0, description="Total number of symbols to generate"
     )
