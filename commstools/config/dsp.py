@@ -3,7 +3,7 @@ from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 
-class DSPBlockParams(BaseModel):
+class DSPBlockConfig(BaseModel):
     """Defines the DSP block properties."""
 
     block: str = Field(
@@ -14,8 +14,8 @@ class DSPBlockParams(BaseModel):
     )
 
 
-class ResamplingParams(DSPBlockParams):
-    """Parameters for resampling."""
+class ResamplingConfig(DSPBlockConfig):
+    """Configuration parameters for resampling."""
 
     block: Literal["resampling"] = "resampling"
     resample_factor: Optional[float] = Field(
@@ -34,8 +34,8 @@ class ResamplingParams(DSPBlockParams):
     # Add validator to ensure only one of factor/target_rate is set
 
 
-class FrequencyCorrectionParams(DSPBlockParams):
-    """Parameters for carrier frequency offset correction."""
+class FrequencyCorrectionConfig(DSPBlockConfig):
+    """Configuration parameters for carrier frequency offset correction."""
 
     block: Literal["frequency_correction"] = "frequency_correction"
     method: Literal["fft_based_v_v", "pll"] = "fft_based_v_v"
@@ -47,8 +47,8 @@ class FrequencyCorrectionParams(DSPBlockParams):
     )
 
 
-class TimingRecoveryParams(DSPBlockParams):
-    """Parameters for symbol timing recovery."""
+class TimingRecoveryConfig(DSPBlockConfig):
+    """Configuration parameters for symbol timing recovery."""
 
     block: Literal["timing_recovery"] = "timing_recovery"
     method: Literal["gardner", "mueller_muller", "nda"] = "gardner"
@@ -63,10 +63,10 @@ class TimingRecoveryParams(DSPBlockParams):
     )
 
 
-class EqualizerParams(DSPBlockParams):
-    """Parameters for equalization."""
+class EqualizerConfig(DSPBlockConfig):
+    """Configuration parameters for equalization."""
 
-    block: Literal["equalize"] = "equalization"  # Discriminator value
+    block: Literal["equalization"] = "equalization"  # Discriminator value
     method: Literal["cma", "lms", "rls", "decision_directed_lms"] = "cma"
     num_taps: int = Field(11, gt=0, description="Number of equalizer taps")
     step_size: Optional[float] = Field(
@@ -81,27 +81,27 @@ class EqualizerParams(DSPBlockParams):
     )
 
 
-class PhaseCorrectionParams(DSPBlockParams):
-    """Parameters for carrier phase estimation/correction."""
+class PhaseCorrectionConfig(DSPBlockConfig):
+    """Configuration parameters for carrier phase estimation/correction."""
 
     block: Literal["phase_correction"] = "phase_correction"  # Discriminator value
     method: Literal["v_v", "blind_phase_search", "pll"] = "v_v"
     # Add specific params, e.g., BPS block size, V&V exponent, PLL bandwidth
 
 
-class SymbolDecisionParams(DSPBlockParams):
-    """Parameters for making symbol decisions."""
+class SymbolDecisionConfig(DSPBlockConfig):
+    """Configuration parameters for making symbol decisions."""
 
     block: Literal["symbol_decision"] = "symbol_decision"  # Discriminator value
     modulation_format: Literal["qpsk", "16qam", "64qam", "bpsk"]  # Required
 
 
 DSPBlocks = Union[
-    ResamplingParams,
-    FrequencyCorrectionParams,
-    TimingRecoveryParams,
-    EqualizerParams,
-    PhaseCorrectionParams,
-    SymbolDecisionParams,
+    ResamplingConfig,
+    FrequencyCorrectionConfig,
+    TimingRecoveryConfig,
+    EqualizerConfig,
+    PhaseCorrectionConfig,
+    SymbolDecisionConfig,
     # Add other DSP blocks as needed
 ]

@@ -2,12 +2,12 @@ from typing import Literal, Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field, FilePath, DirectoryPath, field_validator
 
-from .system import SystemParams
+from .system import SystemConfig
 
 from .dsp import DSPBlocks
 
 
-class DSPChainParams(BaseModel):
+class DSPChainConfig(BaseModel):
     """
     Defines the configuration for a digital signal processing (DSP) chain.
 
@@ -100,7 +100,7 @@ class DSPChainParams(BaseModel):
     job_id: Optional[str] = Field(
         None, description="Optional unique identifier for this processing job"
     )
-    system: Optional[SystemParams] = Field(
+    system: Optional[SystemConfig] = Field(
         None,
         description="System parameters (can sometimes be inferred from capture metadata)",
     )

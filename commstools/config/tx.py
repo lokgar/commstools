@@ -2,17 +2,26 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, FilePath
 
-from .system import SystemParams
+from .system import SystemConfig
 
 
-class ModulationParams(BaseModel):
+class SequenceConfig(BaseModel):
+    """Defines the source of the data symbols/bits."""
+
+    type: Literal["prbs", "random_bits", "file"] = "prbs"
+    prbs_order: Optional[int] = Field(15, gt=0)
+    bits_filepath: Optional[FilePath] = None
+    # Add validators
+
+
+class ModulationConfig(BaseModel):
     """Defines the modulation format properties."""
 
     format: Literal["qpsk", "16qam", "64qam", "bpsk"] = "qpsk"
     # Add bits_per_symbol derived field? Or calculate on use
 
 
-class PulseShapeParams(BaseModel):
+class PulseShapeConfig(BaseModel):
     """Defines the pulse shaping filter properties."""
 
     type: Literal["rrc", "rc", "gaussian", "rect"] = "rrc"
@@ -22,24 +31,16 @@ class PulseShapeParams(BaseModel):
     # Add validators to check required params per type
 
 
-class SequenceParams(BaseModel):
-    """Defines the source of the data symbols/bits."""
-
-    type: Literal["prbs", "random_bits", "file"] = "prbs"
-    prbs_order: Optional[int] = Field(15, gt=0)
-    bits_filepath: Optional[FilePath] = None
-    # Add validators
-
-
-class WaveformParams(BaseModel):
+class WaveformConfig(BaseModel):
     """Defines the waveform generation properties."""
 
     job_id: Optional[str] = Field(
         None, description="Optional unique identifier for this generation job"
     )
-    system: SystemParams
-    modulation: ModulationParams
-    pulse_shape: PulseShapeParams
+    system: SystemConfig
+    sequence: SequenceConfig
+    modulation: ModulationConfig
+    pulse_shape: PulseShapeConfig
     num_symbols: int = Field(
         2**16, gt=0, description="Total number of symbols to generate"
     )

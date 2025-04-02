@@ -3,8 +3,8 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class SystemParams(BaseModel):
-    """Main system parameters."""
+class SystemConfig(BaseModel):
+    """Configuration parameters for the system."""
 
     samplerate_dac_hz: Optional[float] = Field(
         None, gt=0, description="Sample rate of the DAC/AWG (Hz)"
