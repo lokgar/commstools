@@ -13,7 +13,7 @@ if src_path not in sys.path:
 
 try:
     # Import your models dynamically based on arguments or list them explicitly
-    from commstools.config.tx import WaveformParams
+    from commstools.tx.config.waveform import WaveformParams
     from commstools.config.rx import DSPChainParams
     # Add other relevant models if needed
 except ImportError as e:
@@ -48,7 +48,7 @@ def main():
         # Use construct() if some required fields lack defaults, providing dummy values if needed
         # Example: Needs SystemParams, which has required fields
         if model_class is WaveformParams:
-            from commstools.config.tx import (
+            from commstools.tx.config.waveform import (
                 SystemParams,
                 ModulationParams,
                 PulseShapeParams,
