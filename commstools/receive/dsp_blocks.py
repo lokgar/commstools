@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from pydantic import BaseModel
 
 # Import all specific RX DSP Block Config models
-from .config.dsp_config import (
+from .configs import (
     CDCompensationConfig,
     EqualizerConfig,
     FrequencyCorrectionConfig,
