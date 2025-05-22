@@ -1,10 +1,9 @@
-# commstools/rx/config/chain.py
 from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, FilePath, DirectoryPath, field_validator
 import logging
 
 # Import the dynamically created Union of RX DSP block configurations
-from commstools.rx.config.block import RXDSPBlocksUnion
+from .dsp import RXDSPBlocksUnion
 
 # Import the shared SystemConfig
 from commstools.system_config import SystemConfig
@@ -12,9 +11,9 @@ from commstools.system_config import SystemConfig
 logger = logging.getLogger(__name__)
 
 
-class DSPChainConfig(BaseModel):
+class ReceivePipelineConfig(BaseModel):
     """
-    Defines the configuration for a digital signal processing (DSP) chain for the receiver.
+    Defines the configuration for a receive DSP pipeline.
     This orchestrates the entire post-processing workflow.
     """
 
@@ -40,7 +39,6 @@ class DSPChainConfig(BaseModel):
         description="Directory where processed outputs (and intermediates) will be saved.",
     )
 
-    # Use the Discriminated Union for the DSP chain
     # The 'discriminator' field tells Pydantic to use the 'block' field in each item
     # of the list to determine which specific Pydantic model (from RXDSPBlocksUnion) to use.
     dsp_chain: List[RXDSPBlocksUnion] = Field(  # type: ignore

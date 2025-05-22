@@ -5,10 +5,10 @@ import os
 from typing import Dict, Any, Tuple
 
 # Configuration imports
-from commstools.rx.config.chain import DSPChainConfig  # Main config for the chain
+from commstools.receive.config.pipeline import DSPChainConfig  # Main config for the chain
 
 # Import the function map accessor from the RX registry module
-from commstools.rx.registry import get_rx_dsp_function_map
+from commstools.receive.algorithms._registry import get_rx_dsp_function_map
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,9 @@
 # commstools/rx/config/block_parameters.py
-from typing import List, Literal, Optional, Union, Type, Dict, Any
+import logging
+from typing import Dict, List, Literal, Optional, Type, Union
+
 from pydantic import BaseModel, Field, model_validator
 from pydantic.fields import FieldInfo
-import logging
 
 logger = logging.getLogger(__name__)
 
