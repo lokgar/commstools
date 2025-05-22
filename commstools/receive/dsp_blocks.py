@@ -1,4 +1,3 @@
-# commstools/rx/dsp.py
 import logging
 from typing import Any, Callable, Dict, Tuple, TypeVar
 
@@ -8,7 +7,7 @@ import jax.numpy as jnp
 from pydantic import BaseModel
 
 # Import all specific RX DSP Block Config models
-from commstools.receive.config.dsp import (
+from .config.dsp_config import (
     CDCompensationConfig,
     EqualizerConfig,
     FrequencyCorrectionConfig,
