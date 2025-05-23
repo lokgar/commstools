@@ -2,80 +2,86 @@ import logging
 from typing import Any, Callable, Dict, Tuple, TypeVar
 
 import jax.numpy as jnp
-
-# For Pydantic models used in type hints for config
 from pydantic import BaseModel
 
-# Import all specific RX DSP Block Config models
 from .configs import (
     CDCompensationConfig,
     EqualizerConfig,
     FrequencyCorrectionConfig,
     MetricsCalculationConfig,
-    # Add other specific config imports if new blocks are added
     PhaseCorrectionConfig,
     ResamplingConfig,
     SymbolDecisionConfig,
     TimingRecoveryConfig,
+    get_dsp_configs,
 )
 
 logger = logging.getLogger(__name__)
 
 # Type variable for the specific config model
-ConfigModelType = TypeVar("ConfigModelType", bound=BaseModel)
+DSPConfig = TypeVar("DSPConfig", bound=BaseModel)
 
 # Type hint for a registered DSP function
-DSPFunctionType = Callable[
-    [jnp.ndarray, ConfigModelType, Dict[str, Any]], Tuple[jnp.ndarray, Dict[str, Any]]
+DSPFunction = Callable[
+    [jnp.ndarray, DSPConfig, Dict[str, Any]], Tuple[jnp.ndarray, Dict[str, Any]]
 ]
 
-# RX DSP Function Registry
-# Stores: {"block_type_str": processing_function}
-_RX_DSP_FUNCTION_REGISTRY: Dict[str, DSPFunctionType] = {}  # type: ignore
+_DSP_FUNCTION_REGISTRY: Dict[str, DSPFunction] = {}
 
 
-def register_rx_dsp_function(block_type_str: str):
+# --- Decorator for registering DSP functions ---
+
+
+def dsp_function(func: DSPFunction) -> DSPFunction:
     """
-    Decorator to register an RX DSP processing function.
+    Decorator to register a DSP processing function.
+
+    The function name is automatically extracted from the function definition.
+    The function name must match the 'function' Literal in the corresponding config model
+    from commstools.receive.configs.
+
     Args:
-        block_type_str: The string identifier for the DSP block,
-                        must match the 'block' Literal in the corresponding config model
-                        from commstools.rx.config.block_parameters.
+        func: The DSP function to register
+
+    Returns:
+        The decorated function
     """
-    if not isinstance(block_type_str, str):
-        raise TypeError(
-            f"block_type_str for registering RX DSP function must be a string. Got: {block_type_str}"
+    dsp_function_name = func.__name__
+
+    dsp_configs = get_dsp_configs()
+    if dsp_function_name not in dsp_configs:
+        available_functions = list(dsp_configs.keys())
+        raise ValueError(
+            f"DSP function '{dsp_function_name}' does not match any registered config model. "
+            f"Available functions: {available_functions}. "
+            f"Ensure the corresponding config class with 'function: Literal[\"{dsp_function_name}\"]' "
+            f"is defined and decorated with @dsp_config in commstools.receive.configs."
         )
 
-    def decorator(func: DSPFunctionType) -> DSPFunctionType:  # type: ignore
-        if block_type_str in _RX_DSP_FUNCTION_REGISTRY:
-            logger.warning(
-                f"RX DSP function for block type '{block_type_str}' from function {func.__name__} "
-                f"is already registered by {_RX_DSP_FUNCTION_REGISTRY[block_type_str].__name__}. Overwriting."
-            )
-        _RX_DSP_FUNCTION_REGISTRY[block_type_str] = func
-        logger.debug(
-            f"Registered RX DSP function: '{block_type_str}' -> {func.__name__}"
-        )
-        return func
-
-    return decorator
-
-
-def get_rx_dsp_function_map() -> Dict[str, DSPFunctionType]:  # type: ignore
-    """Returns a copy of the RX DSP function registry."""
-    if not _RX_DSP_FUNCTION_REGISTRY:
+    if dsp_function_name in _DSP_FUNCTION_REGISTRY:
         logger.warning(
-            "RX DSP Function Registry is empty. Ensure commstools.rx.dsp module is imported in commstools/rx/__init__.py."
+            f"DSP function '{dsp_function_name}' is already registered. Overwriting."
         )
-    return _RX_DSP_FUNCTION_REGISTRY.copy()
+
+    _DSP_FUNCTION_REGISTRY[dsp_function_name] = func
+    logger.debug(f"Registered DSP function: '{dsp_function_name}' -> {func.__name__}")
+    return func
 
 
-# --- RX DSP Function Implementations (Decorated) ---
+def get_dsp_functions() -> Dict[str, DSPFunction]:
+    """Returns a copy of the DSP function registry."""
+    if not _DSP_FUNCTION_REGISTRY:
+        logger.warning(
+            "DSP Function Registry is empty. Ensure commstools.receive.dsp_functions module is imported in commstools/receive/__init__.py."
+        )
+    return _DSP_FUNCTION_REGISTRY.copy()
 
 
-@register_rx_dsp_function("resampling")
-def apply_resampling(
+# --- DSP Function Implementations ---
+
+
+@dsp_function
+def resampling(
     signal: jnp.ndarray, config: ResamplingConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(
@@ -104,8 +110,8 @@ def apply_resampling(
     return processed_signal, signal_state
 
 
-@register_rx_dsp_function("cd_compensation")
-def apply_cd_compensation(
+@dsp_function
+def cd_compensation(
     signal: jnp.ndarray, config: CDCompensationConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(
@@ -116,8 +122,8 @@ def apply_cd_compensation(
     return signal, signal_state
 
 
-@register_rx_dsp_function("frequency_correction")
-def apply_frequency_correction(
+@dsp_function
+def frequency_correction(
     signal: jnp.ndarray, config: FrequencyCorrectionConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(
@@ -127,8 +133,8 @@ def apply_frequency_correction(
     return signal, signal_state
 
 
-@register_rx_dsp_function("timing_recovery")
-def apply_timing_recovery(
+@dsp_function
+def timing_recovery(
     signal: jnp.ndarray, config: TimingRecoveryConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(
@@ -140,8 +146,8 @@ def apply_timing_recovery(
     return signal, signal_state
 
 
-@register_rx_dsp_function("equalization")
-def apply_equalization(
+@dsp_function
+def equalization(
     signal: jnp.ndarray, config: EqualizerConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(
@@ -151,8 +157,8 @@ def apply_equalization(
     return signal, signal_state
 
 
-@register_rx_dsp_function("phase_correction")
-def apply_phase_correction(
+@dsp_function
+def phase_correction(
     signal: jnp.ndarray, config: PhaseCorrectionConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(f"Applying phase correction using method: {config.method}")
@@ -160,8 +166,8 @@ def apply_phase_correction(
     return signal, signal_state
 
 
-@register_rx_dsp_function("symbol_decision")
-def apply_symbol_decision(
+@dsp_function
+def symbol_decision(
     signal: jnp.ndarray, config: SymbolDecisionConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
     logger.info(f"Applying symbol decision for modulation: {config.modulation_format}")
@@ -170,30 +176,19 @@ def apply_symbol_decision(
     return signal, signal_state
 
 
-@register_rx_dsp_function("metrics_calculation")
-def apply_metrics_calculation(
+@dsp_function
+def metrics_calculation(
     signal: jnp.ndarray, config: MetricsCalculationConfig, signal_state: Dict
 ) -> Tuple[jnp.ndarray, Dict]:
+    logger.info(f"Calculating metrics: {config.metrics_to_calculate}")
     logger.info(
-        f"Calculating metrics: {config.metrics_to_calculate}, skipping {config.skip_symbols_start} symbols."
+        f"Skipping {config.skip_symbols_start} symbols at start, {config.skip_symbols_end} at end"
     )
-    # Placeholder for metrics calculation. This block might not modify the signal itself,
-    # but rather populate signal_state with calculated metrics (e.g., signal_state['evm'], signal_state['ber']).
-    # It would likely use functions from commstools.utils.metrics.
-    # Example:
-    # if "evm" in config.metrics_to_calculate:
-    #   ref_symbols = ... # get reference symbols, possibly from signal_state or a loaded file
-    #   evm = calculate_evm(signal_to_measure, ref_symbols) # from commstools.utils.metrics
-    #   signal_state['evm'] = evm
-    #   logger.info(f"Calculated EVM: {evm}")
+    # Placeholder for JAX-based metrics calculation
+    # This function might not modify the signal but could add metrics to signal_state
+    signal_state["calculated_metrics"] = {}
+    for metric in config.metrics_to_calculate:
+        logger.debug(f"Computing {metric}")
+        # Placeholder: actual metric calculations would go here
+        signal_state["calculated_metrics"][metric] = 0.0
     return signal, signal_state
-
-
-# Basic logging configuration
-if not logger.hasHandlers():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
-    )
-
-logger.debug("RX DSP functions and registry mechanism defined in commstools.rx.dsp.")

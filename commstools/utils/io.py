@@ -118,13 +118,3 @@ def load_data_and_metadata(
             metadata = None  # Ensure metadata is None if loading failed
 
     return loaded_data, metadata
-
-
-# Basic logging configuration
-if not logger.hasHandlers():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
-    )
-
-logger.debug("I/O utilities defined.")

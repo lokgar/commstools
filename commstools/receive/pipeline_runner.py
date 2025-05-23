@@ -1,29 +1,24 @@
-# commstools/rx/dsp_chain.py (Refactored)
 import logging
-import jax.numpy as jnp
 import os
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Tuple
 
-# Configuration imports
-from commstools.receive.config.pipeline_config import (
-    DSPChainConfig,
-)  # Main config for the chain
+import jax.numpy as jnp
 
-# Import the function map accessor from the RX registry module
-from dsp_blocks import get_rx_dsp_function_map
+from commstools.receive.configs import ReceivePipelineConfig
+from commstools.receive.dsp_functions import get_dsp_functions
 
 logger = logging.getLogger(__name__)
 
 
 # Helper functions (can remain here or move to a utils.py within commstools.rx or commstools.utils)
-def _validate_signal_integrity(signal: jnp.ndarray, block_identifier: str):
+def _validate_signal_integrity(signal: jnp.ndarray, function_id: str):
     """
     Basic signal integrity checks (NaNs, Infs).
     """
     if jnp.any(jnp.isnan(signal)):
-        logger.warning(f"NaNs detected in signal after block: {block_identifier}")
+        logger.warning(f"NaNs detected in signal after function: {function_id}")
     if jnp.any(jnp.isinf(signal)):
-        logger.warning(f"Infs detected in signal after block: {block_identifier}")
+        logger.warning(f"Infs detected in signal after function: {function_id}")
 
 
 def _save_intermediate_signal(
@@ -42,12 +37,12 @@ def _save_intermediate_signal(
         logger.error(f"Failed to save intermediate signal to {full_path}: {e}")
 
 
-def run_dsp_chain(
-    config: DSPChainConfig, initial_signal: jnp.ndarray
+def run_receive_pipeline(
+    config: ReceivePipelineConfig, initial_signal: jnp.ndarray
 ) -> Tuple[jnp.ndarray, Dict[str, Any]]:
     """
-    Runs the configured RX DSP chain on an initial signal.
-    Relies on RX DSP functions being registered in commstools.rx.registry.
+    Runs the configured receive DSP pipeline on an initial signal.
+    Relies on DSP functions being registered in the function registry.
     """
     current_signal = initial_signal
     signal_state: Dict[str, Any] = {}  # Initialize signal state
@@ -62,78 +57,70 @@ def run_dsp_chain(
             signal_state["center_frequency_hz"] = config.system.center_frequency_hz
         # Add other relevant system parameters to signal_state if needed
 
-    logger.info(f"Starting RX DSP chain for job_id: {config.job_id or 'N/A'}")
+    logger.info(f"Starting DSP pipeline for job_id: {config.job_id or 'N/A'}")
     logger.debug(f"Initial signal state: {signal_state}")
 
-    # Get the map of registered RX DSP functions
-    rx_dsp_function_map = get_rx_dsp_function_map()
-    if not rx_dsp_function_map:
+    # Get the map of registered DSP functions
+    dsp_functions = get_dsp_functions()
+    if not dsp_functions:
         logger.error(
-            "RX DSP function map is empty! No DSP functions seem to be registered. "
-            "Check imports in commstools/rx/__init__.py."
+            "DSP function registry is empty! No DSP functions are registered. "
+            "Check imports in commstools/receive/__init__.py."
         )
         raise RuntimeError(
-            "RX DSP function map is empty. Cannot proceed with DSP chain."
+            "DSP function registry is empty. Cannot proceed with pipeline."
         )
 
-    for i, block_config_instance in enumerate(config.dsp_chain):
-        # block_config_instance is an instance of one of the Pydantic models in RXDSPBlocksUnion
-        block_type_str = block_config_instance.block  # Access the discriminator field
-        block_identifier = (
-            f"{i + 1}_{block_type_str}"  # Unique identifier for logging/saving
-        )
+    for i, step_config in enumerate(config.pipeline):
+        step_name = step_config.function
+        step_id = f"{i + 1}_{step_name}"
 
-        if not block_config_instance.enabled:
-            logger.info(f"Skipping disabled block: {block_identifier}")
+        if not step_config.enabled:
+            logger.info(f"Skipping disabled function: {step_id}")
             continue
 
-        logger.info(f"Running block: {block_identifier}")
+        logger.info(f"Running function: {step_id}")
         logger.debug(
-            f"Block {block_identifier} configuration: {block_config_instance.model_dump_json(indent=2)}"
+            f"Function {step_id} configuration: {step_config.model_dump_json(indent=2)}"
         )
 
-        if block_type_str in rx_dsp_function_map:
-            dsp_function = rx_dsp_function_map[block_type_str]
+        if step_name in dsp_functions:
+            step_function = dsp_functions[step_name]
             try:
-                current_signal, signal_state = dsp_function(
-                    current_signal, block_config_instance, signal_state
+                current_signal, signal_state = step_function(
+                    current_signal, step_config, signal_state
                 )
                 logger.info(
-                    f"Successfully processed block {block_identifier}. Updated signal state: {signal_state}"
+                    f"Successfully processed function {step_id}. Signal shape: {current_signal.shape}"
                 )
-                _validate_signal_integrity(current_signal, block_identifier)
+                logger.debug(f"Updated signal state: {signal_state}")
+                _validate_signal_integrity(current_signal, step_id)
             except Exception as e:
                 logger.error(
-                    f"Error processing block {block_identifier}: {e}", exc_info=True
+                    f"Error processing function {step_id}: {e}",
+                    exc_info=True,
                 )
                 raise  # Re-raise to halt processing on error
         else:
             logger.error(
-                f"RX DSP function for block type '{block_type_str}' (Block: {block_identifier}) not found in registry."
+                f"DSP function for function type '{step_name}' (Function: {step_id}) not found in registry."
             )
             raise NotImplementedError(
-                f"RX DSP function for block type '{block_type_str}' (Block: {block_identifier}) is not implemented or registered."
+                f"DSP function for function type '{step_name}' (Function: {step_id}) is not implemented or registered."
             )
 
         if config.save_intermediate:
-            output_dir_str = str(
-                config.output_dir
-            )  # Ensure it's a string for os.path.join
+            output_dir_str = str(config.output_dir)
             _save_intermediate_signal(
-                current_signal, f"intermediate_{block_identifier}", output_dir_str
+                current_signal, f"intermediate_{step_id}", output_dir_str
             )
 
     logger.info(
-        f"RX DSP chain processing completed for job_id: {config.job_id or 'N/A'}"
+        f"DSP pipeline processing completed for job_id: {config.job_id or 'N/A'}"
     )
     return current_signal, signal_state
 
 
-# Basic logging configuration
-if not logger.hasHandlers():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
-    )
-
-logger.debug("RX DSP chain runner (run_dsp_chain) defined.")
+logger.debug(
+    "DSP functions and registry mechanism defined in commstools.receive.dsp_functions."
+)

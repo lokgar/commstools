@@ -1,78 +1,93 @@
 import logging
-from typing import Dict, List, Literal, Optional, Type, Union
+from typing import Dict, List, Literal, Optional, Type, Union, Annotated, Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    DirectoryPath,
+    Field,
+    FilePath,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
+
+from commstools.system_config import SystemConfig
 
 logger = logging.getLogger(__name__)
 
-# Registry for RX DSP block configuration Pydantic models
-# Stores: {"block_type_str": ModelClass}
-_RX_DSP_CONFIG_REGISTRY: Dict[str, Type[BaseModel]] = {}
+_DSP_CONFIG_REGISTRY: Dict[str, Type[BaseModel]] = {}
 
 
-def register_rx_dsp_block_config(cls: Type[BaseModel]):
+# --- Decorators for DSP Function Configuration Models ---
+
+
+def dsp_config(cls: Type[BaseModel]):
     """
-    Decorator to register an RX DSP block configuration Pydantic model.
-    The model must have a 'block: Literal["block_type_name"] = "block_type_name"' field.
-    Tailored for Pydantic V2.
+    Decorator to register a DSP function configuration Pydantic model.
+    The model must have a 'function: Literal["function_name"] = "function_name"' field.
     """
-    if not hasattr(cls, "model_fields"):
+    function_field: Optional[FieldInfo] = cls.model_fields.get("function")
+
+    if not function_field:
         raise TypeError(
-            f"Class {cls.__name__} does not appear to be a Pydantic V2 model (missing 'model_fields')."
+            f"Class {cls.__name__} must have a 'function' field to be registered as a DSP function config."
         )
 
-    block_field_info: Optional[FieldInfo] = cls.model_fields.get("block")
+    dsp_function_name = function_field.default
 
-    if not block_field_info:
-        raise TypeError(
-            f"Class {cls.__name__} must have a 'block' field to be registered as an RX DSP block config."
-        )
-
-    block_type_str = block_field_info.default
-    if block_type_str is None or block_type_str is Ellipsis:
-        literal_args = getattr(block_field_info.annotation, "__args__", None)
+    if dsp_function_name is None or dsp_function_name is Ellipsis:
+        literal_args = getattr(function_field.annotation, "__args__", None)
         if literal_args and len(literal_args) == 1 and isinstance(literal_args[0], str):
-            block_type_str = literal_args[0]
+            dsp_function_name = literal_args[0]
         else:
             raise ValueError(
-                f"Could not automatically determine block_type_str for {cls.__name__} from 'block' field. "
-                f'Ensure \'block: Literal["unique_name"] = "unique_name"\' is defined with a default value.'
+                f"Could not automatically determine dsp_function_name for {cls.__name__} from 'function' field. "
+                f'Ensure \'function: Literal["unique_name"] = "unique_name"\' is defined with a default value.'
             )
 
-    if not isinstance(block_type_str, str):
+    if not isinstance(dsp_function_name, str):
         raise TypeError(
-            f"The 'block' field's resolved type string for {cls.__name__} must be a string. Got: {block_type_str}"
+            f"The 'function' field's resolved type string for {cls.__name__} must be a string. Got: {dsp_function_name}"
         )
 
-    if block_type_str in _RX_DSP_CONFIG_REGISTRY:
+    if dsp_function_name in _DSP_CONFIG_REGISTRY:
         logger.warning(
-            f"RX DSP block config type '{block_type_str}' from class {cls.__name__} "
-            f"is already registered by {_RX_DSP_CONFIG_REGISTRY[block_type_str].__name__}. Overwriting."
+            f"DSP function config type '{dsp_function_name}' from class {cls.__name__} "
+            f"is already registered by {_DSP_CONFIG_REGISTRY[dsp_function_name].__name__}. Overwriting."
         )
 
-    _RX_DSP_CONFIG_REGISTRY[block_type_str] = cls
+    _DSP_CONFIG_REGISTRY[dsp_function_name] = cls
     logger.debug(
-        f"Registered RX DSP block config: '{block_type_str}' -> {cls.__name__}"
+        f"Registered DSP function config: '{dsp_function_name}' -> {cls.__name__}"
     )
     return cls
 
 
-class RXDSPBlockConfigBase(BaseModel):  # Renamed from DSPBlockConfig to be RX specific
-    """Base model for all RX DSP block configurations."""
+def get_dsp_configs() -> Dict[str, Type[BaseModel]]:
+    """Returns a copy of the DSP function configuration registry."""
+    return _DSP_CONFIG_REGISTRY.copy()
 
-    block: str = Field(
-        ..., description="The type of DSP block (e.g., 'resampling', 'equalization')"
+
+# --- Base DSP Function Configuration Model ---
+
+
+class BaseDSPConfig(BaseModel):
+    """Base model for all DSP function configurations."""
+
+    function: str = Field(
+        ..., description="The name of DSP function (e.g., 'resampling', 'equalization')"
     )
     enabled: bool = Field(
-        True, description="Flag to enable or disable this DSP block in the chain"
+        True, description="Flag to enable or disable this DSP function in the chain"
     )
 
 
-# --- Definitions of individual RX DSP Block Configurations ---
-@register_rx_dsp_block_config
-class ResamplingConfig(RXDSPBlockConfigBase):
-    block: Literal["resampling"] = "resampling"
+# --- Individual DSP Function Configuration Models ---
+
+
+@dsp_config
+class ResamplingConfig(BaseDSPConfig):
+    function: Literal["resampling"] = "resampling"
     resample_factor: Optional[float] = Field(
         None,
         gt=0,
@@ -100,9 +115,9 @@ class ResamplingConfig(RXDSPBlockConfigBase):
         return self
 
 
-@register_rx_dsp_block_config
-class CDCompensationConfig(RXDSPBlockConfigBase):
-    block: Literal["cd_compensation"] = "cd_compensation"
+@dsp_config
+class CDCompensationConfig(BaseDSPConfig):
+    function: Literal["cd_compensation"] = "cd_compensation"
     fiber_length_km: float = Field(
         ..., gt=0, description="Length of the fiber in kilometers."
     )
@@ -114,9 +129,9 @@ class CDCompensationConfig(RXDSPBlockConfigBase):
     )
 
 
-@register_rx_dsp_block_config
-class FrequencyCorrectionConfig(RXDSPBlockConfigBase):
-    block: Literal["frequency_correction"] = "frequency_correction"
+@dsp_config
+class FrequencyCorrectionConfig(BaseDSPConfig):
+    function: Literal["frequency_correction"] = "frequency_correction"
     method: Literal["fft_based_v_v", "pll"] = Field(
         "fft_based_v_v", description="Method for frequency offset correction."
     )
@@ -131,13 +146,13 @@ class FrequencyCorrectionConfig(RXDSPBlockConfigBase):
     )
 
 
-@register_rx_dsp_block_config
-class TimingRecoveryConfig(RXDSPBlockConfigBase):
-    block: Literal["timing_recovery"] = "timing_recovery"
+@dsp_config
+class TimingRecoveryConfig(BaseDSPConfig):
+    function: Literal["timing_recovery"] = "timing_recovery"
     method: Literal["gardner", "mueller_muller", "nda_early_late"] = Field(
         "gardner", description="Method for symbol timing recovery."
     )
-    samples_per_symbol_in: Optional[int] = Field(  # Clarified name
+    samples_per_symbol_in: Optional[int] = Field(
         None,
         gt=1,
         description="Expected samples per symbol at the input of this block. If None, might be inferred or default (e.g., 2).",
@@ -147,12 +162,11 @@ class TimingRecoveryConfig(RXDSPBlockConfigBase):
         gt=0,
         description="Normalized loop bandwidth for the timing recovery loop.",
     )
-    # Add other method-specific parameters as needed, e.g., for NDA Early/Late
 
 
-@register_rx_dsp_block_config
-class EqualizerConfig(RXDSPBlockConfigBase):
-    block: Literal["equalization"] = "equalization"
+@dsp_config
+class EqualizerConfig(BaseDSPConfig):
+    function: Literal["equalization"] = "equalization"
     method: Literal["cma", "lms", "rls", "decision_directed_lms"] = Field(
         "lms", description="Equalization algorithm."
     )
@@ -169,21 +183,19 @@ class EqualizerConfig(RXDSPBlockConfigBase):
         None,
         description="Reference constellation points for decision-directed or training modes.",
     )
-    num_iterations_train: Optional[int] = Field(  # Added for training phase
+    num_iterations_train: Optional[int] = Field(
         None,
         gt=0,
         description="Number of symbols to use for initial training phase (if applicable).",
     )
-    mode: Optional[Literal["training", "tracking", "blind"]] = (
-        Field(  # Added for equalizer mode
-            "blind", description="Operating mode of the equalizer."
-        )
+    mode: Optional[Literal["training", "tracking", "blind"]] = Field(
+        "blind", description="Operating mode of the equalizer."
     )
 
 
-@register_rx_dsp_block_config
-class PhaseCorrectionConfig(RXDSPBlockConfigBase):
-    block: Literal["phase_correction"] = "phase_correction"
+@dsp_config
+class PhaseCorrectionConfig(BaseDSPConfig):
+    function: Literal["phase_correction"] = "phase_correction"
     method: Literal["v_v_cpe", "blind_phase_search", "feedforward_pll"] = Field(
         "v_v_cpe", description="Method for carrier phase estimation/correction."
     )
@@ -209,60 +221,58 @@ class PhaseCorrectionConfig(RXDSPBlockConfigBase):
     )
 
 
-@register_rx_dsp_block_config
-class SymbolDecisionConfig(RXDSPBlockConfigBase):
-    block: Literal["symbol_decision"] = "symbol_decision"
+@dsp_config
+class SymbolDecisionConfig(BaseDSPConfig):
+    function: Literal["symbol_decision"] = "symbol_decision"
     modulation_format: Literal["qpsk", "16qam", "64qam", "bpsk"] = Field(
         ..., description="Modulation format for symbol decision."
     )
 
 
-@register_rx_dsp_block_config
-class MetricsCalculationConfig(
-    RXDSPBlockConfigBase
-):  # Added based on example_dsp_chain.yaml
-    block: Literal["metrics_calculation"] = "metrics_calculation"
-    metrics_to_calculate: List[Literal["evm", "ber", "ser", "snr_est"]] = Field(
-        ..., description="List of metrics to calculate."
+@dsp_config
+class MetricsCalculationConfig(BaseDSPConfig):
+    function: Literal["metrics_calculation"] = "metrics_calculation"
+    metrics_to_calculate: List[Literal["evm", "ber", "ser", "snr"]] = Field(
+        default_factory=lambda: ["evm"],
+        description="List of metrics to calculate (e.g., EVM, BER, SER, SNR).",
     )
-    reference_sequence_path: Optional[str] = Field(
-        None,
-        description="Path to the reference sequence (bits or symbols) for BER/SER calculation.",
-    )
-    skip_symbols_start: Optional[int] = Field(
+    skip_symbols_start: int = Field(
         0,
         ge=0,
-        description="Number of initial symbols to skip before calculating metrics (e.g., to exclude training/convergence).",
+        description="Number of symbols to skip at the start for metrics calculation.",
+    )
+    skip_symbols_end: int = Field(
+        0,
+        ge=0,
+        description="Number of symbols to skip at the end for metrics calculation.",
+    )
+    reference_sequence_path: Optional[FilePath] = Field(
+        None,
+        description="Optional path to reference sequence file for BER/SER calculations.",
     )
 
 
-# Dynamically create the Union of all registered RX DSP block configurations
-if not _RX_DSP_CONFIG_REGISTRY:
-    logger.warning(
-        "RX DSP Block Config Registry is empty. "
-        "RXDSPBlocksUnion will fallback to Union[RXDSPBlockConfigBase]. Ensure RX DSP block config classes are defined and decorated."
-    )
-    RXDSPBlocksUnion = Union[RXDSPBlockConfigBase]
-else:
-    RXDSPBlocksUnion = Union[tuple(_RX_DSP_CONFIG_REGISTRY.values())]  # type: ignore
+# --- Main Pipeline Configuration Model ---
 
 
-def get_rx_dsp_config_registry() -> Dict[str, Type[BaseModel]]:
-    """Returns a copy of the RX DSP block configuration registry."""
-    return _RX_DSP_CONFIG_REGISTRY.copy()
+# First, define a forward reference for the Union type that will be created after all configs are registered
+def _create_dsp_config_union():
+    """Create the DSP config union after all configs are registered."""
+    if not _DSP_CONFIG_REGISTRY:
+        logger.warning(
+            "DSP Function Config Registry is empty. "
+            "DSPConfigUnion will fallback to Union[BaseDSPConfig]. Ensure DSP function config classes are defined and decorated."
+        )
+        return Annotated[Union[BaseDSPConfig], Field(discriminator="function")]
+    else:
+        # Only include the registered specific config classes, not BaseDSPConfig
+        return Annotated[
+            Union[tuple(_DSP_CONFIG_REGISTRY.values())], Field(discriminator="function")
+        ]
 
 
-from typing import Optional, List, Literal
-from pydantic import BaseModel, Field, FilePath, DirectoryPath, field_validator
-import logging
-
-# Import the dynamically created Union of RX DSP block configurations
-from .dsp_config import RXDSPBlocksUnion
-
-# Import the shared SystemConfig
-from commstools.system_config import SystemConfig
-
-logger = logging.getLogger(__name__)
+# Create the union type
+DSPConfigUnion = _create_dsp_config_union()
 
 
 class ReceivePipelineConfig(BaseModel):
@@ -293,12 +303,10 @@ class ReceivePipelineConfig(BaseModel):
         description="Directory where processed outputs (and intermediates) will be saved.",
     )
 
-    # The 'discriminator' field tells Pydantic to use the 'block' field in each item
-    # of the list to determine which specific Pydantic model (from RXDSPBlocksUnion) to use.
-    dsp_chain: List[RXDSPBlocksUnion] = Field(  # type: ignore
+    # Now use the proper DSPConfigUnion type
+    pipeline: List[DSPConfigUnion] = Field(
         default_factory=list,
-        discriminator="block",  # Crucial for Pydantic to correctly parse the Union types
-        description="Sequence of RX DSP blocks and their parameters. Order matters.",
+        description="Sequence of DSP functions and their parameters. Order matters.",
     )
 
     save_intermediate: bool = Field(
@@ -310,7 +318,7 @@ class ReceivePipelineConfig(BaseModel):
     )
 
     @field_validator("output_dir")
-    @classmethod  # Pydantic V2 validators are class methods by default if first arg is cls
+    @classmethod
     def create_output_dir(cls, v: DirectoryPath) -> DirectoryPath:
         """Ensure the output directory exists."""
         if v:
@@ -318,16 +326,21 @@ class ReceivePipelineConfig(BaseModel):
             logger.debug(f"Output directory ensured: {v}")
         return v
 
-    # Example YAML structure for dsp_chain:
-    # dsp_chain:
-    #   - block: resampling  # This 'block' value is the discriminator
-    #     enabled: true
-    #     target_rate_hz: 64e9
-    #   - block: cd_compensation
-    #     fiber_length_km: 80
-    #     dispersion_ps_nm_km: 17.0
-    #     center_wavelength_nm: 1550.0
-    #   - block: equalization
-    #     method: lms
-    #     num_taps: 31
-    #     step_size: 5e-4
+
+# Example YAML structure for pipeline:
+# pipeline:
+#   - function: resampling  # This 'function' value is the discriminator
+#     enabled: true
+#     target_rate_hz: 64e9
+#   - function: cd_compensation
+#     fiber_length_km: 80
+#     dispersion_ps_nm_km: 17.0
+#     center_wavelength_nm: 1550.0
+#   - function: equalization
+#     method: lms
+#     num_taps: 31
+#     step_size: 5e-4
+
+
+if __name__ == "__main__":
+    print(get_dsp_configs())
