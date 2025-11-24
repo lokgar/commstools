@@ -1,6 +1,7 @@
 from typing import Optional, Tuple, Any
 from dataclasses import dataclass
 from .backend import get_backend, Backend, ArrayType
+from .config import get_config
 
 
 @dataclass
@@ -27,6 +28,30 @@ class Signal:
         # However, to avoid implicit copying, we might just trust the user or
         # provide a method to ensure backend.
         pass
+
+    @classmethod
+    def from_config(cls, samples: ArrayType) -> "Signal":
+        """Create a Signal using parameters from the global SystemConfig.
+
+        Args:
+            samples: The complex IQ samples for the signal
+
+        Returns:
+            A new Signal instance with parameters from global config
+
+        Raises:
+            RuntimeError: If no global config is set
+
+        Example:
+            >>> config = SystemConfig(sampling_rate=1e6, center_freq=2.4e9)
+            >>> set_config(config)
+            >>> sig = Signal.from_config(samples=my_data)
+            >>> # sig now has sampling_rate=1e6, center_freq=2.4e9 from config
+        """
+        from .config import require_config
+
+        config = require_config()
+        return cls(samples=samples, **config.to_signal_params())
 
     @property
     def duration(self) -> float:
@@ -78,7 +103,7 @@ class Signal:
         Returns:
             A new Signal instance with data on the requested backend.
         """
-        from .backend import set_backend, get_backend, NumpyBackend, JaxBackend
+        from .backend import NumpyBackend, JaxBackend
 
         target_backend: Backend
         if backend_name.lower() == "numpy":
@@ -91,7 +116,7 @@ class Signal:
         # Convert samples
         new_samples = target_backend.array(self.samples)
 
-        return Signal(
+        return self.__class__(
             samples=new_samples,
             sampling_rate=self.sampling_rate,
             center_freq=self.center_freq,
@@ -117,7 +142,7 @@ class Signal:
         Returns:
             A new Signal instance with the specified updates.
         """
-        return Signal(
+        return self.__class__(
             samples=samples if samples is not None else self.samples,
             sampling_rate=sampling_rate
             if sampling_rate is not None
