@@ -1,14 +1,12 @@
-# commstools
+# CommsTools
 
-**High-Performance Digital Communications Research Framework**
-
-`commstools` is a modern, modular Python framework designed to bridge the gap between theoretical simulation and hardware-in-the-loop experimentation for digital signal processing (DSP) and telecommunications.
+CommsTools is a modern, modular Python library for high-performance digital communications research.
 
 Built with a **dual-backend architecture**, it allows researchers to seamlessly switch between **NumPy** for ease of debugging and compatibility, and **JAX** for GPU acceleration and Just-In-Time (JIT) compilation—without changing their high-level code.
 
 ## 🚀 Key Features
 
-*   **Dual-Backend Architecture**: Write your DSP logic once and run it on:
+*   **Dual-Backend Architecture**:
     *   **NumPy**: Standard CPU execution, perfect for debugging and small-scale simulations.
     *   **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
 *   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sample rate, center frequency, modulation format), abstracting away the underlying array implementation.
@@ -79,7 +77,7 @@ except ImportError:
 
 ## 🏗️ Architecture
 
-The framework is built around three core concepts:
+The library is built around three core concepts:
 
 1.  **`Backend` Protocol**: Defines the interface for array operations (`fft`, `exp`, `sum`, etc.). Implementations exist for `NumpyBackend` and `JaxBackend`.
 2.  **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `spectrum()` and `time_axis()` that delegate to the active backend.

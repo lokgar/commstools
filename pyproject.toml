@@ -1,7 +1,7 @@
 [project]
 name = "commstools"
 version = "0.1.0"
-description = "High-Performance Digital Communications Research Framework."
+description = "A Python library for high-performance digital communications research."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
