@@ -1,38 +1,24 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from commstools import Signal, ProcessingBlock, set_backend, using_backend, get_backend
+from commstools import Signal, set_backend, using_backend, get_backend, jit
 
 
-# 1. Define a custom Processing Block
-class AddNoise(ProcessingBlock):
+# 1. Define a processing function
+# @jit(static_argnums=1)
+def add_noise(signal: Signal, noise_power: float = 0.1) -> Signal:
     """Adds Gaussian noise to the signal."""
+    backend = get_backend()
+    # Generate complex noise
+    noise = (
+        backend.array(np.random.randn(*signal.samples.shape))
+        + 1j * backend.array(np.random.randn(*signal.samples.shape))
+    ) * np.sqrt(noise_power / 2)
 
-    def __init__(self, noise_power: float = 0.1):
-        self.noise_power = noise_power
-
-    def process(self, signal: Signal) -> Signal:
-        backend = get_backend()
-        # Generate complex noise
-        noise = (
-            backend.array(np.random.randn(*signal.samples.shape))
-            + 1j * backend.array(np.random.randn(*signal.samples.shape))
-        ) * np.sqrt(self.noise_power / 2)
-
-        # Ensure noise is on the correct backend (JAX/Numpy)
-        # Note: In a real implementation, we'd use backend-specific random generation
-        # for better performance/reproducibility, but this works for a demo.
-
-        new_samples = signal.samples + noise
-        return Signal(
-            samples=new_samples,
-            sample_rate=signal.sample_rate,
-            center_freq=signal.center_freq,
-            modulation_format=signal.modulation_format,
-        )
+    return signal.update(signal.samples + noise)
 
 
 def main():
-    print("=== Commstools Demo ===")
+    print("=== Commstools Demo (Functional API) ===")
 
     # Parameters
     fs = 1e6  # 1 MHz sample rate
@@ -46,15 +32,14 @@ def main():
 
     # Create a simple complex exponential signal
     samples = np.exp(1j * 2 * np.pi * f0 * t)
-    sig = Signal(samples=samples, sample_rate=fs, center_freq=2.4e9)
+    sig = Signal(samples=samples, sampling_rate=fs, center_freq=2.4e9)
 
     print(f"Signal created: {sig.samples.shape[0]} samples")
     print(f"Backend type: {type(sig.samples)}")
 
     # Apply processing
-    noise_block = AddNoise(noise_power=0.5)
-    noisy_sig = noise_block(sig)
-    print("Applied AddNoise block.")
+    noisy_sig = add_noise(sig, noise_power=0.5)
+    print("Applied add_noise function.")
 
     # 3. Switch to JAX Backend
     print("\n[JAX Backend]")
@@ -64,11 +49,9 @@ def main():
             sig_jax = sig.to("jax")
             print(f"Signal moved to JAX. Backend type: {type(sig_jax.samples)}")
 
-            # Apply processing (happens on JAX backend)
-            # Note: Our simple AddNoise block uses numpy.random, which returns numpy arrays.
-            # The backend.array() call in AddNoise handles the conversion to JAX array.
-            noisy_sig_jax = noise_block(sig_jax)
-            print("Applied AddNoise block on JAX backend.")
+            # Apply processing (happens on JAX backend, JIT compiled!)
+            noisy_sig_jax = add_noise(sig_jax, noise_power=0.5)
+            print("Applied add_noise function on JAX backend.")
 
             # Compute Spectrum using JAX
             freqs, psd = noisy_sig_jax.spectrum()
@@ -110,7 +93,10 @@ def main():
     plt.grid(True)
 
     plt.tight_layout()
-    plt.show()
+    plt.show()  # Commented out for headless environments
+    # output_file = "demo_plot.png"
+    # plt.savefig(output_file)
+    # print(f"Plot saved to {output_file}")
 
 
 if __name__ == "__main__":

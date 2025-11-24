@@ -10,13 +10,13 @@ class Signal:
 
     Attributes:
         samples: The complex IQ samples of the signal.
-        sample_rate: The sampling rate in Hz.
+        sampling_rate: The sampling rate in Hz.
         center_freq: The center frequency in Hz.
         modulation_format: Description of the modulation format (e.g., 'QPSK', '16QAM').
     """
 
     samples: ArrayType
-    sample_rate: float
+    sampling_rate: float
     center_freq: float = 0.0
     modulation_format: str = "unknown"
 
@@ -32,12 +32,12 @@ class Signal:
     def duration(self) -> float:
         """Duration of the signal in seconds."""
         backend = self._get_backend()
-        return self.samples.shape[0] / self.sample_rate
+        return self.samples.shape[0] / self.sampling_rate
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
         backend = self._get_backend()
-        return backend.arange(0, self.samples.shape[0]) / self.sample_rate
+        return backend.arange(0, self.samples.shape[0]) / self.sampling_rate
 
     def spectrum(self, nfft: Optional[int] = None) -> Tuple[ArrayType, ArrayType]:
         """
@@ -62,7 +62,7 @@ class Signal:
 
         # Frequency axis
         freqs = (
-            backend.fftshift(backend.fftfreq(nfft, d=1 / self.sample_rate))
+            backend.fftshift(backend.fftfreq(nfft, d=1 / self.sampling_rate))
             + self.center_freq
         )
 
@@ -93,9 +93,39 @@ class Signal:
 
         return Signal(
             samples=new_samples,
-            sample_rate=self.sample_rate,
+            sampling_rate=self.sampling_rate,
             center_freq=self.center_freq,
             modulation_format=self.modulation_format,
+        )
+
+    def update(
+        self,
+        samples: Optional[ArrayType] = None,
+        sampling_rate: Optional[float] = None,
+        center_freq: Optional[float] = None,
+        modulation_format: Optional[str] = None,
+    ) -> "Signal":
+        """
+        Creates a new Signal with updated fields, defaulting to the original values.
+
+        Args:
+            samples: The new samples array. Defaults to the current samples.
+            sampling_rate: The new sampling rate in Hz. Defaults to the current sampling rate.
+            center_freq: The new center frequency in Hz. Defaults to the current center frequency.
+            modulation_format: The new modulation format. Defaults to the current modulation format.
+
+        Returns:
+            A new Signal instance with the specified updates.
+        """
+        return Signal(
+            samples=samples if samples is not None else self.samples,
+            sampling_rate=sampling_rate
+            if sampling_rate is not None
+            else self.sampling_rate,
+            center_freq=center_freq if center_freq is not None else self.center_freq,
+            modulation_format=modulation_format
+            if modulation_format is not None
+            else self.modulation_format,
         )
 
     def _get_backend(self) -> Backend:
@@ -139,7 +169,7 @@ try:
     def _signal_tree_flatten(signal):
         children = (signal.samples,)  # Arrays/tensors to be traced
         aux_data = (
-            signal.sample_rate,
+            signal.sampling_rate,
             signal.center_freq,
             signal.modulation_format,
         )  # Static metadata

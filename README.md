@@ -10,7 +10,7 @@ Built with a **dual-backend architecture**, it allows researchers to seamlessly 
     *   **NumPy**: Standard CPU execution, perfect for debugging and small-scale simulations.
     *   **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
 *   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sample rate, center frequency, modulation format), abstracting away the underlying array implementation.
-*   **Modular Processing Blocks**: A standardized `ProcessingBlock` protocol ensures that filters, channel models, and DSP algorithms are reusable and composable.
+*   **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
 *   **Developer Ergonomics**: Type-safe design with modern Python hints, making it easy to build robust and scalable communication systems.
 
 ## 📦 Installation
@@ -32,19 +32,14 @@ Here is a simple example demonstrating how to generate a signal, apply a process
 
 ```python
 import numpy as np
-from commstools import Signal, ProcessingBlock, set_backend, using_backend
+from commstools import Signal, jit, set_backend, using_backend
 
-# 1. Define a custom Processing Block
-class GainBlock(ProcessingBlock):
-    def __init__(self, gain: float):
-        self.gain = gain
-
-    def process(self, signal: Signal) -> Signal:
-        # Operations are backend-agnostic
-        return Signal(
-            samples=signal.samples * self.gain,
-            sample_rate=signal.sample_rate
-        )
+# 1. Define a processing function (JIT-enabled)
+@jit
+def apply_gain(signal: Signal, gain: float) -> Signal:
+    # Operations are backend-agnostic
+    # .like() returns a new Signal with same metadata but new samples
+    return signal.like(signal.samples * gain)
 
 # 2. Create a Signal (defaults to NumPy)
 set_backend("numpy")
@@ -54,8 +49,7 @@ sig = Signal(
 )
 
 # 3. Process on CPU (NumPy)
-processor = GainBlock(gain=2.0)
-out_numpy = processor(sig)
+out_numpy = apply_gain(sig, gain=2.0)
 print(f"NumPy Output: {type(out_numpy.samples)}")
 
 # 4. Process on GPU (JAX) - Seamless Switch
@@ -64,8 +58,8 @@ try:
         # Move signal to JAX backend
         sig_jax = sig.to("jax")
         
-        # Apply same processor (now runs on JAX)
-        out_jax = processor(sig_jax)
+        # Apply same function (now runs on JAX and is JIT compiled!)
+        out_jax = apply_gain(sig_jax, gain=2.0)
         
         print(f"JAX Output:   {type(out_jax.samples)}")
         
@@ -81,7 +75,7 @@ The library is built around three core concepts:
 
 1.  **`Backend` Protocol**: Defines the interface for array operations (`fft`, `exp`, `sum`, etc.). Implementations exist for `NumpyBackend` and `JaxBackend`.
 2.  **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `spectrum()` and `time_axis()` that delegate to the active backend.
-3.  **`ProcessingBlock`**: A protocol for any transformation applied to a signal. This enforces a consistent API (`process(signal) -> signal`) across the library.
+3.  **Functional API (`@jit`)**: Processing logic is implemented as pure functions. The `@jit` decorator ensures they are compiled when running on JAX, while remaining standard Python functions on NumPy.
 
 ## 🤝 Contributing
 

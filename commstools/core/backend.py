@@ -1,4 +1,5 @@
-from typing import Any, Protocol, Union, Optional, Callable, TypeVar
+from typing import Any, Protocol, Union, Optional, Callable, TypeVar, Dict
+import functools
 import numpy as np
 import contextlib
 
@@ -68,7 +69,7 @@ class Backend(Protocol):
     def ifftshift(self, x: ArrayType, axes: Any = None) -> ArrayType: ...
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType: ...
 
-    def jit(
+    def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
     ) -> Callable: ...
 
@@ -156,7 +157,7 @@ class NumpyBackend:
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType:
         return np.fft.fftfreq(n, d=d)
 
-    def jit(
+    def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
     ) -> Callable:
         # Numpy backend does not support JIT, return function as is
@@ -252,7 +253,7 @@ class JaxBackend:
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType:
         return jnp.fft.fftfreq(n, d=d)
 
-    def jit(
+    def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
     ) -> Callable:
         import jax
@@ -290,3 +291,35 @@ def using_backend(backend_name: str):
         yield
     finally:
         _CURRENT_BACKEND = prev_backend
+
+
+def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = None):
+    """
+    Decorator that lazily JIT compiles the function using the currently active backend.
+
+    It dispatches to the active backend's JIT implementation at runtime.
+
+    Usage:
+        @jit
+        def my_func(x): ...
+
+        @jit(static_argnums=(1,))
+        def my_func(x, mode): ...
+    """
+    if fun is None:
+        return lambda f: jit(f, static_argnums=static_argnums)
+
+    # Cache for compiled functions: {backend_name: compiled_fn}
+    _cache: Dict[str, Callable] = {}
+
+    @functools.wraps(fun)
+    def wrapper(*args, **kwargs):
+        backend = get_backend()
+
+        if backend.name not in _cache:
+            # Compile for this backend
+            _cache[backend.name] = backend._jit_impl(fun, static_argnums=static_argnums)
+
+        return _cache[backend.name](*args, **kwargs)
+
+    return wrapper
