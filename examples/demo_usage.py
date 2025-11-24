@@ -21,7 +21,7 @@ def main():
     print("=== Commstools Demo (Functional API) ===")
 
     # Parameters
-    fs = 1e6  # 1 MHz sample rate
+    fs = 1e6  # 1 MHz sampling rate
     f0 = 50e3  # 50 kHz tone
     duration = 0.001  # 1 ms
     t = np.arange(int(fs * duration)) / fs

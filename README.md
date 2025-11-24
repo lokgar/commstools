@@ -9,7 +9,7 @@ Built with a **dual-backend architecture**, it allows researchers to seamlessly 
 *   **Dual-Backend Architecture**:
     *   **NumPy**: Standard CPU execution, perfect for debugging and small-scale simulations.
     *   **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
-*   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sample rate, center frequency, modulation format), abstracting away the underlying array implementation.
+*   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, center frequency, modulation format), abstracting away the underlying array implementation.
 *   **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
 *   **Developer Ergonomics**: Type-safe design with modern Python hints, making it easy to build robust and scalable communication systems.
 
@@ -45,7 +45,7 @@ def apply_gain(signal: Signal, gain: float) -> Signal:
 set_backend("numpy")
 sig = Signal(
     samples=np.exp(1j * 2 * np.pi * np.arange(1000) * 0.01), 
-    sample_rate=1e6
+    sampling_rate=1e6
 )
 
 # 3. Process on CPU (NumPy)
