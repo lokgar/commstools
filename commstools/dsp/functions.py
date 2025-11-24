@@ -153,7 +153,9 @@ def matched_filter(
         >>> filtered = matched_filter(sig)  # Uses config.filter_roll_off
     """
     config = get_config()
-    backend = get_backend()
+
+    # Ensure signal is on the global backend
+    signal = signal.ensure_backend()
 
     # Get parameters: explicit > config > defaults
     if roll_off is None:
@@ -173,7 +175,7 @@ def matched_filter(
     # This is just to demonstrate the config usage pattern
 
     # Simple moving average as placeholder
-    kernel = backend.ones(filter_length) / filter_length
+    # kernel = backend.ones(filter_length) / filter_length
 
     # Convolve (simplified - would use scipy.signal.convolve in production)
     # For now, just return signal with metadata preserved
@@ -204,7 +206,10 @@ def add_awgn(
         >>> noisy = add_awgn(sig)  # Uses config.snr_db = 20
     """
     config = get_config()
-    backend = get_backend()
+
+    # Ensure signal is on the global backend
+    signal = signal.ensure_backend()
+    backend = signal.backend
 
     # Calculate noise power
     if noise_power is None:

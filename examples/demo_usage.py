@@ -1,13 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from commstools import Signal, set_backend, using_backend, get_backend, jit
+from commstools import Signal, set_backend
 
 
+# 1. Define a processing function
 # 1. Define a processing function
 # @jit(static_argnums=1)
 def add_noise(signal: Signal, noise_power: float = 0.1) -> Signal:
     """Adds Gaussian noise to the signal."""
-    backend = get_backend()
+    # Ensure signal is on the global backend
+    signal = signal.ensure_backend()
+    backend = signal.backend
     # Generate complex noise
     noise = (
         backend.array(np.random.randn(*signal.samples.shape))
@@ -44,22 +47,27 @@ def main():
     # 3. Switch to JAX Backend
     print("\n[JAX Backend]")
     try:
-        with using_backend("jax"):
-            # Move signal to JAX
-            sig_jax = sig.to("jax")
-            print(f"Signal moved to JAX. Backend type: {type(sig_jax.samples)}")
+        # Switch to JAX backend
+        set_backend("jax")
 
-            # Apply processing (happens on JAX backend, JIT compiled!)
-            noisy_sig_jax = add_noise(sig_jax, noise_power=0.5)
-            print("Applied add_noise function on JAX backend.")
+        # Move signal to JAX
+        sig_jax = sig.to("jax")
+        print(f"Signal moved to JAX. Backend type: {type(sig_jax.samples)}")
 
-            # Compute Spectrum using JAX
-            freqs, psd = noisy_sig_jax.spectrum()
-            print("Computed spectrum using JAX FFT.")
+        # Apply processing (happens on JAX backend, JIT compiled!)
+        noisy_sig_jax = add_noise(sig_jax, noise_power=0.5)
+        print("Applied add_noise function on JAX backend.")
 
-            # Bring back to Numpy for plotting
-            freqs_np = np.array(freqs)
-            psd_np = np.array(psd)
+        # Compute Spectrum using JAX
+        freqs, psd = noisy_sig_jax.spectrum()
+        print("Computed spectrum using JAX FFT.")
+
+        # Bring back to Numpy for plotting
+        freqs_np = np.array(freqs)
+        psd_np = np.array(psd)
+
+        # Reset backend
+        set_backend("numpy")
 
     except ImportError:
         print("JAX not installed or configured. Skipping JAX demo.")

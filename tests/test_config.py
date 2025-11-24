@@ -13,6 +13,9 @@ from commstools import (
 from commstools.dsp import generate_pilot_sequence, generate_training_signal, add_awgn
 
 
+from pydantic import ValidationError
+
+
 class TestSystemConfig:
     """Test SystemConfig creation and validation."""
 
@@ -40,12 +43,12 @@ class TestSystemConfig:
 
     def test_invalid_sampling_rate(self):
         """Test that invalid sampling rate raises error."""
-        with pytest.raises(ValueError, match="sampling_rate must be positive"):
+        with pytest.raises(ValidationError):
             SystemConfig(sampling_rate=-1)
 
     def test_invalid_roll_off(self):
         """Test that invalid roll-off raises error."""
-        with pytest.raises(ValueError, match="filter_roll_off must be between 0 and 1"):
+        with pytest.raises(ValidationError):
             SystemConfig(sampling_rate=1e6, filter_roll_off=1.5)
 
     def test_to_signal_params(self):

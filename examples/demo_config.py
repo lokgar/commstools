@@ -6,14 +6,16 @@ This example shows three different usage patterns:
 3. Function-specific config without Signal input
 """
 
+from commstools.core.backend import get_backend
 import numpy as np
-from commstools import Signal, SystemConfig, set_config, get_config, using_config
+from commstools import Signal, SystemConfig, set_config, get_config
 from commstools.dsp import (
     generate_pilot_sequence,
     generate_training_signal,
     add_awgn,
     matched_filter,
 )
+from commstools import get_backend
 
 
 def demo_traditional_no_config():
@@ -35,6 +37,7 @@ def demo_traditional_no_config():
     # Functions with explicit parameters
     noisy = add_awgn(sig, snr_db=20)
     print(f"Added noise with SNR=20 dB")
+    print(get_backend())
 
     # Generate sequence with explicit parameters
     pilots = generate_pilot_sequence(length=128, modulation="QPSK")
@@ -121,55 +124,6 @@ def demo_global_config():
     print(f"  ✓ Custom pilots: {len(custom_pilots)} QPSK symbols (overriding config)")
 
 
-def demo_temporary_config():
-    """Pattern 3: Temporary config using context manager"""
-    print("\n" + "=" * 70)
-    print("PATTERN 3: Temporary Config with Context Manager")
-    print("=" * 70)
-
-    # Set a default config
-    default_config = SystemConfig(
-        sampling_rate=1e6,
-        modulation_format="QPSK",
-        sequence_length=128,
-        snr_db=20,
-    )
-    set_config(default_config)
-    print("Default config: QPSK, SNR=20 dB, length=128")
-
-    # Generate with default config
-    pilots1 = generate_pilot_sequence()
-    print(
-        f"Generated with default: {len(pilots1)} {default_config.modulation_format} symbols"
-    )
-
-    # Temporarily use different config
-    special_config = SystemConfig(
-        sampling_rate=2e6,
-        modulation_format="64QAM",
-        sequence_length=256,
-        snr_db=30,
-    )
-
-    print("\nUsing temporary config context:")
-    with using_config(special_config):
-        # Inside this block, special_config is active
-        pilots2 = generate_pilot_sequence()
-        print(
-            f"  Inside context: {len(pilots2)} {special_config.modulation_format} symbols"
-        )
-
-        samples = np.random.randn(500) + 1j * np.random.randn(500)
-        sig = Signal.from_config(samples=samples)
-        print(f"  Signal created: fs={sig.sampling_rate / 1e6} MHz")
-
-    # Back to default config
-    pilots3 = generate_pilot_sequence()
-    print(
-        f"After context: {len(pilots3)} {default_config.modulation_format} symbols (back to default)"
-    )
-
-
 def demo_save_load_config():
     """Pattern 4: Save and load configurations"""
     print("\n" + "=" * 70)
@@ -217,7 +171,6 @@ def main():
     # Run all demos
     demo_traditional_no_config()
     demo_global_config()
-    demo_temporary_config()
     demo_save_load_config()
 
     print("\n" + "=" * 70)

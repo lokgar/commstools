@@ -1,7 +1,7 @@
-from typing import Any, Protocol, Union, Optional, Callable, TypeVar, Dict
+from typing import Any, Protocol, Union, Optional, Callable, Dict
 import functools
 import numpy as np
-import contextlib
+
 
 # Try to import JAX, but don't fail if it's not available
 try:
@@ -279,18 +279,6 @@ def set_backend(backend_name: str) -> None:
         _CURRENT_BACKEND = JaxBackend()
     else:
         raise ValueError(f"Unknown backend: {backend_name}")
-
-
-@contextlib.contextmanager
-def using_backend(backend_name: str):
-    """Context manager to temporarily switch backend."""
-    global _CURRENT_BACKEND
-    prev_backend = _CURRENT_BACKEND
-    try:
-        set_backend(backend_name)
-        yield
-    finally:
-        _CURRENT_BACKEND = prev_backend
 
 
 def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = None):

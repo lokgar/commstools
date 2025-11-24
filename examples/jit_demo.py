@@ -1,12 +1,14 @@
 import time
 import numpy as np
-from commstools import Signal, set_backend, using_backend, get_backend, jit
+from commstools import Signal, set_backend, jit
 
 
 # Define a computationally intensive function
 @jit
 def complex_operation(signal: Signal) -> Signal:
-    backend = get_backend()
+    # Ensure signal is on the global backend
+    signal = signal.ensure_backend()
+    backend = signal.backend
     # Perform some heavy math: lots of element-wise operations
     x = signal.samples
     for _ in range(50):
@@ -35,21 +37,28 @@ def main():
     # --- JAX Backend (With JIT) ---
     print("\n[JAX Backend]")
     try:
-        with using_backend("jax"):
-            sig_jax = sig_np.to("jax")
+        # Switch to JAX backend
+        set_backend("jax")
 
-            # Warmup (compilation)
-            print("Compiling...")
-            start = time.time()
-            # Note: We call the function directly, @jit handles the dispatch
-            _ = complex_operation(sig_jax).samples.block_until_ready()
-            print(f"Compilation + Run time: {time.time() - start:.4f} s")
+        # Move signal to JAX (auto-alignment via ensure_backend is also possible inside function,
+        # but explicit conversion here avoids measuring transfer time in execution)
+        sig_jax = sig_np.to("jax")
 
-            # Fast Run
-            print("Running JIT-compiled...")
-            start = time.time()
-            _ = complex_operation(sig_jax).samples.block_until_ready()
-            print(f"Execution time: {time.time() - start:.4f} s")
+        # Warmup (compilation)
+        print("Compiling...")
+        start = time.time()
+        # Note: We call the function directly, @jit handles the dispatch
+        _ = complex_operation(sig_jax).samples.block_until_ready()
+        print(f"Compilation + Run time: {time.time() - start:.4f} s")
+
+        # Fast Run
+        print("Running JIT-compiled...")
+        start = time.time()
+        _ = complex_operation(sig_jax).samples.block_until_ready()
+        print(f"Execution time: {time.time() - start:.4f} s")
+
+        # Reset backend
+        set_backend("numpy")
 
     except ImportError:
         print("JAX not installed.")

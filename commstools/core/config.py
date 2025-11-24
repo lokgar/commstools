@@ -4,82 +4,60 @@ This module provides a global configuration context that can be accessed
 from anywhere in the codebase without explicit passing.
 """
 
-from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field, model_validator, ConfigDict
 
 
-@dataclass
-class SystemConfig:
+class SystemConfig(BaseModel):
     """Central configuration for communication system parameters.
 
     This class holds all system-level parameters that can be accessed globally
     by Signal processing functions and sequence generators.
-
-    Attributes:
-        # Physical Layer Parameters
-        sampling_rate: Sampling rate in Hz
-        center_freq: Center frequency in Hz
-        modulation_format: Modulation format (e.g., 'QPSK', '16QAM', '64QAM')
-
-        # Symbol-Level Parameters
-        symbol_rate: Symbol rate in Hz (symbols/second)
-        samples_per_symbol: Number of samples per symbol
-
-        # Channel Parameters
-        snr_db: Signal-to-noise ratio in dB
-        phase_noise: Phase noise power
-        frequency_offset: Carrier frequency offset in Hz
-
-        # DSP Parameters
-        filter_roll_off: Pulse shaping filter roll-off factor (0 to 1)
-        equalizer_taps: Number of equalizer taps
-
-        # Sequence Generation
-        sequence_length: Length of training/preamble sequences
-        pilot_spacing: Spacing between pilot symbols
-
-        # Extensibility
-        extra: Dictionary for custom user-defined parameters
     """
 
+    model_config = ConfigDict(extra="allow")
+
     # Physical Layer Parameters
-    sampling_rate: float
-    center_freq: float = 0.0
-    modulation_format: str = "QPSK"
+    sampling_rate: float = Field(..., gt=0, description="Sampling rate in Hz")
+    center_freq: float = Field(0.0, description="Center frequency in Hz")
+    modulation_format: str = Field("QPSK", description="Modulation format")
 
     # Symbol-Level Parameters
-    symbol_rate: Optional[float] = None
-    samples_per_symbol: Optional[int] = None
+    symbol_rate: Optional[float] = Field(None, description="Symbol rate in Hz")
+    samples_per_symbol: Optional[int] = Field(None, description="Samples per symbol")
 
     # Channel Parameters
-    snr_db: Optional[float] = None
-    phase_noise: Optional[float] = None
-    frequency_offset: Optional[float] = None
+    snr_db: Optional[float] = Field(None, description="Signal-to-noise ratio in dB")
+    phase_noise: Optional[float] = Field(None, description="Phase noise power")
+    frequency_offset: Optional[float] = Field(
+        None, description="Carrier frequency offset in Hz"
+    )
 
     # DSP Parameters
-    filter_roll_off: float = 0.35
-    equalizer_taps: int = 15
+    filter_roll_off: float = Field(
+        0.35, ge=0, le=1, description="Pulse shaping filter roll-off factor"
+    )
+    equalizer_taps: int = Field(15, description="Number of equalizer taps")
 
     # Sequence Generation
-    sequence_length: int = 128
-    pilot_spacing: int = 8
+    sequence_length: int = Field(
+        128, description="Length of training/preamble sequences"
+    )
+    pilot_spacing: int = Field(8, description="Spacing between pilot symbols")
 
     # Extensibility for custom parameters
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: Dict[str, Any] = Field(
+        default_factory=dict, description="Custom user-defined parameters"
+    )
 
-    def __post_init__(self):
-        """Validate and auto-compute dependent parameters."""
-        if self.sampling_rate <= 0:
-            raise ValueError("sampling_rate must be positive")
-
-        if self.filter_roll_off < 0 or self.filter_roll_off > 1:
-            raise ValueError("filter_roll_off must be between 0 and 1")
-
-        # Auto-compute dependent parameters
+    @model_validator(mode="after")
+    def compute_dependent_parameters(self) -> "SystemConfig":
+        """Auto-compute dependent parameters."""
         if self.symbol_rate and self.samples_per_symbol is None:
             self.samples_per_symbol = int(self.sampling_rate / self.symbol_rate)
         elif self.samples_per_symbol and self.symbol_rate is None:
             self.symbol_rate = self.sampling_rate / self.samples_per_symbol
+        return self
 
     @classmethod
     def from_yaml(cls, path: str) -> "SystemConfig":
@@ -90,15 +68,13 @@ class SystemConfig:
 
         Returns:
             SystemConfig instance
-
-        Example:
-            >>> config = SystemConfig.from_yaml('sim_config.yaml')
         """
         import yaml
 
         with open(path, "r") as f:
             data = yaml.safe_load(f)
-        # Remove extra dict if it's in the YAML to avoid duplication
+
+        # Handle 'extra' field explicitly if present in YAML, otherwise Pydantic handles top-level extra fields via Config
         extra = data.pop("extra", {})
         config = cls(**data)
         config.extra.update(extra)
@@ -109,28 +85,12 @@ class SystemConfig:
 
         Args:
             path: Path where YAML file will be saved
-
-        Example:
-            >>> config.to_yaml('sim_config.yaml')
         """
         import yaml
 
-        # Convert dataclass to dict
-        data = {
-            "sampling_rate": self.sampling_rate,
-            "center_freq": self.center_freq,
-            "modulation_format": self.modulation_format,
-            "symbol_rate": self.symbol_rate,
-            "samples_per_symbol": self.samples_per_symbol,
-            "snr_db": self.snr_db,
-            "phase_noise": self.phase_noise,
-            "frequency_offset": self.frequency_offset,
-            "filter_roll_off": self.filter_roll_off,
-            "equalizer_taps": self.equalizer_taps,
-            "sequence_length": self.sequence_length,
-            "pilot_spacing": self.pilot_spacing,
-            "extra": self.extra,
-        }
+        # Convert model to dict, including extra fields
+        data = self.model_dump()
+
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
@@ -139,9 +99,6 @@ class SystemConfig:
 
         Returns:
             Dictionary with sampling_rate, center_freq, modulation_format
-
-        Example:
-            >>> sig = Signal(samples=data, **config.to_signal_params())
         """
         return {
             "sampling_rate": self.sampling_rate,
@@ -188,11 +145,6 @@ def set_config(config: SystemConfig):
 
     Args:
         config: SystemConfig instance to use globally
-
-    Example:
-        >>> config = SystemConfig(sampling_rate=1e6, modulation_format='16QAM')
-        >>> set_config(config)
-        >>> # Now all functions can access this config via get_config()
     """
     global _global_config
     _global_config = config
@@ -203,21 +155,12 @@ def get_config() -> Optional[SystemConfig]:
 
     Returns:
         Current SystemConfig instance, or None if not set
-
-    Example:
-        >>> config = get_config()
-        >>> if config:
-        >>>     fs = config.sampling_rate
     """
     return _global_config
 
 
 def clear_config():
-    """Clear the global configuration.
-
-    Example:
-        >>> clear_config()  # Reset to no config
-    """
+    """Clear the global configuration."""
     global _global_config
     _global_config = None
 
@@ -225,18 +168,11 @@ def clear_config():
 def require_config() -> SystemConfig:
     """Get the current config, raising an error if not set.
 
-    This is useful for functions that absolutely need a config to operate.
-
     Returns:
         Current SystemConfig instance
 
     Raises:
         RuntimeError: If no config is currently set
-
-    Example:
-        >>> def my_function():
-        >>>     config = require_config()  # Ensures config exists
-        >>>     return config.sampling_rate
     """
     config = get_config()
     if config is None:

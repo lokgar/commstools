@@ -1,4 +1,5 @@
 from typing import Optional, Tuple, Any
+import dataclasses
 from dataclasses import dataclass
 from .backend import get_backend, Backend, ArrayType
 from .config import get_config
@@ -54,15 +55,18 @@ class Signal:
         return cls(samples=samples, **config.to_signal_params())
 
     @property
+    def backend(self) -> Backend:
+        """Returns the backend associated with the signal's data."""
+        return self._get_backend()
+
+    @property
     def duration(self) -> float:
         """Duration of the signal in seconds."""
-        backend = self._get_backend()
         return self.samples.shape[0] / self.sampling_rate
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
-        backend = self._get_backend()
-        return backend.arange(0, self.samples.shape[0]) / self.sampling_rate
+        return self.backend.arange(0, self.samples.shape[0]) / self.sampling_rate
 
     def spectrum(self, nfft: Optional[int] = None) -> Tuple[ArrayType, ArrayType]:
         """
@@ -74,7 +78,7 @@ class Signal:
         Returns:
             A tuple containing (frequency_axis, psd_magnitude).
         """
-        backend = self._get_backend()
+        backend = self.backend
         if nfft is None:
             nfft = self.samples.shape[0]
 
@@ -116,12 +120,22 @@ class Signal:
         # Convert samples
         new_samples = target_backend.array(self.samples)
 
-        return self.__class__(
-            samples=new_samples,
-            sampling_rate=self.sampling_rate,
-            center_freq=self.center_freq,
-            modulation_format=self.modulation_format,
-        )
+        return dataclasses.replace(self, samples=new_samples)
+
+    def ensure_backend(self, backend_name: str = None) -> "Signal":
+        """
+        Ensures the signal is on the specified backend (or global default).
+
+        Args:
+            backend_name: Target backend name. If None, uses global default.
+
+        Returns:
+            Signal on the target backend (self if already there).
+        """
+        target = backend_name or get_backend().name
+        if self.backend.name != target:
+            return self.to(target)
+        return self
 
     def update(
         self,
@@ -142,16 +156,17 @@ class Signal:
         Returns:
             A new Signal instance with the specified updates.
         """
-        return self.__class__(
-            samples=samples if samples is not None else self.samples,
-            sampling_rate=sampling_rate
-            if sampling_rate is not None
-            else self.sampling_rate,
-            center_freq=center_freq if center_freq is not None else self.center_freq,
-            modulation_format=modulation_format
-            if modulation_format is not None
-            else self.modulation_format,
-        )
+        changes = {}
+        if samples is not None:
+            changes["samples"] = samples
+        if sampling_rate is not None:
+            changes["sampling_rate"] = sampling_rate
+        if center_freq is not None:
+            changes["center_freq"] = center_freq
+        if modulation_format is not None:
+            changes["modulation_format"] = modulation_format
+
+        return dataclasses.replace(self, **changes)
 
     def _get_backend(self) -> Backend:
         """
@@ -160,6 +175,14 @@ class Signal:
         """
         # This is a bit heuristic.
         # Ideally we check the type of self.samples against known backend array types.
+
+        # Check for Numpy array first to avoid importing JAX if not needed
+        import numpy as np
+
+        if isinstance(self.samples, np.ndarray):
+            from .backend import NumpyBackend
+
+            return NumpyBackend()
 
         # Check for JAX array
         try:
@@ -174,15 +197,6 @@ class Signal:
         except ImportError:
             pass
 
-        # Check for Numpy array
-        import numpy as np
-
-        if isinstance(self.samples, np.ndarray):
-            from .backend import NumpyBackend
-
-            return NumpyBackend()
-
-        # Fallback to global default
         # Fallback to global default
         return get_backend()
 
