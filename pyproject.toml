@@ -1,0 +1,24 @@
+[project]
+name = "commstools"
+version = "0.1.0"
+description = "High-Performance Digital Communications Research Framework."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jax[cuda12]>=0.5.3",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.4",
+    "pandas>=2.2.3",
+    "pyyaml>=6.0.2",
+    "scipy>=1.15.2",
+    "sympy>=1.13.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.setuptools]
+packages = ["commstools"]
