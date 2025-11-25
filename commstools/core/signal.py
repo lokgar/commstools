@@ -18,41 +18,42 @@ class Signal:
     """
 
     samples: ArrayType
-    sampling_rate: float
-    center_freq: float = 0.0
-    modulation_format: str = "unknown"
+    sampling_rate: Optional[float] = None
+    center_freq: Optional[float] = None
+    modulation_format: Optional[str] = None
+    use_config: dataclasses.InitVar[bool] = False
 
-    def __post_init__(self):
+    def __post_init__(self, use_config: bool):
+        # Merge with global config if requested
+        if use_config:
+            from .config import require_config
+
+            config = require_config()
+            if self.sampling_rate is None:
+                self.sampling_rate = config.sampling_rate
+            if self.center_freq is None:
+                self.center_freq = config.center_freq
+            if self.modulation_format is None:
+                self.modulation_format = config.modulation_format
+
+        # Validate required fields
+        if self.sampling_rate is None:
+            raise ValueError(
+                "sampling_rate must be provided either explicitly or via global config (use_config=True)"
+            )
+
+        # Set defaults if still None
+        if self.center_freq is None:
+            self.center_freq = 0.0
+        if self.modulation_format is None:
+            self.modulation_format = "unknown"
+
         # Ensure samples are on the current backend upon initialization if they aren't already
         # This might be too aggressive if we want to allow mixed backend usage,
         # but for now it ensures consistency.
         # However, to avoid implicit copying, we might just trust the user or
         # provide a method to ensure backend.
         pass
-
-    @classmethod
-    def from_config(cls, samples: ArrayType) -> "Signal":
-        """Create a Signal using parameters from the global SystemConfig.
-
-        Args:
-            samples: The complex IQ samples for the signal
-
-        Returns:
-            A new Signal instance with parameters from global config
-
-        Raises:
-            RuntimeError: If no global config is set
-
-        Example:
-            >>> config = SystemConfig(sampling_rate=1e6, center_freq=2.4e9)
-            >>> set_config(config)
-            >>> sig = Signal.from_config(samples=my_data)
-            >>> # sig now has sampling_rate=1e6, center_freq=2.4e9 from config
-        """
-        from .config import require_config
-
-        config = require_config()
-        return cls(samples=samples, **config.to_signal_params())
 
     @property
     def backend(self) -> Backend:

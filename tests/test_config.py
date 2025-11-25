@@ -146,7 +146,7 @@ class TestSignalConfigIntegration:
         set_config(config)
 
         samples = np.array([1.0, 2.0, 3.0])
-        sig = Signal.from_config(samples=samples)
+        sig = Signal(samples=samples, use_config=True)
 
         assert sig.sampling_rate == 1e6
         assert sig.center_freq == 2.4e9
@@ -154,11 +154,11 @@ class TestSignalConfigIntegration:
         assert np.array_equal(sig.samples, samples)
 
     def test_signal_from_config_requires_config(self):
-        """Test that from_config raises error when no config set."""
+        """Test that use_config raises error when no config set."""
         samples = np.array([1.0, 2.0, 3.0])
 
         with pytest.raises(RuntimeError, match="No system configuration is set"):
-            Signal.from_config(samples=samples)
+            Signal(samples=samples, use_config=True)
 
     def test_traditional_signal_creation_still_works(self):
         """Test that traditional Signal creation still works without config."""
@@ -167,6 +167,29 @@ class TestSignalConfigIntegration:
 
         assert sig.sampling_rate == 1e6
         assert sig.center_freq == 2.4e9
+
+    def test_signal_constructor_validation(self):
+        """Test Signal constructor validation logic."""
+        samples = np.array([1.0, 2.0])
+
+        # 1. Missing sampling_rate (no config) -> ValueError
+        with pytest.raises(ValueError, match="sampling_rate must be provided"):
+            Signal(samples=samples)
+
+        # 2. Manual sampling_rate -> OK
+        sig = Signal(samples=samples, sampling_rate=1e6)
+        assert sig.sampling_rate == 1e6
+
+        # 3. Config + Manual Override -> Manual wins
+        config = SystemConfig(sampling_rate=1e6)
+        set_config(config)
+
+        sig = Signal(samples=samples, sampling_rate=2e6, use_config=True)
+        assert sig.sampling_rate == 2e6  # Override wins
+
+        # 4. Config + Manual Override (no use_config) -> Manual wins (config ignored)
+        sig2 = Signal(samples=samples, sampling_rate=3e6)
+        assert sig2.sampling_rate == 3e6
 
 
 class TestDSPConfigIntegration:
@@ -234,7 +257,7 @@ class TestDSPConfigIntegration:
         set_config(config)
 
         samples = np.ones(100, dtype=complex)
-        sig = Signal.from_config(samples=samples)
+        sig = Signal(samples=samples, use_config=True)
 
         noisy = add_awgn(sig)
 
@@ -249,7 +272,7 @@ class TestDSPConfigIntegration:
         set_config(config)
 
         samples = np.ones(100, dtype=complex)
-        sig = Signal.from_config(samples=samples)
+        sig = Signal(samples=samples, use_config=True)
 
         # Override with explicit SNR
         noisy = add_awgn(sig, snr_db=30)
