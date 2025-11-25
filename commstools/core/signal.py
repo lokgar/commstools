@@ -50,12 +50,10 @@ class Signal:
         if self.modulation_format is None:
             self.modulation_format = "unknown"
 
-        # Ensure samples are on the current backend upon initialization if they aren't already
-        # This might be too aggressive if we want to allow mixed backend usage,
-        # but for now it ensures consistency.
-        # However, to avoid implicit copying, we might just trust the user or
-        # provide a method to ensure backend.
-        pass
+        # Ensure samples are on the current backend upon initialization
+        # This aligns the signal with the globally configured backend
+        current_backend = get_backend()
+        self.samples = current_backend.asarray(self.samples)
 
     @property
     def backend(self) -> Backend:
@@ -71,35 +69,6 @@ class Signal:
         """Returns the time vector associated with the signal samples."""
         return self.backend.arange(0, self.samples.shape[0]) / self.sampling_rate
 
-    def spectrum(self, nfft: Optional[int] = None) -> Tuple[ArrayType, ArrayType]:
-        """
-        Computes the power spectral density of the signal.
-
-        Args:
-            nfft: Number of FFT points. Defaults to the length of the signal.
-
-        Returns:
-            A tuple containing (frequency_axis, psd_magnitude).
-        """
-        backend = self.backend
-        if nfft is None:
-            nfft = self.samples.shape[0]
-
-        # Compute FFT
-        # Use backend.fft
-        spectrum = backend.fftshift(backend.fft(self.samples, n=nfft))
-
-        # Compute PSD (magnitude squared)
-        psd = backend.abs(spectrum) ** 2
-
-        # Frequency axis
-        freqs = (
-            backend.fftshift(backend.fftfreq(nfft, d=1 / self.sampling_rate))
-            + self.center_freq
-        )
-
-        return freqs, psd
-
     def plot_psd(self, NFFT: int = 256, ax: Optional[Any] = None) -> Tuple[Any, Any]:
         from .. import plotting
 
@@ -109,31 +78,6 @@ class Signal:
         from .. import plotting
 
         return plotting.plot_signal(self, ax=ax)
-
-    def to(self, backend_name: str) -> "Signal":
-        """
-        Moves the signal data to the specified backend.
-
-        Args:
-            backend_name: The name of the target backend ('numpy' or 'jax').
-
-        Returns:
-            A new Signal instance with data on the requested backend.
-        """
-        from .backend import JaxBackend, NumpyBackend
-
-        target_backend: Backend
-        if backend_name.lower() == "numpy":
-            target_backend = NumpyBackend()
-        elif backend_name.lower() == "jax":
-            target_backend = JaxBackend()
-        else:
-            raise ValueError(f"Unknown backend: {backend_name}")
-
-        # Convert samples
-        new_samples = target_backend.array(self.samples)
-
-        return dataclasses.replace(self, samples=new_samples)
 
     def ensure_backend(self, backend_name: str = None) -> "Signal":
         """
@@ -147,7 +91,7 @@ class Signal:
         """
         target = backend_name or get_backend().name
         if self.backend.name != target:
-            return self.to(target)
+            return self._to_backend(target)
         return self
 
     def update(
@@ -212,6 +156,31 @@ class Signal:
 
         # Fallback to global default
         return get_backend()
+
+    def _to_backend(self, backend_name: str) -> "Signal":
+        """
+        Moves the signal data to the specified backend.
+
+        Args:
+            backend_name: The name of the target backend ('numpy' or 'jax').
+
+        Returns:
+            A new Signal instance with data on the requested backend.
+        """
+        from .backend import JaxBackend, NumpyBackend
+
+        target_backend: Backend
+        if backend_name.lower() == "numpy":
+            target_backend = NumpyBackend()
+        elif backend_name.lower() == "jax":
+            target_backend = JaxBackend()
+        else:
+            raise ValueError(f"Unknown backend: {backend_name}")
+
+        # Convert samples
+        new_samples = target_backend.array(self.samples)
+
+        return dataclasses.replace(self, samples=new_samples)
 
 
 # Register Signal as a JAX Pytree node if JAX is available
