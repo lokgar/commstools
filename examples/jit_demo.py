@@ -42,7 +42,7 @@ def main():
 
         # Move signal to JAX (auto-alignment via ensure_backend is also possible inside function,
         # but explicit conversion here avoids measuring transfer time in execution)
-        sig_jax = sig_np.to("jax")
+        sig_jax = sig_np._to_backend("jax")
 
         # Warmup (compilation)
         print("Compiling...")

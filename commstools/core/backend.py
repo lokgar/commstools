@@ -68,6 +68,9 @@ class Backend(Protocol):
     def fftshift(self, x: ArrayType, axes: Any = None) -> ArrayType: ...
     def ifftshift(self, x: ArrayType, axes: Any = None) -> ArrayType: ...
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType: ...
+    def convolve(
+        self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
+    ) -> ArrayType: ...
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -156,6 +159,13 @@ class NumpyBackend:
 
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType:
         return np.fft.fftfreq(n, d=d)
+
+    def convolve(
+        self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
+    ) -> ArrayType:
+        import scipy.signal
+
+        return scipy.signal.convolve(in1, in2, mode=mode, method=method)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -252,6 +262,13 @@ class JaxBackend:
 
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType:
         return jnp.fft.fftfreq(n, d=d)
+
+    def convolve(
+        self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
+    ) -> ArrayType:
+        import jax.scipy.signal
+
+        return jax.scipy.signal.convolve(in1, in2, mode=mode, method=method)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None

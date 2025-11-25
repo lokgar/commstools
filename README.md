@@ -32,14 +32,14 @@ Here is a simple example demonstrating how to generate a signal, apply a process
 
 ```python
 import numpy as np
-from commstools import Signal, jit, set_backend, using_backend
+from commstools import Signal, jit, set_backend
 
 # 1. Define a processing function (JIT-enabled)
 @jit
 def apply_gain(signal: Signal, gain: float) -> Signal:
     # Operations are backend-agnostic
     # .like() returns a new Signal with same metadata but new samples
-    return signal.like(signal.samples * gain)
+    return signal.update(signal.samples * gain)
 
 # 2. Create a Signal (defaults to NumPy)
 set_backend("numpy")
@@ -54,17 +54,15 @@ print(f"NumPy Output: {type(out_numpy.samples)}")
 
 # 4. Process on GPU (JAX) - Seamless Switch
 try:
-    with using_backend("jax"):
-        # Move signal to JAX backend
-        sig_jax = sig.to("jax")
-        
-        # Apply same function (now runs on JAX and is JIT compiled!)
-        out_jax = apply_gain(sig_jax, gain=2.0)
-        
-        print(f"JAX Output:   {type(out_jax.samples)}")
-        
-        # Compute Spectrum (accelerated)
-        freqs, psd = out_jax.spectrum()
+    set_backend("jax")
+    
+    # Apply same function (now runs on JAX and is JIT compiled!)
+    out_jax = apply_gain(sig, gain=2.0)
+    
+    print(f"JAX Output:   {type(out_jax.samples)}")
+    
+    # Compute Spectrum (accelerated)
+    freqs, psd = out_jax.spectrum()
 except ImportError:
     print("JAX not installed, skipping GPU demo.")
 ```

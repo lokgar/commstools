@@ -51,7 +51,7 @@ def main():
         set_backend("jax")
 
         # Move signal to JAX
-        sig_jax = sig.to("jax")
+        sig_jax = sig._to_backend("jax")
         print(f"Signal moved to JAX. Backend type: {type(sig_jax.samples)}")
 
         # Apply processing (happens on JAX backend, JIT compiled!)

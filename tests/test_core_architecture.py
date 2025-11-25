@@ -57,13 +57,13 @@ def test_backend_switching():
 
     if _JAX_AVAILABLE:
         # Convert to JAX
-        sig_jax = sig.to("jax")
+        sig_jax = sig._to_backend("jax")
         assert hasattr(sig_jax.samples, "device_buffer") or isinstance(
             sig_jax.samples, type(jnp.array([]))
         )
 
         # Convert back to Numpy
-        sig_numpy = sig_jax.to("numpy")
+        sig_numpy = sig_jax._to_backend("numpy")
         assert isinstance(sig_numpy.samples, np.ndarray)
         assert np.allclose(sig_numpy.samples, samples)
 
