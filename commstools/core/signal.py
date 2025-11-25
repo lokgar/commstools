@@ -2,7 +2,6 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
-import matplotlib.pyplot as plt
 
 from .backend import ArrayType, Backend, get_backend
 from .config import get_config
@@ -102,24 +101,14 @@ class Signal:
         return freqs, psd
 
     def plot_psd(self, NFFT: int = 256, ax: Optional[Any] = None) -> Tuple[Any, Any]:
-        if ax is None:
-            fig, ax = plt.subplots()
-        else:
-            fig = ax.figure
+        from .. import plotting
 
-        ax.psd(self.samples, NFFT=NFFT, Fs=self.sampling_rate, detrend="none")
-        return fig, ax
+        return plotting.plot_psd(self, NFFT=NFFT, ax=ax)
 
-    def plot(self, ax: Optional[Any] = None) -> Tuple[Any, Any]:
-        if ax is None:
-            fig, ax = plt.subplots()
-        else:
-            fig = ax.figure
+    def plot_signal(self, ax: Optional[Any] = None) -> Tuple[Any, Any]:
+        from .. import plotting
 
-        ax.plot(self.time_axis(), self.samples)
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Amplitude")
-        return fig, ax
+        return plotting.plot_signal(self, ax=ax)
 
     def to(self, backend_name: str) -> "Signal":
         """
