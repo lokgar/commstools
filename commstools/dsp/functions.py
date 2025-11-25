@@ -122,9 +122,9 @@ def generate_training_signal(
     # Convert to backend array
     samples = backend.array(upsampled)
 
-    # Create Signal - will use config if available via from_config
+    # Create Signal - will use config if available via use_config
     if config is not None:
-        return Signal.from_config(samples=samples)
+        return Signal(samples=samples, use_config=True)
     else:
         # Fallback if no config
         return Signal(samples=samples, sampling_rate=1e6)
@@ -149,7 +149,7 @@ def matched_filter(
         Filtered signal
 
     Example:
-        >>> sig = Signal.from_config(samples=data)
+        >>> sig = Signal(samples=data, ...)
         >>> filtered = matched_filter(sig)  # Uses config.filter_roll_off
     """
     config = get_config()
@@ -202,7 +202,7 @@ def add_awgn(
     Example:
         >>> config = SystemConfig(sampling_rate=1e6, snr_db=20)
         >>> set_config(config)
-        >>> sig = Signal.from_config(samples=clean_data)
+        >>> sig = Signal(samples=clean_data, ...)
         >>> noisy = add_awgn(sig)  # Uses config.snr_db = 20
     """
     config = get_config()

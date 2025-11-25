@@ -84,7 +84,7 @@ def demo_global_config():
 
     # Step 3: Create Signal from config - no need to repeat parameters!
     samples = np.random.randn(1000) + 1j * np.random.randn(1000)
-    sig = Signal.from_config(samples=samples)
+    sig = Signal(samples=samples, use_config=True)
 
     print(f"\nSignal created from config:")
     print(f"  Samples: {sig.samples.shape[0]}")

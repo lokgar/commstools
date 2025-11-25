@@ -69,6 +69,34 @@ except ImportError:
     print("JAX not installed, skipping GPU demo.")
 ```
 
+
+
+## ⚙️ Configuration Management
+
+CommsTools provides a global configuration system to streamline parameter management across your signal processing chain.
+
+```python
+from commstools import SystemConfig, set_config, Signal
+
+# 1. Define Global Configuration
+config = SystemConfig(
+    sampling_rate=10e6,       # 10 MHz
+    center_freq=2.4e9,        # 2.4 GHz
+    modulation_format="QPSK"
+)
+
+# 2. Set as Global Context
+set_config(config)
+
+# 3. Create Signals using Global Config
+# Pass use_config=True to pull metadata from the global context
+sig = Signal(samples=my_data_array, use_config=True)
+
+print(f"Signal SR: {sig.sampling_rate/1e6} MHz")  # Output: 10.0 MHz
+```
+
+**Note:** The standard `Signal(...)` constructor ignores the global configuration, allowing you to create independent signals with manual parameters when needed.
+
 ## 🏗️ Architecture
 
 The library is built around three core concepts:
