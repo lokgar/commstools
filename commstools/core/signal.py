@@ -1,7 +1,10 @@
-from typing import Optional, Tuple, Any
 import dataclasses
 from dataclasses import dataclass
-from .backend import get_backend, Backend, ArrayType
+from typing import Any, Optional, Tuple
+
+import matplotlib.pyplot as plt
+
+from .backend import ArrayType, Backend, get_backend
 from .config import get_config
 
 
@@ -98,6 +101,26 @@ class Signal:
 
         return freqs, psd
 
+    def plot_psd(self, NFFT: int = 256, ax: Optional[Any] = None) -> Tuple[Any, Any]:
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
+
+        ax.psd(self.samples, NFFT=NFFT, Fs=self.sampling_rate, detrend="none")
+        return fig, ax
+
+    def plot(self, ax: Optional[Any] = None) -> Tuple[Any, Any]:
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
+
+        ax.plot(self.time_axis(), self.samples)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        return fig, ax
+
     def to(self, backend_name: str) -> "Signal":
         """
         Moves the signal data to the specified backend.
@@ -108,7 +131,7 @@ class Signal:
         Returns:
             A new Signal instance with data on the requested backend.
         """
-        from .backend import NumpyBackend, JaxBackend
+        from .backend import JaxBackend, NumpyBackend
 
         target_backend: Backend
         if backend_name.lower() == "numpy":
