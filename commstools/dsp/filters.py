@@ -1,11 +1,25 @@
 import numpy as np
-from typing import Optional, Union, Literal
+from typing import Any
 from ..core.backend import get_backend, ArrayType
 
 
-def rect(samples_per_symbol: int) -> ArrayType:
+def delta_taps(samples_per_symbol: int) -> ArrayType:
     """
-    Generates a rectangular pulse (all ones).
+    Generates an delta pulse taps.
+
+    Args:
+        samples_per_symbol: Number of samples per symbol (unused, kept for API consistency).
+
+    Returns:
+        Array with single element [1.0].
+    """
+    backend = get_backend()
+    return backend.ones(1)
+
+
+def rect_taps(samples_per_symbol: int) -> ArrayType:
+    """
+    Generates a rectangular pulse taps.
 
     Args:
         samples_per_symbol: Number of samples per symbol.
@@ -17,9 +31,9 @@ def rect(samples_per_symbol: int) -> ArrayType:
     return backend.ones(samples_per_symbol)
 
 
-def gaussian(samples_per_symbol: int, bt: float = 0.3, span: int = 2) -> ArrayType:
+def gaussian_taps(samples_per_symbol: int, bt: float = 0.3, span: int = 2) -> ArrayType:
     """
-    Generates a Gaussian pulse.
+    Generates a Gaussian filter taps.
 
     Args:
         samples_per_symbol: Number of samples per symbol.
@@ -27,7 +41,7 @@ def gaussian(samples_per_symbol: int, bt: float = 0.3, span: int = 2) -> ArrayTy
         span: Filter span in symbols.
 
     Returns:
-        Gaussian pulse taps.
+        Gaussian filter taps.
     """
     backend = get_backend()
     # Using numpy for coefficient calculation, then converting to backend
@@ -51,17 +65,19 @@ def gaussian(samples_per_symbol: int, bt: float = 0.3, span: int = 2) -> ArrayTy
     return backend.array(pulse)
 
 
-def rrc(samples_per_symbol: int, alpha: float = 0.35, span: int = 4) -> ArrayType:
+def rrc_taps(
+    samples_per_symbol: int, rolloff: float = 0.35, span: int = 4
+) -> ArrayType:
     """
-    Generates a Root Raised Cosine (RRC) pulse.
+    Generates a Root Raised Cosine (RRC) filter taps.
 
     Args:
         samples_per_symbol: Number of samples per symbol.
-        alpha: Roll-off factor (0 to 1).
+        rolloff: Roll-off factor (0 to 1).
         span: Filter span in symbols.
 
     Returns:
-        RRC pulse taps.
+        RRC filter taps.
     """
     backend = get_backend()
 
@@ -80,14 +96,14 @@ def rrc(samples_per_symbol: int, alpha: float = 0.35, span: int = 4) -> ArrayTyp
 
     # Case 1: t = 0
     idx_0 = np.isclose(t, 0)
-    h[idx_0] = 1.0 - alpha + (4 * alpha / np.pi)
+    h[idx_0] = 1.0 - rolloff + (4 * rolloff / np.pi)
 
     # Case 2: t = +/- 1/(4*alpha)
-    if alpha > 0:
-        idx_singularity = np.isclose(np.abs(t), 1 / (4 * alpha))
-        h[idx_singularity] = (alpha / np.sqrt(2)) * (
-            (1 + 2 / np.pi) * np.sin(np.pi / (4 * alpha))
-            + (1 - 2 / np.pi) * np.cos(np.pi / (4 * alpha))
+    if rolloff > 0:
+        idx_singularity = np.isclose(np.abs(t), 1 / (4 * rolloff))
+        h[idx_singularity] = (rolloff / np.sqrt(2)) * (
+            (1 + 2 / np.pi) * np.sin(np.pi / (4 * rolloff))
+            + (1 - 2 / np.pi) * np.cos(np.pi / (4 * rolloff))
         )
     else:
         idx_singularity = np.zeros_like(t, dtype=bool)
@@ -96,10 +112,10 @@ def rrc(samples_per_symbol: int, alpha: float = 0.35, span: int = 4) -> ArrayTyp
     idx_general = ~(idx_0 | idx_singularity)
     t_gen = t[idx_general]
 
-    num = np.sin(np.pi * t_gen * (1 - alpha)) + 4 * alpha * t_gen * np.cos(
-        np.pi * t_gen * (1 + alpha)
+    num = np.sin(np.pi * t_gen * (1 - rolloff)) + 4 * rolloff * t_gen * np.cos(
+        np.pi * t_gen * (1 + rolloff)
     )
-    den = np.pi * t_gen * (1 - (4 * alpha * t_gen) ** 2)
+    den = np.pi * t_gen * (1 - (4 * rolloff * t_gen) ** 2)
     h[idx_general] = num / den
 
     # Normalize
@@ -111,6 +127,31 @@ def rrc(samples_per_symbol: int, alpha: float = 0.35, span: int = 4) -> ArrayTyp
     h = h / np.sqrt(np.sum(h**2))
 
     return backend.array(h)
+
+
+def get_taps(filter_type: str, samples_per_symbol: int, **kwargs: Any) -> ArrayType:
+    """
+    Factory function to generate filter taps.
+
+    Args:
+        filter_type: Filter type ('delta', 'rect', 'gaussian', 'rrc').
+        samples_per_symbol: Number of samples per symbol.
+        **kwargs: Additional arguments for specific filters (e.g., alpha, bt, span).
+
+    Returns:
+        Filter taps.
+    """
+    filter_type = filter_type.lower()
+    if filter_type == "delta":
+        return delta_taps(samples_per_symbol)
+    elif filter_type == "rect":
+        return rect_taps(samples_per_symbol)
+    elif filter_type == "gaussian":
+        return gaussian_taps(samples_per_symbol, **kwargs)
+    elif filter_type == "rrc":
+        return rrc_taps(samples_per_symbol, **kwargs)
+    else:
+        raise ValueError(f"Unknown filter type: {filter_type}")
 
 
 def upsample(symbols: ArrayType, samples_per_symbol: int) -> ArrayType:
@@ -138,45 +179,33 @@ def upsample(symbols: ArrayType, samples_per_symbol: int) -> ArrayType:
     return out
 
 
-def apply_pulse_shape(
+def shape_pulse(
     symbols: ArrayType,
+    taps: ArrayType,
     samples_per_symbol: int,
-    filter_taps: Optional[ArrayType] = None,
-    kind: Literal["rect", "custom"] = "rect",
+    mode: str = "same",
 ) -> ArrayType:
     """
-    Applies pulse shaping to a symbol sequence.
+    Applies pulse shaping to a symbol sequence by upsampling and convolving with filter taps.
 
     Args:
         symbols: Input symbol array.
+        taps: Filter taps (pulse shape).
         samples_per_symbol: Upsampling factor.
-        filter_taps: Custom filter taps. Required if kind='custom'.
-        kind: Type of pulse shaping.
-            - 'rect': Rectangular pulse (Sample-and-Hold).
-            - 'custom': Convolves upsampled sequence with filter_taps.
+        mode: Convolution mode ('full', 'valid', 'same'). Defaults to 'same'.
 
     Returns:
         Shaped sample array.
     """
     backend = get_backend()
 
-    if kind == "rect":
-        # Optimized path for rect (sample-and-hold)
-        # Reshape and tile approach
-        symbols_col = symbols.reshape((-1, 1))
-        ones_row = backend.ones((1, samples_per_symbol), dtype=symbols.dtype)
-        matrix = symbols_col * ones_row
-        return matrix.reshape((-1,))
+    # 1. Upsample
+    upsampled = upsample(symbols, samples_per_symbol)
 
-    elif kind == "custom":
-        if filter_taps is None:
-            raise ValueError("filter_taps must be provided for kind='custom'")
+    # Optimization: If taps is just [1], return upsampled directly
+    # This handles the 'impulse' case efficiently without convolution overhead
+    if taps.shape == (1,) and taps[0] == 1:
+        return upsampled
 
-        # 1. Upsample
-        upsampled = upsample(symbols, samples_per_symbol)
-
-        # 2. Convolve
-        return backend.convolve(upsampled, filter_taps, mode="full")
-
-    else:
-        raise ValueError(f"Unknown pulse shape kind: {kind}")
+    # 2. Convolve
+    return backend.convolve(upsampled, taps, mode=mode, method="fft")

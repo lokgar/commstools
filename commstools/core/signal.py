@@ -72,12 +72,17 @@ class Signal:
     def plot_psd(self, NFFT: int = 256, ax: Optional[Any] = None) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.plot_psd(self, NFFT=NFFT, ax=ax)
+        return plotting.psd(self, NFFT=NFFT, ax=ax)
 
     def plot_signal(self, ax: Optional[Any] = None) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.plot_signal(self, ax=ax)
+        return plotting.signal(self, ax=ax)
+
+    def plot_eye(self, ax: Optional[Any] = None, plot_type="line") -> Tuple[Any, Any]:
+        from .. import plotting
+
+        return plotting.eye_diagram(self, ax=ax, plot_type=plot_type)
 
     def ensure_backend(self, backend_name: str = None) -> "Signal":
         """

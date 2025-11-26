@@ -8,6 +8,8 @@ from .core.config import (
     require_config,
 )
 
+from .plotting import apply_default_theme
+
 __all__ = [
     "Signal",
     "set_backend",
@@ -18,4 +20,7 @@ __all__ = [
     "get_config",
     "clear_config",
     "require_config",
+    "apply_default_theme",
 ]
+
+apply_default_theme()
