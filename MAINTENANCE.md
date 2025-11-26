@@ -7,6 +7,7 @@ This guide outlines the best practices for extending `commstools`, specifically 
 *   **Signal-First**: The `Signal` class is the primary data carrier. It encapsulates samples and metadata.
 *   **Backend-Agnostic**: Code should run on both NumPy and JAX without modification. Use the `Backend` protocol methods.
 *   **Config-Aware**: Functions should respect `SystemConfig` defaults when parameters are not explicitly provided.
+*   **Modular DSP**: The DSP module is split into `sequences`, `mapping`, `filters`, and `waveforms`.
 
 ## Adding New DSP Functions
 
@@ -41,40 +42,44 @@ def my_dsp_function(signal: Signal, param: Optional[float] = None) -> Signal:
     return signal.update(samples=new_samples)
 ```
 
-### Key Rules
-*   **Do not import `numpy` or `jax` directly for computation** inside the function logic if you want to support both. Use `signal.backend`.
-*   **Use `signal.update()`** instead of creating a new `Signal` from scratch to preserve metadata.
-
 ## Implementing Signal Generation
 
-Generators should create and return a `Signal` object, populating metadata from `SystemConfig`.
+Signal generation is split into four stages:
+1.  **Sequences**: Generate raw bits/symbols (e.g., `commstools.dsp.sequences`).
+2.  **Mapping**: Map bits to constellation symbols (e.g., `commstools.dsp.mapping`).
+3.  **Pulse Shaping**: Upsample and shape pulses (e.g., `commstools.dsp.filters`).
+4.  **Waveforms**: Orchestrate the above to create a `Signal` (e.g., `commstools.dsp.waveforms`).
 
-### Pattern
+### 1. Adding a New Filter/Pulse Shape (`dsp/filters.py`)
+
+Add a new tap generator function ending in `_taps`.
 
 ```python
-from typing import Optional
-import numpy as np # Safe to use for initial generation if converting later, 
-                   # but prefer backend.array if possible for JAX-native generation.
-from commstools import Signal, get_config, get_backend
+def my_pulse_taps(samples_per_symbol: int, param: float) -> ArrayType:
+    backend = get_backend()
+    # ... calculate taps ...
+    return backend.array(taps)
+```
 
-def generate_custom_waveform(length: int = 1000) -> Signal:
-    config = get_config()
-    backend = get_backend() # Use current global backend
+Update `get_taps` factory if necessary.
+
+### 2. Adding a New Waveform (`dsp/waveforms.py`)
+
+```python
+from commstools.dsp import mapping, filters
+
+def my_waveform(bits, samples_per_symbol, pulse_type='rect') -> Signal:
+    # 1. Map
+    symbols = mapping.my_map(bits)
     
-    # 1. Get Metadata from Config
-    sr = config.sampling_rate if config else 1e6
-    fc = config.center_freq if config else 0.0
-    
-    # 2. Generate Data
-    # If logic is complex, you might generate in numpy and convert, 
-    # or use backend methods for JIT compatibility.
-    t = backend.arange(length) / sr
-    samples = backend.exp(1j * 2 * backend.array(np.pi) * fc * t)
+    # 2. Shape
+    taps = filters.get_taps(pulse_type, samples_per_symbol)
+    samples = filters.shape_pulse(symbols, taps, samples_per_symbol)
     
     # 3. Return Signal
-    # Pass use_config=True to auto-fill metadata from global config
-    if config:
-        return Signal(samples=samples, use_config=True)
-    else:
-        return Signal(samples=samples, sampling_rate=sr, center_freq=fc)
+    return Signal(samples=samples, ...)
 ```
+
+## Key Rules
+*   **Do not import `numpy` or `jax` directly for computation** inside the function logic if you want to support both. Use `signal.backend` or `get_backend()`.
+*   **Use `signal.update()`** instead of creating a new `Signal` from scratch when modifying an existing signal.

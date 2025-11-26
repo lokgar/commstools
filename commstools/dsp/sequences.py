@@ -1,6 +1,6 @@
 import numpy as np
-from typing import Optional
-from ..core.backend import get_backend, ArrayType
+
+from ..core.backend import ArrayType, get_backend
 
 
 def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
