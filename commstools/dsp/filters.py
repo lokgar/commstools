@@ -3,23 +3,9 @@ from typing import Any
 from ..core.backend import get_backend, ArrayType
 
 
-def delta_taps(samples_per_symbol: int) -> ArrayType:
+def boxcar_taps(samples_per_symbol: int) -> ArrayType:
     """
-    Generates an delta pulse taps.
-
-    Args:
-        samples_per_symbol: Number of samples per symbol (unused, kept for API consistency).
-
-    Returns:
-        Array with single element [1.0].
-    """
-    backend = get_backend()
-    return backend.ones(1)
-
-
-def rect_taps(samples_per_symbol: int) -> ArrayType:
-    """
-    Generates a rectangular pulse taps.
+    Generates a boxcar filter taps.
 
     Args:
         samples_per_symbol: Number of samples per symbol.
@@ -134,7 +120,7 @@ def get_taps(filter_type: str, samples_per_symbol: int, **kwargs: Any) -> ArrayT
     Factory function to generate filter taps.
 
     Args:
-        filter_type: Filter type ('delta', 'rect', 'gaussian', 'rrc').
+        filter_type: Filter type ('none', 'boxcar', 'gaussian', 'rrc').
         samples_per_symbol: Number of samples per symbol.
         **kwargs: Additional arguments for specific filters (e.g., alpha, bt, span).
 
@@ -142,10 +128,11 @@ def get_taps(filter_type: str, samples_per_symbol: int, **kwargs: Any) -> ArrayT
         Filter taps.
     """
     filter_type = filter_type.lower()
-    if filter_type == "delta":
-        return delta_taps(samples_per_symbol)
-    elif filter_type == "rect":
-        return rect_taps(samples_per_symbol)
+    if filter_type == "none":
+        backend = get_backend()
+        return backend.ones(1)
+    elif filter_type == "boxcar":
+        return boxcar_taps(samples_per_symbol)
     elif filter_type == "gaussian":
         return gaussian_taps(samples_per_symbol, **kwargs)
     elif filter_type == "rrc":
@@ -202,8 +189,7 @@ def shape_pulse(
     # 1. Upsample
     upsampled = upsample(symbols, samples_per_symbol)
 
-    # Optimization: If taps is just [1], return upsampled directly
-    # This handles the 'impulse' case efficiently without convolution overhead
+    # Optimization: If taps is just [1] (filter is identity), return upsampled directly
     if taps.shape == (1,) and taps[0] == 1:
         return upsampled
 

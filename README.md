@@ -9,7 +9,7 @@ Built with a **dual-backend architecture**, it allows researchers to seamlessly 
 *   **Dual-Backend Architecture**:
     *   **NumPy**: Standard CPU execution, perfect for debugging and small-scale simulations.
     *   **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
-*   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, center frequency, modulation format), abstracting away the underlying array implementation.
+*   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.), abstracting away the underlying array implementation.
 *   **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
 *   **Developer Ergonomics**: Type-safe design with modern Python hints, making it easy to build robust and scalable communication systems.
 
@@ -66,33 +66,6 @@ try:
 except ImportError:
     print("JAX not installed, skipping GPU demo.")
 ```
-
-
-
-## ⚙️ Configuration Management
-
-CommsTools provides a global configuration system to streamline parameter management across your signal processing chain.
-
-```python
-from commstools import SystemConfig, set_config, Signal
-
-# 1. Define Global Configuration
-config = SystemConfig(
-    sampling_rate=10e6,       # 10 MHz
-    modulation_format="QPSK"
-)
-
-# 2. Set as Global Context
-set_config(config)
-
-# 3. Create Signals using Global Config
-# Pass use_config=True to pull metadata from the global context
-sig = Signal(samples=my_data_array, use_config=True)
-
-print(f"Signal SR: {sig.sampling_rate/1e6} MHz")  # Output: 10.0 MHz
-```
-
-**Note:** The standard `Signal(...)` constructor ignores the global configuration, allowing you to create independent signals with manual parameters when needed.
 
 ## 🏗️ Architecture
 

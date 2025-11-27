@@ -1,13 +1,11 @@
 # CommsTools Maintenance & Extension Guide
 
-This guide outlines the best practices for extending `commstools`, specifically for adding new DSP functions and signal generation logic. It ensures consistency with the dual-backend architecture (NumPy/JAX) and the global configuration system.
+This guide outlines the best practices for extending `commstools`, specifically for adding new DSP functions and signal generation logic. It ensures consistency with the dual-backend architecture (NumPy/JAX).
 
 ## Architecture Principles
 
 *   **Signal-First**: The `Signal` class is the primary data carrier. It encapsulates samples and metadata.
 *   **Backend-Agnostic**: Code should run on both NumPy and JAX without modification. Use the `Backend` protocol methods.
-*   **Config-Aware**: Functions should respect `SystemConfig` defaults when parameters are not explicitly provided.
-*   **Modular DSP**: The DSP module is split into `sequences`, `mapping`, `filters`, and `waveforms`.
 
 ## Adding New DSP Functions
 
@@ -17,20 +15,15 @@ DSP functions, if they are directly related to the signal, should generally take
 
 ```python
 from typing import Optional
-from commstools import Signal, get_config
+from commstools import Signal
 
 def my_dsp_function(signal: Signal, param: Optional[float] = None) -> Signal:
     # 1. Access Backend
     backend = signal.backend
     
-    # 2. Resolve Parameters (Explicit > Config > Default)
-    config = get_config()
+    # 2. Resolve Parameters (Explicit > Default)
     if param is None:
-        if config is not None:
-            # Assuming 'my_param' exists in config or config.extra
-            param = config.get("my_param", default=1.0)
-        else:
-            param = 1.0
+        param = 1.0
             
     # 3. Perform Computation using Backend
     # Use backend methods (backend.exp, backend.fft, etc.) instead of np/jnp directly
