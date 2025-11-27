@@ -1,6 +1,6 @@
 from typing import Optional, Any
 from ..core.signal import Signal
-from ..core.config import get_config
+
 from ..core.backend import ArrayType
 from . import mapping, filters
 
@@ -9,7 +9,7 @@ def ook(
     data_bits: ArrayType,
     sampling_rate: Optional[float] = None,
     samples_per_symbol: Optional[int] = None,
-    pulse_shape: str = "delta",
+    pulse_shape: str = "none",
     **kwargs: Any,
 ) -> Signal:
     """
@@ -25,20 +25,12 @@ def ook(
     Returns:
         Signal object containing the OOK waveform.
     """
-    config = get_config()
-
     # 0. Resolve parameters
     if sampling_rate is None:
-        if config:
-            sampling_rate = config.sampling_rate
-        else:
-            raise ValueError("sampling_rate must be provided or set in global config")
+        raise ValueError("sampling_rate must be provided")
 
     if samples_per_symbol is None:
-        if config and config.samples_per_symbol:
-            samples_per_symbol = config.samples_per_symbol
-        else:
-            samples_per_symbol = 1  # Default to 1 if not specified
+        samples_per_symbol = 1  # Default to 1 if not specified
 
     # 1. Map bits to symbols
     symbols = mapping.ook_map(data_bits)

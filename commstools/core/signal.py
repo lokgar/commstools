@@ -4,7 +4,6 @@ from typing import Any, Optional, Tuple
 
 
 from .backend import ArrayType, Backend, get_backend
-from .config import get_config
 
 
 @dataclass
@@ -21,24 +20,11 @@ class Signal:
     samples: ArrayType
     sampling_rate: Optional[float] = None
     modulation_format: Optional[str] = None
-    use_config: dataclasses.InitVar[bool] = False
 
-    def __post_init__(self, use_config: bool):
-        # Merge with global config if requested
-        if use_config:
-            from .config import require_config
-
-            config = require_config()
-            if self.sampling_rate is None:
-                self.sampling_rate = config.sampling_rate
-            if self.modulation_format is None:
-                self.modulation_format = config.modulation_format
-
+    def __post_init__(self):
         # Validate required fields
         if self.sampling_rate is None:
-            raise ValueError(
-                "sampling_rate must be provided either explicitly or via global config (use_config=True)"
-            )
+            raise ValueError("sampling_rate must be provided explicitly")
 
         if self.modulation_format is None:
             self.modulation_format = "unknown"
