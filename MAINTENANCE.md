@@ -11,7 +11,7 @@ This guide outlines the best practices for extending `commstools`, specifically 
 
 ## Adding New DSP Functions
 
-DSP functions should generally take a `Signal` as input and return a modified `Signal`.
+DSP functions, if they are directly related to the signal, should generally take a `Signal` as input and return a modified `Signal`.
 
 ### Pattern
 
@@ -73,7 +73,7 @@ def my_waveform(bits, samples_per_symbol, pulse_type='rect') -> Signal:
     symbols = mapping.my_map(bits)
     
     # 2. Shape
-    taps = filters.get_taps(pulse_type, samples_per_symbol)
+    taps = filters.get_taps(pulse_type, samples_per_symbol, **kwargs)
     samples = filters.shape_pulse(symbols, taps, samples_per_symbol)
     
     # 3. Return Signal

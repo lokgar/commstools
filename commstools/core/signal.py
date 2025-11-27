@@ -15,13 +15,11 @@ class Signal:
     Attributes:
         samples: The complex IQ samples of the signal.
         sampling_rate: The sampling rate in Hz.
-        center_freq: The center frequency in Hz.
         modulation_format: Description of the modulation format (e.g., 'QPSK', '16QAM').
     """
 
     samples: ArrayType
     sampling_rate: Optional[float] = None
-    center_freq: Optional[float] = None
     modulation_format: Optional[str] = None
     use_config: dataclasses.InitVar[bool] = False
 
@@ -33,8 +31,6 @@ class Signal:
             config = require_config()
             if self.sampling_rate is None:
                 self.sampling_rate = config.sampling_rate
-            if self.center_freq is None:
-                self.center_freq = config.center_freq
             if self.modulation_format is None:
                 self.modulation_format = config.modulation_format
 
@@ -44,9 +40,6 @@ class Signal:
                 "sampling_rate must be provided either explicitly or via global config (use_config=True)"
             )
 
-        # Set defaults if still None
-        if self.center_freq is None:
-            self.center_freq = 0.0
         if self.modulation_format is None:
             self.modulation_format = "unknown"
 
@@ -79,10 +72,12 @@ class Signal:
 
         return plotting.signal(self, ax=ax)
 
-    def plot_eye(self, ax: Optional[Any] = None, plot_type="line") -> Tuple[Any, Any]:
+    def plot_eye(
+        self, ax: Optional[Any] = None, plot_type="line", **kwargs
+    ) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.eye_diagram(self, ax=ax, plot_type=plot_type)
+        return plotting.eye_diagram(self, ax=ax, plot_type=plot_type, **kwargs)
 
     def ensure_backend(self, backend_name: str = None) -> "Signal":
         """
@@ -103,7 +98,6 @@ class Signal:
         self,
         samples: Optional[ArrayType] = None,
         sampling_rate: Optional[float] = None,
-        center_freq: Optional[float] = None,
         modulation_format: Optional[str] = None,
     ) -> "Signal":
         """
@@ -112,7 +106,6 @@ class Signal:
         Args:
             samples: The new samples array. Defaults to the current samples.
             sampling_rate: The new sampling rate in Hz. Defaults to the current sampling rate.
-            center_freq: The new center frequency in Hz. Defaults to the current center frequency.
             modulation_format: The new modulation format. Defaults to the current modulation format.
 
         Returns:
@@ -123,8 +116,6 @@ class Signal:
             changes["samples"] = samples
         if sampling_rate is not None:
             changes["sampling_rate"] = sampling_rate
-        if center_freq is not None:
-            changes["center_freq"] = center_freq
         if modulation_format is not None:
             changes["modulation_format"] = modulation_format
 
@@ -196,7 +187,6 @@ try:
         children = (signal.samples,)  # Arrays/tensors to be traced
         aux_data = (
             signal.sampling_rate,
-            signal.center_freq,
             signal.modulation_format,
         )  # Static metadata
         return children, aux_data
