@@ -109,7 +109,7 @@ def eye_diagram(
         ax: Optional matplotlib axis to plot on.
         samples_per_symbol: Number of samples per symbol. If None, attempts to fetch from global config.
         num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
-        plot_type: Type of plot ('line' or '2d'). 'line' plots overlapping traces, '2d' plots a 2D histogram.
+        plot_type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
 
     Returns:
         Tuple of (figure, axis).
@@ -171,18 +171,18 @@ def eye_diagram(
 
         ax.plot(t, traces, color="C0", alpha=0.2, linewidth=1, **kwargs)
 
-    elif plot_type == "2d":
-        # For 2D, we use all traces to build a good histogram
+    elif plot_type == "hist":
+        # For hist, we use all traces to build a good histogram
         # We can vectorize the extraction using stride_tricks or just reshaping if possible
         # But since we have overlapping windows, stride_tricks is best or a loop if memory is concern.
         # Given typical signal sizes, a loop or simple list comp is fine for extraction, then flatten.
 
         # However, for very large signals, we might want to limit or batch.
         # Let's use a reasonable limit for histogram calculation to avoid OOM on huge signals
-        max_traces_2d = 20000
-        if num_traces > max_traces_2d:
-            skip = num_traces // max_traces_2d
-            indices = np.arange(0, num_traces, skip)[:max_traces_2d]
+        max_traces_hist = 20000
+        if num_traces > max_traces_hist:
+            skip = num_traces // max_traces_hist
+            indices = np.arange(0, num_traces, skip)[:max_traces_hist]
         else:
             indices = np.arange(num_traces)
 
@@ -239,14 +239,14 @@ def eye_diagram(
             "origin": "lower",
             "extent": [xedges[0], xedges[-1], yedges[0], yedges[-1]],
             "aspect": "auto",
-            "cmap": "hot",
+            "cmap": "copper",
         }
         imshow_kwargs.update(kwargs)
 
         ax.imshow(h, **imshow_kwargs)
 
     else:
-        raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', '2d'")
+        raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', 'hist'")
 
     ax.set_xlabel("Time (Symbol Periods)")
     ax.set_ylabel("Amplitude")
