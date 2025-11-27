@@ -79,7 +79,6 @@ from commstools import SystemConfig, set_config, Signal
 # 1. Define Global Configuration
 config = SystemConfig(
     sampling_rate=10e6,       # 10 MHz
-    center_freq=2.4e9,        # 2.4 GHz
     modulation_format="QPSK"
 )
 
@@ -100,7 +99,7 @@ print(f"Signal SR: {sig.sampling_rate/1e6} MHz")  # Output: 10.0 MHz
 The library is built around three core concepts:
 
 1.  **`Backend` Protocol**: Defines the interface for array operations (`fft`, `exp`, `sum`, etc.). Implementations exist for `NumpyBackend` and `JaxBackend`.
-2.  **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `spectrum()` and `time_axis()` that delegate to the active backend.
+2.  **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `plot_psd()` and `time_axis()` that delegate to the active backend.
 3.  **Functional API (`@jit`)**: Processing logic is implemented as pure functions. The `@jit` decorator ensures they are compiled when running on JAX, while remaining standard Python functions on NumPy.
 
 ## 🤝 Contributing

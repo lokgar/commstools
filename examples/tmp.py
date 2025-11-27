@@ -12,10 +12,10 @@ set_config(config)
 
 bits = np.concatenate(
     (
-        prbs(5000, seed=0x123456221, order=31),
-        prbs(5000, seed=0x123656221, order=31),
-        prbs(5000, seed=0x123658721, order=31),
-        prbs(5000, seed=0x123658938, order=31),
+        prbs(500, seed=0x123456221, order=31),
+        prbs(500, seed=0x123656221, order=31),
+        prbs(500, seed=0x123658721, order=31),
+        prbs(500, seed=0x123658938, order=31),
     )
 )
 
@@ -48,7 +48,8 @@ sig_rrc = ook(bits, pulse_shape="rrc", rolloff=0.1, span=10)
 # sig_rrc.plot_psd(ax=axs[3])
 # axs[3].set_title("RRC")
 
-# plt.show()
 
+sig_rrc.plot_eye()
 sig_rrc.plot_eye(plot_type="2d")
+sig_rrc.plot_eye(plot_type="2d", vmax=0.01)
 plt.show()

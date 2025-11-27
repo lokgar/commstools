@@ -19,7 +19,6 @@ class SystemConfig(BaseModel):
 
     # Physical Layer Parameters
     sampling_rate: float = Field(..., gt=0, description="Sampling rate in Hz")
-    center_freq: float = Field(0.0, description="Center frequency in Hz")
     modulation_format: str = Field("QPSK", description="Modulation format")
 
     # Symbol-Level Parameters
@@ -43,7 +42,6 @@ class SystemConfig(BaseModel):
     sequence_length: int = Field(
         128, description="Length of training/preamble sequences"
     )
-    pilot_spacing: int = Field(8, description="Spacing between pilot symbols")
 
     # Extensibility for custom parameters
     extra: Dict[str, Any] = Field(
@@ -102,7 +100,6 @@ class SystemConfig(BaseModel):
         """
         return {
             "sampling_rate": self.sampling_rate,
-            "center_freq": self.center_freq,
             "modulation_format": self.modulation_format,
         }
 

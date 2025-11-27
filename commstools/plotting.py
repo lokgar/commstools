@@ -99,6 +99,7 @@ def eye_diagram(
     samples_per_symbol: Optional[int] = None,
     num_symbols: int = 2,
     plot_type: str = "line",
+    **kwargs,
 ) -> Tuple[Any, Any]:
     """
     Plots the eye diagram of the signal.
@@ -146,8 +147,7 @@ def eye_diagram(
 
     # Calculate number of traces
     # We slide by 1 symbol period (samples_per_symbol)
-    n_samples = len(samples)
-    num_traces = (n_samples - trace_len) // int(samples_per_symbol) + 1
+    num_traces = (len(samples) - trace_len) // int(samples_per_symbol) + 1
 
     if plot_type == "line":
         # Limit traces for performance/visuals
@@ -164,12 +164,12 @@ def eye_diagram(
             start = int(i * samples_per_symbol)
             traces_list.append(samples[start : start + trace_len])
 
-        traces = np.stack(traces_list, axis=1)
+        traces = np.stack(traces_list, axis=1)  # Shape: (trace_len, num_traces)
 
         # Time axis in symbols
         t = np.linspace(0, num_symbols, trace_len, endpoint=True)
 
-        ax.plot(t, traces, color="C0", alpha=0.2, linewidth=1)
+        ax.plot(t, traces, color="C0", alpha=0.2, linewidth=1, **kwargs)
 
     elif plot_type == "2d":
         # For 2D, we use all traces to build a good histogram
@@ -194,7 +194,7 @@ def eye_diagram(
         traces = np.stack(traces_list, axis=0)  # Shape: (num_traces, trace_len)
 
         # Interpolate traces
-        target_width = 300
+        target_width = 500
         if trace_len < target_width:
             from scipy.interpolate import interp1d
 
@@ -202,7 +202,7 @@ def eye_diagram(
             x_new = np.linspace(0, trace_len - 1, target_width)
 
             # Interpolate along the last axis (time)
-            f = interp1d(x_old, traces, kind="quadratic", axis=1)
+            f = interp1d(x_old, traces, kind="linear", axis=1)
             traces = f(x_new)
             trace_len = target_width
 
@@ -218,7 +218,7 @@ def eye_diagram(
         # Bins: Time (x) and Amplitude (y)
         # Time bins: match the sample resolution roughly
         bins_x = trace_len
-        bins_y = 300  # Higher resolution for amplitude
+        bins_y = 500
 
         h, xedges, yedges = np.histogram2d(t_flat, y_flat, bins=[bins_x, bins_y])
 
@@ -228,15 +228,22 @@ def eye_diagram(
         # Plot using imshow with LogNorm for better contrast
         # We need to transpose h because imshow expects (rows, cols) -> (y, x)
         # and origin='lower'
-        ax.imshow(
-            h,
-            origin="lower",
-            extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]],
-            aspect="auto",
-            cmap="viridis",
-            interpolation="bilinear",
-            # norm=mpl.colors.LogNorm(vmin=1),
-        )
+        # Normalize histogram to [0, 1] for intuitive vmax
+        if h.max() > 0:
+            h = h / h.max()
+
+        # Plot using imshow
+        # We need to transpose h because imshow expects (rows, cols) -> (y, x)
+        # and origin='lower'
+        imshow_kwargs = {
+            "origin": "lower",
+            "extent": [xedges[0], xedges[-1], yedges[0], yedges[-1]],
+            "aspect": "auto",
+            "cmap": "hot",
+        }
+        imshow_kwargs.update(kwargs)
+
+        ax.imshow(h, **imshow_kwargs)
 
     else:
         raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', '2d'")
