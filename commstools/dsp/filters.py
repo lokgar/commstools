@@ -41,12 +41,12 @@ def gaussian_taps(sps: float, bt: float = 0.3, span: int = 2) -> ArrayType:
     # Gaussian function: h(t) = (sqrt(pi)/a) * exp(-(pi*t/a)^2) where a = sqrt(ln(2)/2)/B
     # Simplified for comms usually:
     alpha = np.sqrt(np.log(2) / 2) / bt
-    pulse = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
+    h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
 
     # Normalize: sum(h) = sps (preserves amplitude after convolution with expanded sequence)
-    pulse = pulse / np.sum(pulse) * sps
+    h = h / np.sum(h) * sps
 
-    return backend.array(pulse)
+    return backend.array(h)
 
 
 def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 4) -> ArrayType:
@@ -367,8 +367,8 @@ def shape_pulse(
 
     # Special handling for causal filters
     # Boxcar is causal (starts at 0), so 'same' would shift it left.
-    if pulse_shape.lower() == "boxcar":
-        mode = "full"
+    # if pulse_shape.lower() == "boxcar":
+    #     mode = "full"
 
     # 3. Expand (zero-insertion)
     expanded = expand(symbols, int(sps))
@@ -377,13 +377,13 @@ def shape_pulse(
     if taps.shape == (1,) and taps[0] == 1:
         return expanded
 
-    # 4. Convolve
+    # 4. Filter
     shaped = fir_filter(expanded, taps, mode=mode)
 
     # 5. Post-process (Truncate if full)
-    if mode == "full":
-        # Truncate to expected length (num_symbols * sps)
-        expected_len = int(symbols.shape[0] * sps)
-        shaped = shaped[:expected_len]
+    # if mode == "full":
+    #     # Truncate to expected length (num_symbols * sps)
+    #     expected_len = int(symbols.shape[0] * sps)
+    #     shaped = shaped[:expected_len]
 
     return shaped
