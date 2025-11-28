@@ -19,20 +19,40 @@ class Signal:
 
     samples: ArrayType
     sampling_rate: Optional[float] = None
+    symbol_rate: Optional[float] = None
     modulation_format: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Validate required fields
         if self.sampling_rate is None:
             raise ValueError("sampling_rate must be provided explicitly")
+
+        if self.symbol_rate is None:
+            raise ValueError("symbol_rate must be provided explicitly")
 
         if self.modulation_format is None:
             self.modulation_format = "unknown"
 
         # Ensure samples are on the current backend upon initialization
-        # This aligns the signal with the globally configured backend
-        current_backend = get_backend()
-        self.samples = current_backend.asarray(self.samples)
+        # unless they are already a valid array type (Numpy or JAX)
+        import numpy as np
+
+        is_known_array = isinstance(self.samples, np.ndarray)
+
+        if not is_known_array:
+            try:
+                import jax.numpy as jnp
+
+                if isinstance(self.samples, type(jnp.array([]))) or hasattr(
+                    self.samples, "device_buffer"
+                ):
+                    is_known_array = True
+            except ImportError:
+                pass
+
+        if not is_known_array:
+            current_backend = get_backend()
+            self.samples = current_backend.asarray(self.samples)
 
     @property
     def backend(self) -> Backend:
@@ -59,13 +79,19 @@ class Signal:
         return plotting.signal(self, ax=ax)
 
     def plot_eye(
-        self, ax: Optional[Any] = None, plot_type="line", **kwargs
+        self, ax: Optional[Any] = None, plot_type: str = "line", **kwargs: Any
     ) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.eye_diagram(self, ax=ax, plot_type=plot_type, **kwargs)
+        return plotting.eye_diagram(
+            self,
+            ax=ax,
+            sps=self.sampling_rate / self.symbol_rate,
+            plot_type=plot_type,
+            **kwargs,
+        )
 
-    def ensure_backend(self, backend_name: str = None) -> "Signal":
+    def ensure_backend(self, backend_name: Optional[str] = None) -> "Signal":
         """
         Ensures the signal is on the specified backend (or global default).
 
@@ -97,7 +123,7 @@ class Signal:
         Returns:
             A new Signal instance with the specified updates.
         """
-        changes = {}
+        changes: dict[str, Any] = {}
         if samples is not None:
             changes["samples"] = samples
         if sampling_rate is not None:
@@ -169,16 +195,22 @@ class Signal:
 try:
     import jax
 
-    def _signal_tree_flatten(signal):
+    def _signal_tree_flatten(signal: Signal) -> tuple:
         children = (signal.samples,)  # Arrays/tensors to be traced
         aux_data = (
             signal.sampling_rate,
+            signal.symbol_rate,
             signal.modulation_format,
         )  # Static metadata
         return children, aux_data
 
-    def _signal_tree_unflatten(aux_data, children):
-        return Signal(children[0], *aux_data)
+    def _signal_tree_unflatten(aux_data: tuple, children: tuple) -> Signal:
+        return Signal(
+            samples=children[0],
+            sampling_rate=aux_data[0],
+            symbol_rate=aux_data[1],
+            modulation_format=aux_data[2],
+        )
 
     jax.tree_util.register_pytree_node(
         Signal, _signal_tree_flatten, _signal_tree_unflatten

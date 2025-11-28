@@ -1,4 +1,5 @@
 import numpy as np
+from ..core.backend import ArrayType
 
 
 def calculate_snr(signal_power: float, noise_power: float) -> float:
@@ -17,12 +18,12 @@ def calculate_snr(signal_power: float, noise_power: float) -> float:
     return 10 * np.log10(signal_power / noise_power)
 
 
-def add_gaussian_noise(signal: np.ndarray, snr_db: float) -> np.ndarray:
+def add_gaussian_noise(signal: ArrayType, snr_db: float) -> ArrayType:
     """
     Adds Gaussian noise to a signal to achieve a specified SNR.
 
     Args:
-        signal: The input signal (numpy array).
+        signal: The input signal (array).
         snr_db: The desired Signal-to-Noise Ratio in decibels.
 
     Returns:

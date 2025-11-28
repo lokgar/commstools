@@ -6,12 +6,12 @@ Built with a **dual-backend architecture**, it allows researchers to seamlessly 
 
 ## 🚀 Key Features
 
-*   **Dual-Backend Architecture**:
-    *   **NumPy**: Standard CPU execution, perfect for debugging and small-scale simulations.
-    *   **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
-*   **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.), abstracting away the underlying array implementation.
-*   **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
-*   **Developer Ergonomics**: Type-safe design with modern Python hints, making it easy to build robust and scalable communication systems.
+* **Dual-Backend Architecture**:
+  * **NumPy**: Standard CPU execution using scipy.signal, perfect for debugging and small-scale simulations.
+  * **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
+* **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.), abstracting away the underlying array implementation.
+* **Building-Block DSP**: Modular DSP primitives (`expand`, `interpolate`, `decimate`, `resample`, `matched_filter`) allow flexible signal processing pipelines.
+* **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
 
 ## 📦 Installation
 
@@ -28,17 +28,55 @@ uv pip install -e .
 
 ## ⚡ Quick Start
 
-Here is a simple example demonstrating how to generate a signal, apply a processing block, and switch backends.
+### Basic Signal Processing
 
 ```python
 import numpy as np
-from commstools import Signal, jit, set_backend
+from commstools import Signal, set_backend
+from commstools.dsp import sequences, mapping, filters
+from commstools import waveforms
 
+# Generate PRBS sequence
+bits = sequences.prbs(order=7, length=100)
+
+# Map to OOK symbols
+symbols = mapping.ook(bits)
+
+# Generate waveform with pulse shaping
+sps = 8  # samples per symbol
+waveform = waveforms.ook(symbols, sps=sps, pulse_shape="rrc", rolloff=0.35)
+
+print(f"Generated {len(waveform)} samples from {len(symbols)} symbols")
+```
+
+### Building-Block DSP Operations
+
+```python
+from commstools.dsp import filters
+
+# Generic FIR filtering
+taps = filters.rrc_taps(sps=8, rolloff=0.35)
+filtered = filters.fir_filter(signal, taps)
+
+# Upsample with pulse shaping
+tx_signal = filters.upsample(symbols, factor=sps, filter_type="rrc", rolloff=0.35)
+
+# At receiver: matched filtering
+pulse_taps = filters.rrc_taps(sps, rolloff=0.35)
+rx_signal = filters.matched_filter(tx_signal, pulse_taps)
+
+# Decimate back to symbol rate
+decimated = filters.decimate(rx_signal, factor=sps)
+```
+
+### Backend Switching for Performance
+
+```python
 # 1. Define a processing function (JIT-enabled)
+from commstools import jit
+
 @jit
 def apply_gain(signal: Signal, gain: float) -> Signal:
-    # Operations are backend-agnostic
-    # .like() returns a new Signal with same metadata but new samples
     return signal.update(signal.samples * gain)
 
 # 2. Create a Signal (defaults to NumPy)
@@ -71,9 +109,9 @@ except ImportError:
 
 The library is built around three core concepts:
 
-1.  **`Backend` Protocol**: Defines the interface for array operations (`fft`, `exp`, `sum`, etc.). Implementations exist for `NumpyBackend` and `JaxBackend`.
-2.  **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `plot_psd()` and `time_axis()` that delegate to the active backend.
-3.  **Functional API (`@jit`)**: Processing logic is implemented as pure functions. The `@jit` decorator ensures they are compiled when running on JAX, while remaining standard Python functions on NumPy.
+1. **`Backend` Protocol**: Defines the interface for array operations (`fft`, `exp`, `sum`, etc.). Implementations exist for `NumpyBackend` and `JaxBackend`.
+2. **`Signal` Class**: The primary data carrier. It holds the data array (agnostic of backend) and provides utility methods like `plot_psd()` and `time_axis()` that delegate to the active backend.
+3. **Functional API (`@jit`)**: Processing logic is implemented as pure functions. The `@jit` decorator ensures they are compiled when running on JAX, while remaining standard Python functions on NumPy.
 
 ## 🤝 Contributing
 

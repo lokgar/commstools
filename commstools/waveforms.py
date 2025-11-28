@@ -1,14 +1,14 @@
 from typing import Optional, Any
-from ..core.signal import Signal
+from .core.signal import Signal
 
-from ..core.backend import ArrayType
-from . import mapping, filters
+from .core.backend import ArrayType
+from .dsp import mapping, filters
 
 
 def ook(
     data_bits: ArrayType,
     sampling_rate: Optional[float] = None,
-    samples_per_symbol: Optional[int] = None,
+    sps: Optional[float] = None,
     pulse_shape: str = "none",
     **kwargs: Any,
 ) -> Signal:
@@ -18,9 +18,9 @@ def ook(
     Args:
         data_bits: Input binary data.
         sampling_rate: Sampling rate in Hz.
-        samples_per_symbol: Number of samples per symbol.
-        pulse_shape: Type of pulse shaping ('delta', 'rect', 'gaussian', 'rrc').
-        **kwargs: Additional arguments for specific filters (e.g., alpha, bt, span).
+        sps: Samples per symbol.
+        pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc', 'sinc').
+        **kwargs: Additional arguments for specific filters (e.g., rolloff, bt, span).
 
     Returns:
         Signal object containing the OOK waveform.
@@ -29,20 +29,19 @@ def ook(
     if sampling_rate is None:
         raise ValueError("sampling_rate must be provided")
 
-    if samples_per_symbol is None:
-        samples_per_symbol = 1  # Default to 1 if not specified
+    if sps is None:
+        sps = 1  # Default to 1 if not specified
 
     # 1. Map bits to symbols
     symbols = mapping.ook_map(data_bits)
 
     # 2. Apply pulse shaping
-    # Unified approach: Get taps -> Shape pulse
-    taps = filters.get_taps(pulse_shape, samples_per_symbol, **kwargs)
-    samples = filters.shape_pulse(symbols, taps, samples_per_symbol)
+    samples = filters.shape_pulse(symbols, sps, pulse_shape=pulse_shape, **kwargs)
 
     # 3. Create Signal
     return Signal(
         samples=samples,
         sampling_rate=sampling_rate,
+        symbol_rate=sampling_rate / sps,
         modulation_format="OOK",
     )

@@ -24,7 +24,7 @@ def main():
     N = 100_000
     print(f"Signal size: {N} samples")
     samples = np.random.randn(N) + 1j * np.random.randn(N)
-    sig_np = Signal(samples=samples, sampling_rate=1e6)
+    sig_np = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e5)
 
     # --- Numpy Backend (No JIT) ---
     set_backend("numpy")

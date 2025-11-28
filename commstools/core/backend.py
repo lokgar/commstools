@@ -72,6 +72,12 @@ class Backend(Protocol):
         self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
     ) -> ArrayType: ...
 
+    def expand(self, x: ArrayType, factor: int) -> ArrayType: ...
+    def decimate(
+        self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
+    ) -> ArrayType: ...
+    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType: ...
+
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
     ) -> Callable: ...
@@ -167,6 +173,28 @@ class NumpyBackend:
 
         return scipy.signal.convolve(in1, in2, mode=mode, method=method)
 
+    def expand(self, x: ArrayType, factor: int) -> ArrayType:
+        """Zero-insertion: Insert (factor-1) zeros between samples."""
+        n_in = x.shape[0]
+        n_out = n_in * factor
+        out = np.zeros(n_out, dtype=x.dtype)
+        out[::factor] = x
+        return out
+
+    def decimate(
+        self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
+    ) -> ArrayType:
+        """Decimate signal: Anti-aliasing filter + downsample."""
+        import scipy.signal
+
+        return scipy.signal.decimate(x, factor, ftype=ftype, zero_phase=zero_phase)
+
+    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType:
+        """Resample signal using polyphase filtering."""
+        import scipy.signal
+
+        return scipy.signal.resample_poly(x, up, down)
+
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
     ) -> Callable:
@@ -177,7 +205,7 @@ class NumpyBackend:
 class JaxBackend:
     """JAX implementation of the Backend protocol."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         if not _JAX_AVAILABLE:
             raise ImportError(
                 "JAX is not available. Please install it to use JaxBackend."
@@ -268,7 +296,75 @@ class JaxBackend:
     ) -> ArrayType:
         import jax.scipy.signal
 
-        return jax.scipy.signal.convolve(in1, in2, mode=mode, method=method)
+        return jax.scipy.signal.convolve(in1, in2, mode=mode, method=method)  # type: ignore[arg-type]
+
+    def expand(self, x: ArrayType, factor: int) -> ArrayType:
+        """Zero-insertion: Insert (factor-1) zeros between samples."""
+        n_in = x.shape[0]
+        n_out = n_in * factor
+        out = jnp.zeros(n_out, dtype=x.dtype)
+        out = out.at[::factor].set(x)
+        return out
+
+    def decimate(
+        self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
+    ) -> ArrayType:
+        """Decimate signal: Anti-aliasing filter + downsample."""
+        # For JAX, implement basic decimation with sinc-based lowpass filter
+        # Design anti-aliasing lowpass filter
+        numtaps = max(20 * factor, 100)
+        # Ensure odd number of taps for symmetric filter
+        if numtaps % 2 == 0:
+            numtaps += 1
+
+        # Create sinc lowpass filter with cutoff at 1/factor
+        cutoff = 1.0 / factor
+        n = jnp.arange(numtaps)
+        center = (numtaps - 1) / 2
+        t = (n - center) * cutoff
+
+        # Sinc function with Hamming window
+        h = jnp.sinc(t)
+        # Apply Hamming window
+        window = 0.54 - 0.46 * jnp.cos(2 * jnp.pi * n / (numtaps - 1))
+        h = h * window
+        h = h / jnp.sum(h)  # Normalize
+
+        # Apply filter
+        filtered = self.convolve(x, h, mode="same", method="fft")
+
+        # Downsample
+        return filtered[::factor]
+
+    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType:
+        """Resample signal using polyphase filtering."""
+        # For JAX, implement basic rational resampling
+        # Step 1: Expand by 'up'
+        expanded = self.expand(x, up)
+
+        # Step 2: Apply anti-imaging/anti-aliasing filter
+        # Design lowpass filter with cutoff at min(1/up, 1/down)
+        cutoff = min(1.0 / up, 1.0 / down)
+        numtaps = max(20 * max(up, down), 100)
+        if numtaps % 2 == 0:
+            numtaps += 1
+
+        # Create sinc lowpass filter
+        n = jnp.arange(numtaps)
+        center = (numtaps - 1) / 2
+        t = (n - center) * cutoff
+
+        h = jnp.sinc(t)
+        # Apply Hamming window
+        window = 0.54 - 0.46 * jnp.cos(2 * jnp.pi * n / (numtaps - 1))
+        h = h * window
+        h = h / jnp.sum(h) * up  # Normalize and compensate for upsampling gain
+
+        # Filter
+        filtered = self.convolve(expanded, h, mode="same", method="fft")
+
+        # Step 3: Downsample by 'down'
+        return filtered[::down]
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -318,7 +414,7 @@ def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = N
     _cache: Dict[str, Callable] = {}
 
     @functools.wraps(fun)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         backend = get_backend()
 
         if backend.name not in _cache:

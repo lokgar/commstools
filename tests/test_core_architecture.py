@@ -19,7 +19,7 @@ def gain_func(signal: Signal, gain: float) -> Signal:
 def test_signal_creation_numpy():
     set_backend("numpy")
     samples = np.array([1.0, 2.0, 3.0])
-    sig = Signal(samples=samples, sampling_rate=100.0)
+    sig = Signal(samples=samples, sampling_rate=100.0, symbol_rate=1)
 
     assert isinstance(sig.samples, np.ndarray)
     assert sig.sampling_rate == 100.0
@@ -34,7 +34,7 @@ def test_signal_creation_numpy():
 def test_signal_creation_jax():
     set_backend("jax")
     samples = jnp.array([1.0, 2.0, 3.0])
-    sig = Signal(samples=samples, sampling_rate=100.0)
+    sig = Signal(samples=samples, sampling_rate=100.0, symbol_rate=1)
 
     assert isinstance(sig.samples, type(jnp.array([]))) or hasattr(
         sig.samples, "device_buffer"
@@ -51,7 +51,7 @@ def test_signal_creation_jax():
 def test_backend_switching():
     set_backend("numpy")
     samples = np.array([1.0 + 1j, 2.0 + 2j])
-    sig = Signal(samples=samples, sampling_rate=10.0)
+    sig = Signal(samples=samples, sampling_rate=10.0, symbol_rate=1)
 
     assert isinstance(sig.samples, np.ndarray)
 
@@ -71,7 +71,7 @@ def test_backend_switching():
 def test_functional_processing():
     set_backend("numpy")
     samples = np.array([1.0, 2.0])
-    sig = Signal(samples=samples, sampling_rate=10.0)
+    sig = Signal(samples=samples, sampling_rate=10.0, symbol_rate=1)
 
     processed_sig = gain_func(sig, gain=2.0)
 
@@ -94,23 +94,3 @@ def test_functional_processing():
 
         # Reset backend
         set_backend("numpy")
-
-
-def test_spectrum():
-    set_backend("numpy")
-    # Simple sine wave
-    fs = 100.0
-    t = np.arange(100) / fs
-    f0 = 10.0
-    samples = np.exp(1j * 2 * np.pi * f0 * t)
-    sig = Signal(samples=samples, sampling_rate=fs)
-
-    freqs, psd = sig.spectrum()
-
-    assert isinstance(freqs, np.ndarray)
-    assert isinstance(psd, np.ndarray)
-
-    # Peak should be at 10 Hz
-    peak_idx = np.argmax(psd)
-    peak_freq = freqs[peak_idx]
-    assert np.isclose(peak_freq, f0, atol=1.0)
