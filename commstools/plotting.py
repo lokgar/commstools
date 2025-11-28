@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from .core.signal import Signal
 
 
-def apply_default_theme():
+def apply_default_theme() -> None:
     try:
         font_prop = fm.FontProperties(family="Roboto", weight="regular")
         fm.findfont(font_prop, fallback_to_default=False)
@@ -96,7 +96,7 @@ def signal(signal: "Signal", ax: Optional[Any] = None) -> Tuple[Any, Any]:
 def eye_diagram(
     signal: "Signal",
     ax: Optional[Any] = None,
-    samples_per_symbol: Optional[int] = None,
+    sps: Optional[float] = None,
     num_symbols: int = 2,
     plot_type: str = "line",
     **kwargs,
@@ -107,7 +107,7 @@ def eye_diagram(
     Args:
         signal: The signal to plot.
         ax: Optional matplotlib axis to plot on.
-        samples_per_symbol: Number of samples per symbol. If None, attempts to fetch from global config.
+        sps: Samples per symbol.
         num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
         plot_type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
 
@@ -116,16 +116,8 @@ def eye_diagram(
     """
     import numpy as np
 
-    from .core.config import get_config
-
-    if samples_per_symbol is None:
-        config = get_config()
-        if config is not None:
-            samples_per_symbol = config.samples_per_symbol
-        else:
-            raise ValueError(
-                "samples_per_symbol must be provided either explicitly or via global config."
-            )
+    if sps is None:
+        raise ValueError("sps must be provided explicitly.")
 
     if ax is None:
         fig, ax = plt.subplots()
@@ -141,13 +133,13 @@ def eye_diagram(
 
     # We want to include the endpoint to avoid a gap at the end of the plot
     # So we need one extra sample per trace
-    trace_len = int(num_symbols * samples_per_symbol) + 1
+    trace_len = int(num_symbols * sps) + 1
     if trace_len > len(samples):
         raise ValueError("Signal is shorter than the required trace length.")
 
     # Calculate number of traces
-    # We slide by 1 symbol period (samples_per_symbol)
-    num_traces = (len(samples) - trace_len) // int(samples_per_symbol) + 1
+    # We slide by 1 symbol period (sps)
+    num_traces = (len(samples) - trace_len) // int(sps) + 1
 
     if plot_type == "line":
         # Limit traces for performance/visuals
@@ -161,7 +153,7 @@ def eye_diagram(
         # Extract traces
         traces_list = []
         for i in indices:
-            start = int(i * samples_per_symbol)
+            start = int(i * sps)
             traces_list.append(samples[start : start + trace_len])
 
         traces = np.stack(traces_list, axis=1)  # Shape: (trace_len, num_traces)
@@ -188,7 +180,7 @@ def eye_diagram(
 
         traces_list = []
         for i in indices:
-            start = int(i * samples_per_symbol)
+            start = int(i * sps)
             traces_list.append(samples[start : start + trace_len])
 
         traces = np.stack(traces_list, axis=0)  # Shape: (num_traces, trace_len)
@@ -233,8 +225,6 @@ def eye_diagram(
             h = h / h.max()
 
         # Plot using imshow
-        # We need to transpose h because imshow expects (rows, cols) -> (y, x)
-        # and origin='lower'
         imshow_kwargs = {
             "origin": "lower",
             "extent": [xedges[0], xedges[-1], yedges[0], yedges[-1]],
@@ -243,7 +233,7 @@ def eye_diagram(
         }
         imshow_kwargs.update(kwargs)
 
-        ax.imshow(h, **imshow_kwargs)
+        ax.imshow(h, **imshow_kwargs)  # type: ignore[arg-type]
 
     else:
         raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', 'hist'")
