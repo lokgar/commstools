@@ -77,6 +77,8 @@ class Backend(Protocol):
         self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
     ) -> ArrayType: ...
     def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType: ...
+    def blackman(self, M: int) -> ArrayType: ...
+    def hamming(self, M: int) -> ArrayType: ...
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -194,6 +196,14 @@ class NumpyBackend:
         import scipy.signal
 
         return scipy.signal.resample_poly(x, up, down)
+
+    def blackman(self, M: int) -> ArrayType:
+        """Return a Blackman window of length M."""
+        return np.blackman(M)
+
+    def hamming(self, M: int) -> ArrayType:
+        """Return a Hamming window of length M."""
+        return np.hamming(M)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -365,6 +375,14 @@ class JaxBackend:
 
         # Step 3: Downsample by 'down'
         return filtered[::down]
+
+    def blackman(self, M: int) -> ArrayType:
+        """Return a Blackman window of length M."""
+        return jnp.blackman(M)
+
+    def hamming(self, M: int) -> ArrayType:
+        """Return a Hamming window of length M."""
+        return jnp.hamming(M)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None

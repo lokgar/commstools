@@ -16,10 +16,11 @@ def boxcar_taps(sps: float) -> ArrayType:
         sps: Samples per symbol.
 
     Returns:
-        Array of ones with length equal to sps.
+        Array of normalized taps with unity DC gain (sum=1).
     """
     backend = get_backend()
-    return backend.ones(int(sps))
+    taps = backend.ones(int(sps))
+    return taps / backend.sum(taps)
 
 
 def gaussian_taps(sps: float, bt: float = 0.3, span: int = 2) -> ArrayType:
@@ -32,7 +33,7 @@ def gaussian_taps(sps: float, bt: float = 0.3, span: int = 2) -> ArrayType:
         span: Filter span in symbols.
 
     Returns:
-        Gaussian filter taps.
+        Gaussian filter taps with unit energy normalization.
     """
     backend = get_backend()
     # Using numpy for coefficient calculation, then converting to backend
@@ -43,8 +44,8 @@ def gaussian_taps(sps: float, bt: float = 0.3, span: int = 2) -> ArrayType:
     alpha = np.sqrt(np.log(2) / 2) / bt
     h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
 
-    # Normalize: sum(h) = sps (preserves amplitude after convolution with expanded sequence)
-    h = h / np.sum(h) * sps
+    # Normalize to Unity Gain
+    h = h / np.sum(h)
 
     return backend.array(h)
 
@@ -59,7 +60,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 4) -> ArrayType:
         span: Filter span in symbols.
 
     Returns:
-        RRC filter taps.
+        RRC filter taps with unit energy normalization.
     """
     backend = get_backend()
 
@@ -97,41 +98,39 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 4) -> ArrayType:
     den = np.pi * t_gen * (1 - (4 * rolloff * t_gen) ** 2)
     h[idx_general] = num / den
 
-    # Normalize to unit energy (standard for matched filtering)
-    h = h / np.sqrt(np.sum(h**2))
+    # Normalize to Unity Gain
+    h = h / np.sum(h)
 
     return backend.array(h)
 
 
-def sinc_taps(sps: float, bandwidth: float = 0.5, span: int = 8) -> ArrayType:
+def sinc_taps(sps: float, span: int) -> np.ndarray:
     """
-    Generates ideal sinc interpolation filter taps.
+    Generates Windowed Sinc interpolation filter taps.
 
-    Args:
-        sps: Samples per symbol.
-        bandwidth: Normalized bandwidth (0-1), where 1 is Nyquist.
-        span: Filter span in symbols.
-
-    Returns:
-        Windowed sinc filter taps.
+    The cutoff is implicitly set to the Nyquist frequency of the
+    INPUT signal (1/sps in the normalized output domain).
     """
-    backend = get_backend()
-
-    # Create time vector
+    # 1. Create time vector relative to Input Symbols
+    # Range: [-span, +span]
+    # Step:  1/sps
     t = np.arange(-span * sps, span * sps + 1) / sps
 
-    # Sinc function
-    h = np.sinc(t * bandwidth)
+    # 2. Sinc Function
+    # np.sinc(x) computes sin(pi*x)/(pi*x)
+    # We want zeros at t = +/- 1, 2, 3... (the original sample locations)
+    # Therefore, we pass 't' directly.
+    h = np.sinc(t)
 
-    # Apply Hamming window
-    n = np.arange(len(h))
-    window = 0.54 - 0.46 * np.cos(2 * np.pi * n / (len(h) - 1))
+    # 3. Apply Window (Hamming/Blackman) to reduce spectral leakage
+    # Blackman often preferred for better stopband attenuation in upsampling
+    window = np.blackman(len(h))
     h = h * window
 
-    # Normalize to preserve DC gain
-    h = h / np.sum(h) * sps
+    # 4. Normalize to Unity Gain
+    h = h / np.sum(h)
 
-    return backend.array(h)
+    return h
 
 
 def get_taps(filter_type: str, sps: float, **kwargs: Any) -> ArrayType:
@@ -217,12 +216,7 @@ def expand(symbols: ArrayType, factor: int) -> ArrayType:
     return backend.expand(symbols, int(factor))
 
 
-def upsample(
-    samples: ArrayType,
-    factor: int,
-    filter_type: str = "sinc",
-    **kwargs: Any,
-) -> ArrayType:
+def upsample(samples: ArrayType, factor: int) -> ArrayType:
     """
     Upsample signal: Expansion (zero-insertion) + anti-imaging filtering.
 
@@ -232,7 +226,6 @@ def upsample(
     Args:
         samples: Input sample array.
         factor: Upsampling factor.
-        filter_type: Filter type for interpolation ('sinc', 'rrc', 'gaussian').
         **kwargs: Additional arguments for filter design.
 
     Returns:
@@ -241,9 +234,11 @@ def upsample(
     # Expand signal (zero-insertion)
     expanded = expand(samples, factor)
 
-    # Design and apply interpolation filter
-    taps = get_taps(filter_type, float(factor), **kwargs)
-    return fir_filter(expanded, taps)
+    # Design interpolation filter and scale by factor
+    taps = sinc_taps(sps=float(factor), span=10)
+    scaled_taps = taps * factor
+
+    return fir_filter(expanded, scaled_taps)
 
 
 def decimate(
@@ -274,12 +269,7 @@ def decimate(
     )
 
 
-def resample(
-    samples: ArrayType,
-    up: int,
-    down: int,
-    **kwargs: Any,
-) -> ArrayType:
+def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
     """
     Rational resampling: Upsample by 'up', downsample by 'down'.
 
@@ -312,9 +302,6 @@ def matched_filter(
     """
     Apply matched filter (time-reversed conjugate of pulse shape).
 
-    The matched filter is optimal for detecting signals in AWGN. It maximizes
-    the signal-to-noise ratio at the sampling instant.
-
     Args:
         samples: Received sample array.
         pulse_taps: Pulse shape filter taps.
@@ -327,6 +314,15 @@ def matched_filter(
 
     # Matched filter is conjugate and time-reversed version of pulse
     matched_taps = backend.conj(pulse_taps[::-1])
+
+    # Enforce Unit Energy
+    # Calculate energy
+    energy_sq = backend.sum(backend.abs(matched_taps) ** 2)
+
+    # Avoid division by zero or redundant calculation if already 1.0
+    # (Using a small epsilon for float comparison)
+    if energy_sq > 0 and backend.abs(energy_sq - 1.0) > 1e-6:
+        matched_taps = matched_taps / backend.sqrt(energy_sq)
 
     # Apply filter
     return fir_filter(samples, matched_taps, mode=mode)
@@ -346,44 +342,36 @@ def shape_pulse(
     """
     Applies pulse shaping to a symbol sequence.
 
-    High-level function that combines expansion and pulse shaping filtering.
-    This is the standard transmit-side operation for digital communications.
-
     Args:
         symbols: Input symbol array.
         sps: Samples per symbol (upsampling factor).
-        pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc', 'sinc').
+        pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc').
         **kwargs: Additional arguments for filter generation.
 
     Returns:
         Shaped sample array at (sps * symbol_rate).
     """
-    # 1. Resolve taps
+    backend = get_backend()
+
     taps = get_taps(pulse_shape, sps, **kwargs)
 
-    # 2. Determine convolution mode
-    # Default to 'same' (centered) which is correct for RRC, Gaussian, etc.
-    mode = "same"
+    # Enforce Unit Energy
+    # Calculate energy
+    energy_sq = backend.sum(backend.abs(taps) ** 2)
 
-    # Special handling for causal filters
-    # Boxcar is causal (starts at 0), so 'same' would shift it left.
-    # if pulse_shape.lower() == "boxcar":
-    #     mode = "full"
+    # Avoid division by zero or redundant calculation if already 1.0
+    # (Using a small epsilon for float comparison)
+    if energy_sq > 0 and backend.abs(energy_sq - 1.0) > 1e-6:
+        taps = taps / backend.sqrt(energy_sq)
 
-    # 3. Expand (zero-insertion)
+    scaled_taps = taps * backend.sqrt(float(sps))
+
     expanded = expand(symbols, int(sps))
 
-    # Optimization: If taps is just [1], return expanded signal
-    if taps.shape == (1,) and taps[0] == 1:
-        return expanded
+    # Optimization: If taps is just [1], return expanded signal scaled by sqrt(sps)
+    if taps.shape == (1,) and backend.abs(taps[0] - 1.0) < 1e-10:
+        return expanded * backend.sqrt(float(sps))
 
-    # 4. Filter
-    shaped = fir_filter(expanded, taps, mode=mode)
-
-    # 5. Post-process (Truncate if full)
-    # if mode == "full":
-    #     # Truncate to expected length (num_symbols * sps)
-    #     expected_len = int(symbols.shape[0] * sps)
-    #     shaped = shaped[:expected_len]
+    shaped = fir_filter(expanded, scaled_taps, mode="same")
 
     return shaped
