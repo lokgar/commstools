@@ -5,7 +5,7 @@ Comprehensive tests for DSP building blocks and filters.
 import pytest
 import numpy as np
 from commstools import set_backend
-from commstools.dsp import filters
+from commstools.dsp import filters, multirate
 
 # Test both backends
 backends = ["numpy"]
@@ -25,7 +25,7 @@ class TestBuildingBlocks:
         """Test basic expand operation."""
         set_backend(backend_name)
         symbols = np.array([1, 2, 3])
-        expanded = filters.expand(symbols, factor=3)
+        expanded = multirate.expand(symbols, factor=3)
 
         expected = np.array([1, 0, 0, 2, 0, 0, 3, 0, 0])
         np.testing.assert_array_equal(expanded, expected)
@@ -35,7 +35,7 @@ class TestBuildingBlocks:
         """Test expand with complex values."""
         set_backend(backend_name)
         symbols = np.array([1 + 1j, 2 + 2j])
-        expanded = filters.expand(symbols, factor=2)
+        expanded = multirate.expand(symbols, factor=2)
 
         expected = np.array([1 + 1j, 0, 2 + 2j, 0])
         np.testing.assert_array_almost_equal(expanded, expected)
@@ -45,7 +45,7 @@ class TestBuildingBlocks:
         """Test expand with single symbol."""
         set_backend(backend_name)
         symbols = np.array([5.0])
-        expanded = filters.expand(symbols, factor=4)
+        expanded = multirate.expand(symbols, factor=4)
 
         expected = np.array([5.0, 0, 0, 0])
         np.testing.assert_array_equal(expanded, expected)
@@ -57,7 +57,7 @@ class TestBuildingBlocks:
         samples = np.array([1.0, 2.0, 3.0, 4.0])
         factor = 3
 
-        upsampled = filters.upsample(samples, factor=factor, filter_type="sinc")
+        upsampled = multirate.upsample(samples, factor=factor)
 
         assert len(upsampled) == len(samples) * factor
 
@@ -69,7 +69,7 @@ class TestBuildingBlocks:
         samples = np.ones(20) * 5.0
         factor = 2
 
-        upsampled = filters.upsample(samples, factor=factor, filter_type="sinc")
+        upsampled = multirate.upsample(samples, factor=factor)
 
         # DC should be preserved
         assert np.abs(np.mean(upsampled) - 5.0) < 0.5
@@ -81,7 +81,7 @@ class TestBuildingBlocks:
         samples = np.random.randn(100)
         factor = 5
 
-        decimated = filters.decimate(samples, factor=factor)
+        decimated = multirate.decimate(samples, factor=factor)
 
         expected_length = len(samples) // factor
         assert len(decimated) == expected_length
@@ -95,7 +95,7 @@ class TestBuildingBlocks:
         signal = np.sin(2 * np.pi * 0.5 * t)  # 0.5 Hz signal
 
         # Decimate by 10
-        decimated = filters.decimate(signal, factor=10)
+        decimated = multirate.decimate(signal, factor=10)
 
         # Should still see the sinusoidal pattern
         # Check zero crossings are preserved (roughly)
@@ -110,11 +110,11 @@ class TestBuildingBlocks:
         samples = np.array([1.0, 2.0, 3.0, 4.0])
 
         # Upsample by 2
-        resampled = filters.resample(samples, up=2, down=1)
+        resampled = multirate.resample(samples, up=2, down=1)
         assert len(resampled) == len(samples) * 2
 
         # Downsample by 2
-        resampled = filters.resample(samples, up=1, down=2)
+        resampled = multirate.resample(samples, up=1, down=2)
         assert len(resampled) == len(samples) // 2
 
     @pytest.mark.parametrize("backend_name", backends)
@@ -124,7 +124,7 @@ class TestBuildingBlocks:
         samples = np.random.randn(100)
 
         # Resample by 3/2
-        resampled = filters.resample(samples, up=3, down=2)
+        resampled = multirate.resample(samples, up=3, down=2)
 
         expected_length = int(len(samples) * 3 / 2)
         assert abs(len(resampled) - expected_length) <= 1  # Allow for rounding
@@ -137,15 +137,15 @@ class TestFilterTaps:
         """Test boxcar taps have correct length."""
         taps = filters.boxcar_taps(sps=8)
         assert len(taps) == 8
-        np.testing.assert_array_equal(taps, np.ones(8))
+        np.testing.assert_array_equal(taps, np.ones(8) / 8)
 
     def test_gaussian_taps_normalization(self):
         """Test Gaussian taps are properly normalized."""
         sps = 10
         taps = filters.gaussian_taps(sps=sps, bt=0.3, span=4)
 
-        # Should sum to approximately sps
-        assert abs(np.sum(taps) - sps) < 0.1
+        # Should sum to approximately 1.0 (Unity Gain)
+        assert abs(np.sum(taps) - 1.0) < 0.1
 
     def test_gaussian_taps_bt_effect(self):
         """Test that BT parameter affects Gaussian pulse width."""
@@ -167,8 +167,10 @@ class TestFilterTaps:
         """Test RRC taps have unit energy."""
         taps = filters.rrc_taps(sps=8, rolloff=0.35, span=6)
 
-        energy = np.sum(np.abs(taps) ** 2)
-        np.testing.assert_almost_equal(energy, 1.0, decimal=5)
+        # RRC taps are now Unity Gain normalized, not Unit Energy
+        # But let's check sum is 1.0
+        gain = np.sum(taps)
+        np.testing.assert_almost_equal(gain, 1.0, decimal=5)
 
     def test_rrc_taps_rolloff_effect(self):
         """Test that rolloff parameter affects bandwidth."""
@@ -194,36 +196,11 @@ class TestFilterTaps:
 
     def test_sinc_taps_dc_gain(self):
         """Test sinc taps have correct DC gain."""
-        sps = 10
-        taps = filters.sinc_taps(sps=sps, bandwidth=0.5, span=6)
+        # New signature: num_taps, cutoff_norm
+        taps = filters.sinc_taps(num_taps=21, cutoff_norm=0.1)
 
-        # Should sum to approximately sps
-        assert abs(np.sum(taps) - sps) < 0.5
-
-    def test_get_taps_factory(self):
-        """Test get_taps factory function."""
-        sps = 8
-
-        # Test all filter types
-        taps_none = filters.get_taps("none", sps)
-        assert len(taps_none) == 1
-
-        taps_boxcar = filters.get_taps("boxcar", sps)
-        assert len(taps_boxcar) == sps
-
-        taps_gaussian = filters.get_taps("gaussian", sps, bt=0.3, span=4)
-        assert len(taps_gaussian) > sps
-
-        taps_rrc = filters.get_taps("rrc", sps, rolloff=0.35, span=4)
-        assert len(taps_rrc) > sps
-
-        taps_sinc = filters.get_taps("sinc", sps, bandwidth=0.5, span=4)
-        assert len(taps_sinc) > sps
-
-    def test_get_taps_invalid_type(self):
-        """Test get_taps raises error for invalid filter type."""
-        with pytest.raises(ValueError):
-            filters.get_taps("invalid_filter", sps=8)
+        # Should sum to approximately 1.0
+        assert abs(np.sum(taps) - 1.0) < 0.1
 
 
 class TestMatchedFiltering:
@@ -303,7 +280,7 @@ class TestShapePulse:
         symbols = np.array([1, 0, 1, 0])
         sps = 8
 
-        shaped = filters.shape_pulse(symbols, sps, pulse_shape="boxcar")
+        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="boxcar")
 
         assert len(shaped) == len(symbols) * sps
 
@@ -312,7 +289,9 @@ class TestShapePulse:
         symbols = np.array([1, 0, 1, 0])
         sps = 8
 
-        shaped = filters.shape_pulse(symbols, sps, pulse_shape="rrc", rolloff=0.35)
+        shaped = filters.shape_pulse(
+            symbols, sps, span=4, pulse_shape="rrc", rolloff=0.35
+        )
 
         # RRC uses 'same' mode, so length matches expanded signal
         assert len(shaped) == len(symbols) * sps
@@ -322,18 +301,20 @@ class TestShapePulse:
         symbols = np.array([1, 2, 3])
         sps = 4
 
-        shaped = filters.shape_pulse(symbols, sps, pulse_shape="none")
+        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="none")
 
-        # Should be equivalent to expand
-        expanded = filters.expand(symbols, sps)
-        np.testing.assert_array_equal(shaped, expanded)
+        # Should be equivalent to expand * sqrt(sps)
+        expanded = multirate.expand(symbols, sps)
+        np.testing.assert_array_equal(shaped, expanded * np.sqrt(sps))
 
     def test_shape_pulse_complex_symbols(self):
         """Test shape_pulse with complex symbols."""
         symbols = np.array([1 + 1j, -1 + 1j, -1 - 1j, 1 - 1j])
         sps = 8
 
-        shaped = filters.shape_pulse(symbols, sps, pulse_shape="rrc", rolloff=0.35)
+        shaped = filters.shape_pulse(
+            symbols, sps, span=4, pulse_shape="rrc", rolloff=0.35
+        )
 
         assert shaped.dtype == np.complex128 or shaped.dtype == np.complex64
         assert len(shaped) == len(symbols) * sps
@@ -348,7 +329,7 @@ class TestBackwardCompatibility:
         factor = 4
 
         # expand function should work
-        expanded = filters.expand(symbols, factor)
+        expanded = multirate.expand(symbols, factor)
 
         # Should produce correct output
         assert len(expanded) == len(symbols) * factor
@@ -364,7 +345,7 @@ class TestEdgeCases:
         empty = np.array([])
 
         # Expand should handle empty input
-        result = filters.expand(empty, factor=2)
+        result = multirate.expand(empty, factor=2)
         assert len(result) == 0
 
     def test_single_sample_filters(self):
@@ -372,7 +353,7 @@ class TestEdgeCases:
         single = np.array([5.0])
         sps = 4
 
-        shaped = filters.shape_pulse(single, sps, pulse_shape="boxcar")
+        shaped = filters.shape_pulse(single, sps, span=4, pulse_shape="boxcar")
         assert len(shaped) == sps
 
     def test_very_large_sps(self):
@@ -380,7 +361,7 @@ class TestEdgeCases:
         symbols = np.array([1.0, 0.0])
         sps = 100
 
-        expanded = filters.expand(symbols, sps)
+        expanded = multirate.expand(symbols, sps)
         assert len(expanded) == len(symbols) * sps
 
     def test_fractional_sps_handling(self):
@@ -389,7 +370,7 @@ class TestEdgeCases:
         sps = 7.5  # Fractional
 
         # boxcar shape_pulse handles floats via resample
-        shaped = filters.shape_pulse(symbols, sps, pulse_shape="boxcar")
+        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="boxcar")
         # Length should be approximately len(symbols) * sps
         expected_len = int(len(symbols) * sps)
         assert abs(len(shaped) - expected_len) <= 1

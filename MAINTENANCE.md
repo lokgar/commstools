@@ -4,8 +4,8 @@ This guide outlines the best practices for extending `commstools`, specifically 
 
 ## Architecture Principles
 
-*   **Signal-First**: The `Signal` class is the primary data carrier. It encapsulates samples and metadata.
-*   **Backend-Agnostic**: Code should run on both NumPy and JAX without modification. Use the `Backend` protocol methods.
+* **Signal-First**: The `Signal` class is the primary data carrier. It encapsulates samples and metadata.
+* **Backend-Agnostic**: Code should run on both NumPy and JAX without modification. Use the `Backend` protocol methods.
 
 ## Adding New DSP Functions
 
@@ -39,10 +39,10 @@ def my_dsp_function(signal: Signal, param: Optional[float] = None) -> Signal:
 
 Signal generation is split into four stages:
 
-1.  **Sequences**: Generate raw bits/symbols (e.g., `commstools.dsp.sequences`).
-2.  **Mapping**: Map bits to constellation symbols (e.g., `commstools.dsp.mapping`).
-3.  **Pulse Shaping**: Apply DSP building blocks and filters (e.g., `commstools.dsp.filters`).
-4.  **Waveforms**: Orchestrate the above to create complete waveforms (e.g., `commstools.waveforms`).
+1. **Sequences**: Generate raw bits/symbols (e.g., `commstools.dsp.sequences`).
+2. **Mapping**: Map bits to constellation symbols (e.g., `commstools.dsp.mapping`).
+3. **Pulse Shaping**: Apply DSP building blocks and filters (e.g., `commstools.dsp.filters`).
+4. **Waveforms**: Orchestrate the above to create complete waveforms (e.g., `commstools.waveforms`).
 
 **Note:** Waveforms are now in the top-level `commstools.waveforms` module, not in `commstools.dsp.waveforms`.
 
@@ -51,6 +51,7 @@ Signal generation is split into four stages:
 The filters module is organized into four sections:
 
 #### Filter Design (Tap Generation)
+
 Add a new tap generator function ending in `_taps`:
 
 ```python
@@ -71,27 +72,20 @@ def my_pulse_taps(sps: int | float, param: float, span: int = 4) -> ArrayType:
     return backend.array(taps)
 ```
 
-Update `get_taps` factory:
-
-```python
-def get_taps(filter_type: str, sps: int | float, **kwargs) -> ArrayType:
-    if filter_type == "my_pulse":
-        return my_pulse_taps(sps, **kwargs)
-    # ... existing cases ...
-```
-
 #### Core Building Blocks
-Building blocks operate at the sample level:
-- `fir_filter(samples, taps, mode)` - Generic FIR filtering (convolution)
-- `expand(symbols, factor)` - Zero-insertion upsampling
-- `upsample(samples, factor, filter_type)` - Complete upsampling (expand + fir_filter)
-- `decimate(samples, factor)` - Filtered downsampling  
-- `resample(samples, up, down)` - Rational rate conversion
 
-The `fir_filter()` function is the fundamental operation used by `upsample`, `matched_filter`, 
-and `shape_pulse`. Use it directly when you have custom taps or need specific convolution modes.
+Building blocks operate at the sample level:
+
+* `fir_filter(samples, taps, mode)` - Generic FIR filtering (convolution)
+* `expand(symbols, factor)` - Zero-insertion upsampling
+* `upsample(samples, factor, filter_type)` - Complete upsampling (expand + fir_filter)
+* `decimate(samples, factor)` - Filtered downsampling  
+* `resample(samples, up, down)` - Rational rate conversion
+
+The `fir_filter()` function is the fundamental operation used by `upsample`, `matched_filter`, and `shape_pulse`. Use it directly when you have custom taps or need specific convolution modes.
 
 #### Matched Filtering
+
 Matched filtering uses the `matched_filter` function (or generic `fir_filter` with custom taps):
 
 ```python
@@ -106,6 +100,7 @@ filtered = fir_filter(samples, matched_taps, mode="same")
 ```
 
 #### High-Level Operations
+
 Compose building blocks into complete operations:
 
 ```python
@@ -165,12 +160,13 @@ def my_waveform(
 
 **Standard parameter name: `sps` (samples per symbol)**
 
-- Use `sps` consistently throughout the codebase
-- Accept `int | float` type for flexibility with rational rates
-- Old parameter name `samples_per_symbol` has been deprecated
-- Function `upsample` has been renamed to `expand` (zero-insertion)
+* Use `sps` consistently throughout the codebase
+* Accept `int | float` type for flexibility with rational rates
+* Old parameter name `samples_per_symbol` has been deprecated
+* Function `upsample` has been renamed to `expand` (zero-insertion)
 
 Example function signature:
+
 ```python
 def shape_pulse(
     symbols,
@@ -182,5 +178,6 @@ def shape_pulse(
 ```
 
 ## Key Rules
-*   **Do not import `numpy` or `jax` directly for computation** inside the function logic if you want to support both. Use `signal.backend` or `get_backend()`.
-*   **Use `signal.update()`** instead of creating a new `Signal` from scratch when modifying an existing signal.
+
+* **Do not import `numpy` or `jax` directly for computation** inside the function logic if you want to support both. Use `signal.backend` or `get_backend()`.
+* **Use `signal.update()`** instead of creating a new `Signal` from scratch when modifying an existing signal.

@@ -1,6 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 
 
 from .backend import ArrayType, Backend, get_backend
@@ -64,19 +64,58 @@ class Signal:
         """Duration of the signal in seconds."""
         return self.samples.shape[0] / self.sampling_rate
 
+    @property
+    def sps(self) -> float:
+        """Samples per symbol."""
+        return self.sampling_rate / self.symbol_rate
+
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
         return self.backend.arange(0, self.samples.shape[0]) / self.sampling_rate
 
-    def plot_psd(self, NFFT: int = 256, ax: Optional[Any] = None) -> Tuple[Any, Any]:
+    def welch_psd(
+        self,
+        nperseg: int = 256,
+        detrend: Optional[Union[str, bool]] = False,
+        average: Optional[str] = "mean",
+    ) -> Tuple[ArrayType, ArrayType]:
+        if self.backend.iscomplexobj(self.samples):
+            return self.backend.welch(
+                self.samples,
+                fs=self.sampling_rate,
+                nperseg=nperseg,
+                detrend=detrend,
+                average=average,
+                return_onesided=False,
+            )
+        else:
+            return self.backend.welch(
+                self.samples,
+                fs=self.sampling_rate,
+                nperseg=nperseg,
+                detrend=detrend,
+                average=average,
+            )
+
+    def plot_psd(
+        self,
+        nperseg: int = 256,
+        detrend: Optional[Union[str, bool]] = False,
+        average: Optional[str] = "mean",
+        ax: Optional[Any] = None,
+    ) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.psd(self, NFFT=NFFT, ax=ax)
+        return plotting.psd(
+            self, nperseg=nperseg, detrend=detrend, average=average, ax=ax
+        )
 
-    def plot_signal(self, ax: Optional[Any] = None) -> Tuple[Any, Any]:
+    def plot_signal(
+        self, num_symbols: int = 2, ax: Optional[Any] = None
+    ) -> Tuple[Any, Any]:
         from .. import plotting
 
-        return plotting.signal(self, ax=ax)
+        return plotting.signal(self, num_symbols=num_symbols, ax=ax)
 
     def plot_eye(
         self, ax: Optional[Any] = None, plot_type: str = "line", **kwargs: Any
@@ -105,6 +144,92 @@ class Signal:
         if self.backend.name != target:
             return self._to_backend(target)
         return self
+
+    def fir_filter(self, taps: ArrayType, mode: str = "same") -> "Signal":
+        """
+        Apply FIR filter to the signal.
+
+        Args:
+            taps: Filter taps.
+            mode: Convolution mode.
+
+        Returns:
+            New Signal with filtered samples.
+        """
+        from ..dsp import filters
+
+        new_samples = filters.fir_filter(self.samples, taps, mode=mode)
+        return self.update(samples=new_samples)
+
+    def upsample(self, factor: int) -> "Signal":
+        """
+        Upsample the signal.
+
+        Args:
+            factor: Upsampling factor.
+
+        Returns:
+            New Signal with upsampled samples and updated sampling rate.
+        """
+        from ..dsp import multirate
+
+        new_samples = multirate.upsample(self.samples, factor)
+        new_rate = self.sampling_rate * factor
+        return self.update(samples=new_samples, sampling_rate=new_rate)
+
+    def decimate(
+        self, factor: int, filter_type: str = "fir", **kwargs: Any
+    ) -> "Signal":
+        """
+        Decimate the signal.
+
+        Args:
+            factor: Decimation factor.
+            filter_type: Filter type.
+            **kwargs: Additional arguments for decimate.
+
+        Returns:
+            New Signal with decimated samples and updated sampling rate.
+        """
+        from ..dsp import multirate
+
+        new_samples = multirate.decimate(
+            self.samples, factor, filter_type=filter_type, **kwargs
+        )
+        new_rate = self.sampling_rate / factor
+        return self.update(samples=new_samples, sampling_rate=new_rate)
+
+    def resample(self, up: int, down: int) -> "Signal":
+        """
+        Resample the signal by a rational factor.
+
+        Args:
+            up: Upsampling factor.
+            down: Downsampling factor.
+
+        Returns:
+            New Signal with resampled samples and updated sampling rate.
+        """
+        from ..dsp import multirate
+
+        new_samples = multirate.resample(self.samples, up, down)
+        new_rate = self.sampling_rate * up / down
+        return self.update(samples=new_samples, sampling_rate=new_rate)
+
+    def matched_filter(self, pulse_taps: ArrayType) -> "Signal":
+        """
+        Apply matched filter to the signal.
+
+        Args:
+            pulse_taps: Pulse shape filter taps.
+
+        Returns:
+            New Signal with matched filtered samples.
+        """
+        from ..dsp import filters
+
+        new_samples = filters.matched_filter(self.samples, pulse_taps)
+        return self.update(samples=new_samples)
 
     def update(
         self,
