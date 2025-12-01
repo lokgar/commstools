@@ -112,6 +112,7 @@ def signal(
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Amplitude")
     ax.set_title("Waveform")
+
     return fig, ax
 
 
