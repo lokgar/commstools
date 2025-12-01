@@ -71,7 +71,6 @@ class Backend(Protocol):
     def convolve(
         self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
     ) -> ArrayType: ...
-
     def expand(self, x: ArrayType, factor: int) -> ArrayType: ...
     def decimate(
         self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
@@ -79,6 +78,21 @@ class Backend(Protocol):
     def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType: ...
     def blackman(self, M: int) -> ArrayType: ...
     def hamming(self, M: int) -> ArrayType: ...
+    def welch(
+        self,
+        x: ArrayType,
+        fs: Optional[float] = 1.0,
+        window: Optional[str] = "hann",
+        nperseg: Optional[int] = None,
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        detrend: Optional[Union[str, bool]] = "constant",
+        return_onesided: Optional[bool] = True,
+        scaling: Optional[str] = "density",
+        axis: Optional[int] = -1,
+        average: Optional[str] = "mean",
+    ) -> ArrayType: ...
+    def iscomplexobj(self, x: ArrayType) -> bool: ...
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -204,6 +218,39 @@ class NumpyBackend:
     def hamming(self, M: int) -> ArrayType:
         """Return a Hamming window of length M."""
         return np.hamming(M)
+
+    def welch(
+        self,
+        x: ArrayType,
+        fs: Optional[float] = 1.0,
+        window: Optional[str] = "hann",
+        nperseg: Optional[int] = None,
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        detrend: Optional[Union[str, bool]] = "constant",
+        return_onesided: Optional[bool] = True,
+        scaling: Optional[str] = "density",
+        axis: Optional[int] = -1,
+        average: Optional[str] = "mean",
+    ) -> ArrayType:
+        import scipy.signal
+
+        return scipy.signal.welch(
+            x,
+            fs=fs,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=axis,
+            average=average,
+        )
+
+    def iscomplexobj(self, x: ArrayType) -> bool:
+        return np.iscomplexobj(x)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
@@ -383,6 +430,39 @@ class JaxBackend:
     def hamming(self, M: int) -> ArrayType:
         """Return a Hamming window of length M."""
         return jnp.hamming(M)
+
+    def welch(
+        self,
+        x: ArrayType,
+        fs: Optional[float] = 1.0,
+        window: Optional[str] = "hann",
+        nperseg: Optional[int] = None,
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        detrend: Optional[Union[str, bool]] = "constant",
+        return_onesided: Optional[bool] = True,
+        scaling: Optional[str] = "density",
+        axis: Optional[int] = -1,
+        average: Optional[str] = "mean",
+    ) -> ArrayType:
+        import jax.scipy.signal
+
+        return jax.scipy.signal.welch(
+            x,
+            fs=fs,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=axis,
+            average=average,
+        )
+
+    def iscomplexobj(self, x: ArrayType) -> bool:
+        return jnp.iscomplexobj(x)
 
     def _jit_impl(
         self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None

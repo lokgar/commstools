@@ -35,8 +35,12 @@ def ook(
     # 1. Map bits to symbols
     symbols = mapping.ook_map(data_bits)
 
+    span = kwargs.pop("span", 10)
+
     # 2. Apply pulse shaping
-    samples = filters.shape_pulse(symbols, sps, pulse_shape=pulse_shape, **kwargs)
+    samples = filters.shape_pulse(
+        symbols=symbols, sps=sps, span=span, pulse_shape=pulse_shape, **kwargs
+    )
 
     # 3. Create Signal
     return Signal(
