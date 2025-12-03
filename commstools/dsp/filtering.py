@@ -1,11 +1,18 @@
 import numpy as np
-from typing import Any
-from ..core.backend import get_backend, ArrayType
 
+from ..core.backend import ArrayType, get_backend, jit
+from ..dsp.utils import normalize
 
 # ============================================================================
 # FILTER DESIGN - TAP GENERATORS
 # ============================================================================
+# For filter taps, as they aren't large arrays, we use NumPy for calculations
+# ----------------------------------------------------------------------------
+# boxcar_taps: Boxcar filter taps
+# gaussian_taps: Gaussian filter taps
+# rrc_taps: Root Raised Cosine filter taps
+# sinc_taps: Windowed Sinc Low Pass filter taps
+# sinc_interpolation_taps: Sinc interpolation filter taps
 
 
 def boxcar_taps(sps: float) -> ArrayType:
@@ -20,52 +27,61 @@ def boxcar_taps(sps: float) -> ArrayType:
     """
     backend = get_backend()
     taps = backend.ones(int(sps))
-    return taps / backend.sum(taps)
+    return normalize(taps, mode="unity_gain")
 
 
-def gaussian_taps(sps: float, bt: float = 0.3, span: int = 2) -> ArrayType:
+def gaussian_taps(sps: float, bt: float = 0.3, span: int = 4) -> ArrayType:
     """
     Generates Gaussian filter taps.
 
     Args:
         sps: Samples per symbol.
         bt: Bandwidth-Time product.
-        span: Filter span in symbols.
+        span: Total filter span in symbols.
 
     Returns:
         Gaussian filter taps with unity gain normalization.
     """
     backend = get_backend()
-    # Using numpy for coefficient calculation, then converting to backend
 
-    t = np.arange(-span * sps, span * sps + 1) / sps
+    # Ensure odd number of taps to have a center peak
+    num_taps = int(span * sps)
+    if num_taps % 2 == 0:
+        num_taps += 1
+
+    t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
     # Gaussian function: h(t) = (sqrt(pi)/a) * exp(-(pi*t/a)^2) where a = sqrt(ln(2)/2)/B
     # Simplified for comms usually:
     alpha = np.sqrt(np.log(2) / 2) / bt
     h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
 
     # Normalize to Unity Gain
-    h = h / np.sum(h)
+    h = normalize(h, mode="unity_gain")
 
     return backend.array(h)
 
 
-def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 4) -> ArrayType:
+def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     """
     Generates Root Raised Cosine (RRC) filter taps.
 
     Args:
         sps: Samples per symbol.
         rolloff: Roll-off factor (0 to 1).
-        span: Filter span in symbols.
+        span: Total filter span in symbols.
 
     Returns:
         RRC filter taps with unity gain normalization.
     """
     backend = get_backend()
 
+    # Ensure odd number of taps
+    num_taps = int(span * sps)
+    if num_taps % 2 == 0:
+        num_taps += 1
+
     # Use numpy for calculation
-    t = np.arange(-span * sps, span * sps + 1) / sps
+    t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
 
     # Avoid division by zero
     # 1. t = 0
@@ -99,7 +115,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 4) -> ArrayType:
     h[idx_general] = num / den
 
     # Normalize to Unity Gain
-    h = h / np.sum(h)
+    h = normalize(h, mode="unity_gain")
 
     return backend.array(h)
 
@@ -138,7 +154,7 @@ def sinc_taps(num_taps: int, cutoff_norm: float, window: str = "blackman") -> Ar
     h = h * win
 
     # Unity Gain Normalization
-    h = h / np.sum(h)
+    h = normalize(h, mode="unity_gain")
 
     return backend.array(h)
 
@@ -161,14 +177,17 @@ def sinc_interpolation_taps(
     """
     backend = get_backend()
 
-    num_taps = int(2 * span * factor) + 1
+    num_taps = int(span * factor)
+    if num_taps % 2 == 0:
+        num_taps += 1
 
     cutoff = (1.0 / (2.0 * factor)) * bandwidth_fraction
 
     h = sinc_taps(num_taps, cutoff)
 
     # Normalize to Unity Gain
-    h = h / np.sum(h)
+    h = normalize(h, mode="unity_gain")
+
     h *= factor
 
     return backend.array(h)
@@ -182,6 +201,7 @@ def sinc_interpolation_taps(
 # shape_pulse: Apply pulse shaping to symbols
 
 
+@jit(static_argnames=("mode",))
 def fir_filter(samples: ArrayType, taps: ArrayType, mode: str = "same") -> ArrayType:
     """
     Apply FIR filter via convolution.
@@ -205,40 +225,14 @@ def fir_filter(samples: ArrayType, taps: ArrayType, mode: str = "same") -> Array
     return backend.convolve(samples, taps, mode=mode, method="fft")
 
 
-def matched_filter(
-    samples: ArrayType, pulse_taps: ArrayType, mode: str = "same"
-) -> ArrayType:
-    """
-    Apply matched filter (time-reversed conjugate of pulse shape).
-
-    Args:
-        samples: Received sample array.
-        pulse_taps: Pulse shape filter taps.
-        mode: Convolution mode ('same', 'full', 'valid').
-
-    Returns:
-        Matched filtered samples.
-    """
-    backend = get_backend()
-
-    # Matched filter is conjugate and time-reversed version of pulse
-    matched_taps = backend.conj(pulse_taps[::-1])
-
-    # Enforce Unit Energy
-    # Calculate energy
-    energy_sq = backend.sum(backend.abs(matched_taps) ** 2)
-
-    # Avoid division by zero or redundant calculation if already 1.0
-    # (Using a small epsilon for float comparison)
-    if energy_sq > 0 and backend.abs(energy_sq - 1.0) > 1e-6:
-        matched_taps = matched_taps / backend.sqrt(energy_sq)
-
-    # Apply filter
-    return fir_filter(samples, matched_taps, mode=mode)
-
-
+# @jit(static_argnames=("pulse_shape", "filter_span", "rrc_rolloff", "gaussian_bt"))
 def shape_pulse(
-    symbols: ArrayType, sps: float, span: int, pulse_shape: str = "none", **kwargs: Any
+    symbols: ArrayType,
+    sps: float,
+    pulse_shape: str = "none",
+    filter_span: int = 10,
+    rrc_rolloff: float = 0.35,
+    gaussian_bt: float = 0.3,
 ) -> ArrayType:
     """
     Applies pulse shaping to a symbol sequence.
@@ -246,12 +240,13 @@ def shape_pulse(
     Args:
         symbols: Input symbol array.
         sps: Samples per symbol (upsampling factor).
-        span: Pulse shaping filter span in symbols.
         pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc').
-        **kwargs: Additional arguments for filter generation.
+        filter_span: Pulse shaping filter span in symbols.
+        rrc_rolloff: Roll-off factor for RRC filter.
+        gaussian_bt: Bandwidth-Time product for Gaussian filter.
 
     Returns:
-        Shaped sample array at rate (sps * symbol_rate).
+        Shaped sample array at rate (sps * symbol_rate), normalized
     """
     backend = get_backend()
 
@@ -262,28 +257,57 @@ def shape_pulse(
     elif pulse_shape == "boxcar":
         h = boxcar_taps(sps)
     elif pulse_shape == "gaussian":
-        h = gaussian_taps(sps, span=span, **kwargs)
+        h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
     elif pulse_shape == "rrc":
-        h = rrc_taps(sps, span=span, **kwargs)
+        h = rrc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
     elif pulse_shape == "sinc":
         # Sinc pulse shaping is equivalent to RRC with rolloff=0
-        h = rrc_taps(sps, span=span, rolloff=0.0, **kwargs)
+        h = rrc_taps(sps, span=filter_span, rolloff=0.0)
     else:
         raise ValueError(f"Not implemented pulse shape: {pulse_shape}")
 
-    # Optimization: If h is just [1], return expanded scaled by sqrt(sps)
-    if h.shape == (1,) and backend.abs(h[0] - 1.0) < 1e-10:
-        return expanded * backend.sqrt(float(sps))
+    return normalize(fir_filter(expanded, h, mode="same"), mode="max_amplitude")
 
-    # Enforce Unit Energy
-    # Calculate energy
-    energy_sq = backend.sum(backend.abs(h) ** 2)
 
-    # Avoid division by zero or redundant calculation if already 1.0
-    # (Using a small epsilon for float comparison)
-    if energy_sq > 0 and backend.abs(energy_sq - 1.0) > 1e-6:
-        h = h / backend.sqrt(energy_sq)
+# @jit(static_argnames=("taps_normalization", "mode", "normalize_output"))
+def matched_filter(
+    samples: ArrayType,
+    pulse_taps: ArrayType,
+    taps_normalization: str = "unity_gain",
+    mode: str = "same",
+    normalize_output: bool = False,
+) -> ArrayType:
+    """
+    Apply matched filter (time-reversed conjugate of pulse shape).
 
-    scaled_h = h * backend.sqrt(float(sps))
+    Args:
+        samples: Received sample array.
+        pulse_taps: Pulse shape filter taps.
+        taps_normalization: Normalization to apply to the matched filter taps.
+                            Options: 'unity_gain', 'unit_energy'.
+        mode: Convolution mode ('same', 'full', 'valid').
+        normalize_output: If True, normalizes the output samples to have a maximum
+                          absolute value of 1.0.
 
-    return fir_filter(expanded, scaled_h, mode="same")
+    Returns:
+        Matched filtered samples.
+    """
+    backend = get_backend()
+
+    # Matched filter is conjugate and time-reversed version of pulse
+    matched_taps = backend.conj(pulse_taps[::-1])
+
+    if taps_normalization == "unity_gain" or taps_normalization == "gain":
+        matched_taps = normalize(matched_taps, mode="unity_gain")
+    elif taps_normalization == "unit_energy" or taps_normalization == "energy":
+        matched_taps = normalize(matched_taps, mode="unit_energy")
+    else:
+        raise ValueError(f"Not implemented taps normalization: {taps_normalization}")
+
+    # Apply filter
+    output = fir_filter(samples, matched_taps, mode=mode)
+
+    if normalize_output:
+        output = normalize(output, mode="max_amplitude")
+
+    return output

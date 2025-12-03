@@ -99,51 +99,68 @@ class Signal:
 
     def plot_psd(
         self,
-        nperseg: int = 256,
+        nperseg: int = 128,
         detrend: Optional[Union[str, bool]] = False,
         average: Optional[str] = "mean",
         ax: Optional[Any] = None,
-    ) -> Tuple[Any, Any]:
+        title: Optional[str] = "Spectrum",
+        show: bool = False,
+        **kwargs: Any,
+    ) -> Optional[Tuple[Any, Any]]:
         from .. import plotting
 
         return plotting.psd(
-            self, nperseg=nperseg, detrend=detrend, average=average, ax=ax
-        )
-
-    def plot_signal(
-        self, num_symbols: int = 2, ax: Optional[Any] = None
-    ) -> Tuple[Any, Any]:
-        from .. import plotting
-
-        return plotting.signal(self, num_symbols=num_symbols, ax=ax)
-
-    def plot_eye(
-        self, ax: Optional[Any] = None, plot_type: str = "line", **kwargs: Any
-    ) -> Tuple[Any, Any]:
-        from .. import plotting
-
-        return plotting.eye_diagram(
-            self,
+            self.samples,
+            sampling_rate=self.sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
             ax=ax,
-            sps=self.sampling_rate / self.symbol_rate,
-            plot_type=plot_type,
+            title=title,
+            show=show,
             **kwargs,
         )
 
-    def ensure_backend(self, backend_name: Optional[str] = None) -> "Signal":
-        """
-        Ensures the signal is on the specified backend (or global default).
+    def plot_signal(
+        self,
+        num_symbols: int = None,
+        ax: Optional[Any] = None,
+        title: Optional[str] = "Waveform",
+        show: bool = False,
+        **kwargs: Any,
+    ) -> Optional[Tuple[Any, Any]]:
+        from .. import plotting
 
-        Args:
-            backend_name: Target backend name. If None, uses global default.
+        return plotting.time_domain(
+            self.samples,
+            sampling_rate=self.sampling_rate,
+            num_symbols=num_symbols,
+            sps=self.sps,
+            ax=ax,
+            title=title,
+            show=show,
+            **kwargs,
+        )
 
-        Returns:
-            Signal on the target backend (self if already there).
-        """
-        target = backend_name or get_backend().name
-        if self.backend.name != target:
-            return self._to_backend(target)
-        return self
+    def plot_eye(
+        self,
+        ax: Optional[Any] = None,
+        plot_type: str = "line",
+        title: Optional[str] = "Eye Diagram",
+        show: bool = False,
+        **kwargs: Any,
+    ) -> Optional[Tuple[Any, Any]]:
+        from .. import plotting
+
+        return plotting.eye_diagram(
+            self.samples,
+            ax=ax,
+            sps=self.sampling_rate / self.symbol_rate,
+            plot_type=plot_type,
+            title=title,
+            show=show,
+            **kwargs,
+        )
 
     def fir_filter(self, taps: ArrayType, mode: str = "same") -> "Signal":
         """
@@ -156,9 +173,9 @@ class Signal:
         Returns:
             New Signal with filtered samples.
         """
-        from ..dsp import filters
+        from ..dsp import filtering
 
-        new_samples = filters.fir_filter(self.samples, taps, mode=mode)
+        new_samples = filtering.fir_filter(self.samples, taps, mode=mode)
         return self.update(samples=new_samples)
 
     def upsample(self, factor: int) -> "Signal":
@@ -216,19 +233,36 @@ class Signal:
         new_rate = self.sampling_rate * up / down
         return self.update(samples=new_samples, sampling_rate=new_rate)
 
-    def matched_filter(self, pulse_taps: ArrayType) -> "Signal":
+    def matched_filter(
+        self,
+        pulse_taps: ArrayType,
+        taps_normalization: str = "unity_gain",
+        mode: str = "same",
+        normalize_output: bool = False,
+    ) -> "Signal":
         """
         Apply matched filter to the signal.
 
         Args:
             pulse_taps: Pulse shape filter taps.
+            taps_normalization: Normalization to apply to the matched filter taps.
+                                Options: 'unity_gain', 'unit_energy'.
+            mode: Convolution mode ('same', 'full', 'valid').
+            normalize_output: If True, normalizes the output samples to have a maximum
+                              absolute value of 1.0.
 
         Returns:
             New Signal with matched filtered samples.
         """
-        from ..dsp import filters
+        from ..dsp import filtering
 
-        new_samples = filters.matched_filter(self.samples, pulse_taps)
+        new_samples = filtering.matched_filter(
+            self.samples,
+            pulse_taps=pulse_taps,
+            taps_normalization=taps_normalization,
+            mode=mode,
+            normalize_output=normalize_output,
+        )
         return self.update(samples=new_samples)
 
     def update(
@@ -290,25 +324,28 @@ class Signal:
         # Fallback to global default
         return get_backend()
 
-    def _to_backend(self, backend_name: str) -> "Signal":
+    def to(self, backend: str) -> "Signal":
         """
         Moves the signal data to the specified backend.
 
         Args:
-            backend_name: The name of the target backend ('numpy' or 'jax').
+            backend: The name of the target backend ('numpy' or 'jax').
 
         Returns:
-            A new Signal instance with data on the requested backend.
+            A new Signal instance with data on the requested backend, or self if already on that backend.
         """
+        if self.backend.name == backend:
+            return self
+
         from .backend import JaxBackend, NumpyBackend
 
         target_backend: Backend
-        if backend_name.lower() == "numpy":
+        if backend.lower() == "numpy":
             target_backend = NumpyBackend()
-        elif backend_name.lower() == "jax":
+        elif backend.lower() == "jax":
             target_backend = JaxBackend()
         else:
-            raise ValueError(f"Unknown backend: {backend_name}")
+            raise ValueError(f"Unknown backend: {backend}")
 
         # Convert samples
         new_samples = target_backend.array(self.samples)

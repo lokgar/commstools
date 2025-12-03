@@ -57,13 +57,13 @@ def test_backend_switching():
 
     if _JAX_AVAILABLE:
         # Convert to JAX
-        sig_jax = sig._to_backend("jax")
+        sig_jax = sig.to("jax")
         assert hasattr(sig_jax.samples, "device_buffer") or isinstance(
             sig_jax.samples, type(jnp.array([]))
         )
 
         # Convert back to Numpy
-        sig_numpy = sig_jax._to_backend("numpy")
+        sig_numpy = sig_jax.to("numpy")
         assert isinstance(sig_numpy.samples, np.ndarray)
         assert np.allclose(sig_numpy.samples, samples)
 
@@ -83,7 +83,7 @@ def test_functional_processing():
         set_backend("jax")
 
         # Ensure signal is on JAX (auto-alignment or explicit)
-        sig_jax = sig.ensure_backend()
+        sig_jax = sig.to("jax")
 
         processed_sig_jax = gain_func(sig_jax, gain=2.0)
         assert hasattr(processed_sig_jax.samples, "device_buffer") or isinstance(

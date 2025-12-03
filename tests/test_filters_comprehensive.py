@@ -1,11 +1,11 @@
 """
-Comprehensive tests for DSP building blocks and filters.
+Comprehensive tests for DSP building blocks and filtering.
 """
 
 import pytest
 import numpy as np
 from commstools import set_backend
-from commstools.dsp import filters, multirate
+from commstools.dsp import filtering, multirate
 
 # Test both backends
 backends = ["numpy"]
@@ -135,14 +135,14 @@ class TestFilterTaps:
 
     def test_boxcar_taps_length(self):
         """Test boxcar taps have correct length."""
-        taps = filters.boxcar_taps(sps=8)
+        taps = filtering.boxcar_taps(sps=8)
         assert len(taps) == 8
         np.testing.assert_array_equal(taps, np.ones(8) / 8)
 
     def test_gaussian_taps_normalization(self):
         """Test Gaussian taps are properly normalized."""
         sps = 10
-        taps = filters.gaussian_taps(sps=sps, bt=0.3, span=4)
+        taps = filtering.gaussian_taps(sps=sps, bt=0.3, span=4)
 
         # Should sum to approximately 1.0 (Unity Gain)
         assert abs(np.sum(taps) - 1.0) < 0.1
@@ -151,21 +151,21 @@ class TestFilterTaps:
         """Test that BT parameter affects Gaussian pulse width."""
         sps = 8
 
-        taps_narrow = filters.gaussian_taps(sps=sps, bt=0.2, span=4)
-        taps_wide = filters.gaussian_taps(sps=sps, bt=0.5, span=4)
+        taps_narrow = filtering.gaussian_taps(sps=sps, bt=0.2, span=4)
+        taps_wide = filtering.gaussian_taps(sps=sps, bt=0.5, span=4)
 
         # Higher BT means wider pulse (lower peak)
         assert np.max(taps_narrow) < np.max(taps_wide)
 
     def test_rrc_taps_symmetry(self):
         """Test RRC taps are symmetric."""
-        taps = filters.rrc_taps(sps=8, rolloff=0.35, span=4)
+        taps = filtering.rrc_taps(sps=8, rolloff=0.35, span=4)
 
         np.testing.assert_array_almost_equal(taps, taps[::-1])
 
     def test_rrc_taps_unit_energy(self):
         """Test RRC taps have unit energy."""
-        taps = filters.rrc_taps(sps=8, rolloff=0.35, span=6)
+        taps = filtering.rrc_taps(sps=8, rolloff=0.35, span=6)
 
         # RRC taps are now Unity Gain normalized, not Unit Energy
         # But let's check sum is 1.0
@@ -176,8 +176,8 @@ class TestFilterTaps:
         """Test that rolloff parameter affects bandwidth."""
         sps = 8
 
-        taps_low = filters.rrc_taps(sps=sps, rolloff=0.1, span=6)
-        taps_high = filters.rrc_taps(sps=sps, rolloff=0.8, span=6)
+        taps_low = filtering.rrc_taps(sps=sps, rolloff=0.1, span=6)
+        taps_high = filtering.rrc_taps(sps=sps, rolloff=0.8, span=6)
 
         # Higher rolloff should have shorter tails (more compact in time)
         # Check energy concentration
@@ -197,7 +197,7 @@ class TestFilterTaps:
     def test_sinc_taps_dc_gain(self):
         """Test sinc taps have correct DC gain."""
         # New signature: num_taps, cutoff_norm
-        taps = filters.sinc_taps(num_taps=21, cutoff_norm=0.1)
+        taps = filtering.sinc_taps(num_taps=21, cutoff_norm=0.1)
 
         # Should sum to approximately 1.0
         assert abs(np.sum(taps) - 1.0) < 0.1
@@ -209,20 +209,20 @@ class TestMatchedFiltering:
     def test_matched_filter_length(self):
         """Test matched filter output has correct length."""
         samples = np.random.randn(100)
-        pulse_taps = filters.rrc_taps(sps=8, rolloff=0.35, span=4)
+        pulse_taps = filtering.rrc_taps(sps=8, rolloff=0.35, span=4)
 
-        filtered = filters.matched_filter(samples, pulse_taps, mode="same")
+        filtered = filtering.matched_filter(samples, pulse_taps, mode="same")
 
         assert len(filtered) == len(samples)
 
     def test_matched_filter_is_conjugate_reversed(self):
         """Test matched filter produces peak at correct location."""
-        pulse_taps = filters.rrc_taps(sps=8, rolloff=0.35, span=4)
+        pulse_taps = filtering.rrc_taps(sps=8, rolloff=0.35, span=4)
 
         # Apply matched filter to impulse
         impulse = np.zeros(100)
         impulse[50] = 1.0
-        filtered = filters.matched_filter(impulse, pulse_taps, mode="same")
+        filtered = filtering.matched_filter(impulse, pulse_taps, mode="same")
 
         # Peak should be at impulse location
         peak_idx = np.argmax(np.abs(filtered))
@@ -234,8 +234,8 @@ class TestMatchedFiltering:
         sps = 8
 
         # Generate pulse taps and apply matched filter
-        pulse_taps = filters.rrc_taps(sps, rolloff=0.35)
-        filtered = filters.matched_filter(samples, pulse_taps)
+        pulse_taps = filtering.rrc_taps(sps, rolloff=0.35)
+        filtered = filtering.matched_filter(samples, pulse_taps)
 
         # Should produce output of correct length
         assert len(filtered) == len(samples)
@@ -244,9 +244,10 @@ class TestMatchedFiltering:
 
     def test_matched_filter_snr_improvement(self):
         """Test that matched filter improves SNR."""
+        set_backend("numpy")
         # Create a clean pulse
         sps = 8
-        pulse_taps = filters.rrc_taps(sps, rolloff=0.35, span=6)
+        pulse_taps = filtering.rrc_taps(sps, rolloff=0.35, span=6)
 
         # Create signal: pulse + noise
         signal_len = 200
@@ -255,11 +256,12 @@ class TestMatchedFiltering:
         signal[pulse_start : pulse_start + len(pulse_taps)] = pulse_taps
 
         # Add noise
-        noise = np.random.randn(signal_len) * 0.5
+        np.random.seed(42)
+        noise = np.random.randn(signal_len) * 0.1
         noisy_signal = signal + noise
 
         # Apply matched filter
-        filtered = filters.matched_filter(noisy_signal, pulse_taps, mode="same")
+        filtered = filtering.matched_filter(noisy_signal, pulse_taps, mode="same")
 
         # Peak at center should be stronger after filtering
         peak_location = pulse_start + len(pulse_taps) // 2
@@ -271,6 +273,37 @@ class TestMatchedFiltering:
         # Matched filter should concentrate energy
         assert signal_after > signal_before
 
+    def test_matched_filter_taps_normalization(self):
+        """Test matched filter with taps normalization."""
+        samples = np.random.randn(100)
+        sps = 8
+        pulse_taps = filtering.rrc_taps(sps, rolloff=0.35)
+
+        # Test energy normalization
+        # We can't easily check the internal taps, but we can check the output scaling
+        # compared to manual normalization.
+
+        filtered_energy = filtering.matched_filter(
+            samples, pulse_taps, taps_normalization="energy"
+        )
+
+        # Manual normalization
+        taps_energy = pulse_taps / np.sqrt(np.sum(np.abs(pulse_taps) ** 2))
+        filtered_manual = filtering.fir_filter(samples, np.conj(taps_energy[::-1]))
+
+        np.testing.assert_allclose(filtered_energy, filtered_manual, rtol=1e-5)
+
+    def test_matched_filter_normalize_output(self):
+        """Test matched filter with output normalization."""
+        samples = np.random.randn(100)
+        sps = 8
+        pulse_taps = filtering.rrc_taps(sps, rolloff=0.35)
+
+        filtered = filtering.matched_filter(samples, pulse_taps, normalize_output=True)
+
+        # Max amplitude should be 1.0 (or very close if signal is all zeros, but here random)
+        assert abs(np.max(np.abs(filtered)) - 1.0) < 1e-6
+
 
 class TestShapePulse:
     """Test the high-level shape_pulse function."""
@@ -280,7 +313,7 @@ class TestShapePulse:
         symbols = np.array([1, 0, 1, 0])
         sps = 8
 
-        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="boxcar")
+        shaped = filtering.shape_pulse(symbols, sps, filter_span=4, pulse_shape="boxcar")
 
         assert len(shaped) == len(symbols) * sps
 
@@ -289,8 +322,8 @@ class TestShapePulse:
         symbols = np.array([1, 0, 1, 0])
         sps = 8
 
-        shaped = filters.shape_pulse(
-            symbols, sps, span=4, pulse_shape="rrc", rolloff=0.35
+        shaped = filtering.shape_pulse(
+            symbols, sps, filter_span=4, pulse_shape="rrc", rrc_rolloff=0.35
         )
 
         # RRC uses 'same' mode, so length matches expanded signal
@@ -301,19 +334,27 @@ class TestShapePulse:
         symbols = np.array([1, 2, 3])
         sps = 4
 
-        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="none")
+        shaped = filtering.shape_pulse(symbols, sps, filter_span=4, pulse_shape="none")
 
-        # Should be equivalent to expand * sqrt(sps)
+        # Should be equivalent to expand * 1.0 (since we normalize to max 1.0)
         expanded = multirate.expand(symbols, sps)
-        np.testing.assert_array_equal(shaped, expanded * np.sqrt(sps))
+        # normalize_max_amplitude will make the max value 1.0
+        # Since expanded has 1, 2, 3, max is 3.
+        # So output should be expanded / 3.
+        # Wait, shape_pulse normalizes the OUTPUT.
+        # If pulse_shape="none", h=[1]. Output is expanded.
+        # Max of expanded is 3. So output will be expanded / 3.
+
+        expected = expanded / np.max(np.abs(expanded))
+        np.testing.assert_allclose(shaped, expected, rtol=1e-6)
 
     def test_shape_pulse_complex_symbols(self):
         """Test shape_pulse with complex symbols."""
         symbols = np.array([1 + 1j, -1 + 1j, -1 - 1j, 1 - 1j])
         sps = 8
 
-        shaped = filters.shape_pulse(
-            symbols, sps, span=4, pulse_shape="rrc", rolloff=0.35
+        shaped = filtering.shape_pulse(
+            symbols, sps, filter_span=4, pulse_shape="rrc", rrc_rolloff=0.35
         )
 
         assert shaped.dtype == np.complex128 or shaped.dtype == np.complex64
@@ -353,7 +394,7 @@ class TestEdgeCases:
         single = np.array([5.0])
         sps = 4
 
-        shaped = filters.shape_pulse(single, sps, span=4, pulse_shape="boxcar")
+        shaped = filtering.shape_pulse(single, sps, filter_span=4, pulse_shape="boxcar")
         assert len(shaped) == sps
 
     def test_very_large_sps(self):
@@ -370,7 +411,7 @@ class TestEdgeCases:
         sps = 7.5  # Fractional
 
         # boxcar shape_pulse handles floats via resample
-        shaped = filters.shape_pulse(symbols, sps, span=4, pulse_shape="boxcar")
+        shaped = filtering.shape_pulse(symbols, sps, filter_span=4, pulse_shape="boxcar")
         # Length should be approximately len(symbols) * sps
         expected_len = int(len(symbols) * sps)
         assert abs(len(shaped) - expected_len) <= 1

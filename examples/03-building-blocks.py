@@ -18,7 +18,7 @@ Learning objectives:
 import numpy as np
 import matplotlib.pyplot as plt
 from commstools import set_backend
-from commstools.dsp import filters
+from commstools.dsp import multirate
 
 set_backend("numpy")
 
@@ -36,7 +36,7 @@ print("-" * 70)
 original = np.array([1.0, 0.5, 0.0, -0.5, -1.0])
 factor = 4
 
-expanded = filters.expand(original, factor)
+expanded = multirate.expand(original, factor)
 
 print(f"Original signal ({len(original)} samples): {original}")
 print(f"Expanded signal ({len(expanded)} samples): {expanded}")
@@ -100,7 +100,7 @@ t = np.linspace(0, 1, 50)
 signal = np.sin(2 * np.pi * 3 * t)  # 3 Hz sine wave
 
 # Interpolate by factor of 4
-interpolated = filters.interpolate(signal, factor=4, filter_type="sinc")
+interpolated = multirate.upsample(signal, factor=4)
 
 print(f"Original signal: {len(signal)} samples")
 print(f"Interpolated signal: {len(interpolated)} samples")
@@ -161,7 +161,7 @@ t = np.arange(1000) / fs
 signal_hf = np.sin(2 * np.pi * 50 * t) + 0.5 * np.sin(2 * np.pi * 200 * t)
 
 # Decimate by factor of 8
-decimated = filters.decimate(signal_hf, factor=8)
+decimated = multirate.decimate(signal_hf, factor=8)
 
 print(f"Original signal: {len(signal_hf)} samples at {fs} Hz")
 print(f"Decimated signal: {len(decimated)} samples at {fs / 8} Hz")
@@ -232,7 +232,7 @@ ratios = [(3, 2), (5, 3), (2, 3), (3, 5)]  # (up, down)
 fig, axs = plt.subplots(len(ratios), 1, figsize=(12, 10))
 
 for idx, (up, down) in enumerate(ratios):
-    resampled = filters.resample(signal_sine, up=up, down=down)
+    resampled = multirate.resample(signal_sine, up=up, down=down)
     rate_change = up / down
 
     t_resample = np.linspace(0, 1, len(resampled))
@@ -272,11 +272,11 @@ fs_original = 100e3
 signal_orig = np.sin(2 * np.pi * 5e3 * np.arange(1000) / fs_original)
 
 # Single-stage decimation
-decimated_1stage = filters.decimate(signal_orig, factor=8)
+decimated_1stage = multirate.decimate(signal_orig, factor=8)
 
 # Two-stage decimation (more efficient)
-decimated_stage1 = filters.decimate(signal_orig, factor=4)
-decimated_2stage = filters.decimate(decimated_stage1, factor=2)
+decimated_stage1 = multirate.decimate(signal_orig, factor=4)
+decimated_2stage = multirate.decimate(decimated_stage1, factor=2)
 
 print(f"Original: {len(signal_orig)} samples at {fs_original / 1e3:.1f} kHz")
 print(f"\nSingle-stage (÷8):")
