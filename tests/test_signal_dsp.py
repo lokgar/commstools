@@ -1,6 +1,6 @@
 import numpy as np
 from commstools import Signal
-from commstools.dsp import filters
+from commstools.dsp import filtering
 
 
 class TestSignalDSP:
@@ -8,7 +8,7 @@ class TestSignalDSP:
         samples = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         sig = Signal(samples=samples, sampling_rate=100, symbol_rate=10)
 
-        taps = filters.boxcar_taps(sps=3)
+        taps = filtering.boxcar_taps(sps=3)
         filtered_sig = sig.fir_filter(taps)
 
         assert isinstance(filtered_sig, Signal)
@@ -50,7 +50,7 @@ class TestSignalDSP:
         samples = np.random.randn(100)
         sig = Signal(samples=samples, sampling_rate=100, symbol_rate=10)
 
-        pulse_taps = filters.rrc_taps(sps=4)
+        pulse_taps = filtering.rrc_taps(sps=4)
         filtered_sig = sig.matched_filter(pulse_taps)
 
         assert isinstance(filtered_sig, Signal)

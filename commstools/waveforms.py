@@ -2,7 +2,7 @@ from typing import Optional, Any
 from .core.signal import Signal
 
 from .core.backend import ArrayType
-from .dsp import mapping, filters
+from .dsp import mapping, filtering
 
 
 def ook(
@@ -10,7 +10,9 @@ def ook(
     sampling_rate: Optional[float] = None,
     sps: Optional[float] = None,
     pulse_shape: str = "none",
-    **kwargs: Any,
+    filter_span: int = 10,
+    rrc_rolloff: float = 0.35,
+    gaussian_bt: float = 0.3,
 ) -> Signal:
     """
     Generates an On-Off Keying (OOK) signal.
@@ -20,7 +22,8 @@ def ook(
         sampling_rate: Sampling rate in Hz.
         sps: Samples per symbol.
         pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc', 'sinc').
-        **kwargs: Additional arguments for specific filters (e.g., rolloff, bt, span).
+        rrc_rolloff: Roll-off factor for RRC filter.
+        gaussian_bt: Bandwidth-Time product for Gaussian filter.
 
     Returns:
         Signal object containing the OOK waveform.
@@ -35,11 +38,14 @@ def ook(
     # 1. Map bits to symbols
     symbols = mapping.ook_map(data_bits)
 
-    span = kwargs.pop("span", 10)
-
     # 2. Apply pulse shaping
-    samples = filters.shape_pulse(
-        symbols=symbols, sps=sps, span=span, pulse_shape=pulse_shape, **kwargs
+    samples = filtering.shape_pulse(
+        symbols=symbols,
+        sps=sps,
+        pulse_shape=pulse_shape,
+        filter_span=filter_span,
+        rrc_rolloff=rrc_rolloff,
+        gaussian_bt=gaussian_bt,
     )
 
     # 3. Create Signal

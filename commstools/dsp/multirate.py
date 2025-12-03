@@ -1,6 +1,6 @@
 from typing import Any
 from ..core.backend import get_backend, ArrayType
-from . import filters
+from . import filtering
 
 
 def expand(samples: ArrayType, factor: int) -> ArrayType:
@@ -36,9 +36,9 @@ def upsample(samples: ArrayType, factor: int) -> ArrayType:
     expanded = expand(samples, factor)
 
     # Design interpolation filter and scale by factor
-    h = filters.sinc_interpolation_taps(factor=float(factor), span=10)
+    h = filtering.sinc_interpolation_taps(factor=float(factor), span=10)
 
-    return filters.fir_filter(expanded, h)
+    return filtering.fir_filter(expanded, h)
 
 
 def decimate(

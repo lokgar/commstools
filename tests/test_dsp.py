@@ -1,5 +1,5 @@
 import numpy as np
-from commstools.dsp import sequences, mapping, filters, multirate
+from commstools.dsp import sequences, mapping, filtering, multirate
 from commstools import waveforms
 from commstools import Signal
 
@@ -26,7 +26,7 @@ class TestMapping:
 
 class TestFilters:
     def test_boxcar_taps(self):
-        taps = filters.boxcar_taps(sps=4)
+        taps = filtering.boxcar_taps(sps=4)
         assert len(taps) == 4
         np.testing.assert_array_equal(taps, np.ones(4) / 4)
 
@@ -39,7 +39,9 @@ class TestFilters:
     def test_shape_pulse_boxcar(self):
         symbols = np.array([1, 0])
         # Pass pulse_shape="boxcar" directly
-        shaped = filters.shape_pulse(symbols, sps=4, span=4, pulse_shape="boxcar")
+        shaped = filtering.shape_pulse(
+            symbols, sps=4, filter_span=4, pulse_shape="boxcar"
+        )
         # 1 -> 1 1 1 1, 0 -> 0 0 0 0
         # shape_pulse with boxcar now truncates to valid symbol duration
         # len = 2*4 = 8
@@ -52,12 +54,14 @@ class TestFilters:
     def test_shape_pulse_sinc(self):
         symbols = np.array([1, 0])
         # Sinc pulse shaping (RRC with rolloff=0)
-        shaped = filters.shape_pulse(symbols, sps=4, span=4, pulse_shape="sinc")
+        shaped = filtering.shape_pulse(
+            symbols, sps=4, filter_span=4, pulse_shape="sinc"
+        )
         assert len(shaped) == 8
 
     def test_sinc_taps(self):
         # New signature: num_taps, cutoff_norm
-        taps = filters.sinc_taps(num_taps=17, cutoff_norm=0.1)
+        taps = filtering.sinc_taps(num_taps=17, cutoff_norm=0.1)
         assert len(taps) == 17
         # Check that taps are normalized to unity gain
         assert abs(np.sum(taps) - 1.0) < 0.1
@@ -65,8 +69,8 @@ class TestFilters:
     def test_fir_filter(self):
         """Test generic FIR filter function."""
         samples = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        taps = filters.boxcar_taps(sps=3)
-        filtered = filters.fir_filter(samples, taps, mode="same")
+        taps = filtering.boxcar_taps(sps=3)
+        filtered = filtering.fir_filter(samples, taps, mode="same")
         # Should produce output of same length
         assert len(filtered) == len(samples)
         # Should smooth the signal
@@ -83,7 +87,7 @@ class TestFilters:
         pulse_taps = np.array([1, 2, 3, 2, 1])
         samples = np.array([0, 0, 1, 0, 0, 0, 0])
         # Apply matched filter
-        filtered = filters.matched_filter(samples, pulse_taps, mode="same")
+        filtered = filtering.matched_filter(samples, pulse_taps, mode="same")
         assert len(filtered) == len(samples)
 
 
@@ -91,7 +95,7 @@ class TestWaveforms:
     def test_ook_waveform(self):
         bits = np.array([1, 0])
         sig = waveforms.ook(
-            bits, sps=4, span=4, pulse_shape="boxcar", sampling_rate=100
+            bits, sps=4, filter_span=4, pulse_shape="boxcar", sampling_rate=100
         )
 
         assert isinstance(sig, Signal)
@@ -107,18 +111,20 @@ class TestWaveforms:
 
     def test_ook_impulse(self):
         bits = np.array([1, 0])
-        sig = waveforms.ook(bits, sps=4, span=4, pulse_shape="none", sampling_rate=100)
+        sig = waveforms.ook(
+            bits, sps=4, filter_span=4, pulse_shape="none", sampling_rate=100
+        )
 
         # 1 -> 1 0 0 0, 0 -> 0 0 0 0
-        # shape_pulse scales by sqrt(sps) = 2
-        expected = np.array([2, 0, 0, 0, 0, 0, 0, 0])
+        # shape_pulse normalizes to max amplitude 1.0
+        expected = np.array([1.0, 0, 0, 0, 0, 0, 0, 0])
         np.testing.assert_array_equal(sig.samples, expected)
 
     def test_ook_float_sps(self):
         bits = np.array([1, 0])
         # Use float SPS = 4.0
         sig = waveforms.ook(
-            bits, sps=4.0, span=4, pulse_shape="boxcar", sampling_rate=100
+            bits, sps=4.0, filter_span=4, pulse_shape="boxcar", sampling_rate=100
         )
 
         assert sig.symbol_rate == 25.0

@@ -1,12 +1,9 @@
-from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 from scipy.ndimage._filters import gaussian_filter
-
-if TYPE_CHECKING:
-    from .core.signal import Signal
 
 
 def apply_default_theme() -> None:
@@ -25,6 +22,7 @@ def apply_default_theme() -> None:
             "font.size": 12,
             "lines.linewidth": 2,
             "axes.linewidth": 1,
+            "axes.grid": True,
             "axes.titleweight": "bold",
             "figure.autolayout": True,
             "figure.facecolor": "white",
@@ -52,24 +50,32 @@ def apply_default_theme() -> None:
 
 
 def psd(
-    signal: "Signal",
-    nperseg: int = 256,
+    samples: Any,
+    sampling_rate: float = 1.0,
+    nperseg: int = 128,
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
     ax: Optional[Any] = None,
-) -> Tuple[Any, Any]:
+    title: Optional[str] = "Spectrum",
+    show: bool = False,
+    **kwargs: Any,
+) -> Optional[Tuple[Any, Any]]:
     """
     Plots the Power Spectral Density (PSD) of the signal.
 
     Args:
-        signal: The signal to plot.
+        samples: The signal samples to plot.
+        sampling_rate: Sampling rate in Hz.
         nperseg: Length of each segment.
         detrend: Detrend method.
         average: Averaging method.
         ax: Optional matplotlib axis to plot on.
+        title: Title of the plot. Defaults to "Spectrum". If None, no title is set.
+        show: Whether to call plt.show() after plotting.
+        **kwargs: Additional arguments passed to ax.plot.
 
     Returns:
-        Tuple of (figure, axis).
+        Tuple of (figure, axis) if show is False, else None.
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -77,70 +83,130 @@ def psd(
         fig = ax.figure
 
     import numpy as np
+    from scipy import signal as scipy_signal
 
-    f, Pxx = signal.welch_psd(nperseg=nperseg, detrend=detrend, average=average)
-    ax.plot(f, 10 * np.log10(Pxx))
-    ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("PSD (dB/Hz)")
-    ax.set_title("Spectrum")
+    # Ensure numpy array
+    samples = np.array(samples)
+    samples -= np.mean(samples)
 
+    if np.iscomplexobj(samples):
+        f, Pxx = scipy_signal.welch(
+            samples,
+            fs=sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
+            return_onesided=False,
+        )
+        # Shift zero frequency to center
+        f = np.fft.fftshift(f)
+        Pxx = np.fft.fftshift(Pxx)
+    else:
+        f, Pxx = scipy_signal.welch(
+            samples,
+            fs=sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
+        )
+
+    ax.plot(f, 10 * np.log10(Pxx), **kwargs)
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("PSD [dB/Hz]")
+    if title is not None:
+        ax.set_title(title)
+
+    if show:
+        plt.show()
+        return None
     return fig, ax
 
 
-def signal(
-    signal: "Signal", num_symbols: int = 2, ax: Optional[Any] = None
-) -> Tuple[Any, Any]:
+def time_domain(
+    samples: Any,
+    sampling_rate: float = 1.0,
+    num_symbols: Optional[int] = None,
+    sps: Optional[float] = None,
+    ax: Optional[Any] = None,
+    title: Optional[str] = "Waveform",
+    show: bool = False,
+    **kwargs: Any,
+) -> Optional[Tuple[Any, Any]]:
     """
     Plots the time-domain representation of the signal.
 
     Args:
-        signal: The signal to plot.
+        samples: The signal samples to plot.
+        sampling_rate: Sampling rate in Hz.
+        num_symbols: Number of symbols to plot (requires sps).
+        sps: Samples per symbol (required if num_symbols is used).
         ax: Optional matplotlib axis to plot on.
+        title: Title of the plot. Defaults to "Waveform". If None, no title is set.
+        show: Whether to call plt.show() after plotting.
+        **kwargs: Additional arguments passed to ax.plot.
 
     Returns:
-        Tuple of (figure, axis).
+        Tuple of (figure, axis) if show is False, else None.
     """
     if ax is None:
         fig, ax = plt.subplots()
     else:
         fig = ax.figure
 
-    ax.plot(
-        signal.time_axis()[: int(num_symbols * signal.sps)],
-        signal.samples[: int(num_symbols * signal.sps)],
-    )
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Amplitude")
-    ax.set_title("Waveform")
+    import numpy as np
 
+    samples = np.array(samples)
+
+    if num_symbols is not None and sps is not None:
+        limit = int(num_symbols * sps)
+        plot_samples = samples[:limit]
+    else:
+        plot_samples = samples
+
+    time_axis = np.arange(len(plot_samples)) / sampling_rate
+
+    ax.plot(
+        time_axis,
+        plot_samples,
+        **kwargs,
+    )
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Amplitude")
+    if title is not None:
+        ax.set_title(title)
+
+    if show:
+        plt.show()
+        return None
     return fig, ax
 
 
 def eye_diagram(
-    signal: "Signal",
+    samples: Any,
+    sps: float,
     ax: Optional[Any] = None,
-    sps: Optional[float] = None,
     num_symbols: int = 2,
     plot_type: str = "line",
+    title: Optional[str] = "Eye Diagram",
+    show: bool = False,
     **kwargs,
-) -> Tuple[Any, Any]:
+) -> Optional[Tuple[Any, Any]]:
     """
     Plots the eye diagram of the signal.
 
     Args:
-        signal: The signal to plot.
-        ax: Optional matplotlib axis to plot on.
+        samples: The signal samples to plot.
         sps: Samples per symbol.
+        ax: Optional matplotlib axis to plot on.
         num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
         plot_type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
+        title: Title of the plot. Defaults to "Eye Diagram". If None, no title is set.
+        show: Whether to call plt.show() after plotting.
 
     Returns:
-        Tuple of (figure, axis).
+        Tuple of (figure, axis) if show is False, else None.
     """
     import numpy as np
-
-    if sps is None:
-        raise ValueError("sps must be provided explicitly.")
 
     if ax is None:
         fig, ax = plt.subplots()
@@ -148,11 +214,16 @@ def eye_diagram(
         fig = ax.figure
 
     # Ensure we have a numpy array for plotting
-    samples = np.array(signal.samples)
+    samples = np.array(samples)
 
     # Use real part for plotting if complex
     if np.iscomplexobj(samples):
         samples = samples.real
+
+    # Normalize to max amplitude 1.0
+    max_val = np.max(np.abs(samples))
+    if max_val > 0:
+        samples = samples / max_val
 
     # We want to include the endpoint to avoid a gap at the end of the plot
     # So we need one extra sample per trace
@@ -235,7 +306,20 @@ def eye_diagram(
         bins_x = trace_len
         bins_y = 500
 
-        h, xedges, yedges = np.histogram2d(t_flat, y_flat, bins=[bins_x, bins_y])
+        # Add padding to Y range to avoid cutting off edges
+        y_min, y_max = y_flat.min(), y_flat.max()
+        y_range = y_max - y_min
+        if y_range == 0:
+            y_range = 1.0
+        y_pad = y_range * 0.1
+        range_y = [y_min - y_pad, y_max + y_pad]
+
+        h, xedges, yedges = np.histogram2d(
+            t_flat,
+            y_flat,
+            bins=[bins_x, bins_y],
+            range=[[t_flat.min(), t_flat.max()], range_y],
+        )
 
         h = h.T
         h = gaussian_filter(h, sigma=1)
@@ -252,7 +336,7 @@ def eye_diagram(
             "origin": "lower",
             "extent": [xedges[0], xedges[-1], yedges[0], yedges[-1]],
             "aspect": "auto",
-            "cmap": "copper",
+            "cmap": "inferno",
         }
         imshow_kwargs.update(kwargs)
 
@@ -261,17 +345,21 @@ def eye_diagram(
     else:
         raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', 'hist'")
 
-    ax.set_xlabel("Time (Symbol Periods)")
+    ax.set_xlabel("Time [Symbol Periods]")
     ax.set_ylabel("Amplitude")
     ax.set_xlim(0, num_symbols)
-    ax.set_title("Eye Diagram")
+    if title is not None:
+        ax.set_title(title)
 
+    if show:
+        plt.show()
+        return None
     return fig, ax
 
 
 def filter_response(
-    taps: Any, sps: float = 1.0, ax: Optional[Any] = None
-) -> Tuple[Any, Tuple[Any, Any, Any]]:
+    taps: Any, sps: float = 1.0, ax: Optional[Any] = None, show: bool = False
+) -> Optional[Tuple[Any, Tuple[Any, Any, Any]]]:
     """
     Plots the impulse and frequency response of a filter.
 
@@ -279,9 +367,10 @@ def filter_response(
         taps: Filter taps.
         sps: Samples per symbol. Used for time axis normalization.
         ax: Optional matplotlib axes. If provided, should be a list/tuple of 3 axes.
+        show: Whether to call plt.show() after plotting.
 
     Returns:
-        Tuple of (figure, (ax_impulse, ax_mag, ax_phase)).
+        Tuple of (figure, (ax_impulse, ax_mag, ax_phase)) if show is False, else None.
     """
 
     import numpy as np
@@ -315,9 +404,8 @@ def filter_response(
         ax1.plot(t, taps, color="C0")
 
     ax1.set_title("Impulse Response")
-    ax1.set_xlabel("Time (Symbol Periods)")
+    ax1.set_xlabel("Time [Symbol Periods]")
     ax1.set_ylabel("Amplitude")
-    ax1.grid(True)
 
     # Set ticks at integer intervals (1T, 2T, etc.)
     ax1.xaxis.set_major_locator(ticker.MultipleLocator(1))
@@ -337,21 +425,20 @@ def filter_response(
 
     # Magnitude
     ax2.plot(freqs, 20 * np.log10(np.abs(h) + 1e-12), color="C2")
-    ax2.set_ylabel("Magnitude (dB)")
-    ax2.tick_params(axis="y")
-    ax2.grid(True)
+    ax2.set_ylabel("Magnitude [dB]")
     ax2.set_title("Frequency Response (Magnitude)")
-    ax2.set_xlabel("Frequency (Cycles/Sample)")
+    ax2.set_xlabel("Frequency [Cycles/Sample]")
     ax2.set_xlim(0, 0.5)
 
     # Phase
     angles = np.unwrap(np.angle(h))
     ax3.plot(freqs, angles, color="C3")
-    ax3.set_ylabel("Phase (radians)")
-    ax3.tick_params(axis="y")
+    ax3.set_ylabel("Phase [radians]")
     ax3.set_title("Frequency Response (Phase)")
-    ax3.set_xlabel("Frequency (Cycles/Sample)")
+    ax3.set_xlabel("Frequency [Cycles/Sample]")
     ax3.set_xlim(0, 0.5)
-    ax3.grid(True)
 
+    if show:
+        plt.show()
+        return None
     return fig, (ax1, ax2, ax3)

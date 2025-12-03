@@ -19,7 +19,7 @@ Learning objectives:
 import numpy as np
 import matplotlib.pyplot as plt
 from commstools import set_backend
-from commstools.dsp import filters, sequences
+from commstools.dsp import filtering, sequences
 from commstools.waveforms import ook
 
 set_backend("numpy")
@@ -36,7 +36,7 @@ print("-" * 70)
 
 # Create a simple pulse shape
 sps = 8
-pulse_taps = filters.rrc_taps(sps, rolloff=0.35, span=4)
+pulse_taps = filtering.rrc_taps(sps, rolloff=0.35, span=4)
 
 # Matched filter is time-reversed conjugate
 matched_taps = np.conj(pulse_taps[::-1])
@@ -106,8 +106,8 @@ noise = np.random.randn(len(signal.samples)) * np.sqrt(noise_power / 2)
 noisy_signal = signal.samples + noise
 
 # Apply matched filter
-pulse_taps_rrc = filters.rrc_taps(sps, rolloff=0.35, span=8)
-filtered_signal = filters.matched_filter(noisy_signal, pulse_taps_rrc, mode="same")
+pulse_taps_rrc = filtering.rrc_taps(sps, rolloff=0.35, span=8)
+filtered_signal = filtering.matched_filter(noisy_signal, pulse_taps_rrc, mode="same")
 
 # Calculate SNR improvement
 signal_power_before = np.var(noisy_signal)
@@ -188,7 +188,7 @@ for idx, (pulse_shape, kwargs) in enumerate(pulse_configs):
     noisy = sig.samples + noise
 
     # Apply matched filter
-    filtered = filters.matched_filter_pulse(noisy, pulse_shape, sps, **kwargs)
+    filtered = filtering.matched_filter_pulse(noisy, pulse_shape, sps, **kwargs)
 
     # Before matched filtering
     axs[idx, 0].plot(noisy[:150].real, linewidth=1, alpha=0.7)
@@ -231,7 +231,7 @@ noise_eye = (
 sig_noisy = sig_tx.samples + noise_eye
 
 # Apply matched filter
-sig_matched = filters.matched_filter_pulse(sig_noisy, "rrc", sps, rolloff=0.35)
+sig_matched = filtering.matched_filter_pulse(sig_noisy, "rrc", sps, rolloff=0.35)
 
 # Create signal objects for eye diagram plotting
 from commstools import Signal

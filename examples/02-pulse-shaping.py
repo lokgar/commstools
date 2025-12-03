@@ -18,7 +18,7 @@ Learning objectives:
 import numpy as np
 import matplotlib.pyplot as plt
 from commstools import set_backend
-from commstools.dsp import filters, sequences, mapping
+from commstools.dsp import filtering, sequences, mapping, multirate
 from commstools.waveforms import ook
 
 set_backend("numpy")
@@ -38,7 +38,7 @@ symbols = np.array([0, 1, 1, 0, 1])
 sps = 4
 
 # Expand: insert zeros between symbols
-expanded = filters.expand(symbols, sps)
+expanded = multirate.expand(symbols, sps)
 
 print(f"Original symbols: {symbols}")
 print(f"After expand (sps={sps}): {expanded}")
@@ -54,10 +54,10 @@ print("-" * 70)
 sps = 8  # Use higher sps for better visualization
 
 # Generate different types of filter taps
-taps_boxcar = filters.boxcar_taps(sps)
-taps_sinc = filters.sinc_taps(sps, bandwidth=0.5, span=6)
-taps_gaussian = filters.gaussian_taps(sps, bt=0.3, span=4)
-taps_rrc = filters.rrc_taps(sps, rolloff=0.35, span=6)
+taps_boxcar = filtering.boxcar_taps(sps)
+taps_sinc = filtering.sinc_taps(sps, bandwidth=0.5, span=6)
+taps_gaussian = filtering.gaussian_taps(sps, bt=0.3, span=4)
+taps_rrc = filtering.rrc_taps(sps, rolloff=0.35, span=6)
 
 print(f"Boxcar taps: {len(taps_boxcar)} coefficients")
 print(f"Sinc taps: {len(taps_sinc)} coefficients")

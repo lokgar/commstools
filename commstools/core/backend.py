@@ -58,6 +58,7 @@ class Backend(Protocol):
     def min(
         self, x: ArrayType, axis: Any = None, keepdims: bool = False
     ) -> ArrayType: ...
+    def where(self, condition: ArrayType, x: ArrayType, y: ArrayType) -> ArrayType: ...
 
     def fft(
         self, x: ArrayType, n: Optional[int] = None, axis: int = -1
@@ -95,7 +96,10 @@ class Backend(Protocol):
     def iscomplexobj(self, x: ArrayType) -> bool: ...
 
     def _jit_impl(
-        self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
+        self,
+        fun: Callable,
+        static_argnums: Optional[Union[int, tuple]] = None,
+        static_argnames: Optional[Union[str, tuple]] = None,
     ) -> Callable: ...
 
 
@@ -166,6 +170,9 @@ class NumpyBackend:
 
     def min(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return np.min(x, axis=axis, keepdims=keepdims)
+
+    def where(self, condition: ArrayType, x: ArrayType, y: ArrayType) -> ArrayType:
+        return np.where(condition, x, y)
 
     def fft(self, x: ArrayType, n: Optional[int] = None, axis: int = -1) -> ArrayType:
         return np.fft.fft(x, n=n, axis=axis)
@@ -253,7 +260,10 @@ class NumpyBackend:
         return np.iscomplexobj(x)
 
     def _jit_impl(
-        self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
+        self,
+        fun: Callable,
+        static_argnums: Optional[Union[int, tuple]] = None,
+        static_argnames: Optional[Union[str, tuple]] = None,
     ) -> Callable:
         # Numpy backend does not support JIT, return function as is
         return fun
@@ -332,6 +342,9 @@ class JaxBackend:
 
     def min(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return jnp.min(x, axis=axis, keepdims=keepdims)
+
+    def where(self, condition: ArrayType, x: ArrayType, y: ArrayType) -> ArrayType:
+        return jnp.where(condition, x, y)
 
     def fft(self, x: ArrayType, n: Optional[int] = None, axis: int = -1) -> ArrayType:
         return jnp.fft.fft(x, n=n, axis=axis)
@@ -412,8 +425,9 @@ class JaxBackend:
         t = (n - center) * cutoff
 
         h = jnp.sinc(t)
+
         # Apply Hamming window
-        window = 0.54 - 0.46 * jnp.cos(2 * jnp.pi * n / (numtaps - 1))
+        window = jnp.hamming(numtaps)
         h = h * window
         h = h / jnp.sum(h) * up  # Normalize and compensate for upsampling gain
 
@@ -465,11 +479,16 @@ class JaxBackend:
         return jnp.iscomplexobj(x)
 
     def _jit_impl(
-        self, fun: Callable, static_argnums: Optional[Union[int, tuple]] = None
+        self,
+        fun: Callable,
+        static_argnums: Optional[Union[int, tuple]] = None,
+        static_argnames: Optional[Union[str, tuple]] = None,
     ) -> Callable:
         import jax
 
-        return jax.jit(fun, static_argnums=static_argnums)
+        return jax.jit(
+            fun, static_argnums=static_argnums, static_argnames=static_argnames
+        )
 
 
 # Global state for current backend
@@ -492,7 +511,12 @@ def set_backend(backend_name: str) -> None:
         raise ValueError(f"Unknown backend: {backend_name}")
 
 
-def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = None):
+def jit(
+    fun: Callable = None,
+    *,
+    static_argnums: Optional[Union[int, tuple]] = None,
+    static_argnames: Optional[Union[str, tuple]] = None,
+):
     """
     Decorator that lazily JIT compiles the function using the currently active backend.
 
@@ -504,9 +528,14 @@ def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = N
 
         @jit(static_argnums=(1,))
         def my_func(x, mode): ...
+
+        @jit(static_argnames=("mode",))
+        def my_func(x, mode): ...
     """
     if fun is None:
-        return lambda f: jit(f, static_argnums=static_argnums)
+        return lambda f: jit(
+            f, static_argnums=static_argnums, static_argnames=static_argnames
+        )
 
     # Cache for compiled functions: {backend_name: compiled_fn}
     _cache: Dict[str, Callable] = {}
@@ -517,7 +546,9 @@ def jit(fun: Callable = None, *, static_argnums: Optional[Union[int, tuple]] = N
 
         if backend.name not in _cache:
             # Compile for this backend
-            _cache[backend.name] = backend._jit_impl(fun, static_argnums=static_argnums)
+            _cache[backend.name] = backend._jit_impl(
+                fun, static_argnums=static_argnums, static_argnames=static_argnames
+            )
 
         return _cache[backend.name](*args, **kwargs)
 
