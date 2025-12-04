@@ -2,8 +2,18 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple, Union
 
+import numpy as np
 
-from .backend import ArrayType, Backend, get_backend
+try:
+    import cupy as cp
+
+    _CUPY_AVAILABLE = True
+except ImportError:
+    cp = None
+    _CUPY_AVAILABLE = False
+
+
+from .backend import ArrayType, Backend, CupyBackend, NumpyBackend, get_backend
 
 
 @dataclass
@@ -31,33 +41,35 @@ class Signal:
             raise ValueError("symbol_rate must be provided explicitly")
 
         if self.modulation_format is None:
-            self.modulation_format = "unknown"
+            self.modulation_format = "None"
 
         # Ensure samples are on the current backend upon initialization
-        # unless they are already a valid array type (Numpy or JAX)
-        import numpy as np
-
-        is_known_array = isinstance(self.samples, np.ndarray)
-
-        if not is_known_array:
-            try:
-                import jax.numpy as jnp
-
-                if isinstance(self.samples, type(jnp.array([]))) or hasattr(
-                    self.samples, "device_buffer"
-                ):
-                    is_known_array = True
-            except ImportError:
+        # First, ensure it's something we can work with
+        if not isinstance(self.samples, (np.ndarray, list, tuple)):
+            if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
                 pass
+            else:
+                # Try to convert to numpy array to see if it's a valid array-like
+                try:
+                    self.samples = np.asarray(self.samples)
+                except Exception:
+                    raise ValueError(
+                        f"Unsupported samples type: {type(self.samples)}. Must be array-like."
+                    )
 
-        if not is_known_array:
-            current_backend = get_backend()
-            self.samples = current_backend.asarray(self.samples)
+        current_backend = get_backend()
+        if current_backend.name == "cupy":
+            self.to("gpu")
+        else:
+            self.to("cpu")
 
     @property
     def backend(self) -> Backend:
         """Returns the backend associated with the signal's data."""
-        return self._get_backend()
+        if isinstance(self.samples, np.ndarray):
+            return NumpyBackend()
+        if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
+            return CupyBackend()
 
     @property
     def duration(self) -> float:
@@ -68,6 +80,63 @@ class Signal:
     def sps(self) -> float:
         """Samples per symbol."""
         return self.sampling_rate / self.symbol_rate
+
+    def to(self, device: str) -> "Signal":
+        """
+        Moves the signal data to the specified device.
+
+        Args:
+            device: The target device ('cpu' or 'gpu').
+
+        Returns:
+            self
+        """
+        device = device.lower()
+        if device == "cpu":
+            if isinstance(self.samples, np.ndarray):
+                return self
+            if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
+                self.samples = cp.asnumpy(self.samples)
+                return self
+            # Fallback if unknown array type but requested CPU
+            # Try to convert to numpy array
+            self.samples = np.asarray(self.samples)
+            return self
+
+        elif device == "gpu":
+            if not _CUPY_AVAILABLE:
+                raise ImportError("CuPy is not installed or not available.")
+            if isinstance(self.samples, cp.ndarray):
+                return self
+            self.samples = cp.asarray(self.samples)
+            return self
+
+        else:
+            raise ValueError(f"Unknown device: {device}. Use 'cpu' or 'gpu'.")
+
+    def samples_to_jax(self) -> Any:
+        """
+        Exports the signal samples to a JAX array.
+
+        Returns:
+            A JAX array containing the signal samples.
+        """
+        try:
+            import jax.numpy as jnp
+            from jax import dlpack as jax_dlpack
+        except ImportError:
+            raise ImportError("JAX is not installed.")
+
+        if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
+            # Zero-copy transfer from CuPy (GPU) to JAX (GPU) via DLPack
+            return jax_dlpack.from_dlpack(self.samples.toDlpack())
+
+        if isinstance(self.samples, np.ndarray):
+            # Zero-copy transfer from NumPy (CPU) to JAX (CPU)
+            return jnp.asarray(self.samples)
+
+        # Fallback
+        return jnp.array(self.samples)
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
@@ -80,7 +149,7 @@ class Signal:
         average: Optional[str] = "mean",
     ) -> Tuple[ArrayType, ArrayType]:
         if self.backend.iscomplexobj(self.samples):
-            return self.backend.welch(
+            f, Pxx = self.backend.welch(
                 self.samples,
                 fs=self.sampling_rate,
                 nperseg=nperseg,
@@ -88,6 +157,9 @@ class Signal:
                 average=average,
                 return_onesided=False,
             )
+            f = self.backend.fftshift(f)
+            Pxx = self.backend.fftshift(Pxx)
+            return f, Pxx
         else:
             return self.backend.welch(
                 self.samples,
@@ -171,12 +243,12 @@ class Signal:
             mode: Convolution mode.
 
         Returns:
-            New Signal with filtered samples.
+            self
         """
         from ..dsp import filtering
 
-        new_samples = filtering.fir_filter(self.samples, taps, mode=mode)
-        return self.update(samples=new_samples)
+        self.samples = filtering.fir_filter(self.samples, taps, mode=mode)
+        return self
 
     def upsample(self, factor: int) -> "Signal":
         """
@@ -186,13 +258,13 @@ class Signal:
             factor: Upsampling factor.
 
         Returns:
-            New Signal with upsampled samples and updated sampling rate.
+            self
         """
         from ..dsp import multirate
 
-        new_samples = multirate.upsample(self.samples, factor)
-        new_rate = self.sampling_rate * factor
-        return self.update(samples=new_samples, sampling_rate=new_rate)
+        self.samples = multirate.upsample(self.samples, factor)
+        self.sampling_rate = self.sampling_rate * factor
+        return self
 
     def decimate(
         self, factor: int, filter_type: str = "fir", **kwargs: Any
@@ -206,15 +278,15 @@ class Signal:
             **kwargs: Additional arguments for decimate.
 
         Returns:
-            New Signal with decimated samples and updated sampling rate.
+            self
         """
         from ..dsp import multirate
 
-        new_samples = multirate.decimate(
+        self.samples = multirate.decimate(
             self.samples, factor, filter_type=filter_type, **kwargs
         )
-        new_rate = self.sampling_rate / factor
-        return self.update(samples=new_samples, sampling_rate=new_rate)
+        self.sampling_rate = self.sampling_rate / factor
+        return self
 
     def resample(self, up: int, down: int) -> "Signal":
         """
@@ -225,13 +297,13 @@ class Signal:
             down: Downsampling factor.
 
         Returns:
-            New Signal with resampled samples and updated sampling rate.
+            self
         """
         from ..dsp import multirate
 
-        new_samples = multirate.resample(self.samples, up, down)
-        new_rate = self.sampling_rate * up / down
-        return self.update(samples=new_samples, sampling_rate=new_rate)
+        self.samples = multirate.resample(self.samples, up, down)
+        self.sampling_rate = self.sampling_rate * up / down
+        return self
 
     def matched_filter(
         self,
@@ -252,130 +324,15 @@ class Signal:
                               absolute value of 1.0.
 
         Returns:
-            New Signal with matched filtered samples.
+            self
         """
         from ..dsp import filtering
 
-        new_samples = filtering.matched_filter(
+        self.samples = filtering.matched_filter(
             self.samples,
             pulse_taps=pulse_taps,
             taps_normalization=taps_normalization,
             mode=mode,
             normalize_output=normalize_output,
         )
-        return self.update(samples=new_samples)
-
-    def update(
-        self,
-        samples: Optional[ArrayType] = None,
-        sampling_rate: Optional[float] = None,
-        modulation_format: Optional[str] = None,
-    ) -> "Signal":
-        """
-        Creates a new Signal with updated fields, defaulting to the original values.
-
-        Args:
-            samples: The new samples array. Defaults to the current samples.
-            sampling_rate: The new sampling rate in Hz. Defaults to the current sampling rate.
-            modulation_format: The new modulation format. Defaults to the current modulation format.
-
-        Returns:
-            A new Signal instance with the specified updates.
-        """
-        changes: dict[str, Any] = {}
-        if samples is not None:
-            changes["samples"] = samples
-        if sampling_rate is not None:
-            changes["sampling_rate"] = sampling_rate
-        if modulation_format is not None:
-            changes["modulation_format"] = modulation_format
-
-        return dataclasses.replace(self, **changes)
-
-    def _get_backend(self) -> Backend:
-        """
-        Infers the backend based on the type of 'samples'.
-        Fallback to global backend if uncertain.
-        """
-        # This is a bit heuristic.
-        # Ideally we check the type of self.samples against known backend array types.
-
-        # Check for Numpy array first to avoid importing JAX if not needed
-        import numpy as np
-
-        if isinstance(self.samples, np.ndarray):
-            from .backend import NumpyBackend
-
-            return NumpyBackend()
-
-        # Check for JAX array
-        try:
-            import jax.numpy as jnp
-
-            if isinstance(self.samples, type(jnp.array([]))) or (
-                hasattr(self.samples, "device_buffer")
-            ):
-                from .backend import JaxBackend
-
-                return JaxBackend()
-        except ImportError:
-            pass
-
-        # Fallback to global default
-        return get_backend()
-
-    def to(self, backend: str) -> "Signal":
-        """
-        Moves the signal data to the specified backend.
-
-        Args:
-            backend: The name of the target backend ('numpy' or 'jax').
-
-        Returns:
-            A new Signal instance with data on the requested backend, or self if already on that backend.
-        """
-        if self.backend.name == backend:
-            return self
-
-        from .backend import JaxBackend, NumpyBackend
-
-        target_backend: Backend
-        if backend.lower() == "numpy":
-            target_backend = NumpyBackend()
-        elif backend.lower() == "jax":
-            target_backend = JaxBackend()
-        else:
-            raise ValueError(f"Unknown backend: {backend}")
-
-        # Convert samples
-        new_samples = target_backend.array(self.samples)
-
-        return dataclasses.replace(self, samples=new_samples)
-
-
-# Register Signal as a JAX Pytree node if JAX is available
-try:
-    import jax
-
-    def _signal_tree_flatten(signal: Signal) -> tuple:
-        children = (signal.samples,)  # Arrays/tensors to be traced
-        aux_data = (
-            signal.sampling_rate,
-            signal.symbol_rate,
-            signal.modulation_format,
-        )  # Static metadata
-        return children, aux_data
-
-    def _signal_tree_unflatten(aux_data: tuple, children: tuple) -> Signal:
-        return Signal(
-            samples=children[0],
-            sampling_rate=aux_data[0],
-            symbol_rate=aux_data[1],
-            modulation_format=aux_data[2],
-        )
-
-    jax.tree_util.register_pytree_node(
-        Signal, _signal_tree_flatten, _signal_tree_unflatten
-    )
-except ImportError:
-    pass
+        return self

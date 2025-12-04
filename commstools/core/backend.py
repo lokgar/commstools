@@ -1,22 +1,23 @@
-from typing import Any, Protocol, Union, Optional, Callable, Dict
-import functools
+from typing import Any, Optional, Protocol, Union
+
 import numpy as np
 
-
-# Try to import JAX, but don't fail if it's not available
+# Try to import CuPy, but don't fail if it's not available
 try:
-    import jax
-    import jax.numpy as jnp
+    import cupy as cp
+    import cupyx.scipy.ndimage as cpx_ndimage
+    import cupyx.scipy.signal as cpx_signal
 
-    _JAX_AVAILABLE = True
+    _CUPY_AVAILABLE = True
 except ImportError:
-    _JAX_AVAILABLE = False
-    jax = None
-    jnp = None
+    _CUPY_AVAILABLE = False
+    cp = None
+    cpx_signal = None
+    cpx_ndimage = None
 
 ArrayType = Union[
     np.ndarray, Any
-]  # Any for JAX array to avoid hard dependency in type hint if not installed
+]  # Any for CuPy array to avoid hard dependency in type hint if not installed
 
 
 class Backend(Protocol):
@@ -253,181 +254,128 @@ class NumpyBackend:
         return np.iscomplexobj(x)
 
 
-class JaxBackend:
-    """JAX implementation of the Backend protocol."""
+class CupyBackend:
+    """CuPy implementation of the Backend protocol."""
 
     def __init__(self) -> None:
-        if not _JAX_AVAILABLE:
+        if not _CUPY_AVAILABLE:
             raise ImportError(
-                "JAX is not available. Please install it to use JaxBackend."
+                "CuPy is not available. Please install it to use CupyBackend."
             )
 
     @property
     def name(self) -> str:
-        return "jax"
+        return "cupy"
 
     def array(self, data: Any, dtype: Any = None) -> ArrayType:
-        return jnp.array(data, dtype=dtype)
+        return cp.array(data, dtype=dtype)
 
     def asarray(self, data: Any, dtype: Any = None) -> ArrayType:
-        return jnp.asarray(data, dtype=dtype)
+        return cp.asarray(data, dtype=dtype)
 
     def zeros(self, shape: Any, dtype: Any = None) -> ArrayType:
-        return jnp.zeros(shape, dtype=dtype)
+        return cp.zeros(shape, dtype=dtype)
 
     def ones(self, shape: Any, dtype: Any = None) -> ArrayType:
-        return jnp.ones(shape, dtype=dtype)
+        return cp.ones(shape, dtype=dtype)
 
     def arange(
         self, start: Any, stop: Any = None, step: Any = None, dtype: Any = None
     ) -> ArrayType:
-        return jnp.arange(start, stop, step, dtype=dtype)
+        return cp.arange(start, stop, step, dtype=dtype)
 
     def linspace(
         self, start: Any, stop: Any, num: int, endpoint: bool = True, dtype: Any = None
     ) -> ArrayType:
-        return jnp.linspace(start, stop, num, endpoint=endpoint, dtype=dtype)
+        return cp.linspace(start, stop, num, endpoint=endpoint, dtype=dtype)
 
     def exp(self, x: ArrayType) -> ArrayType:
-        return jnp.exp(x)
+        return cp.exp(x)
 
     def log(self, x: ArrayType) -> ArrayType:
-        return jnp.log(x)
+        return cp.log(x)
 
     def log10(self, x: ArrayType) -> ArrayType:
-        return jnp.log10(x)
+        return cp.log10(x)
 
     def sqrt(self, x: ArrayType) -> ArrayType:
-        return jnp.sqrt(x)
+        return cp.sqrt(x)
 
     def abs(self, x: ArrayType) -> ArrayType:
-        return jnp.abs(x)
+        return cp.abs(x)
 
     def angle(self, x: ArrayType) -> ArrayType:
-        return jnp.angle(x)
+        return cp.angle(x)
 
     def conj(self, x: ArrayType) -> ArrayType:
-        return jnp.conj(x)
+        return cp.conj(x)
 
     def real(self, x: ArrayType) -> ArrayType:
-        return jnp.real(x)
+        return cp.real(x)
 
     def imag(self, x: ArrayType) -> ArrayType:
-        return jnp.imag(x)
+        return cp.imag(x)
 
     def sum(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
-        return jnp.sum(x, axis=axis, keepdims=keepdims)
+        return cp.sum(x, axis=axis, keepdims=keepdims)
 
     def mean(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
-        return jnp.mean(x, axis=axis, keepdims=keepdims)
+        return cp.mean(x, axis=axis, keepdims=keepdims)
 
     def max(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
-        return jnp.max(x, axis=axis, keepdims=keepdims)
+        return cp.max(x, axis=axis, keepdims=keepdims)
 
     def min(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
-        return jnp.min(x, axis=axis, keepdims=keepdims)
+        return cp.min(x, axis=axis, keepdims=keepdims)
 
     def where(self, condition: ArrayType, x: ArrayType, y: ArrayType) -> ArrayType:
-        return jnp.where(condition, x, y)
+        return cp.where(condition, x, y)
 
     def fft(self, x: ArrayType, n: Optional[int] = None, axis: int = -1) -> ArrayType:
-        return jnp.fft.fft(x, n=n, axis=axis)
+        return cp.fft.fft(x, n=n, axis=axis)
 
     def ifft(self, x: ArrayType, n: Optional[int] = None, axis: int = -1) -> ArrayType:
-        return jnp.fft.ifft(x, n=n, axis=axis)
+        return cp.fft.ifft(x, n=n, axis=axis)
 
     def fftshift(self, x: ArrayType, axes: Any = None) -> ArrayType:
-        return jnp.fft.fftshift(x, axes=axes)
+        return cp.fft.fftshift(x, axes=axes)
 
     def ifftshift(self, x: ArrayType, axes: Any = None) -> ArrayType:
-        return jnp.fft.ifftshift(x, axes=axes)
+        return cp.fft.ifftshift(x, axes=axes)
 
     def fftfreq(self, n: int, d: float = 1.0) -> ArrayType:
-        return jnp.fft.fftfreq(n, d=d)
+        return cp.fft.fftfreq(n, d=d)
 
     def convolve(
         self, in1: ArrayType, in2: ArrayType, mode: str = "full", method: str = "auto"
     ) -> ArrayType:
-        import jax.scipy.signal
-
-        return jax.scipy.signal.convolve(in1, in2, mode=mode, method=method)  # type: ignore[arg-type]
+        return cpx_signal.convolve(in1, in2, mode=mode, method=method)
 
     def expand(self, x: ArrayType, factor: int) -> ArrayType:
         """Zero-insertion: Insert (factor-1) zeros between samples."""
         n_in = x.shape[0]
         n_out = n_in * factor
-        out = jnp.zeros(n_out, dtype=x.dtype)
-        out = out.at[::factor].set(x)
+        out = cp.zeros(n_out, dtype=x.dtype)
+        out[::factor] = x
         return out
 
     def decimate(
         self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
     ) -> ArrayType:
         """Decimate signal: Anti-aliasing filter + downsample."""
-        # For JAX, implement basic decimation with sinc-based lowpass filter
-        # Design anti-aliasing lowpass filter
-        numtaps = max(20 * factor, 100)
-        # Ensure odd number of taps for symmetric filter
-        if numtaps % 2 == 0:
-            numtaps += 1
-
-        # Create sinc lowpass filter with cutoff at 1/factor
-        cutoff = 1.0 / factor
-        n = jnp.arange(numtaps)
-        center = (numtaps - 1) / 2
-        t = (n - center) * cutoff
-
-        # Sinc function with Hamming window
-        h = jnp.sinc(t)
-        # Apply Hamming window
-        window = 0.54 - 0.46 * jnp.cos(2 * jnp.pi * n / (numtaps - 1))
-        h = h * window
-        h = h / jnp.sum(h)  # Normalize
-
-        # Apply filter
-        filtered = self.convolve(x, h, mode="same", method="fft")
-
-        # Downsample
-        return filtered[::factor]
+        return cpx_signal.decimate(x, factor, ftype=ftype, zero_phase=zero_phase)
 
     def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType:
         """Resample signal using polyphase filtering."""
-        # For JAX, implement basic rational resampling
-        # Step 1: Expand by 'up'
-        expanded = self.expand(x, up)
-
-        # Step 2: Apply anti-imaging/anti-aliasing filter
-        # Design lowpass filter with cutoff at min(1/up, 1/down)
-        cutoff = min(1.0 / up, 1.0 / down)
-        numtaps = max(20 * max(up, down), 100)
-        if numtaps % 2 == 0:
-            numtaps += 1
-
-        # Create sinc lowpass filter
-        n = jnp.arange(numtaps)
-        center = (numtaps - 1) / 2
-        t = (n - center) * cutoff
-
-        h = jnp.sinc(t)
-
-        # Apply Hamming window
-        window = jnp.hamming(numtaps)
-        h = h * window
-        h = h / jnp.sum(h) * up  # Normalize and compensate for upsampling gain
-
-        # Filter
-        filtered = self.convolve(expanded, h, mode="same", method="fft")
-
-        # Step 3: Downsample by 'down'
-        return filtered[::down]
+        return cpx_signal.resample_poly(x, up, down)
 
     def blackman(self, M: int) -> ArrayType:
         """Return a Blackman window of length M."""
-        return jnp.blackman(M)
+        return cp.blackman(M)
 
     def hamming(self, M: int) -> ArrayType:
         """Return a Hamming window of length M."""
-        return jnp.hamming(M)
+        return cp.hamming(M)
 
     def welch(
         self,
@@ -443,9 +391,7 @@ class JaxBackend:
         axis: Optional[int] = -1,
         average: Optional[str] = "mean",
     ) -> ArrayType:
-        import jax.scipy.signal
-
-        return jax.scipy.signal.welch(
+        return cpx_signal.welch(
             x,
             fs=fs,
             window=window,
@@ -460,7 +406,7 @@ class JaxBackend:
         )
 
     def iscomplexobj(self, x: ArrayType) -> bool:
-        return jnp.iscomplexobj(x)
+        return cp.iscomplexobj(x)
 
 
 # Global state for current backend
@@ -468,16 +414,69 @@ _CURRENT_BACKEND: Backend = NumpyBackend()
 
 
 def get_backend() -> Backend:
-    """Get the currently active backend."""
+    """Get the currently active global backend."""
     return _CURRENT_BACKEND
 
 
 def set_backend(backend_name: str) -> None:
-    """Set the active backend globally."""
+    """
+    Set the active backend globally.
+
+    Args:
+        backend_name (str): The name of the backend to set: "cpu" or "gpu".
+    """
     global _CURRENT_BACKEND
-    if backend_name.lower() == "numpy":
+    if backend_name.lower() in ("numpy", "cpu"):
         _CURRENT_BACKEND = NumpyBackend()
-    elif backend_name.lower() == "jax":
-        _CURRENT_BACKEND = JaxBackend()
+    elif backend_name.lower() in ("cupy", "gpu", "cuda"):
+        _CURRENT_BACKEND = CupyBackend()
     else:
         raise ValueError(f"Unknown backend: {backend_name}")
+
+
+def ensure_on_backend(data: Any) -> ArrayType:
+    """
+    Ensures the data is on the currently active global backend.
+
+    Args:
+        data: Input data (list, tuple, np.ndarray, cp.ndarray).
+
+    Returns:
+        Array on the active backend.
+    """
+    backend = get_backend()
+
+    # Optimization: Check if already on correct backend
+    if backend.name == "numpy":
+        if isinstance(data, np.ndarray):
+            return data
+        if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+            return cp.asnumpy(data)
+        return np.asarray(data)
+
+    elif backend.name == "cupy":
+        if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+            return data
+        # If CuPy is active, we expect CuPy to be available
+        return cp.asarray(data)
+
+    return backend.asarray(data)
+
+
+def to_host(data: Any) -> np.ndarray:
+    """
+    Moves data to the host (CPU/NumPy) for plotting or I/O.
+
+    Args:
+        data: Input data.
+
+    Returns:
+        NumPy array.
+    """
+    if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+        return data.get()
+
+    if isinstance(data, np.ndarray):
+        return data
+
+    return np.asarray(data)
