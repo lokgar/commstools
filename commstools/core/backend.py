@@ -1,4 +1,4 @@
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Optional, Protocol, Union, Tuple
 
 import numpy as np
 
@@ -46,6 +46,19 @@ class Backend(Protocol):
     def conj(self, x: ArrayType) -> ArrayType: ...
     def real(self, x: ArrayType) -> ArrayType: ...
     def imag(self, x: ArrayType) -> ArrayType: ...
+    def sin(self, x: ArrayType) -> ArrayType: ...
+    def cos(self, x: ArrayType) -> ArrayType: ...
+    def sinc(self, x: ArrayType) -> ArrayType: ...
+    def isclose(
+        self, a: ArrayType, b: Any, rtol: float = 1e-05, atol: float = 1e-08
+    ) -> ArrayType: ...
+    def full(self, shape: Any, fill_value: Any, dtype: Any = None) -> ArrayType: ...
+    def clip(self, a: ArrayType, a_min: Any, a_max: Any) -> ArrayType: ...
+    def zeros_like(self, a: ArrayType, dtype: Any = None) -> ArrayType: ...
+    def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType: ...
+
+    @property
+    def pi(self) -> float: ...
 
     def sum(
         self, x: ArrayType, axis: Any = None, keepdims: bool = False
@@ -80,6 +93,26 @@ class Backend(Protocol):
     def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType: ...
     def blackman(self, M: int) -> ArrayType: ...
     def hamming(self, M: int) -> ArrayType: ...
+    def firwin(
+        self,
+        numtaps: int,
+        cutoff: Any,
+        window: str = "hamming",
+        pass_zero: bool = True,
+        scale: bool = True,
+        fs: Optional[float] = None,
+    ) -> ArrayType: ...
+    def freqz(
+        self,
+        b: ArrayType,
+        a: Any = 1,
+        worN: Optional[int] = None,
+        whole: bool = False,
+        fs: Optional[float] = None,
+    ) -> Tuple[ArrayType, ArrayType]: ...
+    def gaussian_filter(
+        self, input: ArrayType, sigma: float, order: int = 0, mode: str = "reflect"
+    ) -> ArrayType: ...
     def welch(
         self,
         x: ArrayType,
@@ -153,6 +186,36 @@ class NumpyBackend:
     def imag(self, x: ArrayType) -> ArrayType:
         return np.imag(x)
 
+    def sin(self, x: ArrayType) -> ArrayType:
+        return np.sin(x)
+
+    def cos(self, x: ArrayType) -> ArrayType:
+        return np.cos(x)
+
+    def sinc(self, x: ArrayType) -> ArrayType:
+        return np.sinc(x)
+
+    def isclose(
+        self, a: ArrayType, b: Any, rtol: float = 1e-05, atol: float = 1e-08
+    ) -> ArrayType:
+        return np.isclose(a, b, rtol=rtol, atol=atol)
+
+    def full(self, shape: Any, fill_value: Any, dtype: Any = None) -> ArrayType:
+        return np.full(shape, fill_value, dtype=dtype)
+
+    def clip(self, a: ArrayType, a_min: Any, a_max: Any) -> ArrayType:
+        return np.clip(a, a_min, a_max)
+
+    def zeros_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
+        return np.zeros_like(a, dtype=dtype)
+
+    def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
+        return np.ones_like(a, dtype=dtype)
+
+    @property
+    def pi(self) -> float:
+        return np.pi
+
     def sum(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return np.sum(x, axis=axis, keepdims=keepdims)
 
@@ -219,6 +282,47 @@ class NumpyBackend:
     def hamming(self, M: int) -> ArrayType:
         """Return a Hamming window of length M."""
         return np.hamming(M)
+
+    def firwin(
+        self,
+        numtaps: int,
+        cutoff: Any,
+        window: str = "hamming",
+        pass_zero: bool = True,
+        scale: bool = True,
+        fs: Optional[float] = None,
+    ) -> ArrayType:
+        """Design FIR filter using window method."""
+        import scipy.signal
+
+        return scipy.signal.firwin(
+            numtaps, cutoff, window=window, pass_zero=pass_zero, scale=scale, fs=fs
+        )
+
+    def freqz(
+        self,
+        b: ArrayType,
+        a: Any = 1,
+        worN: Optional[int] = None,
+        whole: bool = False,
+        fs: Optional[float] = None,
+    ) -> tuple:
+        """Compute frequency response of a digital filter."""
+        import scipy.signal
+
+        # scipy.signal.freqz uses fs=2*pi as default (angular frequency)
+        # Don't pass fs=None explicitly to avoid issues
+        if fs is None:
+            return scipy.signal.freqz(b, a, worN=worN, whole=whole)
+        return scipy.signal.freqz(b, a, worN=worN, whole=whole, fs=fs)
+
+    def gaussian_filter(
+        self, input: ArrayType, sigma: float, order: int = 0, mode: str = "reflect"
+    ) -> ArrayType:
+        """Apply Gaussian filter."""
+        import scipy.ndimage
+
+        return scipy.ndimage.gaussian_filter(input, sigma=sigma, order=order, mode=mode)
 
     def welch(
         self,
@@ -316,6 +420,36 @@ class CupyBackend:
     def imag(self, x: ArrayType) -> ArrayType:
         return cp.imag(x)
 
+    def sin(self, x: ArrayType) -> ArrayType:
+        return cp.sin(x)
+
+    def cos(self, x: ArrayType) -> ArrayType:
+        return cp.cos(x)
+
+    def sinc(self, x: ArrayType) -> ArrayType:
+        return cp.sinc(x)
+
+    def isclose(
+        self, a: ArrayType, b: Any, rtol: float = 1e-05, atol: float = 1e-08
+    ) -> ArrayType:
+        return cp.isclose(a, b, rtol=rtol, atol=atol)
+
+    def full(self, shape: Any, fill_value: Any, dtype: Any = None) -> ArrayType:
+        return cp.full(shape, fill_value, dtype=dtype)
+
+    def clip(self, a: ArrayType, a_min: Any, a_max: Any) -> ArrayType:
+        return cp.clip(a, a_min, a_max)
+
+    def zeros_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
+        return cp.zeros_like(a, dtype=dtype)
+
+    def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
+        return cp.ones_like(a, dtype=dtype)
+
+    @property
+    def pi(self) -> float:
+        return cp.pi
+
     def sum(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return cp.sum(x, axis=axis, keepdims=keepdims)
 
@@ -376,6 +510,41 @@ class CupyBackend:
     def hamming(self, M: int) -> ArrayType:
         """Return a Hamming window of length M."""
         return cp.hamming(M)
+
+    def firwin(
+        self,
+        numtaps: int,
+        cutoff: Any,
+        window: str = "hamming",
+        pass_zero: bool = True,
+        scale: bool = True,
+        fs: Optional[float] = None,
+    ) -> ArrayType:
+        """Design FIR filter using window method."""
+        return cpx_signal.firwin(
+            numtaps, cutoff, window=window, pass_zero=pass_zero, scale=scale, fs=fs
+        )
+
+    def freqz(
+        self,
+        b: ArrayType,
+        a: Any = 1,
+        worN: Optional[int] = None,
+        whole: bool = False,
+        fs: Optional[float] = None,
+    ) -> tuple:
+        """Compute frequency response of a digital filter."""
+        # cupyx.scipy.signal.freqz has issues with fs=None
+        # When fs is None, don't pass it (uses default angular frequency)
+        if fs is None:
+            return cpx_signal.freqz(b, a, worN=worN, whole=whole)
+        return cpx_signal.freqz(b, a, worN=worN, whole=whole, fs=fs)
+
+    def gaussian_filter(
+        self, input: ArrayType, sigma: float, order: int = 0, mode: str = "reflect"
+    ) -> ArrayType:
+        """Apply Gaussian filter."""
+        return cpx_ndimage.gaussian_filter(input, sigma=sigma, order=order, mode=mode)
 
     def welch(
         self,

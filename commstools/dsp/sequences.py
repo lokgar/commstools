@@ -1,11 +1,14 @@
 import numpy as np
 
-from ..core.backend import ArrayType, get_backend
+from ..core.backend import ArrayType, ensure_on_backend
 
 
 def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
     """
     Generates a Pseudo-Random Binary Sequence (PRBS).
+
+    Note: This function currently uses CPU-only numpy implementation for LFSR bitwise operations.
+    The result is then transferred to the active backend.
 
     Args:
         length: Length of the sequence to generate.
@@ -13,13 +16,8 @@ def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
         order: Order of the PRBS (e.g., 7 for PRBS7).
 
     Returns:
-        Array of bits (0s and 1s).
+        Array of bits (0s and 1s) on the active backend.
     """
-    backend = get_backend()
-
-    # Generate using numpy for simplicity as bitwise ops are standard
-    # Then convert to backend array
-
     # Feedback taps for common PRBS orders
     taps = {7: (6, 5), 9: (8, 4), 11: (10, 8), 15: (14, 13), 23: (22, 17), 31: (30, 27)}
 
@@ -30,10 +28,7 @@ def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
 
     tap1, tap2 = taps[order]
 
-    # Simple LFSR implementation
-    # Note: For very long sequences, a more optimized approach or pre-computed table might be better.
-    # But for typical comms simulation lengths, this is fine.
-
+    # Simple LFSR implementation using numpy
     seq = np.zeros(length, dtype=int)
     state = seed
 
@@ -48,4 +43,5 @@ def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
         # Shift
         state = (state >> 1) | (fb << (order - 1))
 
-    return backend.array(seq)
+    # Transfer to active backend
+    return ensure_on_backend(seq)

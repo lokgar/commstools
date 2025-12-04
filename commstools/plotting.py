@@ -3,7 +3,7 @@ from typing import Any, Optional, Tuple, Union
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
-from scipy.ndimage._filters import gaussian_filter
+import scipy.ndimage
 
 
 def apply_default_theme() -> None:
@@ -334,7 +334,7 @@ def eye_diagram(
         )
 
         h = h.T
-        h = gaussian_filter(h, sigma=1)
+        h = scipy.ndimage.gaussian_filter(h, sigma=1)
 
         # Plot using imshow with LogNorm for better contrast
         # We need to transpose h because imshow expects (rows, cols) -> (y, x)
@@ -386,13 +386,13 @@ def filter_response(
     """
 
     import numpy as np
-    from scipy import signal
     import matplotlib.ticker as ticker
 
-    # Ensure numpy array
-    from .core.backend import to_host
+    # Ensure numpy array and get backend
+    from .core.backend import to_host, get_backend
 
     taps = to_host(taps)
+    backend = get_backend()
 
     if ax is None:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
@@ -432,7 +432,17 @@ def filter_response(
     ax1.xaxis.set_major_formatter(ticker.FuncFormatter(t_formatter))
 
     # 2. Frequency Response
-    w, h = signal.freqz(taps, worN=2048)
+    # Compute frequency response using backend (supports GPU)
+    # Note: taps is already on host (numpy), so we need to transfer back to backend
+    # But since freqz needs to output arrays anyway, we can work with host directly
+    # Actually, let's use backend for computation if it supports it
+    from .core.backend import ensure_on_backend
+
+    taps_backend = ensure_on_backend(taps)
+    w, h = backend.freqz(taps_backend, worN=2048)
+    # Transfer to host for plotting
+    w = to_host(w)
+    h = to_host(h)
 
     # Normalize to Nyquist (0 to 1)
     freqs = w / (2 * np.pi)

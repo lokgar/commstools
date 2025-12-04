@@ -1,5 +1,3 @@
-import numpy as np
-
 from ..core.backend import ArrayType, get_backend, ensure_on_backend
 from ..dsp.utils import normalize
 
@@ -47,16 +45,18 @@ def gaussian_taps(sps: float, bt: float = 0.3, span: int = 4) -> ArrayType:
     if num_taps % 2 == 0:
         num_taps += 1
 
-    t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
+    t = (backend.arange(num_taps) - (num_taps - 1) / 2) / sps
     # Gaussian function: h(t) = (sqrt(pi)/a) * exp(-(pi*t/a)^2) where a = sqrt(ln(2)/2)/B
     # Simplified for comms usually:
-    alpha = np.sqrt(np.log(2) / 2) / bt
-    h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
+    alpha = backend.sqrt(backend.log(2) / 2) / bt
+    h = (backend.sqrt(backend.pi) / alpha) * backend.exp(
+        -((backend.pi * t / alpha) ** 2)
+    )
 
     # Normalize to Unity Gain
     h = normalize(h, mode="unity_gain")
 
-    return backend.array(h)
+    return h
 
 
 def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
@@ -78,44 +78,48 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     if num_taps % 2 == 0:
         num_taps += 1
 
-    # Use numpy for calculation
-    t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
+    # Use backend for calculation
+    t = (backend.arange(num_taps) - (num_taps - 1) / 2) / sps
 
     # Avoid division by zero
     # 1. t = 0
     # 2. t = +/- 1/(4*rolloff)
 
     # Initialize array
-    h = np.zeros_like(t)
+    h = backend.zeros_like(t)
 
     # Case 1: t = 0
-    idx_0 = np.isclose(t, 0)
-    h[idx_0] = 1.0 - rolloff + (4 * rolloff / np.pi)
+    idx_0 = backend.isclose(t, 0)
+    h = backend.where(idx_0, 1.0 - rolloff + (4 * rolloff / backend.pi), h)
 
     # Case 2: t = +/- 1/(4*rolloff)
     if rolloff > 0:
-        idx_singularity = np.isclose(np.abs(t), 1 / (4 * rolloff))
-        h[idx_singularity] = (rolloff / np.sqrt(2)) * (
-            (1 + 2 / np.pi) * np.sin(np.pi / (4 * rolloff))
-            + (1 - 2 / np.pi) * np.cos(np.pi / (4 * rolloff))
+        idx_singularity = backend.isclose(backend.abs(t), 1 / (4 * rolloff))
+        h = backend.where(
+            idx_singularity,
+            (rolloff / backend.sqrt(2))
+            * (
+                (1 + 2 / backend.pi) * backend.sin(backend.pi / (4 * rolloff))
+                + (1 - 2 / backend.pi) * backend.cos(backend.pi / (4 * rolloff))
+            ),
+            h,
         )
     else:
-        idx_singularity = np.zeros_like(t, dtype=bool)
+        idx_singularity = backend.zeros_like(t, dtype=bool)
 
     # Case 3: General case
     idx_general = ~(idx_0 | idx_singularity)
-    t_gen = t[idx_general]
 
-    num = np.sin(np.pi * t_gen * (1 - rolloff)) + 4 * rolloff * t_gen * np.cos(
-        np.pi * t_gen * (1 + rolloff)
+    num = backend.sin(backend.pi * t * (1 - rolloff)) + 4 * rolloff * t * backend.cos(
+        backend.pi * t * (1 + rolloff)
     )
-    den = np.pi * t_gen * (1 - (4 * rolloff * t_gen) ** 2)
-    h[idx_general] = num / den
+    den = backend.pi * t * (1 - (4 * rolloff * t) ** 2)
+    h = backend.where(idx_general, num / den, h)
 
     # Normalize to Unity Gain
     h = normalize(h, mode="unity_gain")
 
-    return backend.array(h)
+    return h
 
 
 def sinc_taps(num_taps: int, cutoff_norm: float, window: str = "blackman") -> ArrayType:
@@ -135,26 +139,26 @@ def sinc_taps(num_taps: int, cutoff_norm: float, window: str = "blackman") -> Ar
 
     # Create centered grid
     center = (num_taps - 1) / 2
-    n = np.arange(num_taps) - center
+    n = backend.arange(num_taps) - center
 
     # Generic Sinc Formula: 2 * fc * sinc(2 * fc * n)
     # This works for ANY cutoff, not just the interpolation case.
-    h = 2 * cutoff_norm * np.sinc(2 * cutoff_norm * n)
+    h = 2 * cutoff_norm * backend.sinc(2 * cutoff_norm * n)
 
     # Apply Window
     if window == "blackman":
-        win = np.blackman(num_taps)
+        win = backend.blackman(num_taps)
     elif window == "hamming":
-        win = np.hamming(num_taps)
+        win = backend.hamming(num_taps)
     else:
-        win = np.ones(num_taps)
+        win = backend.ones(num_taps)
 
     h = h * win
 
     # Unity Gain Normalization
     h = normalize(h, mode="unity_gain")
 
-    return backend.array(h)
+    return h
 
 
 def sinc_interpolation_taps(
@@ -173,8 +177,6 @@ def sinc_interpolation_taps(
     Returns:
         Sinc interpolation filter taps with unity gain normalization.
     """
-    backend = get_backend()
-
     num_taps = int(span * factor)
     if num_taps % 2 == 0:
         num_taps += 1
@@ -188,7 +190,7 @@ def sinc_interpolation_taps(
 
     h *= factor
 
-    return backend.array(h)
+    return h
 
 
 # ============================================================================
