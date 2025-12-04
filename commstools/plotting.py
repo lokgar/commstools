@@ -83,14 +83,19 @@ def psd(
         fig = ax.figure
 
     import numpy as np
-    from scipy import signal as scipy_signal
+    from .core.backend import ensure_on_backend, get_backend, to_host
 
-    # Ensure numpy array
-    samples = np.array(samples)
-    samples -= np.mean(samples)
+    # Ensure samples are on the global backend
+    samples = ensure_on_backend(samples)
+    samples -= samples.mean()
+    backend = get_backend()
 
-    if np.iscomplexobj(samples):
-        f, Pxx = scipy_signal.welch(
+    # If samples are complex, we need to handle that
+    # Note: backend.welch handles complex inputs if supported
+
+    # Calculate PSD using the appropriate backend
+    if backend.iscomplexobj(samples):
+        f, Pxx = backend.welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
@@ -98,17 +103,21 @@ def psd(
             average=average,
             return_onesided=False,
         )
-        # Shift zero frequency to center
-        f = np.fft.fftshift(f)
-        Pxx = np.fft.fftshift(Pxx)
+        # Shift zero frequency to center if complex
+        f = backend.fftshift(f)
+        Pxx = backend.fftshift(Pxx)
     else:
-        f, Pxx = scipy_signal.welch(
+        f, Pxx = backend.welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
             detrend=detrend,
             average=average,
         )
+
+    # Convert to NumPy for plotting using to_host
+    f = to_host(f)
+    Pxx = to_host(Pxx)
 
     ax.plot(f, 10 * np.log10(Pxx), **kwargs)
     ax.set_xlabel("Frequency [Hz]")
@@ -154,8 +163,9 @@ def time_domain(
         fig = ax.figure
 
     import numpy as np
+    from .core.backend import to_host
 
-    samples = np.array(samples)
+    samples = to_host(samples)
 
     if num_symbols is not None and sps is not None:
         limit = int(num_symbols * sps)
@@ -214,7 +224,9 @@ def eye_diagram(
         fig = ax.figure
 
     # Ensure we have a numpy array for plotting
-    samples = np.array(samples)
+    from .core.backend import to_host
+
+    samples = to_host(samples)
 
     # Use real part for plotting if complex
     if np.iscomplexobj(samples):
@@ -378,7 +390,9 @@ def filter_response(
     import matplotlib.ticker as ticker
 
     # Ensure numpy array
-    taps = np.array(taps)
+    from .core.backend import to_host
+
+    taps = to_host(taps)
 
     if ax is None:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))

@@ -1,13 +1,11 @@
 import numpy as np
 
-from ..core.backend import ArrayType, get_backend
+from ..core.backend import ArrayType, get_backend, ensure_on_backend
 from ..dsp.utils import normalize
 
 # ============================================================================
 # FILTER DESIGN - TAP GENERATORS
 # ============================================================================
-# For filter taps, as they aren't large arrays, we use NumPy for calculations
-# ----------------------------------------------------------------------------
 # boxcar_taps: Boxcar filter taps
 # gaussian_taps: Gaussian filter taps
 # rrc_taps: Root Raised Cosine filter taps
@@ -220,6 +218,7 @@ def fir_filter(samples: ArrayType, taps: ArrayType, mode: str = "same") -> Array
     Returns:
         Filtered samples.
     """
+    samples = ensure_on_backend(samples)
     backend = get_backend()
     return backend.convolve(samples, taps, mode=mode, method="fft")
 
@@ -246,6 +245,7 @@ def shape_pulse(
     Returns:
         Shaped sample array at rate (sps * symbol_rate), normalized
     """
+    symbols = ensure_on_backend(symbols)
     backend = get_backend()
 
     expanded = backend.expand(symbols, int(sps))
@@ -289,6 +289,7 @@ def matched_filter(
     Returns:
         Matched filtered samples.
     """
+    samples = ensure_on_backend(samples)
     backend = get_backend()
 
     # Matched filter is conjugate and time-reversed version of pulse

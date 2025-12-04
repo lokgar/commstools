@@ -1,4 +1,4 @@
-from ..core.backend import ArrayType, get_backend
+from ..core.backend import ArrayType, get_backend, ensure_on_backend
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -19,6 +19,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     Raises:
         ValueError: If the normalization factor is zero (Numpy only).
     """
+    x = ensure_on_backend(x)
     backend = get_backend()
 
     if mode == "unity_gain":
