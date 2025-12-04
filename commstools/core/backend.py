@@ -95,13 +95,6 @@ class Backend(Protocol):
     ) -> ArrayType: ...
     def iscomplexobj(self, x: ArrayType) -> bool: ...
 
-    def _jit_impl(
-        self,
-        fun: Callable,
-        static_argnums: Optional[Union[int, tuple]] = None,
-        static_argnames: Optional[Union[str, tuple]] = None,
-    ) -> Callable: ...
-
 
 class NumpyBackend:
     """NumPy implementation of the Backend protocol."""
@@ -258,15 +251,6 @@ class NumpyBackend:
 
     def iscomplexobj(self, x: ArrayType) -> bool:
         return np.iscomplexobj(x)
-
-    def _jit_impl(
-        self,
-        fun: Callable,
-        static_argnums: Optional[Union[int, tuple]] = None,
-        static_argnames: Optional[Union[str, tuple]] = None,
-    ) -> Callable:
-        # Numpy backend does not support JIT, return function as is
-        return fun
 
 
 class JaxBackend:
@@ -478,18 +462,6 @@ class JaxBackend:
     def iscomplexobj(self, x: ArrayType) -> bool:
         return jnp.iscomplexobj(x)
 
-    def _jit_impl(
-        self,
-        fun: Callable,
-        static_argnums: Optional[Union[int, tuple]] = None,
-        static_argnames: Optional[Union[str, tuple]] = None,
-    ) -> Callable:
-        import jax
-
-        return jax.jit(
-            fun, static_argnums=static_argnums, static_argnames=static_argnames
-        )
-
 
 # Global state for current backend
 _CURRENT_BACKEND: Backend = NumpyBackend()
@@ -509,47 +481,3 @@ def set_backend(backend_name: str) -> None:
         _CURRENT_BACKEND = JaxBackend()
     else:
         raise ValueError(f"Unknown backend: {backend_name}")
-
-
-def jit(
-    fun: Callable = None,
-    *,
-    static_argnums: Optional[Union[int, tuple]] = None,
-    static_argnames: Optional[Union[str, tuple]] = None,
-):
-    """
-    Decorator that lazily JIT compiles the function using the currently active backend.
-
-    It dispatches to the active backend's JIT implementation at runtime.
-
-    Usage:
-        @jit
-        def my_func(x): ...
-
-        @jit(static_argnums=(1,))
-        def my_func(x, mode): ...
-
-        @jit(static_argnames=("mode",))
-        def my_func(x, mode): ...
-    """
-    if fun is None:
-        return lambda f: jit(
-            f, static_argnums=static_argnums, static_argnames=static_argnames
-        )
-
-    # Cache for compiled functions: {backend_name: compiled_fn}
-    _cache: Dict[str, Callable] = {}
-
-    @functools.wraps(fun)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        backend = get_backend()
-
-        if backend.name not in _cache:
-            # Compile for this backend
-            _cache[backend.name] = backend._jit_impl(
-                fun, static_argnums=static_argnums, static_argnames=static_argnames
-            )
-
-        return _cache[backend.name](*args, **kwargs)
-
-    return wrapper

@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..core.backend import ArrayType, get_backend, jit
+from ..core.backend import ArrayType, get_backend
 from ..dsp.utils import normalize
 
 # ============================================================================
@@ -201,7 +201,6 @@ def sinc_interpolation_taps(
 # shape_pulse: Apply pulse shaping to symbols
 
 
-@jit(static_argnames=("mode",))
 def fir_filter(samples: ArrayType, taps: ArrayType, mode: str = "same") -> ArrayType:
     """
     Apply FIR filter via convolution.
@@ -225,7 +224,6 @@ def fir_filter(samples: ArrayType, taps: ArrayType, mode: str = "same") -> Array
     return backend.convolve(samples, taps, mode=mode, method="fft")
 
 
-# @jit(static_argnames=("pulse_shape", "filter_span", "rrc_rolloff", "gaussian_bt"))
 def shape_pulse(
     symbols: ArrayType,
     sps: float,
@@ -269,7 +267,6 @@ def shape_pulse(
     return normalize(fir_filter(expanded, h, mode="same"), mode="max_amplitude")
 
 
-# @jit(static_argnames=("taps_normalization", "mode", "normalize_output"))
 def matched_filter(
     samples: ArrayType,
     pulse_taps: ArrayType,

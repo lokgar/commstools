@@ -10,7 +10,6 @@ Built with a **dual-backend architecture**, it allows researchers to seamlessly 
   * **NumPy**: Standard CPU execution built on NumPy, perfect for debugging and small-scale simulations.
   * **JAX**: High-performance GPU/TPU acceleration with automatic differentiation and JIT compilation.
 * **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.), abstracting away the underlying array implementation.
-* **Functional API & JIT**: Standalone processing functions can be decorated with `@jit` to automatically leverage JAX's Just-In-Time compilation when running on the JAX backend, while remaining standard Python functions on NumPy.
 
 ## 📦 Installation
 
