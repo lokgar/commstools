@@ -1,7 +1,6 @@
-from ..core.backend import ArrayType, get_backend, jit
+from ..core.backend import ArrayType, get_backend
 
 
-@jit(static_argnames="mode")
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     """
     Normalize array based on the specified mode.
@@ -33,7 +32,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
 
-    # Handle division by zero safely for both JAX (JIT) and Numpy
+    # Handle division by zero safely for both JAX and Numpy
     # Avoid control flow based on data values.
     safe_norm = backend.where(norm_factor == 0, 1.0, norm_factor)
     result = x / safe_norm
