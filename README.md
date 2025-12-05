@@ -64,7 +64,7 @@ sig.to("gpu")
 
 ```python
 # Export samples to JAX array (Zero-copy on GPU via DLPack)
-jax_array = sig.samples_to_jax()
+jax_array = sig.to_jax()
 
 # Now you can use JAX transformations
 import jax

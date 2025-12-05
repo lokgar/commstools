@@ -1,4 +1,3 @@
-import dataclasses
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple, Union
 
@@ -114,29 +113,31 @@ class Signal:
         else:
             raise ValueError(f"Unknown device: {device}. Use 'cpu' or 'gpu'.")
 
-    def samples_to_jax(self) -> Any:
+    def to_jax(self) -> Any:
         """
         Exports the signal samples to a JAX array.
 
         Returns:
             A JAX array containing the signal samples.
         """
-        try:
-            import jax.numpy as jnp
-            from jax import dlpack as jax_dlpack
-        except ImportError:
-            raise ImportError("JAX is not installed.")
+        from .backend import to_jax
 
-        if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
-            # Zero-copy transfer from CuPy (GPU) to JAX (GPU) via DLPack
-            return jax_dlpack.from_dlpack(self.samples.toDlpack())
+        return to_jax(self.samples)
 
-        if isinstance(self.samples, np.ndarray):
-            # Zero-copy transfer from NumPy (CPU) to JAX (CPU)
-            return jnp.asarray(self.samples)
+    def from_jax(self, jax_array: Any) -> "Signal":
+        """
+        Updates the signal samples from a JAX array.
 
-        # Fallback
-        return jnp.array(self.samples)
+        Args:
+            jax_array: Input JAX array.
+
+        Returns:
+            self
+        """
+        from .backend import from_jax
+
+        self.samples = from_jax(jax_array)
+        return self
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""

@@ -1,3 +1,4 @@
+from math import pi
 from typing import Any, Optional, Protocol, Union, Tuple
 
 import numpy as np
@@ -36,6 +37,14 @@ class Backend(Protocol):
     def linspace(
         self, start: Any, stop: Any, num: int, endpoint: bool = True, dtype: Any = None
     ) -> ArrayType: ...
+    def randint(
+        self,
+        low: int,
+        high: Optional[int] = None,
+        size: Any = None,
+        dtype: Any = int,
+        seed: Optional[int] = None,
+    ) -> ArrayType: ...
 
     def exp(self, x: ArrayType) -> ArrayType: ...
     def log(self, x: ArrayType) -> ArrayType: ...
@@ -56,9 +65,28 @@ class Backend(Protocol):
     def clip(self, a: ArrayType, a_min: Any, a_max: Any) -> ArrayType: ...
     def zeros_like(self, a: ArrayType, dtype: Any = None) -> ArrayType: ...
     def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType: ...
+    def unwrap(
+        self,
+        p: ArrayType,
+        discont: Optional[float] = None,
+        axis: int = -1,
+        period: float = 2 * pi,
+    ) -> ArrayType: ...
 
     @property
     def pi(self) -> float: ...
+
+    def stack(self, arrays: Any, axis: int = 0, out: Any = None) -> ArrayType: ...
+    def tile(self, A: ArrayType, reps: Any) -> ArrayType: ...
+    def histogram2d(
+        self,
+        x: ArrayType,
+        y: ArrayType,
+        bins: int = 10,
+        range: Any = None,
+        weights: Any = None,
+        density: Any = None,
+    ) -> Tuple[ArrayType, ArrayType, ArrayType]: ...
 
     def sum(
         self, x: ArrayType, axis: Any = None, keepdims: bool = False
@@ -90,7 +118,16 @@ class Backend(Protocol):
     def decimate(
         self, x: ArrayType, factor: int, ftype: str = "fir", zero_phase: bool = True
     ) -> ArrayType: ...
-    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType: ...
+    def resample_poly(
+        self,
+        x: ArrayType,
+        up: int,
+        down: int,
+        axis: Optional[int] = 0,
+        window: Optional[Union[str, tuple, ArrayType]] = ("kaiser", 5.0),
+        padtype: Optional[str] = "constant",
+        cval: float = 0.0,
+    ) -> ArrayType: ...
     def blackman(self, M: int) -> ArrayType: ...
     def hamming(self, M: int) -> ArrayType: ...
     def firwin(
@@ -128,6 +165,9 @@ class Backend(Protocol):
         average: Optional[str] = "mean",
     ) -> ArrayType: ...
     def iscomplexobj(self, x: ArrayType) -> bool: ...
+    def interp1d(
+        self, x: ArrayType, xp: ArrayType, fp: ArrayType, axis: int = -1
+    ) -> ArrayType: ...
 
 
 class NumpyBackend:
@@ -158,6 +198,17 @@ class NumpyBackend:
         self, start: Any, stop: Any, num: int, endpoint: bool = True, dtype: Any = None
     ) -> ArrayType:
         return np.linspace(start, stop, num, endpoint=endpoint, dtype=dtype)
+
+    def randint(
+        self,
+        low: int,
+        high: Optional[int] = None,
+        size: Any = None,
+        dtype: Any = int,
+        seed: Optional[int] = None,
+    ) -> ArrayType:
+        rng = np.random.default_rng(seed)
+        return rng.integers(low, high, size=size, dtype=dtype)
 
     def exp(self, x: ArrayType) -> ArrayType:
         return np.exp(x)
@@ -212,9 +263,42 @@ class NumpyBackend:
     def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
         return np.ones_like(a, dtype=dtype)
 
+    def unwrap(
+        self,
+        p: ArrayType,
+        discont: Optional[float] = None,
+        axis: int = -1,
+        period: float = 2 * pi,
+    ) -> ArrayType:
+        return np.unwrap(p, discont=discont, axis=axis, period=period)
+
     @property
     def pi(self) -> float:
         return np.pi
+
+    def stack(self, arrays: Any, axis: int = 0, out: Any = None) -> ArrayType:
+        return np.stack(arrays, axis=axis, out=out)
+
+    def tile(self, A: ArrayType, reps: Any) -> ArrayType:
+        return np.tile(A, reps)
+
+    def histogram2d(
+        self,
+        x: ArrayType,
+        y: ArrayType,
+        bins: int = 10,
+        range: Any = None,
+        weights: Any = None,
+        density: Any = None,
+    ) -> Tuple[ArrayType, ArrayType, ArrayType]:
+        return np.histogram2d(
+            x,
+            y,
+            bins=bins,
+            range=range,
+            weights=weights,
+            density=density,
+        )
 
     def sum(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return np.sum(x, axis=axis, keepdims=keepdims)
@@ -269,11 +353,22 @@ class NumpyBackend:
 
         return scipy.signal.decimate(x, factor, ftype=ftype, zero_phase=zero_phase)
 
-    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType:
+    def resample_poly(
+        self,
+        x: ArrayType,
+        up: int,
+        down: int,
+        axis: Optional[int] = 0,
+        window: Optional[Union[str, tuple, ArrayType]] = ("kaiser", 5.0),
+        padtype: Optional[str] = "constant",
+        cval: float = 0.0,
+    ) -> ArrayType:
         """Resample signal using polyphase filtering."""
         import scipy.signal
 
-        return scipy.signal.resample_poly(x, up, down)
+        return scipy.signal.resample_poly(
+            x=x, up=up, down=down, axis=axis, window=window, padtype=padtype, cval=cval
+        )
 
     def blackman(self, M: int) -> ArrayType:
         """Return a Blackman window of length M."""
@@ -357,6 +452,57 @@ class NumpyBackend:
     def iscomplexobj(self, x: ArrayType) -> bool:
         return np.iscomplexobj(x)
 
+    def interp1d(
+        self, x: ArrayType, xp: ArrayType, fp: ArrayType, axis: int = -1
+    ) -> ArrayType:
+        """
+        Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
+        interpolates fp (values) at query points x, given sample points xp.
+        """
+        # Move axis to end for easier handling
+        fp = np.swapaxes(fp, axis, -1)
+
+        # Find indices such that xp[i-1] <= x < xp[i]
+        idxs = np.searchsorted(xp, x)
+        idxs = np.clip(idxs, 1, len(xp) - 1)
+
+        # Get the bounding points
+        x0 = xp[idxs - 1]
+        x1 = xp[idxs]
+
+        # Calculate weights
+        denominator = x1 - x0
+        # Avoid division by zero
+        denominator[denominator == 0] = 1.0
+        weights = (x - x0) / denominator
+
+        # Get the bounding values
+        # fp has shape (..., len(xp))
+        # we want to grab slices corresponding to idxs
+        y0 = np.take_along_axis(fp, np.expand_dims(idxs - 1, axis=0), axis=-1)
+        y1 = np.take_along_axis(fp, np.expand_dims(idxs, axis=0), axis=-1)
+
+        # Squeeze the extra dimension added by take_along_axis if necessary
+        # Actually take_along_axis output matches indices shape broadcasting.
+        # But here fp is (..., T) and idxs is (M,).
+        # We need to broadcast idxs to (..., M).
+        # np.take with explicit axis might be simpler or manual fancy indexing.
+
+        # Let's use simple fancy indexing if possible, but swapaxes made it the last axis.
+        # fp is (..., T)
+        # idxs is (M,)
+        # We want result (..., M)
+
+        y0 = fp[..., idxs - 1]
+        y1 = fp[..., idxs]
+
+        result = y0 * (1 - weights) + y1 * weights
+
+        # Move axis back
+        result = np.swapaxes(result, axis, -1)
+
+        return result
+
 
 class CupyBackend:
     """CuPy implementation of the Backend protocol."""
@@ -392,6 +538,17 @@ class CupyBackend:
         self, start: Any, stop: Any, num: int, endpoint: bool = True, dtype: Any = None
     ) -> ArrayType:
         return cp.linspace(start, stop, num, endpoint=endpoint, dtype=dtype)
+
+    def randint(
+        self,
+        low: int,
+        high: Optional[int] = None,
+        size: Any = None,
+        dtype: Any = int,
+        seed: Optional[int] = None,
+    ) -> ArrayType:
+        rng = cp.random.default_rng(seed)
+        return rng.integers(low, high, size=size, dtype=dtype)
 
     def exp(self, x: ArrayType) -> ArrayType:
         return cp.exp(x)
@@ -446,9 +603,42 @@ class CupyBackend:
     def ones_like(self, a: ArrayType, dtype: Any = None) -> ArrayType:
         return cp.ones_like(a, dtype=dtype)
 
+    def unwrap(
+        self,
+        p: ArrayType,
+        discont: Optional[float] = None,
+        axis: int = -1,
+        period: float = 2 * pi,
+    ) -> ArrayType:
+        return cp.unwrap(p, discont=discont, axis=axis, period=period)
+
     @property
     def pi(self) -> float:
         return cp.pi
+
+    def stack(self, arrays: Any, axis: int = 0, out: Any = None) -> ArrayType:
+        return cp.stack(arrays, axis=axis, out=out)
+
+    def tile(self, A: ArrayType, reps: Any) -> ArrayType:
+        return cp.tile(A, reps)
+
+    def histogram2d(
+        self,
+        x: ArrayType,
+        y: ArrayType,
+        bins: int = 10,
+        range: Any = None,
+        weights: Any = None,
+        density: Any = None,
+    ) -> Tuple[ArrayType, ArrayType, ArrayType]:
+        return cp.histogram2d(
+            x,
+            y,
+            bins=bins,
+            range=range,
+            weights=weights,
+            density=density,
+        )
 
     def sum(self, x: ArrayType, axis: Any = None, keepdims: bool = False) -> ArrayType:
         return cp.sum(x, axis=axis, keepdims=keepdims)
@@ -499,9 +689,19 @@ class CupyBackend:
         """Decimate signal: Anti-aliasing filter + downsample."""
         return cpx_signal.decimate(x, factor, ftype=ftype, zero_phase=zero_phase)
 
-    def resample_poly(self, x: ArrayType, up: int, down: int) -> ArrayType:
+    def resample_poly(
+        self,
+        x: ArrayType,
+        up: int,
+        down: int,
+        axis: Optional[int] = 0,
+        window: Optional[Union[str, tuple, ArrayType]] = ("kaiser", 5.0),
+        padtype: Optional[str] = "constant",
+        cval: float = 0.0,
+    ) -> ArrayType:
         """Resample signal using polyphase filtering."""
-        return cpx_signal.resample_poly(x, up, down)
+        # TODO: figure out an error with padtype and cval
+        return cpx_signal.resample_poly(x=x, up=up, down=down, axis=axis, window=window)
 
     def blackman(self, M: int) -> ArrayType:
         """Return a Blackman window of length M."""
@@ -577,6 +777,43 @@ class CupyBackend:
     def iscomplexobj(self, x: ArrayType) -> bool:
         return cp.iscomplexobj(x)
 
+    def interp1d(
+        self, x: ArrayType, xp: ArrayType, fp: ArrayType, axis: int = -1
+    ) -> ArrayType:
+        """
+        Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
+        interpolates fp (values) at query points x, given sample points xp.
+        """
+        # Move axis to end for easier handling
+        fp = cp.swapaxes(fp, axis, -1)
+
+        # Find indices such that xp[i-1] <= x < xp[i]
+        idxs = cp.searchsorted(xp, x)
+        idxs = cp.clip(idxs, 1, len(xp) - 1)
+
+        # Get the bounding points
+        x0 = xp[idxs - 1]
+        x1 = xp[idxs]
+
+        # Calculate weights
+        denominator = x1 - x0
+        # Avoid division by zero (though xp should describe a valid grid)
+        denominator[denominator == 0] = 1.0
+        weights = (x - x0) / denominator
+
+        # Get the bounding values
+        # fp is (..., T), idxs is (M,)
+        # fancy indexing in cupy works similar to numpy
+        y0 = fp[..., idxs - 1]
+        y1 = fp[..., idxs]
+
+        result = y0 * (1 - weights) + y1 * weights
+
+        # Move axis back
+        result = cp.swapaxes(result, axis, -1)
+
+        return result
+
 
 # Global state for current backend
 _CURRENT_BACKEND: Backend = NumpyBackend()
@@ -648,4 +885,72 @@ def to_host(data: Any) -> np.ndarray:
     if isinstance(data, np.ndarray):
         return data
 
+    return np.asarray(data)
+
+
+def to_jax(data: Any) -> Any:
+    """
+    Converts data to a JAX array, preserving the device if possible.
+
+    Args:
+        data: Input data (NumPy array, CuPy array, list, etc.).
+
+    Returns:
+        JAX array on the corresponding device (CPU or GPU).
+
+    Raises:
+        ImportError: If JAX is not installed.
+    """
+    try:
+        import jax.numpy as jnp
+        from jax import dlpack as jax_dlpack
+    except ImportError:
+        raise ImportError("JAX is not installed.")
+
+    if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+        # Zero-copy transfer from CuPy (GPU) to JAX (GPU) via DLPack
+        return jax_dlpack.from_dlpack(data.toDlpack())
+
+    if isinstance(data, np.ndarray):
+        # Zero-copy transfer from NumPy (CPU) to JAX (CPU)
+        return jnp.asarray(data)
+
+    # Fallback for lists, etc.
+    return jnp.array(data)
+
+
+def from_jax(data: Any) -> ArrayType:
+    """
+    Converts a JAX array to a backend-compatible array (NumPy or CuPy).
+
+    Args:
+        data: Input JAX array.
+
+    Returns:
+        NumPy array (if on CPU) or CuPy array (if on GPU and CuPy avaliable).
+    """
+    # Check device - try to handle JAX arrays or compatible objects
+    try:
+        if hasattr(data, "device"):
+            is_cpu = data.device.platform == "cpu"
+        elif hasattr(data, "devices"):
+            # For sharded arrays, assume first device
+            is_cpu = list(data.devices())[0].platform == "cpu"
+        else:
+            is_cpu = True
+    except Exception:
+        # Graceful fallback
+        is_cpu = True
+
+    if not is_cpu and _CUPY_AVAILABLE:
+        # Try zero-copy via DLPack to CuPy
+        try:
+            from jax import dlpack as jax_dlpack
+
+            return cp.from_dlpack(jax_dlpack.to_dlpack(data))
+        except Exception:
+            # Fallback to implicit conversion if DLPack fails
+            pass
+
+    # Convert to numpy (will copy from GPU if needed via JAX implicit conversion)
     return np.asarray(data)
