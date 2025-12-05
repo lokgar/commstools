@@ -7,8 +7,11 @@ from ..dsp.utils import normalize
 # boxcar_taps: Boxcar filter taps
 # gaussian_taps: Gaussian filter taps
 # rrc_taps: Root Raised Cosine filter taps
-# sinc_taps: Windowed Sinc Low Pass filter taps
-# sinc_interpolation_taps: Sinc interpolation filter taps
+# rc_taps: Raised Cosine filter taps
+# lowpass_taps: Low pass filter taps
+# highpass_taps: High pass filter taps
+# bandpass_taps: Band pass filter taps
+# bandstop_taps: Band stop filter taps
 
 
 def boxcar_taps(sps: float) -> ArrayType:
@@ -122,75 +125,183 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     return h
 
 
-def sinc_taps(num_taps: int, cutoff_norm: float, window: str = "blackman") -> ArrayType:
+def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     """
-    Generates Windowed Sinc Low Pass filter taps.
+    Generates Raised Cosine (RC) filter taps.
 
     Args:
-        num_taps (int): Total number of coefficients (should be odd).
-        cutoff_norm (float): Normalized cutoff frequency (0.0 to 0.5).
-                             0.5 = Nyquist (fs/2).
-        window (str): Type of window to apply ('blackman', 'hamming', or 'none').
+        sps: Samples per symbol.
+        rolloff: Roll-off factor (0 to 1).
+        span: Total filter span in symbols.
 
     Returns:
-        Sinc filter taps with unity gain normalization.
+        RC filter taps with unity gain normalization.
     """
     backend = get_backend()
 
-    # Create centered grid
-    center = (num_taps - 1) / 2
-    n = backend.arange(num_taps) - center
-
-    # Generic Sinc Formula: 2 * fc * sinc(2 * fc * n)
-    # This works for ANY cutoff, not just the interpolation case.
-    h = 2 * cutoff_norm * backend.sinc(2 * cutoff_norm * n)
-
-    # Apply Window
-    if window == "blackman":
-        win = backend.blackman(num_taps)
-    elif window == "hamming":
-        win = backend.hamming(num_taps)
-    else:
-        win = backend.ones(num_taps)
-
-    h = h * win
-
-    # Unity Gain Normalization
-    h = normalize(h, mode="unity_gain")
-
-    return h
-
-
-def sinc_interpolation_taps(
-    factor: float, span: int = 10, bandwidth_fraction: float = 1.0
-) -> ArrayType:
-    """
-    Generates Sinc interpolation filter taps for upsampling.
-
-    Args:
-        factor: Upsampling factor.
-        span: Filter span in symbols.
-        bandwidth_fraction: Defines the cutoff relative to the output Nyquist.
-                            1.0 = Cutoff at exactly Nyquist (Ideal).
-                            < 1.0 = Cutoff lower than Nyquist (Allows rolloff).
-
-    Returns:
-        Sinc interpolation filter taps with unity gain normalization.
-    """
-    num_taps = int(span * factor)
+    # Ensure odd number of taps
+    num_taps = int(span * sps)
     if num_taps % 2 == 0:
         num_taps += 1
 
-    cutoff = (1.0 / (2.0 * factor)) * bandwidth_fraction
+    t = (backend.arange(num_taps) - (num_taps - 1) / 2) / sps
 
-    h = sinc_taps(num_taps, cutoff)
+    # Avoid division by zero
+    # Singularities at t = +/- 1 / (2 * rolloff)
 
-    # Normalize to Unity Gain
-    h = normalize(h, mode="unity_gain")
+    # Initialize array
+    h = backend.zeros_like(t)
 
-    h *= factor
+    # General case mask
+    # Denominator: 1 - (2 * rolloff * t)**2
+    # Singularity when 2 * rolloff * |t| = 1 => |t| = 1 / (2 * rolloff)
 
-    return h
+    if rolloff > 0:
+        idx_singularity = backend.isclose(backend.abs(t), 1 / (2 * rolloff))
+        # Value at singularity: (pi / 4) * sinc(1 / (2 * rolloff))
+        # sinc(x) = sin(pi * x) / (pi * x)
+        # arg = 1 / (2 * rolloff)
+        # val = (pi / 4) * sin(pi * arg) / (pi * arg)
+        #     = (pi / 4) * sin(pi / (2 * rolloff)) * (2 * rolloff / pi)
+        #     = (rolloff / 2) * sin(pi / (2 * rolloff))
+        val_singularity = (rolloff / 2) * backend.sin(backend.pi / (2 * rolloff))
+        h = backend.where(idx_singularity, val_singularity, h)
+    else:
+        idx_singularity = backend.zeros_like(t, dtype=bool)
+
+    idx_general = ~idx_singularity
+
+    # h(t) = sinc(t) * cos(pi * alpha * t) / (1 - (2 * alpha * t)^2)
+    # sinc(t) = sin(pi * t) / (pi * t) (normalized sinc)
+
+    # To avoid t=0 in sinc division, use backend.sinc which handles 0 safely
+    sinc_t = backend.sinc(t)
+    cos_t = backend.cos(backend.pi * rolloff * t)
+    denom = 1 - (2 * rolloff * t) ** 2
+
+    # We masked out where denom is 0, so safe to divide where idx_general is true
+    # However we compute everywhere then mask, so denom should not be 0 to avoid warning/NaN if backend evals strict
+    # backend.where usually evals both branches
+    # So we set denom to 1 where it is 0
+    denom_safe = backend.where(idx_singularity, 1.0, denom)
+
+    res = sinc_t * cos_t / denom_safe
+    h = backend.where(idx_general, res, h)
+
+    return normalize(h, mode="unity_gain")
+
+
+def lowpass_taps(
+    num_taps: int,
+    cutoff: float,
+    sampling_rate: float = 1.0,
+    window: str = "hamming",
+) -> ArrayType:
+    """
+    Design Lowpass FIR filter.
+
+    Args:
+        num_taps: Number of filter coefficients.
+        cutoff: Cutoff frequency in Hz.
+        sampling_rate: Sampling rate in Hz.
+        window: Window function type.
+
+    Returns:
+        Filter taps.
+    """
+    backend = get_backend()
+    return backend.firwin(
+        num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
+    )
+
+
+def highpass_taps(
+    num_taps: int,
+    cutoff: float,
+    sampling_rate: float = 1.0,
+    window: str = "hamming",
+) -> ArrayType:
+    """
+    Design Highpass FIR filter.
+
+    Args:
+        num_taps: Number of filter coefficients (should be odd).
+        cutoff: Cutoff frequency in Hz.
+        sampling_rate: Sampling rate in Hz.
+        window: Window function type.
+
+    Returns:
+        Filter taps.
+    """
+    backend = get_backend()
+
+    # pass_zero=False for highpass
+    return backend.firwin(
+        num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=False
+    )
+
+
+def bandpass_taps(
+    num_taps: int,
+    low_cutoff: float,
+    high_cutoff: float,
+    sampling_rate: float = 1.0,
+    window: str = "hamming",
+) -> ArrayType:
+    """
+    Design Bandpass FIR filter.
+
+    Args:
+        num_taps: Number of filter coefficients.
+        low_cutoff: Lower cutoff frequency in Hz.
+        high_cutoff: Upper cutoff frequency in Hz.
+        sampling_rate: Sampling rate in Hz.
+        window: Window function type.
+
+    Returns:
+        Filter taps.
+    """
+    backend = get_backend()
+
+    # pass_zero=False for bandpass
+    return backend.firwin(
+        num_taps,
+        [low_cutoff, high_cutoff],
+        window=window,
+        fs=sampling_rate,
+        pass_zero=False,
+    )
+
+
+def bandstop_taps(
+    num_taps: int,
+    low_cutoff: float,
+    high_cutoff: float,
+    sampling_rate: float = 1.0,
+    window: str = "hamming",
+) -> ArrayType:
+    """
+    Design Bandstop FIR filter.
+
+    Args:
+        num_taps: Number of filter coefficients (should be odd).
+        low_cutoff: Lower cutoff frequency in Hz.
+        high_cutoff: Upper cutoff frequency in Hz.
+        sampling_rate: Sampling rate in Hz.
+        window: Window function type.
+
+    Returns:
+        Filter taps.
+    """
+    backend = get_backend()
+    # pass_zero=True for bandstop
+    return backend.firwin(
+        num_taps,
+        [low_cutoff, high_cutoff],
+        window=window,
+        fs=sampling_rate,
+        pass_zero=True,
+    )
 
 
 # ============================================================================
@@ -239,7 +350,7 @@ def shape_pulse(
     Args:
         symbols: Input symbol array.
         sps: Samples per symbol (upsampling factor).
-        pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc').
+        pulse_shape: Type of pulse shaping ('none', 'boxcar', 'gaussian', 'rrc', 'rc', 'sinc').
         filter_span: Pulse shaping filter span in symbols.
         rrc_rolloff: Roll-off factor for RRC filter.
         gaussian_bt: Bandwidth-Time product for Gaussian filter.
@@ -250,23 +361,27 @@ def shape_pulse(
     symbols = ensure_on_backend(symbols)
     backend = get_backend()
 
-    expanded = backend.expand(symbols, int(sps))
-
     if pulse_shape == "none":
-        h = backend.ones(1)
+        return normalize(backend.expand(symbols, int(sps)), "max_amplitude")
+
     elif pulse_shape == "boxcar":
         h = boxcar_taps(sps)
     elif pulse_shape == "gaussian":
         h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
     elif pulse_shape == "rrc":
         h = rrc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
+    elif pulse_shape == "rc":
+        h = rc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
     elif pulse_shape == "sinc":
         # Sinc pulse shaping is equivalent to RRC with rolloff=0
         h = rrc_taps(sps, span=filter_span, rolloff=0.0)
     else:
         raise ValueError(f"Not implemented pulse shape: {pulse_shape}")
 
-    return normalize(fir_filter(expanded, h, mode="same"), mode="max_amplitude")
+    # Use polyphase implementation for efficiency:
+    return normalize(
+        backend.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
+    )
 
 
 def matched_filter(

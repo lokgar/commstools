@@ -33,8 +33,8 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
 
-    # Handle division by zero safely for both JAX and Numpy
-    # Avoid control flow based on data values.
+    # Handle division by zero safely for both NumPy and CuPy
+    # Avoid control flow based on data values to prevent host-device synchronization.
     safe_norm = backend.where(norm_factor == 0, 1.0, norm_factor)
     result = x / safe_norm
 

@@ -1,9 +1,26 @@
 import numpy as np
 
-from ..core.backend import ArrayType, ensure_on_backend
+from typing import Optional
+
+from ..core.backend import ArrayType, ensure_on_backend, get_backend
 
 
-def prbs(length: int, seed: int = 0x1, order: int = 7) -> ArrayType:
+def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
+    """
+    Generates a sequence of random bits (0s and 1s).
+
+    Args:
+        length: Length of the sequence to generate.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Array of bits (0s and 1s) on the active backend.
+    """
+    backend = get_backend()
+    return backend.randint(0, 2, size=length, seed=seed)
+
+
+def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:
     """
     Generates a Pseudo-Random Binary Sequence (PRBS).
 
