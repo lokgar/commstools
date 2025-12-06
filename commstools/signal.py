@@ -57,7 +57,7 @@ class Signal:
                     )
 
         current_backend = get_backend()
-        if current_backend.name == "cupy":
+        if current_backend.name == "gpu":
             self.to("gpu")
         else:
             self.to("cpu")
@@ -180,7 +180,7 @@ class Signal:
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
-        from .. import plotting
+        from . import plotting
 
         return plotting.psd(
             self.samples,
@@ -202,7 +202,7 @@ class Signal:
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
-        from .. import plotting
+        from . import plotting
 
         return plotting.time_domain(
             self.samples,
@@ -223,7 +223,7 @@ class Signal:
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
-        from .. import plotting
+        from . import plotting
 
         return plotting.eye_diagram(
             self.samples,
@@ -246,7 +246,7 @@ class Signal:
         Returns:
             self
         """
-        from ..dsp import filtering
+        from . import filtering
 
         self.samples = filtering.fir_filter(self.samples, taps, mode=mode)
         return self
@@ -261,7 +261,7 @@ class Signal:
         Returns:
             self
         """
-        from ..dsp import multirate
+        from . import multirate
 
         self.samples = multirate.upsample(self.samples, factor)
         self.sampling_rate = self.sampling_rate * factor
@@ -281,7 +281,7 @@ class Signal:
         Returns:
             self
         """
-        from ..dsp import multirate
+        from . import multirate
 
         self.samples = multirate.decimate(
             self.samples, factor, filter_type=filter_type, **kwargs
@@ -300,7 +300,7 @@ class Signal:
         Returns:
             self
         """
-        from ..dsp import multirate
+        from . import multirate
 
         self.samples = multirate.resample(self.samples, up, down)
         self.sampling_rate = self.sampling_rate * up / down
@@ -327,7 +327,7 @@ class Signal:
         Returns:
             self
         """
-        from ..dsp import filtering
+        from . import filtering
 
         self.samples = filtering.matched_filter(
             self.samples,

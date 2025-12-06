@@ -2,7 +2,7 @@ import numpy as np
 
 from typing import Optional
 
-from ..core.backend import ArrayType, ensure_on_backend, get_backend
+from .backend import ArrayType, ensure_on_backend, get_backend
 
 
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:

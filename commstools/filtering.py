@@ -1,5 +1,5 @@
-from ..core.backend import ArrayType, get_backend, ensure_on_backend
-from ..dsp.utils import normalize
+from .backend import ArrayType, get_backend, ensure_on_backend
+from .utils import normalize
 
 # ============================================================================
 # FILTER DESIGN - TAP GENERATORS

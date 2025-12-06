@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from commstools.dsp import sequences
+from commstools import sequences
 
 
 def test_prbs7():

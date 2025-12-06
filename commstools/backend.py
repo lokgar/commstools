@@ -175,7 +175,7 @@ class NumpyBackend:
 
     @property
     def name(self) -> str:
-        return "numpy"
+        return "cpu"
 
     def array(self, data: Any, dtype: Any = None) -> ArrayType:
         return np.array(data, dtype=dtype)
@@ -515,7 +515,7 @@ class CupyBackend:
 
     @property
     def name(self) -> str:
-        return "cupy"
+        return "gpu"
 
     def array(self, data: Any, dtype: Any = None) -> ArrayType:
         return cp.array(data, dtype=dtype)
@@ -832,9 +832,9 @@ def set_backend(backend_name: str) -> None:
         backend_name (str): The name of the backend to set: "cpu" or "gpu".
     """
     global _CURRENT_BACKEND
-    if backend_name.lower() in ("numpy", "cpu"):
+    if backend_name.lower() == "cpu":
         _CURRENT_BACKEND = NumpyBackend()
-    elif backend_name.lower() in ("cupy", "gpu", "cuda"):
+    elif backend_name.lower() == "gpu":
         _CURRENT_BACKEND = CupyBackend()
     else:
         raise ValueError(f"Unknown backend: {backend_name}")
@@ -853,14 +853,14 @@ def ensure_on_backend(data: Any) -> ArrayType:
     backend = get_backend()
 
     # Optimization: Check if already on correct backend
-    if backend.name == "numpy":
+    if backend.name == "cpu":
         if isinstance(data, np.ndarray):
             return data
         if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
             return cp.asnumpy(data)
         return np.asarray(data)
 
-    elif backend.name == "cupy":
+    elif backend.name == "gpu":
         if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
             return data
         # If CuPy is active, we expect CuPy to be available

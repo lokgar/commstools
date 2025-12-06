@@ -1,6 +1,5 @@
 import numpy as np
-import pytest
-from commstools.dsp import multirate
+from commstools import multirate
 
 
 def test_expand():

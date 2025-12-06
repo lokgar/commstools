@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from commstools.dsp import mapping
+from commstools import mapping
 
 
 def test_gray_code():
