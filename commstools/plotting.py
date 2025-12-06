@@ -82,7 +82,7 @@ def psd(
         fig = ax.figure
 
     import numpy as np
-    from .core.backend import ensure_on_backend, get_backend, to_host
+    from .backend import ensure_on_backend, get_backend, to_host
 
     # Ensure samples are on the global backend
     samples = ensure_on_backend(samples)
@@ -162,7 +162,7 @@ def time_domain(
         fig = ax.figure
 
     import numpy as np
-    from .core.backend import to_host
+    from .backend import to_host
 
     samples = to_host(samples)
 
@@ -218,7 +218,7 @@ def eye_diagram(
     import numpy as np
 
     # Ensure backend usage
-    from .core.backend import to_host, get_backend, ensure_on_backend
+    from .backend import to_host, get_backend, ensure_on_backend
 
     if ax is None:
         fig, (ax) = plt.subplots(1, 1)
@@ -401,7 +401,7 @@ def filter_response(
     import matplotlib.ticker as ticker
 
     # Ensure numpy array and get backend
-    from .core.backend import to_host, get_backend, ensure_on_backend
+    from .backend import to_host, get_backend, ensure_on_backend
 
     backend = get_backend()
 
