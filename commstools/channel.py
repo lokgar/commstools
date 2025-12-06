@@ -1,5 +1,5 @@
 import numpy as np
-from ..core.backend import ArrayType
+from .backend import ArrayType
 
 
 def calculate_snr(signal_power: float, noise_power: float) -> float:

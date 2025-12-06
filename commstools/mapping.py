@@ -1,5 +1,5 @@
 import numpy as np
-from ..core.backend import get_backend, ArrayType
+from .backend import get_backend, ArrayType
 
 
 def gray_code(n: int) -> ArrayType:

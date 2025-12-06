@@ -1,4 +1,4 @@
-from ..core.backend import ArrayType, get_backend, ensure_on_backend
+from .backend import ArrayType, get_backend, ensure_on_backend
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:

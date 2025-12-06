@@ -1,14 +1,13 @@
 import numpy as np
 import pytest
 from commstools import Signal
-from commstools.core.backend import get_backend, set_backend
 
 
 def test_signal_creation_cpu():
     samples = np.random.randn(100) + 1j * np.random.randn(100)
     sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
     assert isinstance(sig.samples, np.ndarray)
-    assert sig.backend.name == "numpy"
+    assert sig.backend.name == "cpu"
 
 
 def test_signal_to_gpu():
@@ -22,7 +21,7 @@ def test_signal_to_gpu():
 
     sig_gpu = sig.to("gpu")
     assert isinstance(sig_gpu.samples, cupy.ndarray)
-    assert sig_gpu.backend.name == "cupy"
+    assert sig_gpu.backend.name == "gpu"
 
     # Original signal is modified in-place
     assert isinstance(sig.samples, cupy.ndarray)
@@ -70,4 +69,4 @@ def test_signal_to_gpu_inplace():
     sig.to("gpu")
     assert id(sig) == original_id
     assert isinstance(sig.samples, cupy.ndarray)
-    assert sig.backend.name == "cupy"
+    assert sig.backend.name == "gpu"

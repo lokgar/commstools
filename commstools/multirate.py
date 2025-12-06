@@ -1,5 +1,5 @@
 from typing import Any
-from ..core.backend import ensure_on_backend, get_backend, ArrayType
+from .backend import ensure_on_backend, get_backend, ArrayType
 
 
 def expand(samples: ArrayType, factor: int) -> ArrayType:

@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from commstools.channel import calculate_snr, add_gaussian_noise
 
 
