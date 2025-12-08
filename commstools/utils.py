@@ -1,4 +1,4 @@
-from .backend import ArrayType, get_backend, ensure_on_backend
+from .backend import ArrayType, get_xp, ensure_on_backend
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -20,27 +20,92 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
         ValueError: If the normalization factor is zero (Numpy only).
     """
     x = ensure_on_backend(x)
-    backend = get_backend()
+    x = ensure_on_backend(x)
+    xp = get_xp()
 
     if mode == "unity_gain":
-        norm_factor = backend.sum(x)
+        norm_factor = xp.sum(x)
     elif mode == "unit_energy":
-        norm_factor = backend.sqrt(backend.sum(backend.abs(x) ** 2))
+        norm_factor = xp.sqrt(xp.sum(xp.abs(x) ** 2))
     elif mode == "max_amplitude":
-        norm_factor = backend.max(backend.abs(x))
+        norm_factor = xp.max(xp.abs(x))
     elif mode == "average_power":
-        norm_factor = backend.sqrt(backend.mean(backend.abs(x) ** 2))
+        norm_factor = xp.sqrt(xp.mean(xp.abs(x) ** 2))
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
 
     # Handle division by zero safely for both NumPy and CuPy
     # Avoid control flow based on data values to prevent host-device synchronization.
-    safe_norm = backend.where(norm_factor == 0, 1.0, norm_factor)
+    safe_norm = xp.where(norm_factor == 0, 1.0, norm_factor)
     result = x / safe_norm
 
     # Zero out result if norm was 0 (since 0/0 or x/0 should be handled)
     # If norm_factor is 0, it means the signal is all zeros (for energy/power/max/sum)
     # So the normalized result should also be all zeros.
-    return backend.where(
-        norm_factor == 0, backend.zeros(x.shape, dtype=x.dtype), result
-    )
+    return xp.where(norm_factor == 0, xp.zeros(x.shape, dtype=x.dtype), result)
+
+
+def interp1d(
+    self, x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
+) -> ArrayType:
+    """
+    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
+    interpolates f_p (values) at query points x, given sample points x_p.
+
+    Args:
+        x: Query points.
+        x_p: Sample points.
+        f_p: Values at sample points.
+        axis: Axis along which to perform interpolation.
+
+    Returns:
+        Interpolated values.
+    """
+    x = ensure_on_backend(x)
+    x_p = ensure_on_backend(x_p)
+    f_p = ensure_on_backend(f_p)
+    xp = get_xp()
+
+    # Move axis to end for easier handling
+    f_p = xp.swapaxes(f_p, axis, -1)
+
+    # Find indices such that xp[i-1] <= x < xp[i]
+    idxs = xp.searchsorted(x_p, x)
+    idxs = xp.clip(idxs, 1, len(x_p) - 1)
+
+    # Get the bounding points
+    x0 = x_p[idxs - 1]
+    x1 = x_p[idxs]
+
+    # Calculate weights
+    denominator = x1 - x0
+    # Avoid division by zero
+    denominator[denominator == 0] = 1.0
+    weights = (x - x0) / denominator
+
+    # Get the bounding values
+    # fp has shape (..., len(xp))
+    # we want to grab slices corresponding to idxs
+    y0 = xp.take_along_axis(f_p, xp.expand_dims(idxs - 1, axis=0), axis=-1)
+    y1 = xp.take_along_axis(f_p, xp.expand_dims(idxs, axis=0), axis=-1)
+
+    # Squeeze the extra dimension added by take_along_axis if necessary
+    # Actually take_along_axis output matches indices shape broadcasting.
+    # But here fp is (..., T) and idxs is (M,).
+    # We need to broadcast idxs to (..., M).
+    # np.take with explicit axis might be simpler or manual fancy indexing.
+
+    # Let's use simple fancy indexing if possible, but swapaxes made it the last axis.
+    # fp is (..., T)
+    # idxs is (M,)
+    # We want result (..., M)
+
+    y0 = f_p[..., idxs - 1]
+    y1 = f_p[..., idxs]
+
+    result = y0 * (1 - weights) + y1 * weights
+
+    # Move axis back
+    result = xp.swapaxes(result, axis, -1)
+
+    return result
