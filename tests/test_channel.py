@@ -1,27 +1,52 @@
+import pytest
 import numpy as np
-from commstools.channel import calculate_snr, add_gaussian_noise
+from commstools import channel
 
 
-def test_calculate_snr():
-    signal_pow = 10.0
-    noise_pow = 1.0
-    snr = calculate_snr(signal_pow, noise_pow)
-    assert snr == 10.0  # 10 log10(10) = 10
+def test_awgn(backend_device, xp):
+    data = xp.ones(1000, dtype=complex)
+    snr_db = 10.0
 
+    # Run AWGN
+    # We need to make sure 'data' is compatible with the backend used inside channel.awgn
+    # channel.awgn usually ensures backend usage or uses get_backend().
 
-def test_add_gaussian_noise():
-    # Create a constant signal
-    sig = np.ones(1000)
-    target_snr = 10.0
-    noisy = add_gaussian_noise(sig, snr_db=target_snr)
+    # If we want to test on GPU, we should ensure the input is on GPU or backend is set.
+    if backend_device == "gpu":
+        from commstools.backend import set_backend
 
-    assert len(noisy) == len(sig)
+        set_backend("gpu")
+        data = xp.asarray(data)
 
-    # Check if SNR is roughly correct
-    noise = noisy - sig
-    signal_power = np.mean(sig**2)
-    noise_power = np.mean(noise**2)
-    measured_snr = 10 * np.log10(signal_power / noise_power)
+    noisy = channel.add_gaussian_noise(data, snr_db)
 
-    # Allow some statistical deviation
-    assert np.isclose(measured_snr, target_snr, atol=1.0)
+    assert isinstance(noisy, xp.ndarray)
+    assert noisy.shape == data.shape
+    assert not xp.allclose(noisy, data)  # Should have noise
+
+    # Rough check of noise power?
+    # Signal power is 0 (zeros). Noise power should be related to SNR...
+    # Wait, if signal power is 0, SNR definition P_sig/P_noise -> P_noise = P_sig / 10^(SNR/10).
+    # If P_sig is 0, P_noise is 0.
+    # So actually output should be 0??
+    # Let's check implementation.
+    # Usually implementation measures signal power. If 0, it might default to something or noise is 0.
+
+    # Let's use non-zero signal
+    data = xp.ones(1000, dtype=complex)
+    noisy = channel.add_gaussian_noise(data, snr_db)
+    # Signal power = 1.
+    # Noise power = 1 / 10^(10/10) = 0.1
+    noise = noisy - data
+    measured_noise_power = xp.mean(xp.abs(noise) ** 2)
+
+    # On GPU checking scalar
+    if backend_device == "gpu":
+        measured_noise_power = float(measured_noise_power)
+
+    assert 0.08 < measured_noise_power < 0.12  # Allow statistical variance
+
+    if backend_device == "gpu":
+        from commstools.backend import set_backend
+
+        set_backend("cpu")

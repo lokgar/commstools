@@ -1,5 +1,6 @@
 import numpy as np
-from .backend import ArrayType, ensure_on_backend
+
+from .backend import ArrayType, ensure_on_backend, get_xp
 
 
 def _gray_code_np(n: int) -> np.ndarray:
@@ -51,15 +52,14 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
     elif modulation == "ask":
         result = _gray_ask(order)
     elif modulation == "qam":
-        # Check for 8-QAM
-        if order == 8:
-            raise ValueError("8-QAM is not supported.")
-
         k = int(np.log2(order))
         if 2**k != order:
             raise ValueError(f"Order must be power of 2 for {modulation}")
 
-        if k % 2 == 0:
+        # Check for 8-QAM
+        if order == 8:
+            result = _gray_qam_8(order)
+        elif k % 2 == 0:
             result = _gray_qam_square(order)
         else:
             result = _gray_qam_cross(order)
@@ -159,6 +159,51 @@ def _gray_qam_square(order: int) -> np.ndarray:
     q_vals = pam[idx_q]
 
     return i_vals + 1j * q_vals
+
+
+def _gray_qam_8(order: int = 8) -> np.ndarray:
+    """
+    Generate 8-QAM constellation with 'Star' Gray mapping (Numpy).
+
+    Specific circular constellation maximizing Minimum Euclidean Distance.
+    Outer points are at distance (1+sqrt(3)) on axes.
+    Inner points are at (±1, ±1).
+
+    Args:
+        order: Modulation order (must be 8). This arg is kept for signature consistency.
+
+    Returns:
+        Complex array of constellation points.
+    """
+    if order != 8:
+        raise ValueError("Order must be 8 for this function.")
+
+    # Optimal scaling for star 8-QAM
+    # Inner square at ±1. R1 = sqrt(2).
+    # Outer points at R2 = 1 + sqrt(3) ~ 2.732.
+    a = 1.0 + np.sqrt(3.0)
+
+    # 3-bit Gray mapping indices
+    # 0 (000) -> Outer Right
+    # 1 (001) -> Inner Top-Right
+    # 2 (010) -> Inner Top-Left
+    # 3 (011) -> Outer Top
+    # 4 (100) -> Inner Bottom-Right
+    # 5 (101) -> Outer Bottom
+    # 6 (110) -> Outer Left
+    # 7 (111) -> Inner Bottom-Left
+
+    points = np.zeros(8, dtype=complex)
+    points[0] = a + 0j
+    points[1] = 1.0 + 1.0j
+    points[2] = -1.0 + 1.0j
+    points[3] = 0.0 + a * 1j
+    points[4] = 1.0 - 1.0j
+    points[5] = 0.0 - a * 1j
+    points[6] = -a + 0j
+    points[7] = -1.0 - 1.0j
+
+    return points
 
 
 def _gray_qam_cross(order: int) -> np.ndarray:
@@ -271,3 +316,48 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     final_q_vals = (-height + 1 + 2 * geo_q_final).astype(float)
 
     return final_i_vals + 1j * final_q_vals
+
+
+def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
+    """
+    Map a sequence of bits to constellation symbols.
+
+    Args:
+        bits: Input array of bits (0s and 1s).
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
+
+    Returns:
+        Array of complex symbols.
+    """
+    bits = ensure_on_backend(bits)
+    xp = get_xp()
+
+    k = int(np.log2(order))
+    if 2**k != order:
+        raise ValueError(f"Order must be a power of 2, got {order}")
+
+    if len(bits) % k != 0:
+        raise ValueError(
+            f"Number of bits ({len(bits)}) must be divisible by bits per symbol ({k})"
+        )
+
+    # Reshape bits into symbols (N/k, k)
+    # We need to process this carefully to remain backend-agnostic efficiently
+    # For now, we assume bits are 0/1 integers
+    num_symbols = len(bits) // k
+
+    # Pack bits into integer indices
+    # We can reshape to (num_symbols, k) and multiply by powers of 2
+    bits_reshaped = bits.reshape((num_symbols, k))
+
+    # Powers of 2: [2^(k-1), ..., 2^0] for MSB first mapping
+    powers = 2 ** xp.arange(k - 1, -1, -1, dtype=int)
+    # Perform dot product
+    indices = xp.sum(bits_reshaped * powers, axis=1)
+
+    # Get constellation
+    constellation = gray_constellation(modulation, order)
+
+    # Map indices to points
+    return constellation[indices]

@@ -1,5 +1,6 @@
 from typing import Any
-from .backend import ensure_on_backend, get_backend, ArrayType
+
+from .backend import ArrayType, ensure_on_backend, get_sp, get_xp
 
 
 def expand(samples: ArrayType, factor: int) -> ArrayType:
@@ -14,11 +15,15 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
         Expanded array with zeros inserted (length = len(samples) * factor).
     """
     samples = ensure_on_backend(samples)
-    backend = get_backend()
-    return backend.expand(samples, int(factor))
+    xp = get_xp()
+    n_in = samples.shape[0]
+    n_out = n_in * factor
+    out = xp.zeros(n_out, dtype=samples.dtype)
+    out[::factor] = samples
+    return out
 
 
-def upsample(samples: ArrayType, factor: int) -> ArrayType:
+def upsample(samples: ArrayType, factor: int, method: str = "polyphase") -> ArrayType:
     """
     Upsampling: Expansion (zero-insertion) + anti-imaging filtering.
 
@@ -28,21 +33,32 @@ def upsample(samples: ArrayType, factor: int) -> ArrayType:
     Args:
         samples: Input sample array.
         factor: Upsampling factor.
+        method: Upsampling method ('zero_insertion', 'polyphase').
 
     Returns:
         Upsampled samples at rate (factor * original_rate).
     """
-    # Use polyphase upsampling for efficiency
     samples = ensure_on_backend(samples)
-    backend = get_backend()
+    xp = get_xp()
+    if method == "zero_insertion":
+        # manual zero insertion
+        n_in = samples.shape[0]
+        n_out = n_in * factor
+        out = xp.zeros(n_out, dtype=samples.dtype)
+        out[::factor] = samples
+        return out
 
-    # resample_poly(x, up, down)
-    # upsample by factor means up=factor, down=1
-    return backend.resample_poly(samples, int(factor), 1)
+    elif method == "polyphase":
+        # use scipy.signal.resample_poly with down=1
+        sp = get_sp()
+        return sp.signal.resample_poly(samples, factor, 1)
+
+    else:
+        raise ValueError(f"Unknown upsampling method: {method}")
 
 
 def decimate(
-    samples: ArrayType, factor: int, filter_type: str = "fir", **kwargs: Any
+    samples: ArrayType, factor: int, method: str = "polyphase", **kwargs: Any
 ) -> ArrayType:
     """
     Decimate: Anti-aliasing filter followed by downsampling.
@@ -53,18 +69,33 @@ def decimate(
     Args:
         samples: Input sample array.
         factor: Decimation factor.
-        filter_type: Filter type ('fir', 'iir'). Only 'fir' currently supported.
-        **kwargs: Additional filter parameters.
+        method: Decimation method ('slice', 'decimate', 'polyphase').
+        **kwargs: Additional filter parameters for 'decimate' method.
 
     Returns:
         Decimated samples at rate (original_rate / factor).
     """
     samples = ensure_on_backend(samples)
-    backend = get_backend()
-    zero_phase = kwargs.get("zero_phase", True)
-    return backend.decimate(
-        samples, int(factor), ftype=filter_type, zero_phase=zero_phase
-    )
+    if method == "slice":
+        # naive downsampling
+        return samples[::factor]
+
+    elif method == "decimate":
+        # scipy.signal.decimate (includes antidaliasing)
+        sp = get_sp()
+        zero_phase = kwargs.get("zero_phase", True)
+        ftype = kwargs.get("ftype", "fir")
+        return sp.signal.decimate(
+            samples, int(factor), ftype=ftype, zero_phase=zero_phase
+        )
+
+    elif method == "polyphase":
+        # resample_poly with up=1
+        sp = get_sp()
+        return sp.signal.resample_poly(samples, 1, int(factor))
+
+    else:
+        raise ValueError(f"Unknown decimation method: {method}")
 
 
 def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
@@ -83,5 +114,5 @@ def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
         Resampled samples at rate (original_rate * up / down).
     """
     samples = ensure_on_backend(samples)
-    backend = get_backend()
-    return backend.resample_poly(samples, int(up), int(down))
+    sp = get_sp()
+    return sp.signal.resample_poly(samples, int(up), int(down))

@@ -141,7 +141,7 @@ class Signal:
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
-        return self.backend.arange(0, self.samples.shape[0]) / self.sampling_rate
+        return self.backend.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
 
     def welch_psd(
         self,
@@ -149,8 +149,19 @@ class Signal:
         detrend: Optional[Union[str, bool]] = False,
         average: Optional[str] = "mean",
     ) -> Tuple[ArrayType, ArrayType]:
-        if self.backend.iscomplexobj(self.samples):
-            f, Pxx = self.backend.welch(
+        """
+        Compute the Power Spectral Density (PSD) using Welch's method.
+
+        Args:
+            nperseg: Length of each segment.
+            detrend: Detrend method.
+            average: Averaging method.
+
+        Returns:
+            Tuple of (frequency_axis, psd_values).
+        """
+        if self.backend.xp.iscomplexobj(self.samples):
+            f, Pxx = self.backend.sp.signal.welch(
                 self.samples,
                 fs=self.sampling_rate,
                 nperseg=nperseg,
@@ -158,16 +169,17 @@ class Signal:
                 average=average,
                 return_onesided=False,
             )
-            f = self.backend.fftshift(f)
-            Pxx = self.backend.fftshift(Pxx)
+            f = self.backend.xp.fft.fftshift(f)
+            Pxx = self.backend.xp.fft.fftshift(Pxx)
             return f, Pxx
         else:
-            return self.backend.welch(
+            return self.backend.sp.signal.welch(
                 self.samples,
                 fs=self.sampling_rate,
                 nperseg=nperseg,
                 detrend=detrend,
                 average=average,
+                return_onesided=True,
             )
 
     def plot_psd(
@@ -180,6 +192,21 @@ class Signal:
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plot the Power Spectral Density (PSD) of the signal.
+
+        Args:
+            nperseg: Length of each segment.
+            detrend: Detrend method.
+            average: Averaging method.
+            ax: Optional matplotlib axis to plot on.
+            title: Title of the plot.
+            show: Whether to call plt.show().
+            **kwargs: Additional plotting arguments.
+
+        Returns:
+            Tuple of (figure, axis) if show is False, else None.
+        """
         from . import plotting
 
         return plotting.psd(
@@ -202,6 +229,19 @@ class Signal:
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plot the time-domain waveform of the signal.
+
+        Args:
+            num_symbols: Number of symbols to plot.
+            ax: Optional matplotlib axis to plot on.
+            title: Title of the plot.
+            show: Whether to call plt.show().
+            **kwargs: Additional plotting arguments.
+
+        Returns:
+            Tuple of (figure, axis) if show is False, else None.
+        """
         from . import plotting
 
         return plotting.time_domain(
@@ -218,38 +258,35 @@ class Signal:
     def plot_eye(
         self,
         ax: Optional[Any] = None,
-        plot_type: str = "line",
+        type: str = "hist",
         title: Optional[str] = "Eye Diagram",
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plot the eye diagram of the signal.
+
+        Args:
+            ax: Optional matplotlib axis (or list of axes for complex signals) to plot on.
+            type: Type of plot ('hist' or 'line').
+            title: Title of the plot.
+            show: Whether to call plt.show().
+            **kwargs: Additional plotting arguments.
+
+        Returns:
+            Tuple of (figure, axis) if show is False, else None.
+        """
         from . import plotting
 
         return plotting.eye_diagram(
             self.samples,
             ax=ax,
             sps=self.sampling_rate / self.symbol_rate,
-            plot_type=plot_type,
+            type=type,
             title=title,
             show=show,
             **kwargs,
         )
-
-    def fir_filter(self, taps: ArrayType, mode: str = "same") -> "Signal":
-        """
-        Apply FIR filter to the signal.
-
-        Args:
-            taps: Filter taps.
-            mode: Convolution mode.
-
-        Returns:
-            self
-        """
-        from . import filtering
-
-        self.samples = filtering.fir_filter(self.samples, taps, mode=mode)
-        return self
 
     def upsample(self, factor: int) -> "Signal":
         """
@@ -304,6 +341,22 @@ class Signal:
 
         self.samples = multirate.resample(self.samples, up, down)
         self.sampling_rate = self.sampling_rate * up / down
+        return self
+
+    def fir_filter(self, taps: ArrayType) -> "Signal":
+        """
+        Apply FIR filter to the signal.
+
+        Args:
+            taps: Filter taps.
+            mode: Convolution mode.
+
+        Returns:
+            self
+        """
+        from . import filtering
+
+        self.samples = filtering.fir_filter(self.samples, taps)
         return self
 
     def matched_filter(

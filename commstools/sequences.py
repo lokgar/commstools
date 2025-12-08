@@ -1,8 +1,11 @@
+# For reproducibility we generate the random bits on the CPU,
+# as sequences differ between backends with given seed.
+
 import numpy as np
 
 from typing import Optional
 
-from .backend import ArrayType, ensure_on_backend, get_backend
+from .backend import ArrayType, ensure_on_backend
 
 
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
@@ -16,8 +19,9 @@ def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
     Returns:
         Array of bits (0s and 1s) on the active backend.
     """
-    backend = get_backend()
-    return backend.randint(0, 2, size=length, seed=seed)
+    rng = np.random.default_rng(seed)
+    bits = rng.integers(0, 2, size=length)
+    return ensure_on_backend(bits)
 
 
 def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:

@@ -3,6 +3,12 @@ from typing import Any, Optional, Tuple, Union
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter
+from scipy.signal import freqz, welch
+
+from .backend import to_host
 
 
 def apply_default_theme() -> None:
@@ -81,20 +87,12 @@ def psd(
     else:
         fig = ax.figure
 
-    import numpy as np
-    from .backend import ensure_on_backend, get_backend, to_host
+    # Ensure samples are on host
+    samples = to_host(samples)
 
-    # Ensure samples are on the global backend
-    samples = ensure_on_backend(samples)
-    samples = samples - samples.mean()
-    backend = get_backend()
-
-    # If samples are complex, we need to handle that
-    # Note: backend.welch handles complex inputs if supported
-
-    # Calculate PSD using the appropriate backend
-    if backend.iscomplexobj(samples):
-        f, Pxx = backend.welch(
+    # Calculate PSD
+    if np.iscomplexobj(samples):
+        f, Pxx = welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
@@ -103,20 +101,16 @@ def psd(
             return_onesided=False,
         )
         # Shift zero frequency to center if complex
-        f = backend.fftshift(f)
-        Pxx = backend.fftshift(Pxx)
+        f = np.fft.fftshift(f)
+        Pxx = np.fft.fftshift(Pxx)
     else:
-        f, Pxx = backend.welch(
+        f, Pxx = welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
             detrend=detrend,
             average=average,
         )
-
-    # Convert to NumPy for plotting using to_host
-    f = to_host(f)
-    Pxx = to_host(Pxx)
 
     ax.plot(f, 10 * np.log10(Pxx), **kwargs)
     ax.set_xlabel("Frequency [Hz]")
@@ -174,11 +168,26 @@ def time_domain(
 
     time_axis = np.arange(len(plot_samples)) / sampling_rate
 
-    ax.plot(
-        time_axis,
-        plot_samples,
-        **kwargs,
-    )
+    if np.iscomplexobj(plot_samples):
+        ax.plot(
+            time_axis,
+            plot_samples.real,
+            label="I",
+            **kwargs,
+        )
+        ax.plot(
+            time_axis,
+            plot_samples.imag,
+            label="Q",
+            **kwargs,
+        )
+        ax.legend()
+    else:
+        ax.plot(
+            time_axis,
+            plot_samples,
+            **kwargs,
+        )
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Amplitude")
     if title is not None:
@@ -190,52 +199,20 @@ def time_domain(
     return fig, ax
 
 
-def eye_diagram(
+def _plot_eye_traces(
     samples: Any,
     sps: float,
-    ax: Optional[Any] = None,
-    num_symbols: int = 2,
-    plot_type: str = "line",
-    title: Optional[str] = "Eye Diagram",
-    show: bool = False,
+    num_symbols: int,
+    ax: Any,
+    type: str,
+    title: Optional[str],
     **kwargs,
-) -> Optional[Tuple[Any, Any]]:
-    """
-    Plots the eye diagram of the signal.
-
-    Args:
-        samples: The signal samples to plot.
-        sps: Samples per symbol.
-        ax: Optional matplotlib axis to plot on.
-        num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
-        plot_type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
-        title: Title of the plot. Defaults to "Eye Diagram". If None, no title is set.
-        show: Whether to call plt.show() after plotting.
-
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
-    """
-    import numpy as np
-
-    # Ensure backend usage
-    from .backend import to_host, get_backend, ensure_on_backend
-
-    if ax is None:
-        fig, (ax) = plt.subplots(1, 1)
-        # Handle the fact that plt.subplots(1, 1) returns a single ax, not a list
-    else:
-        fig = ax.figure
-
-    backend = get_backend()
-    samples = ensure_on_backend(samples)
-
-    # Use real part for plotting if complex
-    if backend.iscomplexobj(samples):
-        samples = samples.real
+) -> None:
+    """Helper to plot a single eye diagram trace (real values)."""
+    samples = to_host(samples)
 
     # Normalize to max amplitude 1.0
-    # backend.abs, backend.max
-    max_val = backend.max(backend.abs(samples))
+    max_val = np.max(np.abs(samples))
     if max_val > 0:
         samples = samples / max_val
 
@@ -249,27 +226,27 @@ def eye_diagram(
     # We slide by 1 symbol period (sps)
     num_traces = (samples.shape[0] - trace_len) // int(sps) + 1
 
-    if plot_type == "line":
+    if type == "line":
         # Limit traces for performance/visuals
         max_traces = 5000
         if num_traces > max_traces:
             skip = num_traces // max_traces
-            indices = backend.arange(0, num_traces, skip)[:max_traces]
+            indices = np.arange(0, num_traces, skip)[:max_traces]
         else:
-            indices = backend.arange(num_traces)
+            indices = np.arange(num_traces)
 
         # Extract traces
-        indices_host = to_host(indices)
+        indices_host = indices
 
         traces_list = []
         for i in indices_host:
             start = int(i * sps)
             traces_list.append(samples[start : start + trace_len])
 
-        traces = backend.stack(traces_list, axis=1)  # Shape: (trace_len, num_traces)
+        traces = np.stack(traces_list, axis=1)  # Shape: (trace_len, num_traces)
 
         # Move to host for plotting
-        traces = to_host(traces)
+        # Move to host for plotting (already on host)
 
         # Time axis in symbols
         t = np.linspace(0, num_symbols, trace_len, endpoint=True)
@@ -279,41 +256,40 @@ def eye_diagram(
 
         ax.plot(t, traces, color="C0", **line_kwargs)
 
-    elif plot_type == "hist":
+    elif type == "hist":
         # For hist, we use all traces to build a good histogram
         max_traces_hist = 20000
         if num_traces > max_traces_hist:
             skip = num_traces // max_traces_hist
-            indices = backend.arange(0, num_traces, skip)[:max_traces_hist]
+            indices = np.arange(0, num_traces, skip)[:max_traces_hist]
         else:
-            indices = backend.arange(num_traces)
+            indices = np.arange(num_traces)
 
-        indices_host = to_host(indices)
+        indices_host = indices
 
         traces_list = []
         for i in indices_host:
             start = int(i * sps)
             traces_list.append(samples[start : start + trace_len])
 
-        traces = backend.stack(traces_list, axis=0)  # Shape: (num_traces, trace_len)
+        traces = np.stack(traces_list, axis=0)  # Shape: (num_traces, trace_len)
 
         # Interpolate traces
         target_width = 500
         if trace_len < target_width:
-            # Interpolate traces using backend
-            x_old = backend.arange(trace_len)
-            x_new = backend.linspace(0, trace_len - 1, target_width)
+            # Interpolate traces using scipy
+            x_old = np.arange(trace_len)
+            x_new = np.linspace(0, trace_len - 1, target_width)
 
             # Interpolate along the last axis (time)
-            traces = backend.interp1d(x_new, x_old, traces, axis=1)
+            f_interp = interp1d(x_old, traces, axis=1, kind="linear")
+            traces = f_interp(x_new)
             trace_len = target_width
 
-        # Create time matrix on backend
-        t = backend.linspace(0, num_symbols, trace_len, endpoint=True)
-        # Use backend.tile
-        t_matrix = backend.tile(
-            t, (traces.shape[0], 1)
-        )  # shape: (num_traces, trace_len)
+        # Create time matrix
+        t = np.linspace(0, num_symbols, trace_len, endpoint=True)
+        # Use np.tile
+        t_matrix = np.tile(t, (traces.shape[0], 1))  # shape: (num_traces, trace_len)
 
         # Flatten
         t_flat = t_matrix.flatten()
@@ -325,7 +301,7 @@ def eye_diagram(
         bins_y = 500
 
         # Add padding to Y range
-        y_min, y_max = backend.min(y_flat), backend.max(y_flat)
+        y_min, y_max = np.min(y_flat), np.max(y_flat)
         y_range = y_max - y_min
         if y_range == 0:
             y_range = 1.0
@@ -333,9 +309,9 @@ def eye_diagram(
         range_y = [float(y_min - y_pad), float(y_max + y_pad)]
 
         # Min/max of t_flat
-        t_min, t_max = backend.min(t_flat), backend.max(t_flat)
+        t_min, t_max = np.min(t_flat), np.max(t_flat)
 
-        h, xedges, yedges = backend.histogram2d(
+        h, xedges, yedges = np.histogram2d(
             t_flat,
             y_flat,
             bins=[bins_x, bins_y],
@@ -343,17 +319,12 @@ def eye_diagram(
         )
 
         h = h.T
-        h = backend.gaussian_filter(h, sigma=1)
+        h = gaussian_filter(h, sigma=1)
 
         # Normalize
-        h_max = backend.max(h)
+        h_max = np.max(h)
         if h_max > 0:
             h = h / h_max
-
-        # Move to host for plotting
-        h = to_host(h)
-        xedges = to_host(xedges)
-        yedges = to_host(yedges)
 
         # Plot using imshow
         imshow_kwargs = {
@@ -367,13 +338,102 @@ def eye_diagram(
         ax.imshow(h, **imshow_kwargs)  # type: ignore[arg-type]
 
     else:
-        raise ValueError(f"Unknown plot_type: {plot_type}. Supported: 'line', 'hist'")
+        raise ValueError(f"Unknown type: {type}. Supported: 'line', 'hist'")
 
     ax.set_xlabel("Time [Symbol Periods]")
     ax.set_ylabel("Amplitude")
     ax.set_xlim(0, num_symbols)
     if title is not None:
         ax.set_title(title)
+
+
+def eye_diagram(
+    samples: Any,
+    sps: float,
+    ax: Optional[Any] = None,
+    num_symbols: int = 2,
+    type: str = "hist",
+    title: Optional[str] = "Eye Diagram",
+    show: bool = False,
+    **kwargs,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the eye diagram of the signal.
+
+    Args:
+        samples: The signal samples to plot.
+        sps: Samples per symbol.
+        ax: Optional matplotlib axis to plot on.
+        num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
+        type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
+        title: Title of the plot. Defaults to "Eye Diagram". If None, no title is set.
+        show: Whether to call plt.show() after plotting.
+
+    Returns:
+        Tuple of (figure, axis) if show is False, else None.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Ensure backend usage
+    # Ensure backend usage
+    samples = to_host(samples)
+    is_complex = np.iscomplexobj(samples)
+
+    if ax is None:
+        if is_complex:
+            fig, ax = plt.subplots(2, 1, figsize=(6, 8), sharex=True)
+        else:
+            fig, ax = plt.subplots(1, 1)
+            # Handle the fact that plt.subplots(1, 1) returns a single ax, not a list
+    else:
+        if isinstance(ax, (list, tuple, np.ndarray)):
+            fig = ax[0].figure
+        else:
+            fig = ax.figure
+
+    if is_complex:
+        if not isinstance(ax, (list, tuple, np.ndarray)) or len(ax) < 2:
+            raise ValueError(
+                "For complex signals, 'ax' must be a list/tuple of at least 2 axes."
+            )
+
+        # Plot I
+        _plot_eye_traces(
+            samples.real,
+            sps,
+            num_symbols,
+            ax[0],
+            type,
+            title=f"{title} (I)" if title else "I-Channel",
+            **kwargs,
+        )
+
+        # Plot Q
+        _plot_eye_traces(
+            samples.imag,
+            sps,
+            num_symbols,
+            ax[1],
+            type,
+            title=f"{title} (Q)" if title else "Q-Channel",
+            **kwargs,
+        )
+    else:
+        # If user passed a list of axes for real signal, use the first one
+        target_ax = ax
+        if isinstance(ax, (list, tuple, np.ndarray)):
+            target_ax = ax[0]
+
+        _plot_eye_traces(
+            samples,
+            sps,
+            num_symbols,
+            target_ax,
+            type,
+            title=title,
+            **kwargs,
+        )
 
     if show:
         plt.show()
@@ -401,14 +461,9 @@ def filter_response(
     import matplotlib.ticker as ticker
 
     # Ensure numpy array and get backend
-    from .backend import to_host, get_backend, ensure_on_backend
-
-    backend = get_backend()
-
-    # Keep taps on backend for computation if possible
-    # But we also need them on host for impulse response plotting
-    # So we ensure they are on backend first
-    taps_backend = ensure_on_backend(taps)
+    # Ensure numpy array and get backend
+    # Keep taps on host
+    taps = to_host(taps)
 
     if ax is None:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
@@ -422,7 +477,7 @@ def filter_response(
 
     # 1. Impulse Response
     # Move to host for plotting
-    taps_host = to_host(taps_backend)
+    taps_host = taps
     num_taps = len(taps_host)
 
     t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
@@ -449,19 +504,13 @@ def filter_response(
     ax1.xaxis.set_major_formatter(ticker.FuncFormatter(t_formatter))
 
     # 2. Frequency Response
-    # Compute frequency response using backend (supports GPU)
-    # taps_backend is already on the backend
-    w, h = backend.freqz(taps_backend, worN=2048)
+    # Compute frequency response using scipy
+    w, h = freqz(taps, worN=2048)
 
     # Normalize to Nyquist (0 to 1)
-    freqs = w / (2 * backend.pi)
-    mag = 20 * backend.log10(backend.abs(h) + 1e-12)
-    angles = backend.unwrap(backend.angle(h))
-
-    # Transfer to host for plotting
-    mag = to_host(mag)
-    angles = to_host(angles)
-    freqs = to_host(freqs)
+    freqs = w / (2 * np.pi)
+    mag = 20 * np.log10(np.abs(h) + 1e-12)
+    angles = np.unwrap(np.angle(h))
 
     # Magnitude
     ax2.plot(freqs, mag, color="C2")
@@ -481,3 +530,114 @@ def filter_response(
         plt.show()
         return None
     return fig, (ax1, ax2, ax3)
+
+
+def plot_ideal_constellation(
+    modulation: str,
+    order: int,
+    ax: Optional[Any] = None,
+    title: Optional[str] = None,
+    show: bool = False,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the ideal constellation diagram for a given modulation and order.
+
+    Args:
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
+        ax: Optional matplotlib axis to plot on.
+        title: Title of the plot.
+        show: Whether to call plt.show() after plotting.
+
+    Returns:
+        Tuple of (figure, axis) if show is False, else None.
+    """
+    from .mapping import gray_constellation
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
+    else:
+        fig = ax.figure
+
+    try:
+        # Generate constellation on backend
+        const = gray_constellation(modulation, order)
+    except ValueError as e:
+        print(f"Error generating constellation: {e}")
+        return None
+
+    # Move to host for plotting
+    const = to_host(const)
+
+    # Separate real/imag
+    if np.iscomplexobj(const):
+        real = const.real
+        imag = const.imag
+    else:
+        real = const
+        imag = np.zeros_like(const)
+
+    # Plot points
+    ax.scatter(real, imag, zorder=10)
+
+    # Annotate points
+    n_bits = int(np.log2(order))
+    for i, point in enumerate(const):
+        if np.iscomplex(point):
+            x, y = point.real, point.imag
+        else:
+            x, y = point, 0
+
+        label = f"{i:0{n_bits}b} ({i})"
+        ax.annotate(
+            label,
+            (x, y),
+            xytext=(5, 5),
+            textcoords="offset points",
+            # Font settings handled by rcParams
+        )
+
+    # Titles and Labels
+    if title is None:
+        title = f"Constellation: {modulation.upper()} {order}"
+    ax.set_title(title)
+    ax.set_xlabel("In-Phase (I)")
+    ax.set_ylabel("Quadrature (Q)")
+
+    # Center lines
+    ax.axhline(0, color="black", linewidth=1, zorder=0)
+    ax.axvline(0, color="black", linewidth=1, zorder=0)
+
+    # Limits and Aspect
+    max_range = np.max(np.abs(const))
+    limit = max_range * 1.1 if max_range > 0 else 1
+    ax.set_xlim(-limit, limit)
+    ax.set_ylim(-limit, limit)
+    ax.set_aspect("equal")
+
+    ax.grid(False)
+
+    # Draw concentric circles (rings) at point magnitudes
+    # Find unique radii from the constellation points
+    radii = np.unique(np.round(np.abs(const), 6))
+
+    # Filter out zero radius (origin)
+    radii = radii[radii > 1e-6]
+
+    for r in radii:
+        circle = plt.Circle(
+            (0, 0),
+            r,
+            fill=False,
+            color="gray",
+            linestyle="-",
+            linewidth=0.5,
+            alpha=0.5,
+            zorder=-5,
+        )
+        ax.add_artist(circle)
+
+    if show:
+        plt.show()
+        return None
+    return fig, ax
