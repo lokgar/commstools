@@ -16,6 +16,7 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
     """
     samples = ensure_on_backend(samples)
     xp = get_xp()
+
     n_in = samples.shape[0]
     n_out = n_in * factor
     out = xp.zeros(n_out, dtype=samples.dtype)
@@ -23,7 +24,7 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
     return out
 
 
-def upsample(samples: ArrayType, factor: int, method: str = "polyphase") -> ArrayType:
+def upsample(samples: ArrayType, factor: int) -> ArrayType:
     """
     Upsampling: Expansion (zero-insertion) + anti-imaging filtering.
 
@@ -33,32 +34,17 @@ def upsample(samples: ArrayType, factor: int, method: str = "polyphase") -> Arra
     Args:
         samples: Input sample array.
         factor: Upsampling factor.
-        method: Upsampling method ('zero_insertion', 'polyphase').
 
     Returns:
         Upsampled samples at rate (factor * original_rate).
     """
     samples = ensure_on_backend(samples)
-    xp = get_xp()
-    if method == "zero_insertion":
-        # manual zero insertion
-        n_in = samples.shape[0]
-        n_out = n_in * factor
-        out = xp.zeros(n_out, dtype=samples.dtype)
-        out[::factor] = samples
-        return out
-
-    elif method == "polyphase":
-        # use scipy.signal.resample_poly with down=1
-        sp = get_sp()
-        return sp.signal.resample_poly(samples, factor, 1)
-
-    else:
-        raise ValueError(f"Unknown upsampling method: {method}")
+    sp = get_sp()
+    return sp.signal.resample_poly(samples, factor, 1)
 
 
 def decimate(
-    samples: ArrayType, factor: int, method: str = "polyphase", **kwargs: Any
+    samples: ArrayType, factor: int, method: str = "decimate", **kwargs: Any
 ) -> ArrayType:
     """
     Decimate: Anti-aliasing filter followed by downsampling.
@@ -69,20 +55,17 @@ def decimate(
     Args:
         samples: Input sample array.
         factor: Decimation factor.
-        method: Decimation method ('slice', 'decimate', 'polyphase').
+        method: Decimation method ('decimate', 'polyphase').
         **kwargs: Additional filter parameters for 'decimate' method.
 
     Returns:
         Decimated samples at rate (original_rate / factor).
     """
     samples = ensure_on_backend(samples)
-    if method == "slice":
-        # naive downsampling
-        return samples[::factor]
+    sp = get_sp()
 
-    elif method == "decimate":
-        # scipy.signal.decimate (includes antidaliasing)
-        sp = get_sp()
+    if method == "decimate":
+        # scipy.signal.decimate (includes antialiasing)
         zero_phase = kwargs.get("zero_phase", True)
         ftype = kwargs.get("ftype", "fir")
         return sp.signal.decimate(
@@ -91,7 +74,6 @@ def decimate(
 
     elif method == "polyphase":
         # resample_poly with up=1
-        sp = get_sp()
         return sp.signal.resample_poly(samples, 1, int(factor))
 
     else:

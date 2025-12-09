@@ -36,7 +36,7 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
     constellation[s] is the complex/float value for symbol s.
 
     Args:
-        modulation: Modulation type ('psk', 'qam', 'ask').
+        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
         order: Modulation order (e.g., 4, 16, 64).
 
     Returns:
@@ -49,8 +49,10 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
 
     if modulation == "psk":
         result = _gray_psk(order)
-    elif modulation == "ask":
+    elif modulation == "ask-bipol":
         result = _gray_ask(order)
+    elif modulation == "ask-unipol":
+        result = _gray_ask(order) - _gray_ask(order).min()
     elif modulation == "qam":
         k = int(np.log2(order))
         if 2**k != order:
@@ -107,6 +109,7 @@ def _gray_psk(order: int) -> np.ndarray:
 def _gray_ask(order: int) -> np.ndarray:
     """
     Generate M-ASK (Amplitude Shift Keying) constellation with Gray mapping (Numpy).
+    ATTENTION: Always returns bipolar values centered at 0.
 
     Args:
         order: Modulation order (must be a power of 2).
@@ -324,7 +327,7 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
 
     Args:
         bits: Input array of bits (0s and 1s).
-        modulation: Modulation type ('psk', 'qam', 'ask').
+        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
         order: Modulation order.
 
     Returns:
