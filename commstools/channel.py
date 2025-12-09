@@ -37,9 +37,14 @@ def add_gaussian_noise(
 
     signal_power = xp.mean(xp.abs(samples) ** 2)
     snr_linear = 10 ** (snr_db / 10)
-    if snr_linear <= 0:
-        # If SNR is very low or negative, noise power will be very high
-        noise_power = signal_power / 1e-10  # Effectively infinite noise
+
+    # Handle very low SNR or infinite noise case
+    # We avoid division by zero or negative SNRs if possible, though physics suggests positive linear SNR.
+    # But if snr_linear is effectively 0, noise power is infinite.
+    if snr_linear <= 1e-20:
+        # Fallback to avoid div by zero, make noise massive relative to signal
+        # or just use a safe epsilon.
+        noise_power = signal_power / 1e-20
     else:
         noise_power = signal_power / snr_linear
 
@@ -52,26 +57,15 @@ def add_gaussian_noise(
         # For complex noise, power is split between real and imag
         noise_std_component = xp.sqrt(noise_power / 2)
 
-        # PROVISIONAL: Generate noise on host using NumPy and move to backend
-        from .backend import to_host
-
-        noise_std_host = float(to_host(noise_std_component))
-
-        shape = samples.shape
-        noise = np.random.normal(0, noise_std_host, shape) + 1j * np.random.normal(
-            0, noise_std_host, shape
-        )
+        # Generate noise on backend
+        noise = xp.random.normal(
+            0, noise_std_component, samples.shape
+        ) + 1j * xp.random.normal(0, noise_std_component, samples.shape)
     else:
         # Real noise
-        from .backend import to_host
+        noise = xp.random.normal(0, noise_std, samples.shape)
 
-        noise_std_host = float(to_host(noise_std))
-        shape = samples.shape
-        noise = np.random.normal(0, noise_std_host, shape)
-
-    # Move noise to backend
-    noise = xp.asarray(noise, dtype=samples.dtype)
-
+    # noise is already on backend
     noisy_samples = samples + noise
 
     if isinstance(signal, Signal):

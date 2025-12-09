@@ -45,9 +45,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     return xp.where(norm_factor == 0, xp.zeros(x.shape, dtype=x.dtype), result)
 
 
-def interp1d(
-    self, x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
-) -> ArrayType:
+def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> ArrayType:
     """
     Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
     interpolates f_p (values) at query points x, given sample points x_p.

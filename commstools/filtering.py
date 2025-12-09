@@ -83,7 +83,6 @@ def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
     # 3. Analytical Formula (Convolved Rect and Gaussian)
     # The 'width' of the rect is pulse_width symbols
     # Rect is from -width/2 to width/2
-    # 3. Analytical Formula (Convolved Rect and Gaussian)
     # The convolution of a rectangle with a Gaussian is given by the difference of erfs
     w_half = pulse_width / 2.0
     h = 0.5 * (
@@ -91,7 +90,7 @@ def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
         - sp.special.erf((t - w_half) / (sigma * xp.sqrt(2)))
     )
 
-    return normalize(h, mode="unity_gain")
+    return normalize(h, "unity_gain")
 
 
 def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
@@ -145,15 +144,16 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     # Case 3: General case
     idx_general = ~(idx_0 | idx_singularity)
 
-    num = xp.sin(xp.pi * t * (1 - rolloff)) + 4 * rolloff * t * xp.cos(
+    numer = xp.sin(xp.pi * t * (1 - rolloff)) + 4 * rolloff * t * xp.cos(
         xp.pi * t * (1 + rolloff)
     )
-    den = xp.pi * t * (1 - (4 * rolloff * t) ** 2)
-    # Avoid invalid value warning by making den safe
-    den_safe = xp.where(idx_general, den, 1.0)
-    h = xp.where(idx_general, num / den_safe, h)
+    denom = xp.pi * t * (1 - (4 * rolloff * t) ** 2)
 
-    return normalize(h, mode="unity_gain")
+    # Avoid invalid value warning by making den safe
+    denom_safe = xp.where(idx_general, denom, 1.0)
+    h = xp.where(idx_general, numer / denom_safe, h)
+
+    return normalize(h, "unity_gain")
 
 
 def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
@@ -219,7 +219,7 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     res = sinc_t * cos_t / denom_safe
     h = xp.where(idx_general, res, h)
 
-    return normalize(h, mode="unity_gain")
+    return normalize(h, "unity_gain")
 
 
 def lowpass_taps(
@@ -241,6 +241,7 @@ def lowpass_taps(
         Filter taps.
     """
     sp = get_sp()
+
     h = sp.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
     )
@@ -330,7 +331,6 @@ def bandstop_taps(
     sp = get_sp()
 
     # pass_zero=True for bandstop
-
     h = sp.signal.firwin(
         num_taps,
         [low_cutoff, high_cutoff],
@@ -360,8 +360,8 @@ def fir_filter(samples: ArrayType, taps: ArrayType) -> ArrayType:
     Returns:
         Filtered samples.
     """
-    samples = get_xp().asarray(samples)  # ensure_on_backend(samples)
-    taps = get_xp().asarray(taps)  # ensure_on_backend(taps)
+    samples = ensure_on_backend(samples)
+    taps = ensure_on_backend(taps)
     sp = get_sp()
 
     return sp.signal.convolve(samples, taps, mode="same", method="fft")
@@ -373,7 +373,7 @@ def shape_pulse(
     pulse_shape: str = "none",
     filter_span: int = 10,
     rrc_rolloff: float = 0.35,
-    smooth_bt: float = 1.0,
+    smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
 ) -> ArrayType:
     """
@@ -391,7 +391,7 @@ def shape_pulse(
         Shaped sample array at rate (sps * symbol_rate), normalized
     """
 
-    symbols = get_xp().asarray(symbols)  # ensure_on_backend(symbols)
+    symbols = ensure_on_backend(symbols)
     xp = get_xp()
     sp = get_sp()
 
@@ -401,7 +401,7 @@ def shape_pulse(
     elif pulse_shape == "rect":
         h = xp.ones(int(sps))
     elif pulse_shape == "smoothrect":
-        h = smoothrect_taps(sps, span=filter_span, bt=smooth_bt)
+        h = smoothrect_taps(sps, span=filter_span, bt=smoothrect_bt)
     elif pulse_shape == "gaussian":
         h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
     elif pulse_shape == "rrc":
@@ -424,7 +424,6 @@ def matched_filter(
     samples: ArrayType,
     pulse_taps: ArrayType,
     taps_normalization: str = "unity_gain",
-    mode: str = "same",
     normalize_output: bool = False,
 ) -> ArrayType:
     """
@@ -435,7 +434,6 @@ def matched_filter(
         pulse_taps: Pulse shape filter taps.
         taps_normalization: Normalization to apply to the matched filter taps.
                             Options: 'unity_gain', 'unit_energy'.
-        mode: Convolution mode ('same', 'full', 'valid').
         normalize_output: If True, normalizes the output samples to have a maximum
                           absolute value of 1.0.
 
@@ -456,7 +454,7 @@ def matched_filter(
         raise ValueError(f"Not implemented taps normalization: {taps_normalization}")
 
     # Apply filter
-    output = fir_filter(samples, matched_taps, mode=mode)
+    output = fir_filter(samples, matched_taps)
 
     if normalize_output:
         output = normalize(output, mode="max_amplitude")

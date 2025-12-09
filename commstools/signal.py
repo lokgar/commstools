@@ -221,7 +221,7 @@ class Signal:
             **kwargs,
         )
 
-    def plot_signal(
+    def plot_symbols(
         self,
         num_symbols: int = None,
         ax: Optional[Any] = None,

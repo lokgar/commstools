@@ -15,7 +15,7 @@ def generate_waveform(
     symbol_rate: float,
     pulse_shape: str = "rrc",
     rrc_rolloff: float = 0.35,
-    smooth_bt: float = 1.0,
+    smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
     filter_span: int = 10,
     seed: Optional[int] = None,
@@ -55,7 +55,7 @@ def generate_waveform(
         pulse_shape=pulse_shape,
         filter_span=filter_span,
         rrc_rolloff=rrc_rolloff,
-        smooth_bt=smooth_bt,
+        smoothrect_bt=smoothrect_bt,
         gaussian_bt=gaussian_bt,
     )
 
@@ -71,12 +71,13 @@ def generate_waveform(
 
 def pam_waveform(
     order: int,
+    bipolar: bool,
     num_symbols: int,
     sps: int,
     symbol_rate: float,
     pulse_shape: str = "rect",
     rrc_rolloff: float = 0.35,
-    smooth_bt: float = 1.0,
+    smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
     filter_span: int = 10,
     seed: Optional[int] = None,
@@ -86,12 +87,13 @@ def pam_waveform(
 
     Args:
         order: Modulation order (2, 4, 8, etc.).
+        bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
         num_symbols: Number of symbols to generate.
         sps: Samples per symbol (integer).
         symbol_rate: Symbol rate in Hz.
         pulse_shape: Pulse shaping type ('rect', 'rrc', 'rc', 'gaussian', 'smoothrect', 'none').
         rrc_rolloff: Roll-off factor for RRC/RC filters.
-        smooth_bt: BT product for smoothrect filter.
+        smoothrect_bt: BT product for smoothrect filter.
         gaussian_bt: BT product for Gaussian filter.
         filter_span: Filter span in symbols.
         seed: Random seed.
@@ -100,29 +102,30 @@ def pam_waveform(
         Signal object.
     """
     sig = generate_waveform(
-        modulation="ask",
+        modulation="ask-bipol" if bipolar else "ask-unipol",
         order=order,
         num_symbols=num_symbols,
         sps=sps,
         symbol_rate=symbol_rate,
         pulse_shape=pulse_shape,
         rrc_rolloff=rrc_rolloff,
-        smooth_bt=smooth_bt,
+        smoothrect_bt=smoothrect_bt,
         gaussian_bt=gaussian_bt,
         filter_span=filter_span,
         seed=seed,
     )
-    sig.modulation_format = f"PAM-{order}"
+    sig.modulation_format = f"PAM-{order}{'-bipol' if bipolar else '-unipol'}"
     return sig
 
 
 def rzpam_waveform(
     order: int,
+    bipolar: bool,
     num_symbols: int,
     sps: int,
     symbol_rate: float,
     pulse_shape: str = "rect",
-    smooth_bt: float = 1.0,
+    smoothrect_bt: float = 1.0,
     filter_span: int = 10,
     seed: Optional[int] = None,
 ) -> Signal:
@@ -131,17 +134,22 @@ def rzpam_waveform(
 
     Args:
         order: Modulation order (2, 4, 8, etc.).
+        bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
         num_symbols: Number of symbols to generate.
         sps: Samples per symbol (integer).
         symbol_rate: Symbol rate in Hz.
         pulse_shape: 'rect' (simplest) or 'smoothrect'. Others are prohibited.
-        smooth_bt: BT product for smoothrect filter.
+        smoothrect_bt: BT product for smoothrect filter.
         filter_span: Filter span in symbols.
         seed: Random seed.
 
     Returns:
         Signal object.
     """
+    # Ensure even sps
+    if sps % 2 != 0:
+        raise ValueError("For correct RZ duty cycle, `sps` must be even")
+
     # Prohibit complex pulses for RZ as requested/planned
     allowed_rz_pulses = ["rect", "smoothrect"]
     if pulse_shape not in allowed_rz_pulses:
@@ -158,7 +166,9 @@ def rzpam_waveform(
         raise ValueError(f"PAM order must be power of 2, got {order}")
     num_bits = num_symbols * k
     bits = sequences.random_bits(num_bits, seed=seed)
-    symbols = mapping.map_bits(bits, modulation="ask", order=order)
+    symbols = mapping.map_bits(
+        bits, modulation="ask-bipol" if bipolar else "ask-unipol", order=order
+    )
 
     # Apply RZ Pulse Shaping
     if pulse_shape == "rect":
@@ -171,7 +181,7 @@ def rzpam_waveform(
     elif pulse_shape == "smoothrect":
         # RZ Smooth Rect: 50% width (0.5 symbol duration)
         h = filtering.smoothrect_taps(
-            sps=sps, span=filter_span, bt=smooth_bt, pulse_width=0.5
+            sps=sps, span=filter_span, bt=smoothrect_bt, pulse_width=0.5
         )
 
         # Apply pulse using polyphase resampling
@@ -185,7 +195,7 @@ def rzpam_waveform(
         samples=samples,
         sampling_rate=symbol_rate * sps,
         symbol_rate=symbol_rate,
-        modulation_format=f"RZ-PAM-{order}",
+        modulation_format=f"RZ-PAM-{order}{'-bipol' if bipolar else '-unipol'}",
     )
 
 

@@ -4,11 +4,9 @@ import matplotlib as mpl
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter
-from scipy.signal import freqz, welch
 
-from .backend import to_host
+from .backend import to_host, ensure_on_backend, get_xp, get_sp
+from .utils import interp1d
 
 
 def apply_default_theme() -> None:
@@ -61,6 +59,8 @@ def psd(
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
     ax: Optional[Any] = None,
+    xlim: Optional[Tuple[float, float]] = None,
+    ylim: Optional[Tuple[float, float]] = None,
     title: Optional[str] = "Spectrum",
     show: bool = False,
     **kwargs: Any,
@@ -75,6 +75,8 @@ def psd(
         detrend: Detrend method.
         average: Averaging method.
         ax: Optional matplotlib axis to plot on.
+        xlim: X-axis limits.
+        ylim: Y-axis limits.
         title: Title of the plot. Defaults to "Spectrum". If None, no title is set.
         show: Whether to call plt.show() after plotting.
         **kwargs: Additional arguments passed to ax.plot.
@@ -87,12 +89,14 @@ def psd(
     else:
         fig = ax.figure
 
-    # Ensure samples are on host
-    samples = to_host(samples)
+    # Ensure samples are on backend
+    samples = ensure_on_backend(samples)
+    xp = get_xp()
+    sp = get_sp()
 
     # Calculate PSD
-    if np.iscomplexobj(samples):
-        f, Pxx = welch(
+    if xp.iscomplexobj(samples):
+        f, Pxx = sp.signal.welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
@@ -101,10 +105,11 @@ def psd(
             return_onesided=False,
         )
         # Shift zero frequency to center if complex
-        f = np.fft.fftshift(f)
-        Pxx = np.fft.fftshift(Pxx)
+        # Use xp.fft.fftshift
+        f = xp.fft.fftshift(f)
+        Pxx = xp.fft.fftshift(Pxx)
     else:
-        f, Pxx = welch(
+        f, Pxx = sp.signal.welch(
             samples,
             fs=sampling_rate,
             nperseg=nperseg,
@@ -112,8 +117,17 @@ def psd(
             average=average,
         )
 
-    ax.plot(f, 10 * np.log10(Pxx), **kwargs)
-    ax.set_xlabel("Frequency [Hz]")
+    # Move to host for plotting
+    f = to_host(f)
+    Pxx = to_host(Pxx)
+
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
+    ax.plot(f / 1e6, 10 * np.log10(Pxx), **kwargs)
+    ax.set_xlabel("Frequency [MHz]")
     ax.set_ylabel("PSD [dB/Hz]")
     if title is not None:
         ax.set_title(title)
@@ -208,11 +222,12 @@ def _plot_eye_traces(
     title: Optional[str],
     **kwargs,
 ) -> None:
-    """Helper to plot a single eye diagram trace (real values)."""
-    samples = to_host(samples)
+    xp = get_xp()
+    sp = get_sp()
+    samples = ensure_on_backend(samples)
 
     # Normalize to max amplitude 1.0
-    max_val = np.max(np.abs(samples))
+    max_val = xp.max(xp.abs(samples))
     if max_val > 0:
         samples = samples / max_val
 
@@ -231,22 +246,28 @@ def _plot_eye_traces(
         max_traces = 5000
         if num_traces > max_traces:
             skip = num_traces // max_traces
-            indices = np.arange(0, num_traces, skip)[:max_traces]
+            indices = xp.arange(0, num_traces, skip)[:max_traces]
         else:
-            indices = np.arange(num_traces)
+            indices = xp.arange(num_traces)
 
-        # Extract traces
-        indices_host = indices
+        # Vectorized trace extraction
+        # indices shape: (num_traces,)
+        # offsets shape: (trace_len,)
+        # We want to extract samples at [indices[i] * sps + offset[j]]
+        start_indices = (indices * int(sps)).astype(int)
+        offsets = xp.arange(trace_len, dtype=int)
 
-        traces_list = []
-        for i in indices_host:
-            start = int(i * sps)
-            traces_list.append(samples[start : start + trace_len])
+        # Matrix of indices: (num_traces, 1) + (1, trace_len) -> (num_traces, trace_len)
+        gather_indices = start_indices[:, None] + offsets[None, :]
 
-        traces = np.stack(traces_list, axis=1)  # Shape: (trace_len, num_traces)
+        # Gather samples
+        traces = samples[gather_indices]  # (num_traces, trace_len)
+
+        # Transpose for plotting
+        traces = traces.T  # (trace_len, num_traces)
 
         # Move to host for plotting
-        # Move to host for plotting (already on host)
+        traces = to_host(traces)
 
         # Time axis in symbols
         t = np.linspace(0, num_symbols, trace_len, endpoint=True)
@@ -257,39 +278,36 @@ def _plot_eye_traces(
         ax.plot(t, traces, color="C0", **line_kwargs)
 
     elif type == "hist":
-        # For hist, we use all traces to build a good histogram
         max_traces_hist = 20000
         if num_traces > max_traces_hist:
             skip = num_traces // max_traces_hist
-            indices = np.arange(0, num_traces, skip)[:max_traces_hist]
+            indices = xp.arange(0, num_traces, skip)[:max_traces_hist]
         else:
-            indices = np.arange(num_traces)
+            indices = xp.arange(num_traces)
 
-        indices_host = indices
-
-        traces_list = []
-        for i in indices_host:
-            start = int(i * sps)
-            traces_list.append(samples[start : start + trace_len])
-
-        traces = np.stack(traces_list, axis=0)  # Shape: (num_traces, trace_len)
+        start_indices = (indices * int(sps)).astype(int)
+        offsets = xp.arange(trace_len, dtype=int)
+        gather_indices = start_indices[:, None] + offsets[None, :]
+        traces = samples[gather_indices]  # (num_traces, trace_len)
 
         # Interpolate traces
         target_width = 500
         if trace_len < target_width:
-            # Interpolate traces using scipy
-            x_old = np.arange(trace_len)
-            x_new = np.linspace(0, trace_len - 1, target_width)
+            # Interpolate traces using commstools.utils.interp1d
+            x_old = xp.arange(trace_len, dtype=float)
+            x_new = xp.linspace(0, trace_len - 1, target_width, dtype=float)
 
             # Interpolate along the last axis (time)
-            f_interp = interp1d(x_old, traces, axis=1, kind="linear")
-            traces = f_interp(x_new)
+            # utils.interp1d expects (x, x_p, f_p, axis), result is interpolated samples
+            # f_p is traces
+            traces = interp1d(x_new, x_old, traces, axis=1)
             trace_len = target_width
 
         # Create time matrix
-        t = np.linspace(0, num_symbols, trace_len, endpoint=True)
-        # Use np.tile
-        t_matrix = np.tile(t, (traces.shape[0], 1))  # shape: (num_traces, trace_len)
+        # Use xp.linspace
+        t = xp.linspace(0, num_symbols, trace_len, endpoint=True)
+        # Use xp.tile
+        t_matrix = xp.tile(t, (traces.shape[0], 1))  # shape: (num_traces, trace_len)
 
         # Flatten
         t_flat = t_matrix.flatten()
@@ -301,7 +319,7 @@ def _plot_eye_traces(
         bins_y = 500
 
         # Add padding to Y range
-        y_min, y_max = np.min(y_flat), np.max(y_flat)
+        y_min, y_max = xp.min(y_flat), xp.max(y_flat)
         y_range = y_max - y_min
         if y_range == 0:
             y_range = 1.0
@@ -309,9 +327,9 @@ def _plot_eye_traces(
         range_y = [float(y_min - y_pad), float(y_max + y_pad)]
 
         # Min/max of t_flat
-        t_min, t_max = np.min(t_flat), np.max(t_flat)
+        t_min, t_max = xp.min(t_flat), xp.max(t_flat)
 
-        h, xedges, yedges = np.histogram2d(
+        h, xedges, yedges = xp.histogram2d(
             t_flat,
             y_flat,
             bins=[bins_x, bins_y],
@@ -319,12 +337,17 @@ def _plot_eye_traces(
         )
 
         h = h.T
-        h = gaussian_filter(h, sigma=1)
+        h = sp.ndimage.gaussian_filter(h, sigma=1)
 
         # Normalize
-        h_max = np.max(h)
+        h_max = xp.max(h)
         if h_max > 0:
             h = h / h_max
+
+        # Move to host for plotting
+        h = to_host(h)
+        xedges = to_host(xedges)
+        yedges = to_host(yedges)
 
         # Plot using imshow
         imshow_kwargs = {
@@ -376,9 +399,9 @@ def eye_diagram(
     import numpy as np
 
     # Ensure backend usage
-    # Ensure backend usage
-    samples = to_host(samples)
-    is_complex = np.iscomplexobj(samples)
+    samples = ensure_on_backend(samples)
+    xp = get_xp()
+    is_complex = xp.iscomplexobj(samples)
 
     if ax is None:
         if is_complex:
@@ -457,13 +480,13 @@ def filter_response(
         Tuple of (figure, (ax_impulse, ax_mag, ax_phase)) if show is False, else None.
     """
 
-    import numpy as np
     import matplotlib.ticker as ticker
 
-    # Ensure numpy array and get backend
-    # Ensure numpy array and get backend
-    # Keep taps on host
-    taps = to_host(taps)
+    xp = get_xp()
+    sp = get_sp()
+
+    # Ensure taps on backend
+    taps = ensure_on_backend(taps)
 
     if ax is None:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
@@ -476,18 +499,20 @@ def filter_response(
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 4))
 
     # 1. Impulse Response
+    num_taps = len(taps)
+
+    t = (xp.arange(num_taps) - (num_taps - 1) / 2) / sps
+
     # Move to host for plotting
-    taps_host = taps
-    num_taps = len(taps_host)
+    t_host = to_host(t)
+    taps_host = to_host(taps)
 
-    t = (np.arange(num_taps) - (num_taps - 1) / 2) / sps
-
-    if np.iscomplexobj(taps_host):
-        ax1.plot(t, taps_host.real, label="Real", color="C0")
-        ax1.plot(t, taps_host.imag, label="Imag", color="C1")
+    if xp.iscomplexobj(taps):
+        ax1.plot(t_host, taps_host.real, label="Real", color="C0")
+        ax1.plot(t_host, taps_host.imag, label="Imag", color="C1")
         ax1.legend()
     else:
-        ax1.plot(t, taps_host, color="C0")
+        ax1.plot(t_host, taps_host, color="C0")
 
     ax1.set_title("Impulse Response")
     ax1.set_xlabel("Time [Symbol Periods]")
@@ -504,13 +529,21 @@ def filter_response(
     ax1.xaxis.set_major_formatter(ticker.FuncFormatter(t_formatter))
 
     # 2. Frequency Response
-    # Compute frequency response using scipy
-    w, h = freqz(taps, worN=2048)
+    # Compute frequency response using backend sp
+    w, h = sp.signal.freqz(taps, worN=2048)
 
     # Normalize to Nyquist (0 to 1)
+    # w is in radians/sample (0 to pi)
     freqs = w / (2 * np.pi)
-    mag = 20 * np.log10(np.abs(h) + 1e-12)
-    angles = np.unwrap(np.angle(h))
+
+    # Avoid log(0)
+    mag = 20 * xp.log10(xp.abs(h) + 1e-12)
+    angles = xp.unwrap(xp.angle(h))
+
+    # Move to host
+    freqs = to_host(freqs)
+    mag = to_host(mag)
+    angles = to_host(angles)
 
     # Magnitude
     ax2.plot(freqs, mag, color="C2")
@@ -537,13 +570,14 @@ def plot_ideal_constellation(
     order: int,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
+    size=5,
     show: bool = False,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Plots the ideal constellation diagram for a given modulation and order.
 
     Args:
-        modulation: Modulation type ('psk', 'qam', 'ask').
+        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
         order: Modulation order.
         ax: Optional matplotlib axis to plot on.
         title: Title of the plot.
@@ -555,7 +589,7 @@ def plot_ideal_constellation(
     from .mapping import gray_constellation
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(size, size))
     else:
         fig = ax.figure
 
