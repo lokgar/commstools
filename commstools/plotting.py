@@ -105,7 +105,6 @@ def psd(
             return_onesided=False,
         )
         # Shift zero frequency to center if complex
-        # Use xp.fft.fftshift
         f = xp.fft.fftshift(f)
         Pxx = xp.fft.fftshift(Pxx)
     else:
@@ -565,7 +564,7 @@ def filter_response(
     return fig, (ax1, ax2, ax3)
 
 
-def plot_ideal_constellation(
+def ideal_constellation(
     modulation: str,
     order: int,
     ax: Optional[Any] = None,

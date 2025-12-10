@@ -363,7 +363,6 @@ class Signal:
         self,
         pulse_taps: ArrayType,
         taps_normalization: str = "unity_gain",
-        mode: str = "same",
         normalize_output: bool = False,
     ) -> "Signal":
         """
@@ -373,7 +372,6 @@ class Signal:
             pulse_taps: Pulse shape filter taps.
             taps_normalization: Normalization to apply to the matched filter taps.
                                 Options: 'unity_gain', 'unit_energy'.
-            mode: Convolution mode ('same', 'full', 'valid').
             normalize_output: If True, normalizes the output samples to have a maximum
                               absolute value of 1.0.
 
@@ -386,7 +384,30 @@ class Signal:
             self.samples,
             pulse_taps=pulse_taps,
             taps_normalization=taps_normalization,
-            mode=mode,
             normalize_output=normalize_output,
         )
         return self
+
+    def copy(self) -> "Signal":
+        """
+        Creates a deep copy of the Signal object.
+
+        Returns:
+            A new Signal object with copied data.
+        """
+        # Create a new instance
+        # We need to copy samples explicitly
+        if hasattr(self.samples, "copy"):
+            new_samples = self.samples.copy()
+        else:
+            # Fallback for list/tuple
+            import copy
+
+            new_samples = copy.deepcopy(self.samples)
+
+        return Signal(
+            samples=new_samples,
+            sampling_rate=self.sampling_rate,
+            symbol_rate=self.symbol_rate,
+            modulation_format=self.modulation_format,
+        )

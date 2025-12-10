@@ -102,7 +102,7 @@ def pam_waveform(
         Signal object.
     """
     sig = generate_waveform(
-        modulation="ask-bipol" if bipolar else "ask-unipol",
+        modulation="ask",
         order=order,
         num_symbols=num_symbols,
         sps=sps,
@@ -114,6 +114,14 @@ def pam_waveform(
         filter_span=filter_span,
         seed=seed,
     )
+
+    if not bipolar:
+        xp = get_xp()
+        # Shift so minimum is 0
+        sig.samples = sig.samples - xp.min(sig.samples)
+        # Normalize so max amplitude is 1 (standard for unipolar)
+        sig.samples = utils.normalize(sig.samples, "max_amplitude")
+
     sig.modulation_format = f"PAM-{order}{'-bipol' if bipolar else '-unipol'}"
     return sig
 
@@ -166,9 +174,11 @@ def rzpam_waveform(
         raise ValueError(f"PAM order must be power of 2, got {order}")
     num_bits = num_symbols * k
     bits = sequences.random_bits(num_bits, seed=seed)
-    symbols = mapping.map_bits(
-        bits, modulation="ask-bipol" if bipolar else "ask-unipol", order=order
-    )
+    symbols = mapping.map_bits(bits, modulation="ask", order=order)
+
+    if not bipolar:
+        # For Unipolar RZ, shift symbols so the lowest level is 0
+        symbols = symbols - xp.min(symbols)
 
     # Apply RZ Pulse Shaping
     if pulse_shape == "rect":

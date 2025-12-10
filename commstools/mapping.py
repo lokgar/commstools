@@ -4,7 +4,15 @@ from .backend import ArrayType, ensure_on_backend, get_xp
 
 
 def _gray_code_np(n: int) -> np.ndarray:
-    """Internal numpy implementation of Gray code."""
+    """
+    Internal numpy implementation of Gray code.
+
+    Args:
+        n: Number of bits.
+
+    Returns:
+        Array of integers representing the Gray code sequence.
+    """
     if n < 0:
         raise ValueError("n must be non-negative")
     if n == 0:
@@ -36,8 +44,8 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
     constellation[s] is the complex/float value for symbol s.
 
     Args:
-        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
-        order: Modulation order (e.g., 4, 16, 64).
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
 
     Returns:
         Array of constellation points on the active backend.
@@ -49,10 +57,8 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
 
     if modulation == "psk":
         result = _gray_psk(order)
-    elif modulation == "ask-bipol":
+    elif modulation == "ask":
         result = _gray_ask(order)
-    elif modulation == "ask-unipol":
-        result = _gray_ask(order) - _gray_ask(order).min()
     elif modulation == "qam":
         k = int(np.log2(order))
         if 2**k != order:
@@ -327,7 +333,7 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
 
     Args:
         bits: Input array of bits (0s and 1s).
-        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
+        modulation: Modulation type ('psk', 'qam', 'ask').
         order: Modulation order.
 
     Returns:
