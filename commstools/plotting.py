@@ -404,7 +404,7 @@ def eye_diagram(
 
     if ax is None:
         if is_complex:
-            fig, ax = plt.subplots(2, 1, figsize=(6, 8), sharex=True)
+            fig, ax = plt.subplots(2, 1, figsize=(5, 7))
         else:
             fig, ax = plt.subplots(1, 1)
             # Handle the fact that plt.subplots(1, 1) returns a single ax, not a list
