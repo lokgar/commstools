@@ -66,7 +66,7 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
 
         # Check for 8-QAM
         if order == 8:
-            result = _gray_qam_8(order)
+            result = _gray_qam_8_rect()
         elif k % 2 == 0:
             result = _gray_qam_square(order)
         else:
@@ -170,7 +170,57 @@ def _gray_qam_square(order: int) -> np.ndarray:
     return i_vals + 1j * q_vals
 
 
-def _gray_qam_8(order: int = 8) -> np.ndarray:
+def _gray_qam_8_rect() -> np.ndarray:
+    """
+    Generate 8-QAM constellation with Rectangular Gray mapping (Numpy).
+
+    Standard rectangular 8-QAM with Gray mapping:
+        0 (000) -> (1, 1)
+        1 (001) -> (1, 3)
+        2 (010) -> (3, 3)
+        3 (011) -> (3, 1)
+        4 (100) -> (1, -1)
+        5 (101) -> (1, -3)
+        6 (110) -> (3, -3)
+        7 (111) -> (3, -1)
+
+    Args:
+        order: Modulation order (must be 8). This arg is kept for signature consistency.
+
+    Returns:
+        Complex array of constellation points.
+    """
+
+    points = np.zeros(8, dtype=complex)
+
+    # 000 (I=-3, Q=-1)
+    points[0] = -3.0 - 1.0j
+
+    # 001 (I=-3, Q=+1)
+    points[1] = -3.0 + 1.0j
+
+    # 010 (I=-1, Q=-1)
+    points[2] = -1.0 - 1.0j
+
+    # 011 (I=-1, Q=+1)
+    points[3] = -1.0 + 1.0j
+
+    # 100 (I=+3, Q=-1)
+    points[4] = 3.0 - 1.0j
+
+    # 101 (I=+3, Q=+1)
+    points[5] = 3.0 + 1.0j
+
+    # 110 (I=+1, Q=-1)
+    points[6] = 1.0 - 1.0j
+
+    # 111 (I=+1, Q=+1)
+    points[7] = 1.0 + 1.0j
+
+    return points
+
+
+def _gray_qam_8_star() -> np.ndarray:
     """
     Generate 8-QAM constellation with 'Star' Gray mapping (Numpy).
 
@@ -184,8 +234,6 @@ def _gray_qam_8(order: int = 8) -> np.ndarray:
     Returns:
         Complex array of constellation points.
     """
-    if order != 8:
-        raise ValueError("Order must be 8 for this function.")
 
     # Optimal scaling for star 8-QAM
     # Inner square at ±1. R1 = sqrt(2).
@@ -203,13 +251,13 @@ def _gray_qam_8(order: int = 8) -> np.ndarray:
     # 7 (111) -> Inner Bottom-Left
 
     points = np.zeros(8, dtype=complex)
-    points[0] = a + 0j
+    points[0] = a
     points[1] = 1.0 + 1.0j
     points[2] = -1.0 + 1.0j
-    points[3] = 0.0 + a * 1j
+    points[3] = a * 1j
     points[4] = 1.0 - 1.0j
-    points[5] = 0.0 - a * 1j
-    points[6] = -a + 0j
+    points[5] = -a * 1j
+    points[6] = -a
     points[7] = -1.0 - 1.0j
 
     return points
