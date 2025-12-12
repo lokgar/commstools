@@ -58,6 +58,9 @@ def psd(
     nperseg: int = 128,
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
+    center_frequency: float = 0.0,
+    domain: str = "RF",
+    x_axis: str = "frequency",
     ax: Optional[Any] = None,
     xlim: Optional[Tuple[float, float]] = None,
     ylim: Optional[Tuple[float, float]] = None,
@@ -74,6 +77,9 @@ def psd(
         nperseg: Length of each segment.
         detrend: Detrend method.
         average: Averaging method.
+        center_frequency: Center frequency of the signal in Hz.
+        domain: Signal domain ('RF' or 'OPT').
+        x_axis: X-axis type ('frequency' or 'wavelength').
         ax: Optional matplotlib axis to plot on.
         xlim: X-axis limits.
         ylim: Y-axis limits.
@@ -120,13 +126,56 @@ def psd(
     f = to_host(f)
     Pxx = to_host(Pxx)
 
+    # Apply center frequency shift
+    f = f + center_frequency
+
+    xlabel = "Frequency [Hz]"
+    x_values = f
+
+    if x_axis == "wavelength":
+        if domain != "OPT":
+            print("Warning: Wavelength plotting is typically used for optical signals.")
+
+        # c = 299,792,458 m/s
+        c = 299792458.0
+        # Avoid division by zero
+        # Convert frequency to wavelength: lambda = c / f
+        # Result in nanometers (1e9)
+        valid_indices = f > 0
+        x_values = np.zeros_like(f)
+        x_values[valid_indices] = (c / f[valid_indices]) * 1e9
+        x_values[~valid_indices] = np.nan  # Handle non-positive frequencies
+
+        xlabel = "Wavelength [nm]"
+    else:
+        # Auto-scale frequency axis
+        max_f = np.max(np.abs(f))
+        if max_f >= 1e12:
+            scale_factor = 1e12
+            unit = "THz"
+        elif max_f >= 1e9:
+            scale_factor = 1e9
+            unit = "GHz"
+        elif max_f >= 1e6:
+            scale_factor = 1e6
+            unit = "MHz"
+        elif max_f >= 1e3:
+            scale_factor = 1e3
+            unit = "kHz"
+        else:
+            scale_factor = 1.0
+            unit = "Hz"
+
+        x_values = f / scale_factor
+        xlabel = f"Frequency [{unit}]"
+
     if xlim is not None:
         ax.set_xlim(xlim)
     if ylim is not None:
         ax.set_ylim(ylim)
 
-    ax.plot(f / 1e6, 10 * np.log10(Pxx), **kwargs)
-    ax.set_xlabel("Frequency [MHz]")
+    ax.plot(x_values, 10 * np.log10(Pxx), **kwargs)
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("PSD [dB/Hz]")
     if title is not None:
         ax.set_title(title)
@@ -181,6 +230,27 @@ def time_domain(
 
     time_axis = np.arange(len(plot_samples)) / sampling_rate
 
+    # Auto-scale time axis
+    max_time = time_axis[-1] if len(time_axis) > 0 else 0
+    if max_time < 1e-9:
+        scale_factor = 1e12
+        unit = "ps"
+    elif max_time < 1e-6:
+        scale_factor = 1e9
+        unit = "ns"
+    elif max_time < 1e-3:
+        scale_factor = 1e6
+        unit = "µs"
+    elif max_time < 1:
+        scale_factor = 1e3
+        unit = "ms"
+    else:
+        scale_factor = 1.0
+        unit = "s"
+
+    time_axis = time_axis * scale_factor
+    xlabel = f"Time [{unit}]"
+
     if np.iscomplexobj(plot_samples):
         ax.plot(
             time_axis,
@@ -201,7 +271,7 @@ def time_domain(
             plot_samples,
             **kwargs,
         )
-    ax.set_xlabel("Time [s]")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("Amplitude")
     if title is not None:
         ax.set_title(title)
@@ -602,13 +672,8 @@ def ideal_constellation(
     # Move to host for plotting
     const = to_host(const)
 
-    # Separate real/imag
-    if np.iscomplexobj(const):
-        real = const.real
-        imag = const.imag
-    else:
-        real = const
-        imag = np.zeros_like(const)
+    real = const.real
+    imag = const.imag
 
     # Plot points
     ax.scatter(real, imag, zorder=10)
@@ -616,10 +681,7 @@ def ideal_constellation(
     # Annotate points
     n_bits = int(np.log2(order))
     for i, point in enumerate(const):
-        if np.iscomplex(point):
-            x, y = point.real, point.imag
-        else:
-            x, y = point, 0
+        x, y = point.real, point.imag
 
         label = f"{i:0{n_bits}b} ({i})"
         ax.annotate(

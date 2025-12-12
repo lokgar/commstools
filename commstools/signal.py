@@ -30,6 +30,10 @@ class Signal:
     sampling_rate: Optional[float] = None
     symbol_rate: Optional[float] = None
     modulation_format: Optional[str] = None
+    signal_type: str = "baseband"
+    domain: Optional[str] = None
+    center_frequency: float = 0.0
+    digital_frequency_offset: float = 0.0
 
     def __post_init__(self) -> None:
         # Validate required fields
@@ -41,6 +45,17 @@ class Signal:
 
         if self.modulation_format is None:
             self.modulation_format = "None"
+
+        if self.signal_type not in ["baseband", "passband"]:
+            raise ValueError("signal_type must be 'baseband' or 'passband'")
+
+        if self.signal_type == "passband":
+            if self.domain is None:
+                raise ValueError("domain must be provided for passband signals")
+            if self.domain not in ["RF", "OPT"]:
+                raise ValueError("domain must be 'RF' or 'OPT'")
+            # center_frequency defaults to 0.0, which might be valid but usually isn't for passband
+            # We won't enforce non-zero strictly as 0 might be a valid educational case, but it's worth noting.
 
         # Ensure samples are on the current backend upon initialization
         # First, ensure it's something we can work with
@@ -189,6 +204,7 @@ class Signal:
         average: Optional[str] = "mean",
         ax: Optional[Any] = None,
         title: Optional[str] = "Spectrum",
+        x_axis: Optional[str] = "frequency",
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
@@ -201,6 +217,7 @@ class Signal:
             average: Averaging method.
             ax: Optional matplotlib axis to plot on.
             title: Title of the plot.
+            x_axis: X-axis type ('frequency' or 'wavelength').
             show: Whether to call plt.show().
             **kwargs: Additional plotting arguments.
 
@@ -215,6 +232,9 @@ class Signal:
             nperseg=nperseg,
             detrend=detrend,
             average=average,
+            center_frequency=self.center_frequency,
+            domain=self.domain if self.domain else "RF",
+            x_axis=x_axis,
             ax=ax,
             title=title,
             show=show,
@@ -410,4 +430,8 @@ class Signal:
             sampling_rate=self.sampling_rate,
             symbol_rate=self.symbol_rate,
             modulation_format=self.modulation_format,
+            signal_type=self.signal_type,
+            domain=self.domain,
+            center_frequency=self.center_frequency,
+            digital_frequency_offset=self.digital_frequency_offset,
         )
