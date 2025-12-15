@@ -1,3 +1,13 @@
+"""
+Core signal abstraction.
+
+This module defines the `Signal` class, which serves as the primary data structure
+for the library. It encapsulates:
+- Initial complex IQ samples.
+- Signal metadata (sampling rate, symbol rate, modulation scheme).
+- Methods for analyzing (PSD, eye diagram) and transforming (filtering, resampling) the signal.
+"""
+
 from typing import Any, Optional, Tuple, Union, Literal, Dict
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

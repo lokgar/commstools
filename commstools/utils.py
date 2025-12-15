@@ -1,3 +1,11 @@
+"""
+Utility functions.
+
+This module provides general helper functions used across the library:
+- Array normalization (unity gain, unit energy, max amplitude, average power).
+- Linear interpolation (backend-agnostic).
+"""
+
 from .backend import ArrayType, get_xp, ensure_on_backend
 
 

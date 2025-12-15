@@ -1,3 +1,12 @@
+"""
+Multirate signal processing.
+
+This module provides efficient implementations of multirate operations:
+- Upsampling (interpolation).
+- Downsampling (decimation).
+- Rational rate resampling (polyphase filtering).
+"""
+
 from typing import Any
 
 from .backend import ArrayType, ensure_on_backend, get_sp, get_xp
