@@ -464,6 +464,10 @@ def eye_diagram(
     Returns:
         Tuple of (figure, axis) if show is False, else None.
     """
+
+    if sps % 1 != 0:
+        raise ValueError("sps must be an integer")
+
     import matplotlib.pyplot as plt
     import numpy as np
 

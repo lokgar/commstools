@@ -370,7 +370,7 @@ class Signal(BaseModel):
         return plotting.eye_diagram(
             self.samples,
             ax=ax,
-            sps=self.sampling_rate / self.symbol_rate,
+            sps=self.sps,
             type=type,
             title=title,
             show=show,
@@ -541,25 +541,4 @@ class Signal(BaseModel):
         Returns:
             A new Signal object with copied data.
         """
-        # Create a new instance
-        # We need to copy samples explicitly
-        if hasattr(self.samples, "copy"):
-            new_samples = self.samples.copy()
-        else:
-            # Fallback for list/tuple
-            import copy
-
-            new_samples = copy.deepcopy(self.samples)
-
-        return Signal(
-            samples=new_samples,
-            sampling_rate=self.sampling_rate,
-            symbol_rate=self.symbol_rate,
-            modulation_scheme=self.modulation_scheme,
-            pulse_shape=self.pulse_shape,
-            pulse_params=self.pulse_params,
-            spectral_domain=self.spectral_domain,
-            physical_domain=self.physical_domain,
-            center_frequency=self.center_frequency,
-            digital_frequency_offset=self.digital_frequency_offset,
-        )
+        return self.model_copy(deep=True)
