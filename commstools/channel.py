@@ -69,12 +69,8 @@ def add_gaussian_noise(
     noisy_samples = samples + noise
 
     if isinstance(signal, Signal):
-        # Return new Signal preserving metadata
-        return Signal(
-            samples=noisy_samples,
-            sampling_rate=signal.sampling_rate,
-            symbol_rate=signal.symbol_rate,
-            modulation_format=signal.modulation_format,
-        )
+        sig = signal.copy()
+        sig.samples = noisy_samples
+        return sig
     else:
         return noisy_samples

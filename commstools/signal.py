@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, Literal, Dict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import numpy as np
 
@@ -15,62 +15,56 @@ except ImportError:
 from .backend import ArrayType, Backend, CupyBackend, NumpyBackend, get_backend
 
 
-@dataclass
-class Signal:
+class Signal(BaseModel):
     """
     Represents a digital signal with associated physical layer metadata.
 
     Attributes:
         samples: The complex IQ samples of the signal.
         sampling_rate: The sampling rate in Hz.
-        modulation_format: Description of the modulation format (e.g., 'QPSK', '16QAM').
+        symbol_rate: The symbol rate in Hz.
+        modulation_scheme: Description of the modulation format (e.g., 'QPSK', '16QAM').
+        spectral_domain: The spectral domain of the signal ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
+        physical_domain: The physical domain of the signal ('DIG', 'RF', 'OPT').
+        center_frequency: The center frequency in Hz.
+        digital_frequency_offset: The digital frequency offset in Hz.
     """
 
-    samples: ArrayType
-    sampling_rate: Optional[float] = None
-    symbol_rate: Optional[float] = None
-    modulation_format: Optional[str] = None
-    signal_type: str = "baseband"
-    domain: Optional[str] = None
-    center_frequency: float = 0.0
-    digital_frequency_offset: float = 0.0
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __post_init__(self) -> None:
-        # Validate required fields
-        if self.sampling_rate is None:
-            raise ValueError("sampling_rate must be provided explicitly")
+    samples: Any
+    sampling_rate: float = Field(..., gt=0)
+    symbol_rate: float = Field(..., gt=0)
+    modulation_scheme: str = "None"
+    pulse_shape: Optional[str] = None
+    pulse_params: Optional[Dict[str, Any]] = None
+    spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
+    physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
+    center_frequency: float = Field(default=0, ge=0)
+    digital_frequency_offset: float = Field(default=0, ge=0)
 
-        if self.symbol_rate is None:
-            raise ValueError("symbol_rate must be provided explicitly")
-
-        if self.modulation_format is None:
-            self.modulation_format = "None"
-
-        if self.signal_type not in ["baseband", "passband"]:
-            raise ValueError("signal_type must be 'baseband' or 'passband'")
-
-        if self.signal_type == "passband":
-            if self.domain is None:
-                raise ValueError("domain must be provided for passband signals")
-            if self.domain not in ["RF", "OPT"]:
-                raise ValueError("domain must be 'RF' or 'OPT'")
-            # center_frequency defaults to 0.0, which might be valid but usually isn't for passband
-            # We won't enforce non-zero strictly as 0 might be a valid educational case, but it's worth noting.
-
-        # Ensure samples are on the current backend upon initialization
-        # First, ensure it's something we can work with
-        if not isinstance(self.samples, (np.ndarray, list, tuple)):
-            if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
-                pass
+    @field_validator("samples", mode="before")
+    @classmethod
+    def validate_samples(cls, v: Any) -> Any:
+        # Ensure it's something we can work with
+        if not isinstance(v, (np.ndarray, list, tuple)):
+            if _CUPY_AVAILABLE and isinstance(v, cp.ndarray):
+                return v
             else:
                 # Try to convert to numpy array to see if it's a valid array-like
                 try:
-                    self.samples = np.asarray(self.samples)
+                    return np.asarray(v)
                 except Exception:
                     raise ValueError(
-                        f"Unsupported samples type: {type(self.samples)}. Must be array-like."
+                        f"Unsupported samples type: {type(v)}. Must be array-like."
                     )
 
+        if isinstance(v, (list, tuple)):
+            return np.asarray(v)
+
+        return v
+
+    def model_post_init(self, __context: Any) -> None:
         current_backend = get_backend()
         if current_backend.name == "gpu":
             self.to("gpu")
@@ -233,13 +227,88 @@ class Signal:
             detrend=detrend,
             average=average,
             center_frequency=self.center_frequency,
-            domain=self.domain if self.domain else "RF",
+            domain=self.physical_domain if self.physical_domain else "RF",
             x_axis=x_axis,
             ax=ax,
             title=title,
             show=show,
             **kwargs,
         )
+
+    @staticmethod
+    def _format_si(value: Optional[float], unit: str = "Hz") -> str:
+        if value is None:
+            return "None"
+
+        if abs(value) == 0:
+            return f"0.00 {unit}"
+
+        # Standard SI prefixes
+        si_units = {
+            -5: "f",
+            -4: "p",
+            -3: "n",
+            -2: "µ",
+            -1: "m",
+            0: "",
+            1: "k",
+            2: "M",
+            3: "G",
+            4: "T",
+            5: "P",
+        }
+
+        rank = int(np.floor(np.log10(abs(value)) / 3))
+        # clamp to supported range
+        rank = max(min(si_units.keys()), min(rank, max(si_units.keys())))
+
+        scaled = value / (1000.0**rank)
+        return f"{scaled:.2f} {si_units[rank]}{unit}"
+
+    def print_summary(self) -> None:
+        """
+        Prints a summary of the signal properties.
+        """
+        import pandas as pd
+        from IPython import get_ipython
+        from IPython.display import display
+
+        data = {
+            "Property": [
+                "Spectral Domain",
+                "Physical Domain",
+                "Modulation Scheme",
+                "Sampling Rate",
+                "Symbol Rate",
+                "Samples Per Symbol",
+                "Pulse Shape",
+                "Duration",
+                "Center Frequency",
+                "Digital Freq. Offset",
+                "Backend",
+                "Samples Shape",
+            ],
+            "Value": [
+                self.spectral_domain,
+                self.physical_domain,
+                self.modulation_scheme,
+                self._format_si(self.sampling_rate, "Hz"),
+                self._format_si(self.symbol_rate, "Baud"),
+                f"{self.sps:.2f}",
+                self.pulse_shape.upper() if self.pulse_shape else "None",
+                self._format_si(self.duration, "s"),
+                self._format_si(self.center_frequency, "Hz"),
+                self._format_si(self.digital_frequency_offset, "Hz"),
+                self.backend.name.upper(),
+                str(self.samples.shape),
+            ],
+        }
+        df = pd.DataFrame(data)
+
+        if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
+            display(df)
+        else:
+            print(df)
 
     def plot_symbols(
         self,
@@ -379,17 +448,68 @@ class Signal:
         self.samples = filtering.fir_filter(self.samples, taps)
         return self
 
+    def shaping_filter_taps(self) -> ArrayType:
+        """
+        Calculates and returns the shaping filter taps based on the signal's
+        pulse shape parameters.
+
+        Returns:
+            Filter taps array.
+
+        Raises:
+            ValueError: If pulse shape is not defined.
+        """
+        if not self.pulse_shape or self.pulse_shape == "none":
+            raise ValueError("No pulse shape defined for this signal.")
+
+        from . import filtering
+
+        params = self.pulse_params if self.pulse_params else {}
+
+        # Default span if not present
+        span = params.get("filter_span", 10)
+        pulse_width = params.get("pulse_width", 1.0)
+
+        if self.pulse_shape == "rect":
+            return self.backend.xp.ones(int(self.sps * pulse_width))
+        elif self.pulse_shape == "smoothrect":
+            return filtering.smoothrect_taps(
+                sps=self.sps,
+                span=span,
+                bt=params.get("smoothrect_bt", 1.0),
+                pulse_width=pulse_width,
+            )
+        elif self.pulse_shape == "gaussian":
+            return filtering.gaussian_taps(
+                sps=self.sps,
+                span=span,
+                bt=params.get("gaussian_bt", 0.3),
+            )
+        elif self.pulse_shape == "rrc":
+            return filtering.rrc_taps(
+                sps=self.sps,
+                span=span,
+                rolloff=params.get("rrc_rolloff", 0.35),
+            )
+        elif self.pulse_shape == "rc":
+            return filtering.rc_taps(
+                sps=self.sps,
+                span=span,
+                rolloff=params.get("rc_rolloff", 0.35),
+            )
+        else:
+            raise ValueError(f"Unknown pulse shape: {self.pulse_shape}")
+
     def matched_filter(
         self,
-        pulse_taps: ArrayType,
         taps_normalization: str = "unity_gain",
         normalize_output: bool = False,
     ) -> "Signal":
         """
         Apply matched filter to the signal.
+        The filter taps are calculated automatically based on the signal properties.
 
         Args:
-            pulse_taps: Pulse shape filter taps.
             taps_normalization: Normalization to apply to the matched filter taps.
                                 Options: 'unity_gain', 'unit_energy'.
             normalize_output: If True, normalizes the output samples to have a maximum
@@ -399,6 +519,12 @@ class Signal:
             self
         """
         from . import filtering
+
+        try:
+            pulse_taps = self.shaping_filter_taps()
+        except ValueError as e:
+            print(f"Cannot apply matched filter: {e}")
+            return self
 
         self.samples = filtering.matched_filter(
             self.samples,
@@ -429,9 +555,11 @@ class Signal:
             samples=new_samples,
             sampling_rate=self.sampling_rate,
             symbol_rate=self.symbol_rate,
-            modulation_format=self.modulation_format,
-            signal_type=self.signal_type,
-            domain=self.domain,
+            modulation_scheme=self.modulation_scheme,
+            pulse_shape=self.pulse_shape,
+            pulse_params=self.pulse_params,
+            spectral_domain=self.spectral_domain,
+            physical_domain=self.physical_domain,
             center_frequency=self.center_frequency,
             digital_frequency_offset=self.digital_frequency_offset,
         )

@@ -2,14 +2,12 @@
 
 CommsTools is a modern, modular Python library for high-performance digital communications research.
 
-It adopts a **"Hardware-First" architecture**, allowing researchers to seamlessly switch between **CPU (NumPy)** for ease of debugging and **GPU (CuPy)** for massive parallel acceleration—without changing their high-level code.
-
 ## 🚀 Key Features
 
 * **Hardware-First Architecture**:
-  * **CPU Mode**: Standard execution built on NumPy. Default behavior, perfect for debugging and small-scale simulations.
-  * **GPU Mode**: High-performance execution built on CuPy. Simply move your signals to the GPU to accelerate heavy DSP operations.
-* **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.).
+  * **CPU Mode**: Standard execution built on NumPy. Default behavior, perfect for debugging and small-scale simulations (or when GPU is not available).
+  * **GPU Mode**: High-performance execution built on CuPy (JAX is also supported). Requires CUDA-compatible GPU and appropriate drivers.
+* **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.) and provides methods for DSP operations and visualization.
 * **JAX Interoperability**: Explicitly export data to JAX for specialized research tasks like gradient calculation or machine learning integration.
 
 ## 📦 Installation
@@ -38,9 +36,9 @@ import numpy as np
 # Select Hardware: 'cpu' (default) or 'gpu'
 set_backend("gpu") 
 
+samples = np.random.randn(1000) + 1j * np.random.randn(1000)
 # Create a signal (automatically placed on the selected backend)
 # If backend is 'gpu', this creates a CuPy array on the device.
-samples = np.random.randn(1000) + 1j * np.random.randn(1000)
 sig = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e5)
 
 # Apply DSP

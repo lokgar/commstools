@@ -7,21 +7,22 @@ from .backend import get_sp, get_xp
 from .signal import Signal
 
 
-def generate_waveform(
+def generate_baseband(
     modulation: str,
     order: int,
     num_symbols: int,
     sps: float,
     symbol_rate: float,
     pulse_shape: str = "rrc",
+    filter_span: int = 10,
     rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
     smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
-    filter_span: int = 10,
     seed: Optional[int] = None,
 ) -> Signal:
     """
-    Generate a complete waveform with specified parameters.
+    Generate a baseband waveform with specified parameters.
 
     Args:
         modulation: Modulation type ('psk', 'qam', 'ask').
@@ -30,9 +31,11 @@ def generate_waveform(
         sps: Samples per symbol.
         symbol_rate: Symbol rate in Hz.
         pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
-        rrc_rolloff: Roll-off factor for RRC/RC filters.
-        gaussian_bt: Bandwidth-Time product for Gaussian filter.
         filter_span: Filter span in symbols.
+        rrc_rolloff: Roll-off factor for RRC filters.
+        rc_rolloff: Roll-off factor for RC filters.
+        smoothrect_bt: Bandwidth-Time product for SmoothRect filter.
+        gaussian_bt: Bandwidth-Time product for Gaussian filter.
         seed: Random seed.
 
     Returns:
@@ -55,6 +58,7 @@ def generate_waveform(
         pulse_shape=pulse_shape,
         filter_span=filter_span,
         rrc_rolloff=rrc_rolloff,
+        rc_rolloff=rc_rolloff,
         smoothrect_bt=smoothrect_bt,
         gaussian_bt=gaussian_bt,
     )
@@ -65,25 +69,34 @@ def generate_waveform(
         samples=samples,
         sampling_rate=symbol_rate * sps,
         symbol_rate=symbol_rate,
-        modulation_format=f"{order}-{modulation.upper()}",
+        modulation_scheme=f"{order}-{modulation.upper()}",
+        pulse_shape=pulse_shape,
+        pulse_params={
+            "filter_span": filter_span,
+            "rrc_rolloff": rrc_rolloff,
+            "rc_rolloff": rc_rolloff,
+            "smoothrect_bt": smoothrect_bt,
+            "gaussian_bt": gaussian_bt,
+        },
     )
 
 
-def pam_waveform(
+def pam(
     order: int,
     bipolar: bool,
     num_symbols: int,
     sps: int,
     symbol_rate: float,
     pulse_shape: str = "rect",
+    filter_span: int = 10,
     rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
     smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
-    filter_span: int = 10,
     seed: Optional[int] = None,
 ) -> Signal:
     """
-    Generate a PAM waveform (NRZ).
+    Generate a PAM baseband waveform (NRZ).
 
     Args:
         order: Modulation order (2, 4, 8, etc.).
@@ -92,26 +105,28 @@ def pam_waveform(
         sps: Samples per symbol (integer).
         symbol_rate: Symbol rate in Hz.
         pulse_shape: Pulse shaping type ('rect', 'rrc', 'rc', 'gaussian', 'smoothrect', 'none').
-        rrc_rolloff: Roll-off factor for RRC/RC filters.
+        filter_span: Filter span in symbols.
+        rrc_rolloff: Roll-off factor for RRC filters.
+        rc_rolloff: Roll-off factor for RC filters.
         smoothrect_bt: BT product for smoothrect filter.
         gaussian_bt: BT product for Gaussian filter.
-        filter_span: Filter span in symbols.
         seed: Random seed.
 
     Returns:
         Signal object.
     """
-    sig = generate_waveform(
+    sig = generate_baseband(
         modulation="ask",
         order=order,
         num_symbols=num_symbols,
         sps=sps,
         symbol_rate=symbol_rate,
         pulse_shape=pulse_shape,
+        filter_span=filter_span,
         rrc_rolloff=rrc_rolloff,
+        rc_rolloff=rc_rolloff,
         smoothrect_bt=smoothrect_bt,
         gaussian_bt=gaussian_bt,
-        filter_span=filter_span,
         seed=seed,
     )
 
@@ -122,23 +137,23 @@ def pam_waveform(
         # Normalize so max amplitude is 1 (standard for unipolar)
         sig.samples = utils.normalize(sig.samples, "max_amplitude")
 
-    sig.modulation_format = f"PAM-{order}{'-bipol' if bipolar else '-unipol'}"
+    sig.modulation_scheme = f"PAM-{order}{'-BIPOL' if bipolar else '-UNIPOL'}"
     return sig
 
 
-def rzpam_waveform(
+def rzpam(
     order: int,
     bipolar: bool,
     num_symbols: int,
     sps: int,
     symbol_rate: float,
     pulse_shape: str = "rect",
-    smoothrect_bt: float = 1.0,
     filter_span: int = 10,
+    smoothrect_bt: float = 1.0,
     seed: Optional[int] = None,
 ) -> Signal:
     """
-    Generate a RZ (Return-to-Zero) PAM waveform.
+    Generate a RZ (Return-to-Zero) PAM baseband waveform.
 
     Args:
         order: Modulation order (2, 4, 8, etc.).
@@ -205,57 +220,71 @@ def rzpam_waveform(
         samples=samples,
         sampling_rate=symbol_rate * sps,
         symbol_rate=symbol_rate,
-        modulation_format=f"RZ-PAM-{order}{'-bipol' if bipolar else '-unipol'}",
+        modulation_scheme=f"RZ-PAM-{order}{'-BIPOL' if bipolar else '-UNIPOL'}",
+        pulse_shape=pulse_shape,
+        pulse_params={
+            "filter_span": filter_span,
+            "smoothrect_bt": smoothrect_bt,
+            "pulse_width": 0.5,
+        },
     )
 
 
-def psk_waveform(
+def psk(
     order: int,
     num_symbols: int,
     sps: float,
     symbol_rate: float,
     pulse_shape: str = "rrc",
-    rrc_rolloff: float = 0.35,
-    gaussian_bt: float = 0.3,
     filter_span: int = 10,
+    rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
+    smoothrect_bt: float = 1.0,
+    gaussian_bt: float = 0.3,
     seed: Optional[int] = None,
 ) -> Signal:
-    """Wrapper for PSK waveform generation."""
-    return generate_waveform(
+    """Wrapper for PSK baseband waveform generation."""
+    return generate_baseband(
         modulation="psk",
         order=order,
         num_symbols=num_symbols,
         sps=sps,
         symbol_rate=symbol_rate,
         pulse_shape=pulse_shape,
-        rrc_rolloff=rrc_rolloff,
-        gaussian_bt=gaussian_bt,
         filter_span=filter_span,
+        rrc_rolloff=rrc_rolloff,
+        rc_rolloff=rc_rolloff,
+        smoothrect_bt=smoothrect_bt,
+        gaussian_bt=gaussian_bt,
         seed=seed,
     )
 
 
-def qam_waveform(
+def qam(
     order: int,
     num_symbols: int,
     sps: float,
     symbol_rate: float,
     pulse_shape: str = "rrc",
-    rrc_rolloff: float = 0.35,
-    gaussian_bt: float = 0.3,
     filter_span: int = 10,
+    rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
+    smoothrect_bt: float = 1.0,
+    gaussian_bt: float = 0.3,
     seed: Optional[int] = None,
 ) -> Signal:
-    """Wrapper for QAM waveform generation."""
-    return generate_waveform(
+    """Wrapper for QAM baseband waveform generation."""
+    return generate_baseband(
         modulation="qam",
         order=order,
         num_symbols=num_symbols,
         sps=sps,
         symbol_rate=symbol_rate,
         pulse_shape=pulse_shape,
-        rrc_rolloff=rrc_rolloff,
-        gaussian_bt=gaussian_bt,
         filter_span=filter_span,
+        rrc_rolloff=rrc_rolloff,
+        rc_rolloff=rc_rolloff,
+        smoothrect_bt=smoothrect_bt,
+        gaussian_bt=gaussian_bt,
         seed=seed,
     )

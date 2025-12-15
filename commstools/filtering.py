@@ -373,6 +373,7 @@ def shape_pulse(
     pulse_shape: str = "none",
     filter_span: int = 10,
     rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
     smoothrect_bt: float = 1.0,
     gaussian_bt: float = 0.3,
 ) -> ArrayType:
@@ -385,6 +386,8 @@ def shape_pulse(
         pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
         filter_span: Pulse shaping filter span in symbols.
         rrc_rolloff: Roll-off factor for RRC filter.
+        rc_rolloff: Roll-off factor for RC filter.
+        smoothrect_bt: Bandwidth-Time product for SmoothRect filter.
         gaussian_bt: Bandwidth-Time product for Gaussian filter.
 
     Returns:
@@ -407,7 +410,7 @@ def shape_pulse(
     elif pulse_shape == "rrc":
         h = rrc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
     elif pulse_shape == "rc":
-        h = rc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
+        h = rc_taps(sps, span=filter_span, rolloff=rc_rolloff)
     elif pulse_shape == "sinc":
         # Sinc pulse shaping is equivalent to RRC with rolloff=0
         h = rrc_taps(sps, span=filter_span, rolloff=0.0)
