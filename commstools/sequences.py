@@ -1,3 +1,10 @@
+"""
+Random sequence generation.
+
+This module provides functions to generate random and pseudo-random bit sequences:
+- Random bits (uniform distribution).
+- Pseudo-Random Binary Sequences (PRBS) using LFSRs.
+"""
 # For reproducibility we generate the random bits on the CPU,
 # as sequences differ between backends with given seed.
 

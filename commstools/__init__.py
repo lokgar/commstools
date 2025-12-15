@@ -1,4 +1,14 @@
-# temp
+"""
+Commstools: A library for digital communication signal processing.
+
+This package provides tools for:
+- Generating standard baseband waveforms (PAM, PSK, QAM).
+- Simulating channel impairments.
+- Performing filtering and pulse shaping.
+- Visualizing signals (Time, Frequency, Eye diagrams).
+- Supporting execution on both CPU (NumPy) and GPU (CuPy).
+"""
+
 import warnings
 
 from .signal import Signal

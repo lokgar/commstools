@@ -1,3 +1,13 @@
+"""
+Symbol mapping and constellation generation.
+
+This module handles the mapping of bits to complex symbols and vice versa.
+It supports:
+- Gray coding and decoding.
+- Constellation generation for PSK, QAM (Square, Cross, Rectangular, Star), and ASK.
+- Bit-to-symbol mapping.
+"""
+
 import numpy as np
 
 from .backend import ArrayType, ensure_on_backend, get_xp

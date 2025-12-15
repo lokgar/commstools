@@ -1,3 +1,10 @@
+"""
+Channel impairment models.
+
+This module provides functions to simulate physical channel impairments, including:
+- Additive White Gaussian Noise (AWGN).
+"""
+
 from typing import Union, TYPE_CHECKING
 import numpy as np
 

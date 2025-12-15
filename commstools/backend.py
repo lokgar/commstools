@@ -1,3 +1,14 @@
+"""
+Computational backend management.
+
+This module abstracts the underlying computational library (NumPy or CuPy) to support
+transparent execution on CPU and GPU. It defines the `Backend` protocol and helper
+functions to:
+- Switch between CPU (NumPy) and GPU (CuPy) backends.
+- Ensure data is on the active backend.
+- Interoperate with JAX.
+"""
+
 import types
 from typing import Any, Protocol, Union
 

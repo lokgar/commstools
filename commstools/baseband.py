@@ -1,3 +1,15 @@
+"""
+Baseband waveform generation.
+
+This module provides functions to generate baseband digital communication signals,
+including support for:
+- Pulse Amplitude Modulation (PAM), both unipolar and bipolar.
+- Phase Shift Keying (PSK).
+- Quadrature Amplitude Modulation (QAM).
+- Return-to-Zero (RZ) signaling.
+- Various pulse shaping filters (Rectangular, RRC, RC, Gaussian, SmoothRect).
+"""
+
 from typing import Optional
 
 import numpy as np
@@ -32,10 +44,10 @@ def generate_baseband(
         symbol_rate: Symbol rate in Hz.
         pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
         filter_span: Filter span in symbols.
-        rrc_rolloff: Roll-off factor for RRC filters.
-        rc_rolloff: Roll-off factor for RC filters.
-        smoothrect_bt: Bandwidth-Time product for SmoothRect filter.
-        gaussian_bt: Bandwidth-Time product for Gaussian filter.
+        rrc_rolloff: Roll-off factor for RRC shaping filter.
+        rc_rolloff: Roll-off factor for RC shaping filter.
+        smoothrect_bt: Bandwidth-Time product for SmoothRect shaping filter.
+        gaussian_bt: Bandwidth-Time product for Gaussian shaping filter.
         seed: Random seed.
 
     Returns:
@@ -106,10 +118,10 @@ def pam(
         symbol_rate: Symbol rate in Hz.
         pulse_shape: Pulse shaping type ('rect', 'rrc', 'rc', 'gaussian', 'smoothrect', 'none').
         filter_span: Filter span in symbols.
-        rrc_rolloff: Roll-off factor for RRC filters.
-        rc_rolloff: Roll-off factor for RC filters.
-        smoothrect_bt: BT product for smoothrect filter.
-        gaussian_bt: BT product for Gaussian filter.
+        rrc_rolloff: Roll-off factor for RRC shaping filter.
+        rc_rolloff: Roll-off factor for RC shaping filter.
+        smoothrect_bt: BT product for smoothrect shaping filter.
+        gaussian_bt: BT product for Gaussian shaping filter.
         seed: Random seed.
 
     Returns:
@@ -162,7 +174,7 @@ def rzpam(
         sps: Samples per symbol (integer).
         symbol_rate: Symbol rate in Hz.
         pulse_shape: 'rect' (simplest) or 'smoothrect'. Others are prohibited.
-        smoothrect_bt: BT product for smoothrect filter.
+        smoothrect_bt: BT product for smoothrect shaping filter.
         filter_span: Filter span in symbols.
         seed: Random seed.
 

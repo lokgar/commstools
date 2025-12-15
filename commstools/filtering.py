@@ -1,3 +1,12 @@
+"""
+Digital filtering and pulse shaping.
+
+This module implements digital filter design and application routines:
+- Pulse shaping filter design (RRC, RC, Gaussian, SmoothRect).
+- Standard FIR filter design (Lowpass, Highpass, Bandpass, Bandstop).
+- FIR filtering and matched filtering operations.
+"""
+
 from .backend import ArrayType, ensure_on_backend, get_sp, get_xp
 from .multirate import expand
 from .utils import normalize

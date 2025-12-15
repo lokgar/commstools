@@ -1,3 +1,14 @@
+"""
+Signal visualization and plotting tools.
+
+This module provides high-level plotting functions optimized for communication signals:
+- Power Spectral Density (PSD) plots.
+- Time-domain waveform plots.
+- Eye diagrams (histogram and line modes).
+- Consultellation diagrams.
+- Filter frequency and impulse responses.
+"""
+
 from typing import Any, Optional, Tuple, Union
 
 import matplotlib as mpl
