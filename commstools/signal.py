@@ -8,10 +8,11 @@ for the library. It encapsulates:
 - Methods for analyzing (PSD, eye diagram) and transforming (filtering, resampling) the signal.
 """
 
-from typing import Any, Optional, Tuple, Union, Literal, Dict
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import types
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
     import cupy as cp
@@ -22,7 +23,15 @@ except ImportError:
     _CUPY_AVAILABLE = False
 
 
-from .backend import ArrayType, Backend, CupyBackend, NumpyBackend, get_backend
+from .backend import (
+    ArrayType,
+    from_jax,
+    get_array_module,
+    get_scipy_module,
+    is_cupy_available,
+    to_device,
+    to_jax,
+)
 
 
 class Signal(BaseModel):
@@ -56,38 +65,47 @@ class Signal(BaseModel):
     @field_validator("samples", mode="before")
     @classmethod
     def validate_samples(cls, v: Any) -> Any:
-        # Ensure it's something we can work with
-        if not isinstance(v, (np.ndarray, list, tuple)):
-            if _CUPY_AVAILABLE and isinstance(v, cp.ndarray):
-                return v
-            else:
-                # Try to convert to numpy array to see if it's a valid array-like
-                try:
-                    return np.asarray(v)
-                except Exception:
-                    raise ValueError(
-                        f"Unsupported samples type: {type(v)}. Must be array-like."
-                    )
-
+        # Coerce lists/tuples to numpy arrays
         if isinstance(v, (list, tuple)):
-            return np.asarray(v)
+            try:
+                return np.asarray(v)
+            except Exception:
+                raise ValueError(
+                    f"Could not convert input of type {type(v)} to numpy array."
+                )
 
+        # Ensure it's something we can work with
+        if not isinstance(v, (np.ndarray, getattr(cp, "ndarray", type(None)))):
+            # Try to convert to numpy array to see if it's a valid array-like
+            try:
+                return np.asarray(v)
+            except Exception:
+                raise ValueError(
+                    f"Unsupported samples type: {type(v)}. Must be array-like."
+                )
         return v
 
     def model_post_init(self, __context: Any) -> None:
-        current_backend = get_backend()
-        if current_backend.name == "gpu":
+        # Default to GPU if available and supported
+        if is_cupy_available():
             self.to("gpu")
-        else:
-            self.to("cpu")
 
     @property
-    def backend(self) -> Backend:
-        """Returns the backend associated with the signal's data."""
-        if isinstance(self.samples, np.ndarray):
-            return NumpyBackend()
-        if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
-            return CupyBackend()
+    def xp(self) -> types.ModuleType:
+        """Returns the array module (numpy or cupy) for the signal's data."""
+        return get_array_module(self.samples)
+
+    @property
+    def sp(self) -> types.ModuleType:
+        """Returns the scipy module (scipy or cupyx.scipy) for the signal's data."""
+        return get_scipy_module(self.xp)
+
+    @property
+    def backend(self) -> str:
+        """
+        Returns the name of the backend ('cpu' or 'gpu').
+        """
+        return "gpu" if self.xp == cp else "cpu"
 
     @property
     def duration(self) -> float:
@@ -109,41 +127,19 @@ class Signal(BaseModel):
         Returns:
             self
         """
-        device = device.lower()
-        if device == "cpu":
-            if isinstance(self.samples, np.ndarray):
-                return self
-            if _CUPY_AVAILABLE and isinstance(self.samples, cp.ndarray):
-                self.samples = cp.asnumpy(self.samples)
-                return self
-            # Fallback if unknown array type but requested CPU
-            # Try to convert to numpy array
-            self.samples = np.asarray(self.samples)
-            return self
+        self.samples = to_device(self.samples, device)
+        return self
 
-        elif device == "gpu":
-            if not _CUPY_AVAILABLE:
-                raise ImportError("CuPy is not installed or not available.")
-            if isinstance(self.samples, cp.ndarray):
-                return self
-            self.samples = cp.asarray(self.samples)
-            return self
-
-        else:
-            raise ValueError(f"Unknown device: {device}. Use 'cpu' or 'gpu'.")
-
-    def to_jax(self) -> Any:
+    def export_samples_to_jax(self) -> Any:
         """
         Exports the signal samples to a JAX array.
 
         Returns:
             A JAX array containing the signal samples.
         """
-        from .backend import to_jax
-
         return to_jax(self.samples)
 
-    def from_jax(self, jax_array: Any) -> "Signal":
+    def update_samples_from_jax(self, jax_array: Any) -> "Signal":
         """
         Updates the signal samples from a JAX array.
 
@@ -153,14 +149,12 @@ class Signal(BaseModel):
         Returns:
             self
         """
-        from .backend import from_jax
-
         self.samples = from_jax(jax_array)
         return self
 
     def time_axis(self) -> ArrayType:
         """Returns the time vector associated with the signal samples."""
-        return self.backend.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
+        return self.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
 
     def welch_psd(
         self,
@@ -179,8 +173,8 @@ class Signal(BaseModel):
         Returns:
             Tuple of (frequency_axis, psd_values).
         """
-        if self.backend.xp.iscomplexobj(self.samples):
-            f, Pxx = self.backend.sp.signal.welch(
+        if self.xp.iscomplexobj(self.samples):
+            f, Pxx = self.sp.signal.welch(
                 self.samples,
                 fs=self.sampling_rate,
                 nperseg=nperseg,
@@ -188,11 +182,11 @@ class Signal(BaseModel):
                 average=average,
                 return_onesided=False,
             )
-            f = self.backend.xp.fft.fftshift(f)
-            Pxx = self.backend.xp.fft.fftshift(Pxx)
+            f = self.xp.fft.fftshift(f)
+            Pxx = self.xp.fft.fftshift(Pxx)
             return f, Pxx
         else:
-            return self.backend.sp.signal.welch(
+            return self.sp.signal.welch(
                 self.samples,
                 fs=self.sampling_rate,
                 nperseg=nperseg,
@@ -275,7 +269,7 @@ class Signal(BaseModel):
         scaled = value / (1000.0**rank)
         return f"{scaled:.2f} {si_units[rank]}{unit}"
 
-    def print_summary(self) -> None:
+    def print_info(self) -> None:
         """
         Prints a summary of the signal properties.
         """
@@ -309,7 +303,7 @@ class Signal(BaseModel):
                 self._format_si(self.duration, "s"),
                 self._format_si(self.center_frequency, "Hz"),
                 self._format_si(self.digital_frequency_offset, "Hz"),
-                self.backend.name.upper(),
+                self.backend.upper(),
                 str(self.samples.shape),
             ],
         }
@@ -480,35 +474,39 @@ class Signal(BaseModel):
         span = params.get("filter_span", 10)
         pulse_width = params.get("pulse_width", 1.0)
 
+        # Generate taps using filtering module (returns default numpy usually)
         if self.pulse_shape == "rect":
-            return self.backend.xp.ones(int(self.sps * pulse_width))
+            taps = np.ones(int(self.sps * pulse_width))
         elif self.pulse_shape == "smoothrect":
-            return filtering.smoothrect_taps(
+            taps = filtering.smoothrect_taps(
                 sps=self.sps,
                 span=span,
                 bt=params.get("smoothrect_bt", 1.0),
                 pulse_width=pulse_width,
             )
         elif self.pulse_shape == "gaussian":
-            return filtering.gaussian_taps(
+            taps = filtering.gaussian_taps(
                 sps=self.sps,
                 span=span,
                 bt=params.get("gaussian_bt", 0.3),
             )
         elif self.pulse_shape == "rrc":
-            return filtering.rrc_taps(
+            taps = filtering.rrc_taps(
                 sps=self.sps,
                 span=span,
                 rolloff=params.get("rrc_rolloff", 0.35),
             )
         elif self.pulse_shape == "rc":
-            return filtering.rc_taps(
+            taps = filtering.rc_taps(
                 sps=self.sps,
                 span=span,
                 rolloff=params.get("rc_rolloff", 0.35),
             )
         else:
             raise ValueError(f"Unknown pulse shape: {self.pulse_shape}")
+
+        # Ensure taps are on the correct device
+        return to_device(taps, self.backend)
 
     def matched_filter(
         self,

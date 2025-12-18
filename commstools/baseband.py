@@ -13,9 +13,9 @@ including support for:
 from typing import Optional
 
 import numpy as np
+import scipy.signal
 
 from . import filtering, mapping, sequences, utils
-from .backend import get_sp, get_xp
 from .signal import Signal
 
 
@@ -57,13 +57,13 @@ def generate_baseband(
     k = int(np.log2(order))
     num_bits = num_symbols * k
 
-    # Generate random bits
+    # Generate random bits (NumPy)
     bits = sequences.random_bits(num_bits, seed=seed)
 
-    # Map to symbols
+    # Map to symbols (NumPy)
     symbols = mapping.map_bits(bits, modulation=modulation, order=order)
 
-    # Apply pulse shaping
+    # Apply pulse shaping (handles dispatch, returns NumPy here as input is NumPy)
     samples = filtering.shape_pulse(
         symbols,
         sps=sps,
@@ -76,7 +76,7 @@ def generate_baseband(
     )
 
     # Create Signal object
-    # Sampling rate is symbol_rate * sps
+    # Default backend logic in Signal will keep it on CPU (NumPy) unless to("gpu") called
     return Signal(
         samples=samples,
         sampling_rate=symbol_rate * sps,
@@ -143,7 +143,7 @@ def pam(
     )
 
     if not bipolar:
-        xp = get_xp()
+        xp = sig.xp
         # Shift so minimum is 0
         sig.samples = sig.samples - xp.min(sig.samples)
         # Normalize so max amplitude is 1 (standard for unipolar)
@@ -193,7 +193,8 @@ def rzpam(
             f"Allowed: {allowed_rz_pulses}"
         )
 
-    xp = get_xp()
+    xp = np
+    sp = scipy
 
     # Generate symbols
     k = int(xp.log2(order))
@@ -209,7 +210,6 @@ def rzpam(
 
     # Apply RZ Pulse Shaping
     if pulse_shape == "rect":
-        sp = get_sp()
         h = xp.ones(int(sps / 2))
         samples = utils.normalize(
             sp.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
@@ -222,7 +222,6 @@ def rzpam(
         )
 
         # Apply pulse using polyphase resampling
-        sp = get_sp()
         samples = utils.normalize(
             sp.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
         )

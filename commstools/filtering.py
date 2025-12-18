@@ -7,7 +7,10 @@ This module implements digital filter design and application routines:
 - FIR filtering and matched filtering operations.
 """
 
-from .backend import ArrayType, ensure_on_backend, get_sp, get_xp
+import numpy as np
+import scipy
+
+from .backend import ArrayType, dispatch
 from .multirate import expand
 from .utils import normalize
 
@@ -35,18 +38,18 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
     Returns:
         Gaussian filter taps with unity gain normalization.
     """
-    xp = get_xp()
-
     # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
         num_taps += 1
 
-    t = (xp.arange(num_taps) - (num_taps - 1) / 2) / sps
-    # Gaussian function: h(t) = (sqrt(pi)/a) * exp(-(pi*t/a)^2) where a = sqrt(ln(2)/2)/B
-    # Simplified for comms usually:
-    alpha = xp.sqrt(xp.log(2) / 2) / bt
-    h = (xp.sqrt(xp.pi) / alpha) * xp.exp(-((xp.pi * t / alpha) ** 2))
+    t = np.linspace(-span / 2, span / 2, num_taps)
+
+    # Gaussian function
+    # h(t) = (sqrt(pi)/alpha) * exp(-(pi*t/alpha)^2)
+    # where alpha = sqrt(ln(2)/2)/B
+    alpha = np.sqrt(np.log(2) / 2) / bt
+    h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
 
     return normalize(h, "unity_gain")
 
@@ -69,34 +72,28 @@ def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
     Returns:
         np.ndarray: Centered pulse shaping taps.
     """
-    xp = get_xp()
-    sp = get_sp()
-
-    # 1. Define Time Vector centered exactly at 0
-    # We want (span * sps) + 1 samples to ensure a center peak exists
-    # or (span * sps) if you strictly follow the span.
-    # Usually, odd length is preferred for FIR symmetry.
+    # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
         num_taps += 1
 
-    t = xp.linspace(-span / 2, span / 2, num_taps)
+    t = np.linspace(-span / 2, span / 2, num_taps)
 
-    # 2. Calculate Sigma from BT
+    # Calculate Sigma from BT
     # Relationship: B = sqrt(ln 2) / (2 * pi * sigma)
     # So sigma = sqrt(ln 2) / (2 * pi * B)
     # B = bt / pulse_width (If bt is B * pulse_width product)
-    # sigma = pulse_width * sqrt(ln 2) / (2 * xp.pi * bt)
-    sigma = pulse_width * xp.sqrt(xp.log(2)) / (2 * xp.pi * bt)
+    # sigma = pulse_width * sqrt(ln 2) / (2 * np.pi * bt)
+    sigma = pulse_width * np.sqrt(np.log(2)) / (2 * np.pi * bt)
 
-    # 3. Analytical Formula (Convolved Rect and Gaussian)
+    # Analytical Formula (Convolved Rect and Gaussian)
     # The 'width' of the rect is pulse_width symbols
     # Rect is from -width/2 to width/2
     # The convolution of a rectangle with a Gaussian is given by the difference of erfs
     w_half = pulse_width / 2.0
     h = 0.5 * (
-        sp.special.erf((t + w_half) / (sigma * xp.sqrt(2)))
-        - sp.special.erf((t - w_half) / (sigma * xp.sqrt(2)))
+        scipy.special.erf((t + w_half) / (sigma * np.sqrt(2)))
+        - scipy.special.erf((t - w_half) / (sigma * np.sqrt(2)))
     )
 
     return normalize(h, "unity_gain")
@@ -114,53 +111,50 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     Returns:
         RRC filter taps with unity gain normalization.
     """
-    xp = get_xp()
-
     # Ensure odd number of taps
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
         num_taps += 1
 
-    # Use backend for calculation
-    t = (xp.arange(num_taps) - (num_taps - 1) / 2) / sps
+    t = np.linspace(-span / 2, span / 2, num_taps)
 
     # Avoid division by zero
     # 1. t = 0
     # 2. t = +/- 1/(4*rolloff)
 
     # Initialize array
-    h = xp.zeros_like(t)
+    h = np.zeros_like(t)
 
     # Case 1: t = 0
-    idx_0 = xp.isclose(t, 0)
-    h = xp.where(idx_0, 1.0 - rolloff + (4 * rolloff / xp.pi), h)
+    idx_0 = np.isclose(t, 0)
+    h = np.where(idx_0, 1.0 - rolloff + (4 * rolloff / np.pi), h)
 
     # Case 2: t = +/- 1/(4*rolloff)
     if rolloff > 0:
-        idx_singularity = xp.isclose(xp.abs(t), 1 / (4 * rolloff))
-        h = xp.where(
+        idx_singularity = np.isclose(np.abs(t), 1 / (4 * rolloff))
+        h = np.where(
             idx_singularity,
-            (rolloff / xp.sqrt(2))
+            (rolloff / np.sqrt(2))
             * (
-                (1 + 2 / xp.pi) * xp.sin(xp.pi / (4 * rolloff))
-                + (1 - 2 / xp.pi) * xp.cos(xp.pi / (4 * rolloff))
+                (1 + 2 / np.pi) * np.sin(np.pi / (4 * rolloff))
+                + (1 - 2 / np.pi) * np.cos(np.pi / (4 * rolloff))
             ),
             h,
         )
     else:
-        idx_singularity = xp.zeros_like(t, dtype=bool)
+        idx_singularity = np.zeros_like(t, dtype=bool)
 
     # Case 3: General case
     idx_general = ~(idx_0 | idx_singularity)
 
-    numer = xp.sin(xp.pi * t * (1 - rolloff)) + 4 * rolloff * t * xp.cos(
-        xp.pi * t * (1 + rolloff)
+    numer = np.sin(np.pi * t * (1 - rolloff)) + 4 * rolloff * t * np.cos(
+        np.pi * t * (1 + rolloff)
     )
-    denom = xp.pi * t * (1 - (4 * rolloff * t) ** 2)
+    denom = np.pi * t * (1 - (4 * rolloff * t) ** 2)
 
     # Avoid invalid value warning by making den safe
-    denom_safe = xp.where(idx_general, denom, 1.0)
-    h = xp.where(idx_general, numer / denom_safe, h)
+    denom_safe = np.where(idx_general, denom, 1.0)
+    h = np.where(idx_general, numer / denom_safe, h)
 
     return normalize(h, "unity_gain")
 
@@ -177,56 +171,54 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     Returns:
         RC filter taps with unity gain normalization.
     """
-    xp = get_xp()
-
     # Ensure odd number of taps
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
         num_taps += 1
 
-    t = (xp.arange(num_taps) - (num_taps - 1) / 2) / sps
+    t = np.linspace(-span / 2, span / 2, num_taps)
 
     # Avoid division by zero
     # Singularities at t = +/- 1 / (2 * rolloff)
 
     # Initialize array
-    h = xp.zeros_like(t)
+    h = np.zeros_like(t)
 
     # General case mask
     # Denominator: 1 - (2 * rolloff * t)**2
     # Singularity when 2 * rolloff * |t| = 1 => |t| = 1 / (2 * rolloff)
 
     if rolloff > 0:
-        idx_singularity = xp.isclose(xp.abs(t), 1 / (2 * rolloff))
+        idx_singularity = np.isclose(np.abs(t), 1 / (2 * rolloff))
         # Value at singularity: (pi / 4) * sinc(1 / (2 * rolloff))
         # sinc(x) = sin(pi * x) / (pi * x)
         # arg = 1 / (2 * rolloff)
         # val = (pi / 4) * sin(pi * arg) / (pi * arg)
         #     = (pi / 4) * sin(pi / (2 * rolloff)) * (2 * rolloff / pi)
         #     = (rolloff / 2) * sin(pi / (2 * rolloff))
-        val_singularity = (rolloff / 2) * xp.sin(xp.pi / (2 * rolloff))
-        h = xp.where(idx_singularity, val_singularity, h)
+        val_singularity = (rolloff / 2) * np.sin(np.pi / (2 * rolloff))
+        h = np.where(idx_singularity, val_singularity, h)
     else:
-        idx_singularity = xp.zeros_like(t, dtype=bool)
+        idx_singularity = np.zeros_like(t, dtype=bool)
 
     idx_general = ~idx_singularity
 
     # h(t) = sinc(t) * cos(pi * alpha * t) / (1 - (2 * alpha * t)^2)
     # sinc(t) = sin(pi * t) / (pi * t) (normalized sinc)
 
-    # To avoid t=0 in sinc division, use xp.sinc which handles 0 safely
-    sinc_t = xp.sinc(t)
-    cos_t = xp.cos(xp.pi * rolloff * t)
+    # To avoid t=0 in sinc division, use np.sinc which handles 0 safely
+    sinc_t = np.sinc(t)
+    cos_t = np.cos(np.pi * rolloff * t)
     denom = 1 - (2 * rolloff * t) ** 2
 
     # We masked out where denom is 0, so safe to divide where idx_general is true
     # However we compute everywhere then mask, so denom should not be 0 to avoid warning/NaN if backend evals strict
     # backend.where usually evals both branches
     # So we set denom to 1 where it is 0
-    denom_safe = xp.where(idx_singularity, 1.0, denom)
+    denom_safe = np.where(idx_singularity, 1.0, denom)
 
     res = sinc_t * cos_t / denom_safe
-    h = xp.where(idx_general, res, h)
+    h = np.where(idx_general, res, h)
 
     return normalize(h, "unity_gain")
 
@@ -249,9 +241,7 @@ def lowpass_taps(
     Returns:
         Filter taps.
     """
-    sp = get_sp()
-
-    h = sp.signal.firwin(
+    h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
     )
     return normalize(h, "unity_gain")
@@ -275,10 +265,8 @@ def highpass_taps(
     Returns:
         Filter taps.
     """
-    sp = get_sp()
-
     # pass_zero=False for highpass
-    h = sp.signal.firwin(
+    h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=False
     )
     return normalize(h, "unity_gain")
@@ -304,10 +292,8 @@ def bandpass_taps(
     Returns:
         Filter taps.
     """
-    sp = get_sp()
-
     # pass_zero=False for bandpass
-    h = sp.signal.firwin(
+    h = scipy.signal.firwin(
         num_taps,
         [low_cutoff, high_cutoff],
         window=window,
@@ -337,10 +323,8 @@ def bandstop_taps(
     Returns:
         Filter taps.
     """
-    sp = get_sp()
-
     # pass_zero=True for bandstop
-    h = sp.signal.firwin(
+    h = scipy.signal.firwin(
         num_taps,
         [low_cutoff, high_cutoff],
         window=window,
@@ -369,9 +353,9 @@ def fir_filter(samples: ArrayType, taps: ArrayType) -> ArrayType:
     Returns:
         Filtered samples.
     """
-    samples = ensure_on_backend(samples)
-    taps = ensure_on_backend(taps)
-    sp = get_sp()
+    samples, xp, sp = dispatch(samples)
+    # Ensure taps are on the correct backend
+    taps = xp.asarray(taps)
 
     return sp.signal.convolve(samples, taps, mode="same", method="fft")
 
@@ -403,9 +387,7 @@ def shape_pulse(
         Shaped sample array at rate (sps * symbol_rate), normalized
     """
 
-    symbols = ensure_on_backend(symbols)
-    xp = get_xp()
-    sp = get_sp()
+    symbols, xp, sp = dispatch(symbols)
 
     if pulse_shape == "none":
         print("Pulse shaping disabled, expanding symbols by sps")
@@ -413,6 +395,7 @@ def shape_pulse(
     elif pulse_shape == "rect":
         h = xp.ones(int(sps))
     elif pulse_shape == "smoothrect":
+        # Note: Tap generators return NumPy arrays
         h = smoothrect_taps(sps, span=filter_span, bt=smoothrect_bt)
     elif pulse_shape == "gaussian":
         h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
@@ -425,6 +408,9 @@ def shape_pulse(
         h = rrc_taps(sps, span=filter_span, rolloff=0.0)
     else:
         raise ValueError(f"Not implemented pulse shape: {pulse_shape}")
+
+    # Ensure h is on the correct backend
+    h = xp.asarray(h)
 
     return normalize(
         sp.signal.resample_poly(symbols, int(sps), 1, window=h),
@@ -452,10 +438,11 @@ def matched_filter(
     Returns:
         Matched filtered samples.
     """
-    samples = ensure_on_backend(samples)
-    xp = get_xp()
+    samples, xp, _ = dispatch(samples)
 
     # Matched filter is conjugate and time-reversed version of pulse
+    # Ensure pulse_taps is on correct backend
+    pulse_taps = xp.asarray(pulse_taps)
     matched_taps = xp.conj(pulse_taps[::-1])
 
     if taps_normalization == "unity_gain" or taps_normalization == "gain":

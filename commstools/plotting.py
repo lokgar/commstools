@@ -16,7 +16,7 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .backend import to_host, ensure_on_backend, get_xp, get_sp
+from .backend import dispatch, to_device
 from .utils import interp1d
 
 
@@ -106,10 +106,8 @@ def psd(
     else:
         fig = ax.figure
 
-    # Ensure samples are on backend
-    samples = ensure_on_backend(samples)
-    xp = get_xp()
-    sp = get_sp()
+    # Dispatch to get backend modules
+    samples, xp, sp = dispatch(samples)
 
     # Calculate PSD
     if xp.iscomplexobj(samples):
@@ -133,9 +131,9 @@ def psd(
             average=average,
         )
 
-    # Move to host for plotting
-    f = to_host(f)
-    Pxx = to_host(Pxx)
+    # Move to cpu for plotting
+    f = to_device(f, "cpu")
+    Pxx = to_device(Pxx, "cpu")
 
     # Apply center frequency shift
     f = f + center_frequency
@@ -228,10 +226,7 @@ def time_domain(
     else:
         fig = ax.figure
 
-    import numpy as np
-    from .backend import to_host
-
-    samples = to_host(samples)
+    samples = to_device(samples, "cpu")
 
     if num_symbols is not None and sps is not None:
         limit = int(num_symbols * sps)
@@ -302,9 +297,7 @@ def _plot_eye_traces(
     title: Optional[str],
     **kwargs,
 ) -> None:
-    xp = get_xp()
-    sp = get_sp()
-    samples = ensure_on_backend(samples)
+    samples, xp, sp = dispatch(samples)
 
     # Normalize to max amplitude 1.0
     max_val = xp.max(xp.abs(samples))
@@ -346,8 +339,8 @@ def _plot_eye_traces(
         # Transpose for plotting
         traces = traces.T  # (trace_len, num_traces)
 
-        # Move to host for plotting
-        traces = to_host(traces)
+        # Move to cpu for plotting
+        traces = to_device(traces, "cpu")
 
         # Time axis in symbols
         t = np.linspace(0, num_symbols, trace_len, endpoint=True)
@@ -424,10 +417,10 @@ def _plot_eye_traces(
         if h_max > 0:
             h = h / h_max
 
-        # Move to host for plotting
-        h = to_host(h)
-        xedges = to_host(xedges)
-        yedges = to_host(yedges)
+        # Move to cpu for plotting
+        h = to_device(h, "cpu")
+        xedges = to_device(xedges, "cpu")
+        yedges = to_device(yedges, "cpu")
 
         # Plot using imshow
         imshow_kwargs = {
@@ -479,12 +472,8 @@ def eye_diagram(
     if sps % 1 != 0:
         raise ValueError("sps must be an integer")
 
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    # Ensure backend usage
-    samples = ensure_on_backend(samples)
-    xp = get_xp()
+    # Dispatch to check backend
+    samples, xp, _ = dispatch(samples)
     is_complex = xp.iscomplexobj(samples)
 
     if ax is None:
@@ -566,11 +555,8 @@ def filter_response(
 
     import matplotlib.ticker as ticker
 
-    xp = get_xp()
-    sp = get_sp()
-
-    # Ensure taps on backend
-    taps = ensure_on_backend(taps)
+    # Dispatch
+    taps, xp, sp = dispatch(taps)
 
     if ax is None:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
@@ -587,16 +573,16 @@ def filter_response(
 
     t = (xp.arange(num_taps) - (num_taps - 1) / 2) / sps
 
-    # Move to host for plotting
-    t_host = to_host(t)
-    taps_host = to_host(taps)
+    # Move to cpu for plotting
+    t_cpu = to_device(t, "cpu")
+    taps_cpu = to_device(taps, "cpu")
 
     if xp.iscomplexobj(taps):
-        ax1.plot(t_host, taps_host.real, label="Real", color="C0")
-        ax1.plot(t_host, taps_host.imag, label="Imag", color="C1")
+        ax1.plot(t_cpu, taps_cpu.real, label="Real", color="C0")
+        ax1.plot(t_cpu, taps_cpu.imag, label="Imag", color="C1")
         ax1.legend()
     else:
-        ax1.plot(t_host, taps_host, color="C0")
+        ax1.plot(t_cpu, taps_cpu, color="C0")
 
     ax1.set_title("Impulse Response")
     ax1.set_xlabel("Time [Symbol Periods]")
@@ -624,10 +610,10 @@ def filter_response(
     mag = 20 * xp.log10(xp.abs(h) + 1e-12)
     angles = xp.unwrap(xp.angle(h))
 
-    # Move to host
-    freqs = to_host(freqs)
-    mag = to_host(mag)
-    angles = to_host(angles)
+    # Move to cpu
+    freqs = to_device(freqs, "cpu")
+    mag = to_device(mag, "cpu")
+    angles = to_device(angles, "cpu")
 
     # Magnitude
     ax2.plot(freqs, mag, color="C2")
@@ -678,14 +664,14 @@ def ideal_constellation(
         fig = ax.figure
 
     try:
-        # Generate constellation on backend
+        # Generate constellation on backend (returns NumPy)
         const = gray_constellation(modulation, order)
     except ValueError as e:
         print(f"Error generating constellation: {e}")
         return None
 
-    # Move to host for plotting
-    const = to_host(const)
+    # Move to cpu for plotting (already NumPy but good practice)
+    const = to_device(const, "cpu")
 
     real = const.real
     imag = const.imag

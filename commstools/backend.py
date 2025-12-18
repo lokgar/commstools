@@ -2,85 +2,93 @@
 Computational backend management.
 
 This module abstracts the underlying computational library (NumPy or CuPy) to support
-transparent execution on CPU and GPU. It defines the `Backend` protocol and helper
-functions to:
-- Switch between CPU (NumPy) and GPU (CuPy) backends.
-- Ensure data is on the active backend.
+transparent execution on CPU and GPU using a stateless, data-driven approach.
+It defines helper functions to:
+- Infer the active backend module (NumPy or CuPy) from data.
+- Manage data transfer between devices.
 - Interoperate with JAX.
 """
 
 import types
-from typing import Any, Protocol, Union
+from functools import lru_cache
+from typing import Any, Tuple, Union
 
 import numpy as np
 
-# Try to import CuPy, but don't fail if it's not available
+# Try to import CuPy and verify functionality
 try:
     import cupy as cp
 
-    _CUPY_AVAILABLE = True
+    # Aggressive check: try to allocate and run a simple operation.
+    # This catches cases where CuPy is installed but shared libraries (nvrtc, cublas) are missing.
+    try:
+        cp.arange(1)
+        _CUPY_AVAILABLE = True
+        print("CuPy is available and functional, defaulting Signals to GPU.")
+    except Exception:
+        # Fallback if functional check fails
+        _CUPY_AVAILABLE = False
+        cp = None
+        print("CuPy has problems with shared libraries, falling back to NumPy.")
+
 except ImportError:
     _CUPY_AVAILABLE = False
     cp = None
+    print("CuPy is not available, falling back to NumPy.")
 
 ArrayType = Union[
     np.ndarray, Any
 ]  # Any for CuPy array to avoid hard dependency in type hint if not installed
 
 
-class Backend(Protocol):
-    """Protocol defining the interface for computational backends."""
-
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def xp(self) -> types.ModuleType: ...
-
-    @property
-    def sp(self) -> types.ModuleType: ...
+_FORCE_CPU = False
 
 
-class NumpyBackend:
-    """NumPy implementation of the Backend protocol."""
+def use_cpu_only(force: bool = True) -> None:
+    """
+    Forces the library to use CPU only, pretending CuPy is not available.
 
-    @property
-    def name(self) -> str:
-        return "cpu"
-
-    @property
-    def xp(self) -> types.ModuleType:
-        return np
-
-    @property
-    def sp(self) -> types.ModuleType:
-        import scipy
-        import scipy.ndimage
-        import scipy.signal
-        import scipy.special
-
-        return scipy
+    Args:
+        force: If True, blocks CuPy availability.
+    """
+    global _FORCE_CPU
+    _FORCE_CPU = force
 
 
-class CupyBackend:
-    """CuPy implementation of the Backend protocol."""
+def is_cupy_available() -> bool:
+    """Returns True if CuPy is available and functional, and not forced off."""
+    if _FORCE_CPU:
+        return False
+    return _CUPY_AVAILABLE
 
-    def __init__(self) -> None:
-        if not _CUPY_AVAILABLE:
-            raise ImportError(
-                "CuPy is not available. Please install it to use CupyBackend."
-            )
 
-    @property
-    def name(self) -> str:
-        return "gpu"
+def get_array_module(data: Any) -> types.ModuleType:
+    """
+    Returns the array module (numpy or cupy) for the given data.
 
-    @property
-    def xp(self) -> types.ModuleType:
-        return cp
+    Args:
+        data: Input data (array or list).
 
-    @property
-    def sp(self) -> types.ModuleType:
+    Returns:
+        The numpy module if data is on CPU (or a list), or cupy if on GPU.
+    """
+    if is_cupy_available():
+        return cp.get_array_module(data)
+    return np
+
+
+@lru_cache(maxsize=None)
+def get_scipy_module(xp: types.ModuleType) -> types.ModuleType:
+    """
+    Returns the signal library (scipy or cupyx.scipy) corresponding to the array module.
+
+    Args:
+        xp: The array module (numpy or cupy).
+
+    Returns:
+        The corresponding scipy-compatible module.
+    """
+    if is_cupy_available() and xp == cp:
         import cupyx.scipy
         import cupyx.scipy.ndimage
         import cupyx.scipy.signal
@@ -88,88 +96,71 @@ class CupyBackend:
 
         return cupyx.scipy
 
+    import scipy
+    import scipy.ndimage
+    import scipy.signal
+    import scipy.special
 
-# Global state for current backend
-_CURRENT_BACKEND: Backend = NumpyBackend()
-
-
-def get_backend() -> Backend:
-    """Get the currently active global backend."""
-    return _CURRENT_BACKEND
+    return scipy
 
 
-def get_xp() -> types.ModuleType:
-    """Get the array library (numpy or cupy) for the current backend."""
-    return _CURRENT_BACKEND.xp
-
-
-def get_sp() -> types.ModuleType:
-    """Get the signal library (scipy.signal or cupyx.scipy.signal) for the current backend."""
-    return _CURRENT_BACKEND.sp
-
-
-def set_backend(backend_name: str) -> None:
+def to_device(data: Any, device: str) -> ArrayType:
     """
-    Set the active backend globally.
+    Moves data to the specified device.
 
     Args:
-        backend_name (str): The name of the backend to set: "cpu" or "gpu".
-    """
-    global _CURRENT_BACKEND
-    if backend_name.lower() == "cpu":
-        _CURRENT_BACKEND = NumpyBackend()
-    elif backend_name.lower() == "gpu":
-        _CURRENT_BACKEND = CupyBackend()
-    else:
-        raise ValueError(f"Unknown backend: {backend_name}")
-
-
-def ensure_on_backend(data: Any) -> ArrayType:
-    """
-    Ensures the data is on the currently active global backend.
-
-    Args:
-        data: Input data (list, tuple, np.ndarray, cp.ndarray).
+        data: Input data.
+        device: 'cpu' or 'gpu'.
 
     Returns:
-        Array on the active backend.
+        Array on the target device.
     """
-    backend = get_backend()
-
-    # Optimization: Check if already on correct backend
-    if backend.name == "cpu":
+    device = device.lower()
+    if device == "cpu":
+        # Verify both availability and force flag to behave safely
+        # But for conversion from GPU to CPU, we can be lenient if logic allows
+        # However, to avoid touching cp if forced off:
+        if is_cupy_available() and isinstance(data, cp.ndarray):
+            return data.get()
         if isinstance(data, np.ndarray):
             return data
-        if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
-            return cp.asnumpy(data)
         return np.asarray(data)
 
-    elif backend.name == "gpu":
-        if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+    elif device == "gpu":
+        if not is_cupy_available():
+            raise ImportError("CuPy is not available.")
+        if isinstance(data, cp.ndarray):
             return data
-        # If CuPy is active, we expect CuPy to be available
         return cp.asarray(data)
 
-    return backend.xp.asarray(data)
+    else:
+        raise ValueError(f"Unknown device: {device}")
 
 
-def to_host(data: Any) -> np.ndarray:
+def dispatch(
+    data: Any,
+) -> Tuple[ArrayType, types.ModuleType, types.ModuleType]:
     """
-    Moves data to the host (CPU/NumPy) for plotting or I/O.
+    Prepare data and return appropriate backend modules (xp, sp).
+    Infers backend from the input data.
 
     Args:
         data: Input data.
 
     Returns:
-        NumPy array.
+        Tuple of (data_array, xp_module, sp_module).
     """
-    if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
-        return data.get()
+    xp = get_array_module(data)
+    sp = get_scipy_module(xp)
 
-    if isinstance(data, np.ndarray):
-        return data
+    # Ensure data is an array of the inferred capability
+    # If forced CPU, cp.ndarray might not be resolvable if we didn't import it,
+    # but here cp is imported if installed.
+    # checking getattr(cp, ...) is safe.
+    if not isinstance(data, (np.ndarray, getattr(cp, "ndarray", type(None)))):
+        data = xp.asarray(data)
 
-    return np.asarray(data)
+    return data, xp, sp
 
 
 def to_jax(data: Any) -> Any:
@@ -191,9 +182,13 @@ def to_jax(data: Any) -> Any:
     except ImportError:
         raise ImportError("JAX is not installed.")
 
-    if _CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+    if is_cupy_available() and isinstance(data, cp.ndarray):
         # Zero-copy transfer from CuPy (GPU) to JAX (GPU) via DLPack
-        return jax_dlpack.from_dlpack(data.toDlpack())
+        try:
+            return jax_dlpack.from_dlpack(data)
+        except Exception:
+            # Fallback if dlpack not supported or fails
+            pass
 
     if isinstance(data, np.ndarray):
         # Zero-copy transfer from NumPy (CPU) to JAX (CPU)
@@ -226,12 +221,10 @@ def from_jax(data: Any) -> ArrayType:
         # Graceful fallback
         is_cpu = True
 
-    if not is_cpu and _CUPY_AVAILABLE:
+    if not is_cpu and is_cupy_available():
         # Try zero-copy via DLPack to CuPy
         try:
-            from jax import dlpack as jax_dlpack
-
-            return cp.from_dlpack(jax_dlpack.to_dlpack(data))
+            return cp.from_dlpack(data)
         except Exception:
             # Fallback to implicit conversion if DLPack fails
             pass
