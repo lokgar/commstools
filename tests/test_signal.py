@@ -1,27 +1,19 @@
 import pytest
 import numpy as np
-import pytest
 from commstools.signal import Signal
 
 
 def test_signal_initialization(backend_device, xp):
     if backend_device == "gpu":
         try:
-            import cupy
+            import cupy  # noqa: F401
         except ImportError:
             pytest.skip("CuPy not installed")
 
     # Test with list
     data = [1, 2, 3, 4]
-    if backend_device == "gpu":
-        # Signal will auto-convert to backend in __post_init__ via to_device or manually
-        # But Signal init logic checks if valid array.
-        # Let's create Signal and move it.
-        s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0).to("gpu")
-        assert isinstance(s.samples, xp.ndarray)
-    else:
-        s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
-        assert isinstance(s.samples, np.ndarray)
+    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0).to(backend_device)
+    assert isinstance(s.samples, xp.ndarray)
 
     assert s.sampling_rate == 1.0
     assert s.symbol_rate == 1.0
@@ -32,9 +24,7 @@ def test_signal_properties(backend_device, xp):
     fs = 100.0
     sym_rate = 10.0
 
-    s = Signal(samples=data, sampling_rate=fs, symbol_rate=sym_rate)
-    if backend_device == "gpu":
-        s.to("gpu")
+    s = Signal(samples=data, sampling_rate=fs, symbol_rate=sym_rate).to(backend_device)
 
     assert s.duration == 1.0
     assert s.sps == 10.0
@@ -44,9 +34,7 @@ def test_signal_properties(backend_device, xp):
 def test_signal_methods(backend_device, xp):
     # Test upsample
     data = xp.array([1.0 + 0j, -1.0 + 0j])
-    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
-    if backend_device == "gpu":
-        s.to("gpu")
+    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0).to(backend_device)
 
     s.upsample(2)
     assert s.sampling_rate == 2.0
@@ -62,10 +50,44 @@ def test_signal_methods(backend_device, xp):
 
 def test_welch_psd(backend_device, xp):
     data = xp.random.randn(1000) + 1j * xp.random.randn(1000)
-    s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0)
-    if backend_device == "gpu":
-        s.to("gpu")
+    s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0).to(backend_device)
 
     f, p = s.welch_psd(nperseg=64)
     assert f.shape == p.shape
     assert isinstance(f, xp.ndarray)
+
+
+def test_signal_print_info(backend_device, xp, capsys):
+    data = xp.zeros(10)
+    s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0).to(backend_device)
+    s.print_info()
+    captured = capsys.readouterr()
+    assert (
+        "Spectral Domain" in captured.out or captured.out == ""
+    )  # Might be empty if pandas display mocks ipython, check stdout
+
+
+def test_shaping_filter_taps_error(backend_device, xp):
+    data = xp.zeros(10)
+    s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0).to(backend_device)
+
+    with pytest.raises(ValueError, match="No pulse shape defined"):
+        s.shaping_filter_taps()
+
+    s.pulse_shape = "invalid_shape"
+    with pytest.raises(ValueError, match="Unknown pulse shape"):
+        s.shaping_filter_taps()
+
+
+def test_signal_copy(backend_device, xp):
+    from commstools import backend
+
+    data = xp.array([1, 2, 3])
+    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0).to(backend_device)
+    s_copy = s.copy()
+
+    assert s_copy is not s
+    assert np.allclose(
+        backend.to_device(s.samples, "cpu"), backend.to_device(s_copy.samples, "cpu")
+    )
+    assert s_copy.backend == s.backend

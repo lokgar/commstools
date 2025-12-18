@@ -10,10 +10,10 @@ It supports:
 
 import numpy as np
 
-from .backend import ArrayType, ensure_on_backend, get_xp
+from .backend import ArrayType, dispatch
 
 
-def _gray_code_np(n: int) -> np.ndarray:
+def gray_code(n: int) -> np.ndarray:
     """
     Internal numpy implementation of Gray code.
 
@@ -33,19 +33,6 @@ def _gray_code_np(n: int) -> np.ndarray:
     return i ^ (i >> 1)
 
 
-def gray_code(n: int) -> ArrayType:
-    """
-    Generate Gray code sequence of length 2^n.
-
-    Args:
-        n: Number of bits.
-
-    Returns:
-        Array of integers representing the Gray code sequence.
-    """
-    return ensure_on_backend(_gray_code_np(n))
-
-
 def gray_constellation(modulation: str, order: int) -> ArrayType:
     """
     Generate constellation points with Gray mapping.
@@ -58,7 +45,7 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
         order: Modulation order.
 
     Returns:
-        Array of constellation points on the active backend.
+        Array of constellation points (NumPy).
     """
     modulation = modulation.lower()
 
@@ -84,7 +71,7 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
     else:
         raise ValueError(f"Unsupported modulation type: {modulation}")
 
-    return ensure_on_backend(result)
+    return result
 
 
 def _gray_psk(order: int) -> np.ndarray:
@@ -103,7 +90,7 @@ def _gray_psk(order: int) -> np.ndarray:
         raise ValueError("Order must be power of 2 for psk")
 
     # Gray codes for k bits
-    gray = _gray_code_np(k)
+    gray = gray_code(k)
 
     # BPSK Special Case: strictly real values
     if order == 2:
@@ -137,7 +124,7 @@ def _gray_ask(order: int) -> np.ndarray:
     if 2**k != order:
         raise ValueError("Order must be power of 2 for ask")
 
-    gray = _gray_code_np(k)
+    gray = gray_code(k)
     # Points are symmetric: -M+1, -M+3, ..., M-3, M-1
     points = np.linspace(-order + 1, order - 1, order)
 
@@ -184,18 +171,8 @@ def _gray_qam_8_rect() -> np.ndarray:
     """
     Generate 8-QAM constellation with Rectangular Gray mapping (Numpy).
 
-    Standard rectangular 8-QAM with Gray mapping:
-        0 (000) -> (1, 1)
-        1 (001) -> (1, 3)
-        2 (010) -> (3, 3)
-        3 (011) -> (3, 1)
-        4 (100) -> (1, -1)
-        5 (101) -> (1, -3)
-        6 (110) -> (3, -3)
-        7 (111) -> (3, -1)
-
     Args:
-        order: Modulation order (must be 8). This arg is kept for signature consistency.
+        order: Modulation order (must be 8).
 
     Returns:
         Complex array of constellation points.
@@ -230,62 +207,9 @@ def _gray_qam_8_rect() -> np.ndarray:
     return points
 
 
-def _gray_qam_8_star() -> np.ndarray:
-    """
-    Generate 8-QAM constellation with 'Star' Gray mapping (Numpy).
-
-    Specific circular constellation maximizing Minimum Euclidean Distance.
-    Outer points are at distance (1+sqrt(3)) on axes.
-    Inner points are at (±1, ±1).
-
-    Args:
-        order: Modulation order (must be 8). This arg is kept for signature consistency.
-
-    Returns:
-        Complex array of constellation points.
-    """
-
-    # Optimal scaling for star 8-QAM
-    # Inner square at ±1. R1 = sqrt(2).
-    # Outer points at R2 = 1 + sqrt(3) ~ 2.732.
-    a = 1.0 + np.sqrt(3.0)
-
-    # 3-bit Gray mapping indices
-    # 0 (000) -> Outer Right
-    # 1 (001) -> Inner Top-Right
-    # 2 (010) -> Inner Top-Left
-    # 3 (011) -> Outer Top
-    # 4 (100) -> Inner Bottom-Right
-    # 5 (101) -> Outer Bottom
-    # 6 (110) -> Outer Left
-    # 7 (111) -> Inner Bottom-Left
-
-    points = np.zeros(8, dtype=complex)
-    points[0] = a
-    points[1] = 1.0 + 1.0j
-    points[2] = -1.0 + 1.0j
-    points[3] = a * 1j
-    points[4] = 1.0 - 1.0j
-    points[5] = -a * 1j
-    points[6] = -a
-    points[7] = -1.0 - 1.0j
-
-    return points
-
-
 def _gray_qam_cross(order: int) -> np.ndarray:
     """
     Generate Cross-QAM constellation (M = 2^(2k+1)) using a Quasi-Gray mapping (Numpy).
-
-    For Cross-QAM (e.g., 32-QAM, 128-QAM), a perfect Gray code (Hamming distance 1
-    for all nearest neighbors) is impossible on the standard cross shape.
-    This implementation uses a "Folded" Rectangular mapping approach:
-    1. Start with a Rectangular Grid of size 2^(k+1) x 2^k.
-    2. Identify "Wing" columns on the left and right.
-    3. Rotate and stack these Wings onto the Top and Bottom of the central body.
-
-    This technique yields the standard Cross shape (e.g., 6x6 for 32-QAM) and
-    minimizes Gray violation errors at the boundary seams (Wing <-> Body).
 
     Args:
         order: Modulation order (must be an odd power of 2).
@@ -305,13 +229,10 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     height = 2**m
 
     # 1. Generate Gray sequences for underlying Rectangular Grid
-    gray_i_seq = _gray_code_np(n)
-    gray_q_seq = _gray_code_np(m)
+    gray_i_seq = gray_code(n)
+    gray_q_seq = gray_code(m)
 
     # 2. Build Inverse Lookup Tables (Symbol -> Geometric Index)
-    # This allows us to map the input Gray-coded symbols to their 2D grid coordinates (geo_i, geo_q).
-    # We perform the "folding" in the Geometric domain, then map back to coordinates.
-    # Use backend operations to maintain compatibility.
     inv_gray_i = np.zeros(width, dtype=int)
     inv_gray_i[gray_i_seq] = np.arange(width)
 
@@ -329,15 +250,12 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     geo_q = inv_gray_q[idx_q_sym]
 
     # 5. Determine Folding Parameters
-    # We remove 'n_shift' columns from each side (Wings) and stack them on top/bottom.
-    # For 32-QAM (n=3, W=8): n_shift = 1. We move Col 0 and Col 7.
-    # For 128-QAM (n=4, W=16): n_shift = 2. We move Cols 0,1 and 14,15.
     n_shift = 0
     if n >= 3:
         n_shift = 2 ** (n - 3)
 
     if n_shift == 0:
-        # Fallback for purely rectangular cases (e.g. 8-QAM if it were supported)
+        # Fallback
         val_i = (-width + 1 + 2 * geo_i).astype(float)
         val_q = (-height + 1 + 2 * geo_q).astype(float)
         return val_i + 1j * val_q
@@ -347,29 +265,19 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     mask_right = geo_i >= (width - n_shift)
 
     # 7. Calculate Rotation/Translation
-    # We map the Wing blocks (Height x n_shift) to the Caps (n_shift x Height)
-    # Center the mapped block horizontally relative to the main body.
     center_offset = (width - height) // 2
 
     # Left Wing -> Top Cap
-    # Rotation: New I = Old Q + Offset.
     rotated_i_left = geo_q + center_offset
-
-    # New Q = Top Extension (Stacking upwards)
-    # The inner-most wing column maps to the row just above the Body.
     rotated_q_left = height + (n_shift - 1 - geo_i)
 
     # Right Wing -> Bottom Cap
-    # Rotation: New I = Old Q + Offset.
     rotated_i_right = geo_q + center_offset
-
-    # New Q = Bottom Extension (Stacking downwards)
-    # The inner-most wing column maps to the row just below the Body.
     rotated_q_right = -1 - (geo_i - (width - n_shift))
 
     # Apply Updates
-    geo_i_final = geo_i.copy() if hasattr(geo_i, "copy") else geo_i
-    geo_q_final = geo_q.copy() if hasattr(geo_q, "copy") else geo_q
+    geo_i_final = geo_i.copy()
+    geo_q_final = geo_q.copy()
 
     geo_i_final = np.where(mask_left, rotated_i_left, geo_i_final)
     geo_i_final = np.where(mask_right, rotated_i_right, geo_i_final)
@@ -378,7 +286,6 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     geo_q_final = np.where(mask_right, rotated_q_right, geo_q_final)
 
     # Convert Final Geometric Indices to Values
-    # Note: geo_q_final can be outside 0..H-1 range, which is intended.
     final_i_vals = (-width + 1 + 2 * geo_i_final).astype(float)
     final_q_vals = (-height + 1 + 2 * geo_q_final).astype(float)
 
@@ -395,10 +302,9 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
         order: Modulation order.
 
     Returns:
-        Array of complex symbols.
+        Array of complex symbols on the same backend as bits.
     """
-    bits = ensure_on_backend(bits)
-    xp = get_xp()
+    bits, xp, _ = dispatch(bits)
 
     k = int(np.log2(order))
     if 2**k != order:
@@ -410,8 +316,6 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
         )
 
     # Reshape bits into symbols (N/k, k)
-    # We need to process this carefully to remain backend-agnostic efficiently
-    # For now, we assume bits are 0/1 integers
     num_symbols = len(bits) // k
 
     # Pack bits into integer indices
@@ -423,8 +327,11 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
     # Perform dot product
     indices = xp.sum(bits_reshaped * powers, axis=1)
 
-    # Get constellation
+    # Get constellation (returns NumPy)
     constellation = gray_constellation(modulation, order)
+
+    # Ensure constellation is on the same backend as indices
+    constellation = xp.asarray(constellation)
 
     # Map indices to points
     return constellation[indices]

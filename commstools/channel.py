@@ -5,10 +5,11 @@ This module provides functions to simulate physical channel impairments, includi
 - Additive White Gaussian Noise (AWGN).
 """
 
-from typing import Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
+
 import numpy as np
 
-from .backend import ArrayType
+from .backend import ArrayType, dispatch
 
 if TYPE_CHECKING:
     from .signal import Signal
@@ -27,30 +28,22 @@ def add_gaussian_noise(
     Returns:
         The signal with added Gaussian noise. If input is Signal, returns a new Signal object.
     """
-    # Check if signal is a Signal object (avoiding circular import issues by checking attribute or type name if strictly needed,
-    # but TYPE_CHECKING import + runtime check for explicit class is problematic if not imported.
-    # We can check for 'samples' attribute or import inside function).
+    # Check if signal is a Signal object
     from .signal import Signal
-
-    from .backend import ensure_on_backend, get_xp
 
     if isinstance(signal, Signal):
         samples = signal.samples
     else:
         samples = signal
 
-    samples = ensure_on_backend(samples)
-    xp = get_xp()
+    samples, xp, _ = dispatch(samples)
 
     signal_power = xp.mean(xp.abs(samples) ** 2)
     snr_linear = 10 ** (snr_db / 10)
 
     # Handle very low SNR or infinite noise case
-    # We avoid division by zero or negative SNRs if possible, though physics suggests positive linear SNR.
-    # But if snr_linear is effectively 0, noise power is infinite.
     if snr_linear <= 1e-20:
-        # Fallback to avoid div by zero, make noise massive relative to signal
-        # or just use a safe epsilon.
+        # Fallback to huge noise
         noise_power = signal_power / 1e-20
     else:
         noise_power = signal_power / snr_linear

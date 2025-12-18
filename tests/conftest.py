@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from commstools import backend
 
 try:
     import cupy as cp
@@ -8,8 +9,6 @@ try:
 except ImportError:
     cp = None
     _CUPY_AVAILABLE = False
-
-from commstools.backend import NumpyBackend, CupyBackend, set_backend
 
 
 def pytest_addoption(parser):
@@ -41,16 +40,16 @@ def backend_device(request):
     """
     Fixture that returns the backend device name.
     Skips GPU tests if CuPy is not available or functional.
+    Forces CPU mode when device is 'cpu' to ensure isolation.
     """
     device = request.param
     if device == "gpu":
+        backend.use_cpu_only(False)
         if not _CUPY_AVAILABLE:
             pytest.skip("CuPy not installed, skipping GPU tests")
         try:
             # Aggressive check for functionality
             cp.zeros(1)
-            cp.random.default_rng(0)
-            # cp.random.randn(1) # This seems to crash differently on some envs, let's try-catch it
             try:
                 cp.random.randn(1)
             except ImportError:
@@ -59,7 +58,17 @@ def backend_device(request):
         except Exception as e:
             pytest.skip(f"CuPy installed but not functional (missing libs?): {e}")
 
-    return device
+    elif device == "cpu":
+        # Force CPU to prevent accidental GPU usage in "cpu" tests
+        backend.use_cpu_only(True)
+
+    yield device
+
+    # Restore default state (allow GPU) after test
+    backend.use_cpu_only(False)
+
+    # Restore default state (allow GPU) after test
+    backend.use_cpu_only(False)
 
 
 @pytest.fixture

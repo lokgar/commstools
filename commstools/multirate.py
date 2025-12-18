@@ -9,7 +9,7 @@ This module provides efficient implementations of multirate operations:
 
 from typing import Any
 
-from .backend import ArrayType, ensure_on_backend, get_sp, get_xp
+from .backend import ArrayType, dispatch
 
 
 def expand(samples: ArrayType, factor: int) -> ArrayType:
@@ -23,8 +23,7 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
     Returns:
         Expanded array with zeros inserted (length = len(samples) * factor).
     """
-    samples = ensure_on_backend(samples)
-    xp = get_xp()
+    samples, xp, _ = dispatch(samples)
 
     n_in = samples.shape[0]
     n_out = n_in * factor
@@ -35,7 +34,7 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
 
 def upsample(samples: ArrayType, factor: int) -> ArrayType:
     """
-    Upsampling: Expansion (zero-insertion) + anti-imaging filtering.
+    Upsampling: Expansion (zero-insertion) + anti-imaging filter.
 
     Increases sample rate by inserting zeros and applying lowpass filter
     to suppress spectral images.
@@ -47,8 +46,7 @@ def upsample(samples: ArrayType, factor: int) -> ArrayType:
     Returns:
         Upsampled samples at rate (factor * original_rate).
     """
-    samples = ensure_on_backend(samples)
-    sp = get_sp()
+    samples, _, sp = dispatch(samples)
     return sp.signal.resample_poly(samples, factor, 1)
 
 
@@ -70,8 +68,7 @@ def decimate(
     Returns:
         Decimated samples at rate (original_rate / factor).
     """
-    samples = ensure_on_backend(samples)
-    sp = get_sp()
+    samples, _, sp = dispatch(samples)
 
     if method == "decimate":
         # scipy.signal.decimate (includes antialiasing)
@@ -104,6 +101,5 @@ def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
     Returns:
         Resampled samples at rate (original_rate * up / down).
     """
-    samples = ensure_on_backend(samples)
-    sp = get_sp()
+    samples, _, sp = dispatch(samples)
     return sp.signal.resample_poly(samples, int(up), int(down))

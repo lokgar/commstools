@@ -4,15 +4,16 @@ Random sequence generation.
 This module provides functions to generate random and pseudo-random bit sequences:
 - Random bits (uniform distribution).
 - Pseudo-Random Binary Sequences (PRBS) using LFSRs.
-"""
-# For reproducibility we generate the random bits on the CPU,
-# as sequences differ between backends with given seed.
 
-import numpy as np
+For reproducibility we generate the random bits on the CPU.
+Use to_device() or Signal.to() to move them to GPU if needed.
+"""
 
 from typing import Optional
 
-from .backend import ArrayType, ensure_on_backend
+import numpy as np
+
+from .backend import ArrayType
 
 
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
@@ -24,19 +25,18 @@ def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
         seed: Random seed for reproducibility.
 
     Returns:
-        Array of bits (0s and 1s) on the active backend.
+        Array of bits (0s and 1s) as a NumPy array (CPU).
     """
     rng = np.random.default_rng(seed)
     bits = rng.integers(0, 2, size=length)
-    return ensure_on_backend(bits)
+    return bits
 
 
 def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:
     """
     Generates a Pseudo-Random Binary Sequence (PRBS).
 
-    Note: This function currently uses CPU-only numpy implementation for LFSR bitwise operations.
-    The result is then transferred to the active backend.
+    Note: This function uses CPU-only numpy implementation for LFSR bitwise operations.
 
     Args:
         length: Length of the sequence to generate.
@@ -44,7 +44,7 @@ def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:
         order: Order of the PRBS (e.g., 7 for PRBS7).
 
     Returns:
-        Array of bits (0s and 1s) on the active backend.
+        Array of bits (0s and 1s) as a NumPy array (CPU).
     """
     # Feedback taps for common PRBS orders
     taps = {7: (6, 5), 9: (8, 4), 11: (10, 8), 15: (14, 13), 23: (22, 17), 31: (30, 27)}
@@ -71,5 +71,4 @@ def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:
         # Shift
         state = (state >> 1) | (fb << (order - 1))
 
-    # Transfer to active backend
-    return ensure_on_backend(seq)
+    return seq

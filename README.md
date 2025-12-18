@@ -5,7 +5,7 @@ CommsTools is a modern, modular Python library for high-performance digital comm
 ## 🚀 Key Features
 
 * **Hardware-First Architecture**:
-  * **CPU Mode**: Standard execution built on NumPy. Default behavior, perfect for debugging and small-scale simulations (or when GPU is not available).
+  * **CPU Mode**: Standard execution built on NumPy. Default behavior when GPU is not available, fine for debugging and small-scale simulations.
   * **GPU Mode**: High-performance execution built on CuPy (JAX is also supported). Requires CUDA-compatible GPU and appropriate drivers.
 * **Unified Signal Abstraction**: The core `Signal` class encapsulates complex IQ samples with critical physical metadata (sampling rate, modulation format, etc.) and provides methods for DSP operations and visualization.
 * **JAX Interoperability**: Explicitly export data to JAX for specialized research tasks like gradient calculation or machine learning integration.
@@ -25,24 +25,25 @@ uv pip install -e .
 
 ## 🛠️ Usage
 
-### Global Backend Selection
+### Device Placement
 
-The library is designed to run on a specific backend (CPU or GPU) chosen at the start of your program.
+The library adopts a data-driven approach. The `Signal` object manages data placement. If CuPy is installed and functional, new `Signal` objects default to the GPU.
 
 ```python
-from commstools import set_backend, Signal
+from commstools import Signal
 import numpy as np
 
-# Select Hardware: 'cpu' (default) or 'gpu'
-set_backend("gpu") 
-
 samples = np.random.randn(1000) + 1j * np.random.randn(1000)
-# Create a signal (automatically placed on the selected backend)
-# If backend is 'gpu', this creates a CuPy array on the device.
+
+# Create a signal
+# Defaults to GPU if CuPy is available, otherwise CPU.
 sig = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e5)
 
+# Verify backend
+print(sig.backend.name)  # 'gpu' or 'cpu'
+
 # Apply DSP
-# Operations are automatically dispatched to optimized CUDA kernels if on GPU
+# Operations are automatically dispatched to the correct backend (NumPy or CuPy)
 sig.fir_filter(taps=np.ones(10))
 ```
 

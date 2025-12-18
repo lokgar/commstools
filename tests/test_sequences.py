@@ -1,13 +1,15 @@
 import pytest
+import numpy as np
 from commstools import sequences, backend
 
 
 def test_random_bits(backend_device, xp):
-    backend.set_backend(backend_device)
-
+    # random_bits now always returns NumPy array
     bits = sequences.random_bits(100, seed=42)
-    assert isinstance(bits, xp.ndarray)
+    assert isinstance(bits, np.ndarray)
     assert len(bits) == 100
-    # Check values are 0 or 1
-    # Use simple boolean logic compatible with both
-    assert xp.all((bits == 0) | (bits == 1))
+    assert np.all((bits == 0) | (bits == 1))
+
+    # Optional: Verify we can move it to device
+    bits_dev = backend.to_device(bits, backend_device)
+    assert isinstance(bits_dev, xp.ndarray)

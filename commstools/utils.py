@@ -2,11 +2,11 @@
 Utility functions.
 
 This module provides general helper functions used across the library:
-- Array normalization (unity gain, unit energy, max amplitude, average power).
+- Array normalization (unity_gain, unit_energy, max_amplitude, average_power).
 - Linear interpolation (backend-agnostic).
 """
 
-from .backend import ArrayType, get_xp, ensure_on_backend
+from .backend import ArrayType, dispatch
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -27,9 +27,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     Raises:
         ValueError: If the normalization factor is zero (Numpy only).
     """
-    x = ensure_on_backend(x)
-    x = ensure_on_backend(x)
-    xp = get_xp()
+    x, xp, _ = dispatch(x)
 
     if mode == "unity_gain":
         norm_factor = xp.sum(x)
@@ -67,10 +65,11 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     Returns:
         Interpolated values.
     """
-    x = ensure_on_backend(x)
-    x_p = ensure_on_backend(x_p)
-    f_p = ensure_on_backend(f_p)
-    xp = get_xp()
+    x, xp, _ = dispatch(x)
+
+    # Ensure other inputs are on the same backend
+    x_p = xp.asarray(x_p)
+    f_p = xp.asarray(f_p)
 
     # Move axis to end for easier handling
     f_p = xp.swapaxes(f_p, axis, -1)
@@ -90,19 +89,7 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     weights = (x - x0) / denominator
 
     # Get the bounding values
-    # fp has shape (..., len(xp))
-    # we want to grab slices corresponding to idxs
-    y0 = xp.take_along_axis(f_p, xp.expand_dims(idxs - 1, axis=0), axis=-1)
-    y1 = xp.take_along_axis(f_p, xp.expand_dims(idxs, axis=0), axis=-1)
-
-    # Squeeze the extra dimension added by take_along_axis if necessary
-    # Actually take_along_axis output matches indices shape broadcasting.
-    # But here fp is (..., T) and idxs is (M,).
-    # We need to broadcast idxs to (..., M).
-    # np.take with explicit axis might be simpler or manual fancy indexing.
-
-    # Let's use simple fancy indexing if possible, but swapaxes made it the last axis.
-    # fp is (..., T)
+    # f_p is (..., T)
     # idxs is (M,)
     # We want result (..., M)
 
