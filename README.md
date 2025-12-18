@@ -40,7 +40,7 @@ samples = np.random.randn(1000) + 1j * np.random.randn(1000)
 sig = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e5)
 
 # Verify backend
-print(sig.backend.name)  # 'gpu' or 'cpu'
+print(sig.backend)  # 'gpu' or 'cpu'
 
 # Apply DSP
 # Operations are automatically dispatched to the correct backend (NumPy or CuPy)
@@ -63,7 +63,7 @@ sig.to("gpu")
 
 ```python
 # Export samples to JAX array (Zero-copy on GPU via DLPack)
-jax_array = sig.to_jax()
+jax_array = sig.export_samples_to_jax()
 
 # Now you can use JAX transformations
 import jax
