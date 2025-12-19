@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .backend import dispatch, to_device
+from .logger import logger
 from .utils import interp1d
 
 
@@ -27,7 +28,7 @@ def apply_default_theme() -> None:
         font_name = "Roboto"
     except ValueError:
         font_name = "sans"
-        print("Roboto font not found, falling back to default sans-serif.")
+        logger.warning("Roboto font not found, falling back to default sans-serif.")
 
     mpl.rcParams.update(
         {
@@ -143,7 +144,7 @@ def psd(
 
     if x_axis == "wavelength":
         if domain != "OPT":
-            print("Warning: Wavelength plotting is typically used for optical signals.")
+            logger.warning("Wavelength plotting is typically used for optical signals.")
 
         # c = 299,792,458 m/s
         c = 299792458.0
@@ -565,7 +566,7 @@ def filter_response(
         fig = ax[0].figure
         ax1, ax2, ax3 = ax
     else:
-        print("Warning: filter_response requires 3 axes. Creating new figure.")
+        logger.warning("filter_response requires 3 axes. Creating new figure.")
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 4))
 
     # 1. Impulse Response
@@ -667,7 +668,7 @@ def ideal_constellation(
         # Generate constellation on backend (returns NumPy)
         const = gray_constellation(modulation, order)
     except ValueError as e:
-        print(f"Error generating constellation: {e}")
+        logger.error(f"Error generating constellation: {e}")
         return None
 
     # Move to cpu for plotting (already NumPy but good practice)

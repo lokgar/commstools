@@ -11,9 +11,11 @@ It defines helper functions to:
 
 import types
 from functools import lru_cache
-from typing import Any, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import numpy as np
+
+from .logger import logger
 
 # Try to import CuPy and verify functionality
 try:
@@ -24,17 +26,19 @@ try:
     try:
         cp.arange(1)
         _CUPY_AVAILABLE = True
-        print("CuPy is available and functional, defaulting Signals to GPU.")
+        logger.info("CuPy is available and functional, defaulting Signals to GPU.")
     except Exception:
         # Fallback if functional check fails
         _CUPY_AVAILABLE = False
         cp = None
-        print("CuPy has problems with shared libraries, falling back to NumPy.")
+        logger.warning(
+            "CuPy has problems with shared libraries, falling back to NumPy."
+        )
 
 except ImportError:
     _CUPY_AVAILABLE = False
     cp = None
-    print("CuPy is not available, falling back to NumPy.")
+    logger.debug("CuPy is not available, falling back to NumPy.")
 
 ArrayType = Union[
     np.ndarray, Any
@@ -110,7 +114,7 @@ def to_device(data: Any, device: str) -> ArrayType:
 
     Args:
         data: Input data.
-        device: 'cpu' or 'gpu'.
+        device: 'CPU' or 'GPU'.
 
     Returns:
         Array on the target device.
@@ -134,7 +138,7 @@ def to_device(data: Any, device: str) -> ArrayType:
         return cp.asarray(data)
 
     else:
-        raise ValueError(f"Unknown device: {device}")
+        raise ValueError(f"Unknown device: {device.upper()}")
 
 
 def dispatch(
@@ -163,71 +167,109 @@ def dispatch(
     return data, xp, sp
 
 
-def to_jax(data: Any) -> Any:
+def to_jax(data: Any, device: Optional[str] = None) -> Any:
     """
-    Converts data to a JAX array, preserving the device if possible.
+    Converts data to a JAX array, preserving the device if possible or targeting a specific device.
 
     Args:
         data: Input data (NumPy array, CuPy array, list, etc.).
+        device: Optional target device ('CPU', 'GPU', or 'TPU'). If None, it attempts
+                to preserve the original data's device.
 
     Returns:
-        JAX array on the corresponding device (CPU or GPU).
+        JAX array on the corresponding device.
 
     Raises:
         ImportError: If JAX is not installed.
+        ValueError: If the requested device is not available.
     """
     try:
+        import jax
         import jax.numpy as jnp
         from jax import dlpack as jax_dlpack
     except ImportError:
         raise ImportError("JAX is not installed.")
 
-    if is_cupy_available() and isinstance(data, cp.ndarray):
-        # Zero-copy transfer from CuPy (GPU) to JAX (GPU) via DLPack
+    target_jax_device = None
+    if device is not None:
+        device = device.lower()
+        # Map our device names to JAX platform names
+        platform_map = {"cpu": "cpu", "gpu": "cuda", "tpu": "tpu"}
+        jax_platform = platform_map.get(device, device)
+
         try:
-            return jax_dlpack.from_dlpack(data)
+            target_jax_device = jax.devices(jax_platform)[0]
+        except (RuntimeError, IndexError):
+            raise ValueError(
+                f"Requested JAX device '{device}' (platform '{jax_platform}') is not available."
+            )
+
+    # 1. Handle CuPy -> JAX (GPU)
+    if is_cupy_available() and isinstance(data, cp.ndarray):
+        try:
+            jax_arr = jax_dlpack.from_dlpack(data)
+            # If a specific device was requested, move it if necessary
+            if target_jax_device and jax_arr.device != target_jax_device:
+                jax_arr = jax.device_put(jax_arr, target_jax_device)
+            return jax_arr
+        except Exception as e:
+            logger.debug(
+                f"DLPack transfer from CuPy to JAX failed: {e}. Falling back to explicit conversion."
+            )
+
+    # 2. General case
+    jax_arr = jnp.asarray(data)
+
+    # 3. Explicit device placement if requested or if we need to ensure consistency
+    if target_jax_device:
+        if jax_arr.device != target_jax_device:
+            jax_arr = jax.device_put(jax_arr, target_jax_device)
+    elif isinstance(data, np.ndarray):
+        # Default for NumPy is CPU; ensure it stays there unless JAX defaults otherwise
+        try:
+            cpu_device = jax.devices("cpu")[0]
+            if jax_arr.device != cpu_device:
+                jax_arr = jax.device_put(jax_arr, cpu_device)
         except Exception:
-            # Fallback if dlpack not supported or fails
             pass
 
-    if isinstance(data, np.ndarray):
-        # Zero-copy transfer from NumPy (CPU) to JAX (CPU)
-        return jnp.asarray(data)
-
-    # Fallback for lists, etc.
-    return jnp.array(data)
+    return jax_arr
 
 
 def from_jax(data: Any) -> ArrayType:
     """
     Converts a JAX array to a backend-compatible array (NumPy or CuPy).
+    Standardizes on NumPy for CPU/TPU and CuPy for GPU.
 
     Args:
         data: Input JAX array.
 
     Returns:
-        NumPy array (if on CPU) or CuPy array (if on GPU and CuPy avaliable).
+        NumPy array (if on CPU or TPU) or CuPy array (if on GPU and CuPy available).
     """
-    # Check device - try to handle JAX arrays or compatible objects
+    # Check device
+    device_platform = "cpu"
     try:
         if hasattr(data, "device"):
-            is_cpu = data.device.platform == "cpu"
+            device_platform = data.device.platform
         elif hasattr(data, "devices"):
-            # For sharded arrays, assume first device
-            is_cpu = list(data.devices())[0].platform == "cpu"
-        else:
-            is_cpu = True
+            device_platform = list(data.devices())[0].platform
     except Exception:
-        # Graceful fallback
-        is_cpu = True
+        pass
 
-    if not is_cpu and is_cupy_available():
+    if device_platform == "cuda" and is_cupy_available():
         # Try zero-copy via DLPack to CuPy
         try:
             return cp.from_dlpack(data)
-        except Exception:
-            # Fallback to implicit conversion if DLPack fails
-            pass
+        except Exception as e:
+            logger.debug(
+                f"DLPack transfer from JAX to CuPy failed: {e}. Falling back to NumPy conversion."
+            )
 
-    # Convert to numpy (will copy from GPU if needed via JAX implicit conversion)
+    if device_platform == "cuda" and not is_cupy_available():
+        logger.warning(
+            "JAX array is on GPU, but CuPy is not available. Falling back to NumPy (CPU)."
+        )
+
+    # Convert to numpy (will copy from GPU/TPU if needed)
     return np.asarray(data)

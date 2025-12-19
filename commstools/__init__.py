@@ -12,6 +12,7 @@ This package provides tools for:
 import warnings
 
 from . import baseband
+from .logger import set_log_level
 from .plotting import apply_default_theme
 from .signal import Signal
 
@@ -21,6 +22,7 @@ warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental
 __all__ = [
     "Signal",
     "baseband",
+    "set_log_level",
 ]
 
 apply_default_theme()
