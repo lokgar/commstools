@@ -32,6 +32,7 @@ from .backend import (
     to_device,
     to_jax,
 )
+from .logger import logger
 
 
 class Signal(BaseModel):
@@ -103,9 +104,9 @@ class Signal(BaseModel):
     @property
     def backend(self) -> str:
         """
-        Returns the name of the backend ('cpu' or 'gpu').
+        Returns the name of the backend ('CPU' or 'GPU').
         """
-        return "gpu" if self.xp == cp else "cpu"
+        return "GPU" if self.xp == cp else "CPU"
 
     @property
     def duration(self) -> float:
@@ -122,7 +123,7 @@ class Signal(BaseModel):
         Moves the signal data to the specified device.
 
         Args:
-            device: The target device ('cpu' or 'gpu').
+            device: The target device ('CPU' or 'GPU').
 
         Returns:
             self
@@ -130,18 +131,24 @@ class Signal(BaseModel):
         self.samples = to_device(self.samples, device)
         return self
 
-    def export_samples_to_jax(self) -> Any:
+    def export_samples_to_jax(self, device: Optional[str] = None) -> Any:
         """
-        Exports the signal samples to a JAX array.
+        Exports the signal samples to a JAX array, ensuring consistency with the signal backend.
+
+        Args:
+            device: Optional target device ('CPU', 'GPU', or 'TPU').
+                    If None, the signal's current backend is used.
 
         Returns:
             A JAX array containing the signal samples.
         """
-        return to_jax(self.samples)
+        # If device is not explicitly requested, use the signal's backend
+        target_device = device if device is not None else self.backend
+        return to_jax(self.samples, device=target_device)
 
     def update_samples_from_jax(self, jax_array: Any) -> "Signal":
         """
-        Updates the signal samples from a JAX array.
+        Updates the signal samples from a JAX array, preserving the original signal backend.
 
         Args:
             jax_array: Input JAX array.
@@ -149,7 +156,15 @@ class Signal(BaseModel):
         Returns:
             self
         """
-        self.samples = from_jax(jax_array)
+        original_backend = self.backend
+        # Convert JAX array to backend-compatible array
+        # from_jax will return NumPy (for CPU/TPU) or CuPy (for GPU)
+        new_samples = from_jax(jax_array)
+
+        # Ensure we move the data back to the original backend if it differs
+        # (e.g., if signal was GPU but jax_array was on CPU/TPU)
+        self.samples = to_device(new_samples, original_backend)
+
         return self
 
     def time_axis(self) -> ArrayType:
@@ -312,7 +327,7 @@ class Signal(BaseModel):
         if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
             display(df)
         else:
-            print(df)
+            logger.info("\n" + str(df))
 
     def plot_symbols(
         self,
@@ -531,7 +546,7 @@ class Signal(BaseModel):
         try:
             pulse_taps = self.shaping_filter_taps()
         except ValueError as e:
-            print(f"Cannot apply matched filter: {e}")
+            logger.error(f"Cannot apply matched filter: {e}")
             return self
 
         self.samples = filtering.matched_filter(

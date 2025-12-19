@@ -40,7 +40,7 @@ samples = np.random.randn(1000) + 1j * np.random.randn(1000)
 sig = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e5)
 
 # Verify backend
-print(sig.backend)  # 'gpu' or 'cpu'
+print(sig.backend)  # 'GPU' or 'CPU'
 
 # Apply DSP
 # Operations are automatically dispatched to the correct backend (NumPy or CuPy)

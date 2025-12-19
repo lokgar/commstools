@@ -11,6 +11,7 @@ import numpy as np
 import scipy
 
 from .backend import ArrayType, dispatch
+from .logger import logger
 from .multirate import expand
 from .utils import normalize
 
@@ -390,7 +391,7 @@ def shape_pulse(
     symbols, xp, sp = dispatch(symbols)
 
     if pulse_shape == "none":
-        print("Pulse shaping disabled, expanding symbols by sps")
+        logger.info("Pulse shaping disabled, expanding symbols by sps")
         return normalize(expand(symbols, int(sps)), "max_amplitude")
     elif pulse_shape == "rect":
         h = xp.ones(int(sps))
