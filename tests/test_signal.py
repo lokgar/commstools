@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from commstools.signal import Signal
+from commstools.core import Signal
 
 
 def test_signal_initialization(backend_device, xp):

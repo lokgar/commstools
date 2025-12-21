@@ -1,12 +1,14 @@
 """
 Signal visualization and plotting tools.
 
-This module provides high-level plotting functions optimized for communication signals:
-- Power Spectral Density (PSD) plots.
-- Time-domain waveform plots.
-- Eye diagrams (histogram and line modes).
-- Consultellation diagrams.
-- Filter frequency and impulse responses.
+This module provides high-level plotting functions optimized for communication signals,
+designed to produce publication-quality figures with minimal effort.
+Features:
+- Power Spectral Density (PSD) with automatic SI scaling.
+- Time-domain waveforms (I/Q or real-valued).
+- Eye diagrams (optimized vectorized line mode and high-definition density plots).
+- Constellation diagrams with Gray-coded bit annotations.
+- Filter response analysis (Impulse, Magnitude, Phase).
 """
 
 from typing import Any, Optional, Tuple, Union
@@ -22,6 +24,7 @@ from .utils import interp1d
 
 
 def apply_default_theme() -> None:
+    logger.debug("Applying default plotting theme.")
     try:
         font_prop = fm.FontProperties(family="Roboto", weight="regular")
         fm.findfont(font_prop, fallback_to_default=False)
@@ -102,6 +105,7 @@ def psd(
     Returns:
         Tuple of (figure, axis) if show is False, else None.
     """
+    logger.debug(f"Generating PSD plot (sampling_rate={sampling_rate} Hz).")
     if ax is None:
         fig, ax = plt.subplots()
     else:
@@ -222,6 +226,7 @@ def time_domain(
     Returns:
         Tuple of (figure, axis) if show is False, else None.
     """
+    logger.debug("Generating time-domain plot.")
     if ax is None:
         fig, ax = plt.subplots()
     else:
@@ -469,6 +474,7 @@ def eye_diagram(
     Returns:
         Tuple of (figure, axis) if show is False, else None.
     """
+    logger.debug(f"Generating eye diagram ({type} mode).")
 
     if sps % 1 != 0:
         raise ValueError("sps must be an integer")
@@ -560,6 +566,7 @@ def filter_response(
     taps, xp, sp = dispatch(taps)
 
     if ax is None:
+        logger.debug("Generating filter response plot.")
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
         fig.subplots_adjust(hspace=0.4)
     elif isinstance(ax, (list, tuple, np.ndarray)) and len(ax) == 3:
@@ -657,6 +664,7 @@ def ideal_constellation(
     Returns:
         Tuple of (figure, axis) if show is False, else None.
     """
+    logger.debug(f"Generating ideal constellation for {modulation} ({order}-level).")
     from .mapping import gray_constellation
 
     if ax is None:

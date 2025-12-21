@@ -44,6 +44,41 @@ ArrayType = Union[
     np.ndarray, Any
 ]  # Any for CuPy array to avoid hard dependency in type hint if not installed
 
+# JAX lazy loading cache
+_JAX_CACHE = {}
+
+
+def _get_jax():
+    """Lazy loader for JAX modules to avoid repeated import overhead."""
+    if "jax" not in _JAX_CACHE:
+        try:
+            import jax
+            import jax.numpy as jnp
+            from jax import dlpack
+
+            _JAX_CACHE["jax"] = jax
+            _JAX_CACHE["jnp"] = jnp
+            _JAX_CACHE["dlpack"] = dlpack
+        except ImportError:
+            _JAX_CACHE["jax"] = None
+
+    return _JAX_CACHE.get("jax"), _JAX_CACHE.get("jnp"), _JAX_CACHE.get("dlpack")
+
+
+@lru_cache(maxsize=8)
+def _get_jax_device(platform: str):
+    """Cached lookup for JAX devices by platform name."""
+    jax, _, _ = _get_jax()
+    if jax is None:
+        return None
+    try:
+        # Map our common names to JAX platform names
+        platform_map = {"cpu": "cpu", "gpu": "cuda", "tpu": "tpu"}
+        jax_platform = platform_map.get(platform, platform)
+        return jax.devices(jax_platform)[0]
+    except (RuntimeError, IndexError):
+        return None
+
 
 _FORCE_CPU = False
 
@@ -119,6 +154,7 @@ def to_device(data: Any, device: str) -> ArrayType:
     Returns:
         Array on the target device.
     """
+    logger.debug(f"Moving data to {device.upper()}.")
     device = device.lower()
     if device == "cpu":
         # Verify both availability and force flag to behave safely
@@ -183,57 +219,46 @@ def to_jax(data: Any, device: Optional[str] = None) -> Any:
         ImportError: If JAX is not installed.
         ValueError: If the requested device is not available.
     """
-    try:
-        import jax
-        import jax.numpy as jnp
-        from jax import dlpack as jax_dlpack
-    except ImportError:
+    jax, jnp, jax_dlpack = _get_jax()
+    if jax is None:
         raise ImportError("JAX is not installed.")
 
-    target_jax_device = None
+    target_device = None
     if device is not None:
-        device = device.lower()
-        # Map our device names to JAX platform names
-        platform_map = {"cpu": "cpu", "gpu": "cuda", "tpu": "tpu"}
-        jax_platform = platform_map.get(device, device)
-
-        try:
-            target_jax_device = jax.devices(jax_platform)[0]
-        except (RuntimeError, IndexError):
-            raise ValueError(
-                f"Requested JAX device '{device}' (platform '{jax_platform}') is not available."
-            )
+        target_device = _get_jax_device(device.lower())
+        if target_device is None:
+            raise ValueError(f"Requested JAX device '{device}' is not available.")
 
     # 1. Handle CuPy -> JAX (GPU)
     if is_cupy_available() and isinstance(data, cp.ndarray):
         try:
+            # DLPack is the fastest way for zero-copy GPU transfer
             jax_arr = jax_dlpack.from_dlpack(data)
-            # If a specific device was requested, move it if necessary
-            if target_jax_device and jax_arr.device != target_jax_device:
-                jax_arr = jax.device_put(jax_arr, target_jax_device)
+            if target_device and jax_arr.device != target_device:
+                return jax.device_put(jax_arr, target_device)
             return jax_arr
         except Exception as e:
             logger.debug(
                 f"DLPack transfer from CuPy to JAX failed: {e}. Falling back to explicit conversion."
             )
 
-    # 2. General case
-    jax_arr = jnp.asarray(data)
+    # 2. Optimized Placement
+    # If a target device is specified, use device_put directly.
+    # This is more efficient than jnp.asarray(data) + device_put because it avoids
+    # an intermediate placement on the JAX default device.
+    if target_device:
+        return jax.device_put(data, target_device)
 
-    # 3. Explicit device placement if requested or if we need to ensure consistency
-    if target_jax_device:
-        if jax_arr.device != target_jax_device:
-            jax_arr = jax.device_put(jax_arr, target_jax_device)
-    elif isinstance(data, np.ndarray):
-        # Default for NumPy is CPU; ensure it stays there unless JAX defaults otherwise
-        try:
-            cpu_device = jax.devices("cpu")[0]
-            if jax_arr.device != cpu_device:
-                jax_arr = jax.device_put(jax_arr, cpu_device)
-        except Exception:
-            pass
+    # 3. Preservation Logic (No target device specified)
+    if isinstance(data, np.ndarray):
+        # Default for NumPy is CPU; ensure it stays there to preserve device origin.
+        # JAX might otherwise default to placing it on GPU if available.
+        cpu_dev = _get_jax_device("cpu")
+        if cpu_dev:
+            return jax.device_put(data, cpu_dev)
 
-    return jax_arr
+    # 4. General case (lists, scalars, or existing JAX arrays)
+    return jnp.asarray(data)
 
 
 def from_jax(data: Any) -> ArrayType:
@@ -247,17 +272,18 @@ def from_jax(data: Any) -> ArrayType:
     Returns:
         NumPy array (if on CPU or TPU) or CuPy array (if on GPU and CuPy available).
     """
-    # Check device
-    device_platform = "cpu"
+    # Detect platform
+    platform = "cpu"
     try:
+        # Standard JAX 0.4.x+ device inspection
         if hasattr(data, "device"):
-            device_platform = data.device.platform
+            platform = data.device.platform
         elif hasattr(data, "devices"):
-            device_platform = list(data.devices())[0].platform
+            platform = list(data.devices())[0].platform
     except Exception:
         pass
 
-    if device_platform == "cuda" and is_cupy_available():
+    if platform == "cuda" and is_cupy_available():
         # Try zero-copy via DLPack to CuPy
         try:
             return cp.from_dlpack(data)
@@ -266,7 +292,7 @@ def from_jax(data: Any) -> ArrayType:
                 f"DLPack transfer from JAX to CuPy failed: {e}. Falling back to NumPy conversion."
             )
 
-    if device_platform == "cuda" and not is_cupy_available():
+    if platform == "cuda" and not is_cupy_available():
         logger.warning(
             "JAX array is on GPU, but CuPy is not available. Falling back to NumPy (CPU)."
         )

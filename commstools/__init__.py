@@ -11,17 +11,19 @@ This package provides tools for:
 
 import warnings
 
-from . import baseband
+from . import baseband, impairments
+from .core import Frame, Signal
 from .logger import set_log_level
 from .plotting import apply_default_theme
-from .signal import Signal
 
 # Filter the specific warning message using a regular expression match
 warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental.*")
 
 __all__ = [
     "Signal",
+    "Frame",
     "baseband",
+    "impairments",
     "set_log_level",
 ]
 

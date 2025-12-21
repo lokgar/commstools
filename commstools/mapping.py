@@ -11,6 +11,7 @@ It supports:
 import numpy as np
 
 from .backend import ArrayType, dispatch
+from .logger import logger
 
 
 def gray_code(n: int) -> np.ndarray:
@@ -47,6 +48,9 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
     Returns:
         Array of constellation points (NumPy).
     """
+    logger.debug(
+        f"Generating Gray-coded constellation: modulation={modulation}, order={order}"
+    )
     modulation = modulation.lower()
 
     if order < 2:
@@ -304,6 +308,7 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
     Returns:
         Array of complex symbols on the same backend as bits.
     """
+    logger.debug(f"Mapping bits to {modulation.upper()} {order}-level symbols.")
     bits, xp, _ = dispatch(bits)
 
     k = int(np.log2(order))

@@ -1,11 +1,13 @@
 """
-Core signal abstraction.
+Core signal processing abstractions.
 
-This module defines the `Signal` class, which serves as the primary data structure
-for the library. It encapsulates:
-- Initial complex IQ samples.
-- Signal metadata (sampling rate, symbol rate, modulation scheme).
-- Methods for analyzing (PSD, eye diagram) and transforming (filtering, resampling) the signal.
+This module defines the primary data structures for the library:
+- `Signal`: Encapsulates complex IQ samples, physical layer metadata (sampling rate, symbol rate,
+  modulation scheme/order), and methods for signal analysis and transformation.
+- `Frame`: A container for structured signals, allowing the assembly of signals with
+  preambles, pilots, and payloads.
+
+All core classes are built on Pydantic for validation and support both CPU (NumPy) and GPU (CuPy) backends.
 """
 
 import types
@@ -23,6 +25,7 @@ except ImportError:
     _CUPY_AVAILABLE = False
 
 
+from . import utils
 from .backend import (
     ArrayType,
     from_jax,
@@ -39,15 +42,24 @@ class Signal(BaseModel):
     """
     Represents a digital signal with associated physical layer metadata.
 
+    This class serves as the primary data container for the library, encapsulating
+    both the raw IQ samples and the contextual information required for digital
+    signal processing (DSP) and analysis.
+
     Attributes:
-        samples: The complex IQ samples of the signal.
-        sampling_rate: The sampling rate in Hz.
-        symbol_rate: The symbol rate in Hz.
-        modulation_scheme: Description of the modulation format (e.g., 'QPSK', '16QAM').
-        spectral_domain: The spectral domain of the signal ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
-        physical_domain: The physical domain of the signal ('DIG', 'RF', 'OPT').
-        center_frequency: The center frequency in Hz.
-        digital_frequency_offset: The digital frequency offset in Hz.
+        samples: The complex IQ samples of the signal. Can be NumPy or CuPy arrays.
+        sampling_rate: The sampling rate of the signal in Hz. Must be positive.
+        symbol_rate: The symbol rate (baud rate) in Hz. Used for SPS calculation.
+        modulation_scheme: Identifier for the modulation format (e.g., 'QPSK', '16QAM').
+        modulation_order: The number of symbols in the constellation (e.g., 4, 16).
+        source_bits: Optional array of original bits that generated this signal.
+        pulse_shape: Name of the pulse shaping filter applied (e.g., 'rrc', 'rect').
+        pulse_params: Dictionary of parameters for the pulse shape (e.g., 'rolloff').
+        spectral_domain: The signal's placement in the spectrum ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
+        physical_domain: The physical layer domain ('DIG' for digital, 'RF' for radio frequency, 'OPT' for optical).
+        center_frequency: The carrier or center frequency in Hz.
+        digital_frequency_offset: Any applied digital frequency shift in Hz.
+        metadata: Generic dictionary for additional custom attributes (e.g., frame structure info).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -55,13 +67,16 @@ class Signal(BaseModel):
     samples: Any
     sampling_rate: float = Field(..., gt=0)
     symbol_rate: float = Field(..., gt=0)
-    modulation_scheme: str = "None"
+    modulation_scheme: Optional[str] = None
+    modulation_order: Optional[int] = None
+    source_bits: Optional[Any] = None
     pulse_shape: Optional[str] = None
     pulse_params: Optional[Dict[str, Any]] = None
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: float = Field(default=0, ge=0)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -171,6 +186,30 @@ class Signal(BaseModel):
         """Returns the time vector associated with the signal samples."""
         return self.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
 
+    def source_symbols(self) -> ArrayType:
+        """
+        Remaps source_bits to symbols using the current modulation scheme and order.
+        This provides a memory-efficient way to access symbols if only bits are stored.
+
+        Returns:
+            The remapped symbols as an array.
+        """
+        logger.debug(f"Remapping bits to symbols ({self.modulation_scheme}).")
+        if self.source_bits is None:
+            raise ValueError("No source bits available for remapping.")
+        if self.modulation_order is None:
+            raise ValueError("Modulation order must be defined for remapping.")
+
+        from . import mapping
+
+        # Ensure we use bits on the right backend for the mapping
+        # mapping.map_bits currently uses numpy internally but we might want to handle dispatch
+        return mapping.map_bits(
+            self.source_bits,
+            modulation=self.modulation_scheme.split("-")[-1].lower(),
+            order=self.modulation_order,
+        )
+
     def welch_psd(
         self,
         nperseg: int = 256,
@@ -256,33 +295,7 @@ class Signal(BaseModel):
 
     @staticmethod
     def _format_si(value: Optional[float], unit: str = "Hz") -> str:
-        if value is None:
-            return "None"
-
-        if abs(value) == 0:
-            return f"0.00 {unit}"
-
-        # Standard SI prefixes
-        si_units = {
-            -5: "f",
-            -4: "p",
-            -3: "n",
-            -2: "µ",
-            -1: "m",
-            0: "",
-            1: "k",
-            2: "M",
-            3: "G",
-            4: "T",
-            5: "P",
-        }
-
-        rank = int(np.floor(np.log10(abs(value)) / 3))
-        # clamp to supported range
-        rank = max(min(si_units.keys()), min(rank, max(si_units.keys())))
-
-        scaled = value / (1000.0**rank)
-        return f"{scaled:.2f} {si_units[rank]}{unit}"
+        return utils.format_si(value, unit)
 
     def print_info(self) -> None:
         """
@@ -297,8 +310,10 @@ class Signal(BaseModel):
                 "Spectral Domain",
                 "Physical Domain",
                 "Modulation Scheme",
-                "Sampling Rate",
+                "Modulation Order",
                 "Symbol Rate",
+                "Bit Rate",
+                "Sampling Rate",
                 "Samples Per Symbol",
                 "Pulse Shape",
                 "Duration",
@@ -311,8 +326,14 @@ class Signal(BaseModel):
                 self.spectral_domain,
                 self.physical_domain,
                 self.modulation_scheme,
-                self._format_si(self.sampling_rate, "Hz"),
+                str(self.modulation_order) if self.modulation_order else "None",
                 self._format_si(self.symbol_rate, "Baud"),
+                self._format_si(
+                    self.symbol_rate * np.log2(self.modulation_order), "bps"
+                )
+                if self.modulation_order
+                else "None",
+                self._format_si(self.sampling_rate, "Hz"),
                 f"{self.sps:.2f}",
                 self.pulse_shape.upper() if self.pulse_shape else "None",
                 self._format_si(self.duration, "s"),
@@ -481,6 +502,7 @@ class Signal(BaseModel):
         if not self.pulse_shape or self.pulse_shape == "none":
             raise ValueError("No pulse shape defined for this signal.")
 
+        logger.debug(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
         from . import filtering
 
         params = self.pulse_params if self.pulse_params else {}
@@ -565,3 +587,66 @@ class Signal(BaseModel):
             A new Signal object with copied data.
         """
         return self.model_copy(deep=True)
+
+
+class Frame(BaseModel):
+    """
+    Structured signal container for managing frame-based communication.
+
+    The `Frame` class facilitates the construction of structured waveforms by
+    grouping a preamble, pilots, and payload. It provides a mechanism to
+    assemble these components into a single, continuous `Signal` object.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    preamble: Optional[Signal] = None
+    pilots: Optional[Signal] = None
+    payload: Optional[Signal] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def assemble(self) -> Signal:
+        """
+        Assembles the parts into a single continuous Signal.
+        Currently implements simple time-multiplexed concatenation: Preamble -> Payload (with Pilots if applicable).
+        Note: Complex pilot insertion patterns should be handled by specific methods.
+
+        Returns:
+            A new Signal object containing the combined samples and identifying metadata.
+        """
+        logger.info("Assembling frame components.")
+        parts = []
+        if self.preamble:
+            parts.append(self.preamble.samples)
+        if self.payload:
+            parts.append(self.payload.samples)
+
+        if not parts:
+            raise ValueError("Frame is empty; cannot assemble.")
+
+        # Assume all parts share same properties (sampling_rate, etc.) from payload or first part
+        ref = self.payload or self.preamble
+        xp = ref.xp
+
+        combined_samples = xp.concatenate(parts, axis=0)
+
+        frame_metadata = {
+            "is_frame": True,
+            "has_preamble": self.preamble is not None,
+            "has_pilots": self.pilots is not None,
+            **self.metadata,
+        }
+
+        return Signal(
+            samples=combined_samples,
+            sampling_rate=ref.sampling_rate,
+            symbol_rate=ref.symbol_rate,
+            modulation_scheme=ref.modulation_scheme,
+            modulation_order=ref.modulation_order,
+            pulse_shape=ref.pulse_shape,
+            pulse_params=ref.pulse_params,
+            spectral_domain=ref.spectral_domain,
+            physical_domain=ref.physical_domain,
+            center_frequency=ref.center_frequency,
+            metadata=frame_metadata,
+        )

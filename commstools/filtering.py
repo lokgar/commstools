@@ -39,6 +39,7 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
     Returns:
         Gaussian filter taps with unity gain normalization.
     """
+    logger.debug(f"Generating Gaussian taps: sps={sps}, span={span}, bt={bt}")
     # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
@@ -73,6 +74,9 @@ def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
     Returns:
         np.ndarray: Centered pulse shaping taps.
     """
+    logger.debug(
+        f"Generating SmoothRect taps: sps={sps}, span={span}, bt={bt}, width={pulse_width}"
+    )
     # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
@@ -112,6 +116,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     Returns:
         RRC filter taps with unity gain normalization.
     """
+    logger.debug(f"Generating RRC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
@@ -172,6 +177,7 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     Returns:
         RC filter taps with unity gain normalization.
     """
+    logger.debug(f"Generating RC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
@@ -242,6 +248,7 @@ def lowpass_taps(
     Returns:
         Filter taps.
     """
+    logger.debug(f"Designing Lowpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
     )
@@ -266,6 +273,7 @@ def highpass_taps(
     Returns:
         Filter taps.
     """
+    logger.debug(f"Designing Highpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     # pass_zero=False for highpass
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=False
@@ -293,6 +301,9 @@ def bandpass_taps(
     Returns:
         Filter taps.
     """
+    logger.debug(
+        f"Designing Bandpass FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
+    )
     # pass_zero=False for bandpass
     h = scipy.signal.firwin(
         num_taps,
@@ -324,6 +335,9 @@ def bandstop_taps(
     Returns:
         Filter taps.
     """
+    logger.debug(
+        f"Designing Bandstop FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
+    )
     # pass_zero=True for bandstop
     h = scipy.signal.firwin(
         num_taps,
@@ -354,6 +368,7 @@ def fir_filter(samples: ArrayType, taps: ArrayType) -> ArrayType:
     Returns:
         Filtered samples.
     """
+    logger.debug(f"Applying FIR filter via convolution ({len(taps)} taps).")
     samples, xp, sp = dispatch(samples)
     # Ensure taps are on the correct backend
     taps = xp.asarray(taps)
@@ -387,6 +402,7 @@ def shape_pulse(
     Returns:
         Shaped sample array at rate (sps * symbol_rate), normalized
     """
+    logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
     symbols, xp, sp = dispatch(symbols)
 
@@ -439,6 +455,7 @@ def matched_filter(
     Returns:
         Matched filtered samples.
     """
+    logger.debug(f"Applying Matched Filter (taps length={len(pulse_taps)}).")
     samples, xp, _ = dispatch(samples)
 
     # Matched filter is conjugate and time-reversed version of pulse

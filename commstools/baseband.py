@@ -16,7 +16,8 @@ import numpy as np
 import scipy.signal
 
 from . import filtering, mapping, sequences, utils
-from .signal import Signal
+from .core import Signal
+from .logger import logger
 
 
 def generate_baseband(
@@ -37,12 +38,12 @@ def generate_baseband(
     Generate a baseband waveform with specified parameters.
 
     Args:
-        modulation: Modulation type ('psk', 'qam', 'ask').
+        modulation: Modulation scheme ('psk', 'qam', 'ask').
         order: Modulation order.
         num_symbols: Number of symbols to generate.
         sps: Samples per symbol.
         symbol_rate: Symbol rate in Hz.
-        pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+        pulse_shape: Pulse shape ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
         filter_span: Filter span in symbols.
         rrc_rolloff: Roll-off factor for RRC shaping filter.
         rc_rolloff: Roll-off factor for RC shaping filter.
@@ -51,8 +52,12 @@ def generate_baseband(
         seed: Random seed.
 
     Returns:
-        Signal object containing the generated waveform.
+        A `Signal` instance containing the generated waveform, including source bits and metadata.
     """
+    logger.info(
+        f"Generating {modulation.upper()} baseband: order={order}, "
+        f"symbols={num_symbols}, sps={sps:.2f}, symbol_rate={utils.format_si(symbol_rate, 'Baud')}."
+    )
     # calculate number of bits
     k = int(np.log2(order))
     num_bits = num_symbols * k
@@ -81,7 +86,9 @@ def generate_baseband(
         samples=samples,
         sampling_rate=symbol_rate * sps,
         symbol_rate=symbol_rate,
-        modulation_scheme=f"{order}-{modulation.upper()}",
+        modulation_scheme=f"{modulation.upper()}",
+        modulation_order=order,
+        source_bits=bits,
         pulse_shape=pulse_shape,
         pulse_params={
             "filter_span": filter_span,
@@ -116,7 +123,7 @@ def pam(
         num_symbols: Number of symbols to generate.
         sps: Samples per symbol (integer).
         symbol_rate: Symbol rate in Hz.
-        pulse_shape: Pulse shaping type ('rect', 'rrc', 'rc', 'gaussian', 'smoothrect', 'none').
+        pulse_shape: Pulse shape ('rect', 'rrc', 'rc', 'gaussian', 'smoothrect', 'none').
         filter_span: Filter span in symbols.
         rrc_rolloff: Roll-off factor for RRC shaping filter.
         rc_rolloff: Roll-off factor for RC shaping filter.
@@ -125,8 +132,12 @@ def pam(
         seed: Random seed.
 
     Returns:
-        Signal object.
+        A `Signal` instance with PAM samples and metadata.
     """
+    logger.info(
+        f"Generating PAM ({'Bipolar' if bipolar else 'Unipolar'}): "
+        f"order={order}, symbols={num_symbols}, pulse={pulse_shape}."
+    )
     sig = generate_baseband(
         modulation="ask",
         order=order,
@@ -149,7 +160,7 @@ def pam(
         # Normalize so max amplitude is 1 (standard for unipolar)
         sig.samples = utils.normalize(sig.samples, "max_amplitude")
 
-    sig.modulation_scheme = f"PAM-{order}{'-BIPOL' if bipolar else '-UNIPOL'}"
+    sig.modulation_scheme = f"PAM{'-BIPOL' if bipolar else '-UNIPOL'}"
     return sig
 
 
@@ -179,8 +190,12 @@ def rzpam(
         seed: Random seed.
 
     Returns:
-        Signal object.
+        A `Signal` instance with RZ-PAM samples and metadata.
     """
+    logger.info(
+        f"Generating RZ-PAM ({'Bipolar' if bipolar else 'Unipolar'}): "
+        f"order={order}, symbols={num_symbols}, pulse={pulse_shape}."
+    )
     # Ensure even sps
     if sps % 2 != 0:
         raise ValueError("For correct RZ duty cycle, `sps` must be even")
@@ -194,7 +209,6 @@ def rzpam(
         )
 
     xp = np
-    sp = scipy
 
     # Generate symbols
     k = int(xp.log2(order))
@@ -212,7 +226,7 @@ def rzpam(
     if pulse_shape == "rect":
         h = xp.ones(int(sps / 2))
         samples = utils.normalize(
-            sp.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
+            scipy.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
         )
 
     elif pulse_shape == "smoothrect":
@@ -223,7 +237,7 @@ def rzpam(
 
         # Apply pulse using polyphase resampling
         samples = utils.normalize(
-            sp.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
+            scipy.signal.resample_poly(symbols, int(sps), 1, window=h), "max_amplitude"
         )
 
     # Return Signal with format RZ-PAM-M
@@ -231,7 +245,9 @@ def rzpam(
         samples=samples,
         sampling_rate=symbol_rate * sps,
         symbol_rate=symbol_rate,
-        modulation_scheme=f"RZ-PAM-{order}{'-BIPOL' if bipolar else '-UNIPOL'}",
+        modulation_scheme=f"RZ-PAM{'-BIPOL' if bipolar else '-UNIPOL'}",
+        modulation_order=order,
+        source_bits=bits,
         pulse_shape=pulse_shape,
         pulse_params={
             "filter_span": filter_span,
