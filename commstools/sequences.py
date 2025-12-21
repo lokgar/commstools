@@ -14,6 +14,7 @@ from typing import Optional
 import numpy as np
 
 from .backend import ArrayType
+from .logger import logger
 
 
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
@@ -27,6 +28,7 @@ def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
     Returns:
         Array of bits (0s and 1s) as a NumPy array (CPU).
     """
+    logger.debug(f"Generating {length} random bits (seed={seed}).")
     rng = np.random.default_rng(seed)
     bits = rng.integers(0, 2, size=length)
     return bits
@@ -46,6 +48,7 @@ def prbs(length: int, seed: int = 0x7F, order: int = 7) -> ArrayType:
     Returns:
         Array of bits (0s and 1s) as a NumPy array (CPU).
     """
+    logger.debug(f"Generating PRBS{order} sequence (length={length}).")
     # Feedback taps for common PRBS orders
     taps = {7: (6, 5), 9: (8, 4), 11: (10, 8), 15: (14, 13), 23: (22, 17), 31: (30, 27)}
 

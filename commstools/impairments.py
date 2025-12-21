@@ -1,35 +1,38 @@
 """
-Channel impairment models.
+Impairment models for communication channels.
 
-This module provides functions to simulate physical channel impairments, including:
-- Additive White Gaussian Noise (AWGN).
+This module provides functions to simulate various physical channel impairments,
+allowing for the evaluation of receiver performance under realistic conditions.
+Currently supported:
+- **Additive White Gaussian Noise (AWGN)**: Adds random noise to the signal based on a target SNR.
 """
 
 from typing import TYPE_CHECKING, Union
 
-import numpy as np
-
 from .backend import ArrayType, dispatch
+from .logger import logger
 
 if TYPE_CHECKING:
-    from .signal import Signal
+    from .core import Signal
 
 
 def add_gaussian_noise(
     signal: Union[ArrayType, "Signal"], snr_db: float
 ) -> Union[ArrayType, "Signal"]:
     """
-    Adds Gaussian noise to a signal to achieve a specified SNR.
+    Adds Additive White Gaussian Noise (AWGN) to a signal to achieve a target SNR.
 
     Args:
-        signal: The input signal (array or Signal object).
-        snr_db: The desired Signal-to-Noise Ratio in decibels.
+        signal: The input signal (NumPy/CuPy array or `Signal` object).
+        snr_db: The desired Signal-to-Noise Ratio (SNR) in decibels.
 
     Returns:
-        The signal with added Gaussian noise. If input is Signal, returns a new Signal object.
+        The noisy signal. If the input was a `Signal` object, a new `Signal`
+        instance with updated samples is returned.
     """
+    logger.info(f"Adding Gaussian noise (SNR target: {snr_db:.2f} dB).")
     # Check if signal is a Signal object
-    from .signal import Signal
+    from .core import Signal
 
     if isinstance(signal, Signal):
         samples = signal.samples

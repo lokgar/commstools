@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 
 from commstools import baseband
-from commstools.signal import Signal
+from commstools.core import Signal
 
 
 def test_signal_pulse_params(backend_device):

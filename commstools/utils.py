@@ -6,7 +6,10 @@ This module provides general helper functions used across the library:
 - Linear interpolation (backend-agnostic).
 """
 
+from typing import Optional
+
 from .backend import ArrayType, dispatch
+from .logger import logger
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -27,6 +30,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     Raises:
         ValueError: If the normalization factor is zero (Numpy only).
     """
+    logger.debug(f"Normalizing array (mode: {mode}).")
     x, xp, _ = dispatch(x)
 
     if mode == "unity_gain":
@@ -65,6 +69,7 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     Returns:
         Interpolated values.
     """
+    logger.debug(f"Performing linear interpolation (axis={axis}).")
     x, xp, _ = dispatch(x)
 
     # Ensure other inputs are on the same backend
@@ -102,3 +107,45 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     result = xp.swapaxes(result, axis, -1)
 
     return result
+
+
+def format_si(value: Optional[float], unit: str = "Hz") -> str:
+    """
+    Format a value with SI prefixes.
+
+    Args:
+        value: The value to format.
+        unit: The unit string (e.g., 'Hz', 'Baud', 's').
+
+    Returns:
+        Formatted string (e.g., '10.00 MHz').
+    """
+    import numpy as np
+
+    if value is None:
+        return "None"
+
+    if abs(value) == 0:
+        return f"0.00 {unit}"
+
+    # Standard SI prefixes
+    si_units = {
+        -5: "f",
+        -4: "p",
+        -3: "n",
+        -2: "µ",
+        -1: "m",
+        0: "",
+        1: "k",
+        2: "M",
+        3: "G",
+        4: "T",
+        5: "P",
+    }
+
+    rank = int(np.floor(np.log10(abs(value)) / 3))
+    # clamp to supported range
+    rank = max(min(si_units.keys()), min(rank, max(si_units.keys())))
+
+    scaled = value / (1000.0**rank)
+    return f"{scaled:.2f} {si_units[rank]}{unit}"

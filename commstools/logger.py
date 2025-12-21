@@ -14,7 +14,7 @@ class ColorFormatter(logging.Formatter):
     RED = "\x1b[31;20m"
     BOLD_RED = "\x1b[31;1m"
     RESET = "\x1b[0m"
-    FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    FORMAT = "%(asctime)s [%(levelname)s] [%(name)s/%(filename)s] %(message)s"
 
     LEVEL_COLORS = {
         logging.DEBUG: CYAN,
@@ -27,13 +27,13 @@ class ColorFormatter(logging.Formatter):
     def format(self, record):
         log_color = self.LEVEL_COLORS.get(record.levelno, self.RESET)
         formatter = logging.Formatter(
-            f"{log_color}%(asctime)s - %(name)s - %(levelname)s - %(message)s{self.RESET}",
-            datefmt="%H:%M:%S",
+            f"{log_color}{self.FORMAT}{self.RESET}",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         return formatter.format(record)
 
 
-def get_logger(name="CommsTools"):
+def get_logger(name="commstools"):
     """
     Returns a logger instance for the CommsTools library.
     If no handlers are present, it adds a StreamHandler with a colorized formatter.

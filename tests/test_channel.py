@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from commstools import channel, backend
+from commstools import impairments, backend
 
 
 def test_awgn(backend_device, xp):
@@ -9,7 +9,7 @@ def test_awgn(backend_device, xp):
 
     snr_db = 10.0
 
-    noisy = channel.add_gaussian_noise(data, snr_db)
+    noisy = impairments.add_gaussian_noise(data, snr_db)
 
     assert isinstance(noisy, xp.ndarray)
     assert noisy.shape == data.shape
