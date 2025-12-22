@@ -29,6 +29,10 @@ def add_gaussian_noise(
     Returns:
         The noisy signal. If the input was a `Signal` object, a new `Signal`
         instance with updated samples is returned.
+
+    Note:
+        For complex signals, the noise power is distributed equally between the
+        real and imaginary components.
     """
     logger.info(f"Adding Gaussian noise (SNR target: {snr_db:.2f} dB).")
     # Check if signal is a Signal object

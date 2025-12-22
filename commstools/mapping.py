@@ -6,6 +6,7 @@ It supports:
 - Gray coding and decoding.
 - Constellation generation for PSK, QAM (Square, Cross, Rectangular, Star), and ASK.
 - Bit-to-symbol mapping.
+- Symbol-to-bit demapping.
 """
 
 import numpy as np
@@ -306,7 +307,7 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
         order: Modulation order.
 
     Returns:
-        Array of complex symbols on the same backend as bits.
+        Array of complex symbols on the same backend as the input bits.
     """
     logger.debug(f"Mapping bits to {modulation.upper()} {order}-level symbols.")
     bits, xp, _ = dispatch(bits)
@@ -340,3 +341,39 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
 
     # Map indices to points
     return constellation[indices]
+
+
+def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
+    """
+    Map complex symbols back to a sequence of bits (hard decisions).
+
+    Args:
+        symbols: Input array of complex symbols.
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
+
+    Returns:
+        Array of bits (0s and 1s) on the same backend as the input symbols.
+    """
+    logger.debug(f"Demapping {modulation.upper()} {order}-level symbols to bits.")
+    symbols, xp, _ = dispatch(symbols)
+
+    # Get constellation
+    constellation = gray_constellation(modulation, order)
+    constellation = xp.asarray(constellation)
+
+    # 1. Find nearest constellation point (Hard Decision)
+    # We expand dimensions to calculate all-to-all distances
+    # symbols: (N,), constellation: (M,)
+    # distances shape: (N, M)
+    distances = xp.abs(symbols[:, xp.newaxis] - constellation[xp.newaxis, :])
+    indices = xp.argmin(distances, axis=1)
+
+    # 2. Convert indices to bits
+    k = int(np.log2(order))
+    # Extract bits from indices: (N, k)
+    # We use bit shifting: (index >> shift) & 1
+    shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
+    bits = (indices[:, xp.newaxis] >> shifts) & 1
+
+    return bits.flatten()

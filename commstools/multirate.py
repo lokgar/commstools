@@ -22,7 +22,7 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
         factor: Expansion factor (samples per symbol).
 
     Returns:
-        Expanded array with zeros inserted (length = len(samples) * factor).
+        Expanded array with zeros inserted (length = len(samples) * factor) on the same backend.
     """
     logger.debug(f"Inserting zeros (expansion factor={factor}).")
     samples, xp, _ = dispatch(samples)
@@ -46,7 +46,7 @@ def upsample(samples: ArrayType, factor: int) -> ArrayType:
         factor: Upsampling factor.
 
     Returns:
-        Upsampled samples at rate (factor * original_rate).
+        Upsampled samples at rate (factor * original_rate) on the same backend.
     """
     logger.debug(f"Upsampling by factor {factor} (polyphase).")
     samples, _, sp = dispatch(samples)
@@ -69,7 +69,7 @@ def decimate(
         **kwargs: Additional filter parameters for 'decimate' method.
 
     Returns:
-        Decimated samples at rate (original_rate / factor).
+        Decimated samples at rate (original_rate / factor) on the same backend.
     """
     logger.debug(f"Decimating by factor {factor} (method: {method}).")
     samples, _, sp = dispatch(samples)
@@ -103,7 +103,7 @@ def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
         down: Downsampling factor.
 
     Returns:
-        Resampled samples at rate (original_rate * up / down).
+        Resampled samples at rate (original_rate * up / down) on the same backend.
     """
     logger.debug(f"Resampling by rational factor {up}/{down} (polyphase).")
     samples, _, sp = dispatch(samples)

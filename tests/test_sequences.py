@@ -1,12 +1,10 @@
 import pytest
 import numpy as np
-from commstools import sequences, backend
+from commstools import utils, backend
 
 
 def test_random_bits(backend_device, xp):
-    # random_bits now always returns NumPy array
-    bits = sequences.random_bits(100, seed=42)
-    assert isinstance(bits, np.ndarray)
+    bits = utils.random_bits(100, seed=42)
     assert len(bits) == 100
     assert np.all((bits == 0) | (bits == 1))
 

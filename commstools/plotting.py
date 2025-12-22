@@ -300,8 +300,11 @@ def _plot_eye_traces(
     ax: Any,
     type: str,
     title: Optional[str],
-    **kwargs,
+    **kwargs: Any,
 ) -> None:
+    """
+    Internal helper to plot eye diagram traces for a single component (I or Q).
+    """
     samples, xp, sp = dispatch(samples)
 
     # Normalize to max amplitude 1.0
@@ -450,12 +453,12 @@ def _plot_eye_traces(
 def eye_diagram(
     samples: Any,
     sps: float,
-    ax: Optional[Any] = None,
+    ax: Optional[Union[Any, Tuple[Any, Any]]] = None,
     num_symbols: int = 2,
     type: str = "hist",
     title: Optional[str] = "Eye Diagram",
     show: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Plots the eye diagram of the signal.

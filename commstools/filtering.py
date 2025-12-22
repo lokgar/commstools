@@ -5,9 +5,12 @@ This module implements digital filter design and application routines:
 - Pulse shaping filter design (RRC, RC, Gaussian, SmoothRect).
 - Standard FIR filter design (Lowpass, Highpass, Bandpass, Bandstop).
 - FIR filtering and matched filtering operations.
+
+Taps are generated on CPU as they are short.
 """
 
 from typing import Any
+
 import numpy as np
 import scipy
 
@@ -57,7 +60,9 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
     return normalize(h, "unity_gain")
 
 
-def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
+def smoothrect_taps(
+    sps: int, span: int, bt: float = 1.0, pulse_width: float = 1.0
+) -> ArrayType:
     """
     Generates a perfectly centered Gaussian-smoothed rectangular pulse
     using the analytical closed-form solution (Error Function).
@@ -66,14 +71,14 @@ def smoothrect_taps(sps, span, bt=1.0, pulse_width=1.0):
     odd/even discrete arrays.
 
     Args:
-        sps (int): Samples per symbol.
-        span (int): Filter span in symbols.
-        bt (float): Bandwidth-Time product of the Gaussian filter.
-        pulse_width (float): Width of the rectangular pulse in symbol periods.
-                             Default is 1.0 (NRZ), for RZ use 0.5.
+        sps: Samples per symbol.
+        span: Filter span in symbols.
+        bt: Bandwidth-Time product of the Gaussian filter.
+        pulse_width: Width of the rectangular pulse in symbol periods.
+                     Default is 1.0 (NRZ), for RZ use 0.5.
 
     Returns:
-        np.ndarray: Centered pulse shaping taps.
+        Centered pulse shaping taps with unity gain normalization.
     """
     logger.debug(
         f"Generating SmoothRect taps: sps={sps}, span={span}, bt={bt}, width={pulse_width}"
@@ -398,7 +403,7 @@ def shape_pulse(
             gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
 
     Returns:
-        Shaped sample array at rate (sps * symbol_rate), normalized
+        The shaped sample array at rate (sps * symbol_rate).
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 

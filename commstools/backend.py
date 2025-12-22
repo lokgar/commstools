@@ -6,7 +6,6 @@ transparent execution on CPU and GPU using a stateless, data-driven approach.
 It defines helper functions to:
 - Infer the active backend module (NumPy or CuPy) from data.
 - Manage data transfer between devices.
-- Interoperate with JAX.
 """
 
 import types
@@ -48,8 +47,15 @@ ArrayType = Union[
 _JAX_CACHE = {}
 
 
-def _get_jax():
-    """Lazy loader for JAX modules to avoid repeated import overhead."""
+def _get_jax() -> Tuple[
+    Optional[types.ModuleType], Optional[types.ModuleType], Optional[Any]
+]:
+    """
+    Lazy loader for JAX modules to avoid repeated import overhead.
+
+    Returns:
+        Tuple of (jax, jax.numpy, jax.dlpack) if available, else (None, None, None).
+    """
     if "jax" not in _JAX_CACHE:
         try:
             import jax
@@ -66,8 +72,16 @@ def _get_jax():
 
 
 @lru_cache(maxsize=8)
-def _get_jax_device(platform: str):
-    """Cached lookup for JAX devices by platform name."""
+def _get_jax_device(platform: str) -> Optional[Any]:
+    """
+    Cached lookup for JAX devices by platform name.
+
+    Args:
+        platform: The target platform ('cpu', 'gpu', or 'tpu').
+
+    Returns:
+        The first discovered device for the specified platform, or None if not found.
+    """
     jax, _, _ = _get_jax()
     if jax is None:
         return None
@@ -193,10 +207,6 @@ def dispatch(
     xp = get_array_module(data)
     sp = get_scipy_module(xp)
 
-    # Ensure data is an array of the inferred capability
-    # If forced CPU, cp.ndarray might not be resolvable if we didn't import it,
-    # but here cp is imported if installed.
-    # checking getattr(cp, ...) is safe.
     if not isinstance(data, (np.ndarray, getattr(cp, "ndarray", type(None)))):
         data = xp.asarray(data)
 
