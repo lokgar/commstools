@@ -7,6 +7,7 @@ This module implements digital filter design and application routines:
 - FIR filtering and matched filtering operations.
 """
 
+from typing import Any
 import numpy as np
 import scipy
 
@@ -380,11 +381,7 @@ def shape_pulse(
     symbols: ArrayType,
     sps: float,
     pulse_shape: str = "none",
-    filter_span: int = 10,
-    rrc_rolloff: float = 0.35,
-    rc_rolloff: float = 0.35,
-    smoothrect_bt: float = 1.0,
-    gaussian_bt: float = 0.3,
+    **kwargs: Any,
 ) -> ArrayType:
     """
     Applies pulse shaping to a symbol sequence.
@@ -393,16 +390,25 @@ def shape_pulse(
         symbols: Input symbol array.
         sps: Samples per symbol (upsampling factor).
         pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
-        filter_span: Pulse shaping filter span in symbols.
-        rrc_rolloff: Roll-off factor for RRC filter.
-        rc_rolloff: Roll-off factor for RC filter.
-        smoothrect_bt: Bandwidth-Time product for SmoothRect filter.
-        gaussian_bt: Bandwidth-Time product for Gaussian filter.
+        **kwargs: Pulse shaping parameters:
+            filter_span (int): Filter span in symbols (default: 10).
+            rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+            rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+            smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+            gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
 
     Returns:
         Shaped sample array at rate (sps * symbol_rate), normalized
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
+
+    # Extract parameters with defaults
+    filter_span = kwargs.get("filter_span", 10)
+    rrc_rolloff = kwargs.get("rrc_rolloff", 0.35)
+    rc_rolloff = kwargs.get("rc_rolloff", 0.35)
+    smoothrect_bt = kwargs.get("smoothrect_bt", 1.0)
+    gaussian_bt = kwargs.get("gaussian_bt", 0.3)
+    pulse_width = 1.0  # Hardcoded to 1.0 (NRZ)
 
     symbols, xp, sp = dispatch(symbols)
 
@@ -410,10 +416,12 @@ def shape_pulse(
         logger.info("Pulse shaping disabled, expanding symbols by sps")
         return normalize(expand(symbols, int(sps)), "max_amplitude")
     elif pulse_shape == "rect":
-        h = xp.ones(int(sps))
+        h = xp.ones(int(sps * pulse_width))
     elif pulse_shape == "smoothrect":
         # Note: Tap generators return NumPy arrays
-        h = smoothrect_taps(sps, span=filter_span, bt=smoothrect_bt)
+        h = smoothrect_taps(
+            sps, span=filter_span, bt=smoothrect_bt, pulse_width=pulse_width
+        )
     elif pulse_shape == "gaussian":
         h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
     elif pulse_shape == "rrc":

@@ -54,14 +54,20 @@ class Signal(BaseModel):
         modulation_order: The number of symbols in the constellation (e.g., 4, 16).
         source_bits: Optional array of original bits that generated this signal.
         pulse_shape: Name of the pulse shaping filter applied (e.g., 'rrc', 'rect').
-        pulse_params: Dictionary of parameters for the pulse shape (e.g., 'rolloff').
         spectral_domain: The signal's placement in the spectrum ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
         physical_domain: The physical layer domain ('DIG' for digital, 'RF' for radio frequency, 'OPT' for optical).
         center_frequency: The carrier or center frequency in Hz.
         digital_frequency_offset: Any applied digital frequency shift in Hz.
+        filter_span: Filter span in symbols for pulse shaping.
+        rrc_rolloff: Roll-off factor for RRC filter.
+        rc_rolloff: Roll-off factor for RC filter.
+        smoothrect_bt: BT product for SmoothRect filter.
+        gaussian_bt: BT product for Gaussian filter.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, validate_assignment=True, extra="forbid"
+    )
 
     samples: Any
     sampling_rate: float = Field(..., gt=0)
@@ -70,11 +76,17 @@ class Signal(BaseModel):
     modulation_order: Optional[int] = None
     source_bits: Optional[Any] = None
     pulse_shape: Optional[str] = None
-    pulse_params: Optional[Dict[str, Any]] = None
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: float = Field(default=0, ge=0)
+
+    # Pulse shaping parameters
+    filter_span: int = 10
+    rrc_rolloff: float = 0.35
+    rc_rolloff: float = 0.35
+    gaussian_bt: float = 0.3
+    smoothrect_bt: float = 1.0
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -503,39 +515,38 @@ class Signal(BaseModel):
         logger.debug(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
         from . import filtering
 
-        params = self.pulse_params if self.pulse_params else {}
-
-        # Default span if not present
-        span = params.get("filter_span", 10)
-        pulse_width = params.get("pulse_width", 1.0)
+        # Determine pulse width based on modulation if RZ
+        p_width = 1.0
+        if self.modulation_scheme and "RZ" in self.modulation_scheme.upper():
+            p_width = 0.5
 
         # Generate taps using filtering module (returns default numpy usually)
         if self.pulse_shape == "rect":
-            taps = np.ones(int(self.sps * pulse_width))
+            taps = np.ones(int(self.sps * p_width))
         elif self.pulse_shape == "smoothrect":
             taps = filtering.smoothrect_taps(
                 sps=self.sps,
-                span=span,
-                bt=params.get("smoothrect_bt", 1.0),
-                pulse_width=pulse_width,
+                span=self.filter_span,
+                bt=self.smoothrect_bt,
+                pulse_width=p_width,
             )
         elif self.pulse_shape == "gaussian":
             taps = filtering.gaussian_taps(
                 sps=self.sps,
-                span=span,
-                bt=params.get("gaussian_bt", 0.3),
+                span=self.filter_span,
+                bt=self.gaussian_bt,
             )
         elif self.pulse_shape == "rrc":
             taps = filtering.rrc_taps(
                 sps=self.sps,
-                span=span,
-                rolloff=params.get("rrc_rolloff", 0.35),
+                span=self.filter_span,
+                rolloff=self.rrc_rolloff,
             )
         elif self.pulse_shape == "rc":
             taps = filtering.rc_taps(
                 sps=self.sps,
-                span=span,
-                rolloff=params.get("rc_rolloff", 0.35),
+                span=self.filter_span,
+                rolloff=self.rc_rolloff,
             )
         else:
             raise ValueError(f"Unknown pulse shape: {self.pulse_shape}")
@@ -585,6 +596,256 @@ class Signal(BaseModel):
             A new Signal object with copied data.
         """
         return self.model_copy(deep=True)
+
+    @classmethod
+    def create(
+        cls,
+        modulation: str,
+        order: int,
+        num_symbols: int,
+        sps: float,
+        symbol_rate: float,
+        pulse_shape: str = "rrc",
+        seed: Optional[int] = None,
+        **kwargs: Any,
+    ) -> "Signal":
+        """
+        Create a baseband Signal with specified parameters.
+
+        Args:
+            modulation: Modulation scheme ('psk', 'qam', 'ask').
+            order: Modulation order.
+            num_symbols: Number of symbols to generate.
+            sps: Samples per symbol.
+            symbol_rate: Symbol rate in Hz.
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            seed: Random seed for bit generation.
+            **kwargs: Pulse shaping parameters:
+                filter_span (int): Filter span in symbols (default: 10).
+                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+
+        Returns:
+            A `Signal` instance containing the generated waveform.
+        """
+        from . import filtering, mapping, sequences
+
+        # calculate number of bits
+        k = int(np.log2(order))
+        num_bits = num_symbols * k
+
+        # Generate random bits (NumPy)
+        bits = sequences.random_bits(num_bits, seed=seed)
+
+        # Map to symbols (NumPy)
+        symbols = mapping.map_bits(bits, modulation=modulation, order=order)
+
+        # Apply pulse shaping
+        samples = filtering.shape_pulse(
+            symbols,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            **kwargs,
+        )
+
+        return cls(
+            samples=samples,
+            sampling_rate=symbol_rate * sps,
+            symbol_rate=symbol_rate,
+            modulation_scheme=modulation.upper(),
+            modulation_order=order,
+            source_bits=bits,
+            pulse_shape=pulse_shape,
+            **kwargs,
+        )
+
+    @classmethod
+    def pam(
+        cls,
+        order: int,
+        num_symbols: int,
+        sps: int,
+        symbol_rate: float,
+        mode: Literal["rz", "nrz"] = "nrz",
+        bipolar: bool = True,
+        pulse_shape: Optional[str] = None,
+        seed: Optional[int] = None,
+        **kwargs: Any,
+    ) -> "Signal":
+        """
+        Generate a PAM baseband waveform (NRZ or RZ).
+
+        Args:
+            order: Modulation order (2, 4, 8, etc.).
+            num_symbols: Number of symbols to generate.
+            sps: Samples per symbol (integer).
+            symbol_rate: Symbol rate in Hz.
+            mode: Signaling mode ('nrz' or 'rz').
+            bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            seed: Random seed for bit generation.
+            **kwargs: Pulse shaping parameters:
+                filter_span (int): Filter span in symbols (default: 10).
+                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+
+        Returns:
+            A `Signal` instance with PAM samples and metadata.
+        """
+        from . import filtering, mapping, sequences
+        import scipy.signal
+
+        if mode == "rz":
+            if sps % 2 != 0:
+                raise ValueError("For correct RZ duty cycle, `sps` must be even")
+
+            p_shape = pulse_shape or "rect"
+            allowed_rz_pulses = ["rect", "smoothrect"]
+            if p_shape not in allowed_rz_pulses:
+                raise ValueError(
+                    f"Pulse shape '{p_shape}' is not allowed for RZ PAM. "
+                    f"Allowed: {allowed_rz_pulses}"
+                )
+
+            # Generate symbols
+            k = int(np.log2(order))
+            if 2**k != order:
+                raise ValueError(f"PAM order must be power of 2, got {order}")
+            num_bits = num_symbols * k
+            bits = sequences.random_bits(num_bits, seed=seed)
+            symbols = mapping.map_bits(bits, modulation="ask", order=order)
+
+            if not bipolar:
+                symbols = symbols - np.min(symbols)
+
+            # Apply RZ Pulse Shaping
+            if p_shape == "rect":
+                h = np.ones(int(sps / 2))
+            elif p_shape == "smoothrect":
+                h = filtering.smoothrect_taps(
+                    sps=sps,
+                    span=kwargs.get("filter_span", 10),
+                    bt=kwargs.get("smoothrect_bt", 1.0),
+                    pulse_width=0.5,
+                )
+
+            # RZ hardcoded to 0.5 pulse width
+            samples = utils.normalize(
+                scipy.signal.resample_poly(symbols, int(sps), 1, window=h),
+                "max_amplitude",
+            )
+
+            return cls(
+                samples=samples,
+                sampling_rate=symbol_rate * sps,
+                symbol_rate=symbol_rate,
+                modulation_scheme=f"RZ-PAM{'-BIPOL' if bipolar else '-UNIPOL'}",
+                modulation_order=order,
+                source_bits=bits,
+                pulse_shape=p_shape,
+                **kwargs,
+            )
+        else:  # nrz
+            p_shape = pulse_shape or "rect"
+            sig = cls.create(
+                modulation="ask",
+                order=order,
+                num_symbols=num_symbols,
+                sps=sps,
+                symbol_rate=symbol_rate,
+                pulse_shape=p_shape,
+                seed=seed,
+                **kwargs,
+            )
+            if not bipolar:
+                xp = sig.xp
+                sig.samples = sig.samples - xp.min(sig.samples)
+                sig.samples = utils.normalize(sig.samples, "max_amplitude")
+
+            sig.modulation_scheme = f"PAM{'-BIPOL' if bipolar else '-UNIPOL'}"
+            return sig
+
+    @classmethod
+    def psk(
+        cls,
+        order: int,
+        num_symbols: int,
+        sps: float,
+        symbol_rate: float,
+        pulse_shape: str = "rrc",
+        seed: Optional[int] = None,
+        **kwargs: Any,
+    ) -> "Signal":
+        """
+        Generate a PSK baseband waveform.
+
+        Args:
+            order: Modulation order.
+            num_symbols: Number of symbols to generate.
+            sps: Samples per symbol.
+            symbol_rate: Symbol rate in Hz.
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            seed: Random seed for bit generation.
+            **kwargs: Pulse shaping parameters:
+                filter_span (int): Filter span in symbols (default: 10).
+                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        """
+        return cls.create(
+            modulation="psk",
+            order=order,
+            num_symbols=num_symbols,
+            sps=sps,
+            symbol_rate=symbol_rate,
+            pulse_shape=pulse_shape,
+            seed=seed,
+            **kwargs,
+        )
+
+    @classmethod
+    def qam(
+        cls,
+        order: int,
+        num_symbols: int,
+        sps: float,
+        symbol_rate: float,
+        pulse_shape: str = "rrc",
+        seed: Optional[int] = None,
+        **kwargs: Any,
+    ) -> "Signal":
+        """
+        Generate a QAM baseband waveform.
+
+        Args:
+            order: Modulation order.
+            num_symbols: Number of symbols to generate.
+            sps: Samples per symbol.
+            symbol_rate: Symbol rate in Hz.
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            seed: Random seed for bit generation.
+            **kwargs: Pulse shaping parameters:
+                filter_span (int): Filter span in symbols (default: 10).
+                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        """
+        return cls.create(
+            modulation="qam",
+            order=order,
+            num_symbols=num_symbols,
+            sps=sps,
+            symbol_rate=symbol_rate,
+            pulse_shape=pulse_shape,
+            seed=seed,
+            **kwargs,
+        )
 
 
 class Frame(BaseModel):
@@ -820,7 +1081,7 @@ class Frame(BaseModel):
         self,
         pulse_shape: str = "rrc",
         sps: int = 4,
-        pulse_params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Signal:
         """
         Generates the time-domain waveform for the frame.
@@ -831,7 +1092,12 @@ class Frame(BaseModel):
         Args:
             pulse_shape: Pulse shape type (e.g., 'rrc', 'root_raised_cosine').
             sps: Samples per symbol (upsampling factor).
-            pulse_params: Parameters for the pulse shape.
+            **kwargs: Pulse shaping parameters:
+                filter_span (int): Filter span in symbols (default: 10).
+                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
+                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
+                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
+                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
 
         Returns:
             A Signal object representing the waveform (sps > 1).
@@ -843,24 +1109,15 @@ class Frame(BaseModel):
 
         # 2. Update Signal properties
         sig.pulse_shape = pulse_shape
-        sig.pulse_params = pulse_params or {}
+        for k, v in kwargs.items():
+            setattr(sig, k, v)
 
         # 3. Apply Pulse Shaping
-        # Using filtering.shape_pulse for robustness
-        # Extract params
-        pp = sig.pulse_params
-
-        # Map params to function arguments
-        # shape_pulse(symbols, sps, pulse_shape, filter_span, rrc_rolloff...)
         shaped_samples = filtering.shape_pulse(
             sig.samples,
             sps=sps,
             pulse_shape=pulse_shape,
-            filter_span=pp.get("filter_span", 10),
-            rrc_rolloff=pp.get("rrc_rolloff", 0.35),
-            rc_rolloff=pp.get("rc_rolloff", 0.35),
-            smoothrect_bt=pp.get("smoothrect_bt", 1.0),
-            gaussian_bt=pp.get("gaussian_bt", 0.3),
+            **kwargs,
         )
 
         # Update signal samples and rate

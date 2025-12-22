@@ -1,6 +1,6 @@
 import pytest
 
-from commstools import baseband
+from commstools.core import Signal
 
 
 def test_pam_waveform(backend_device, xp):
@@ -17,7 +17,7 @@ def test_pam_waveform(backend_device, xp):
     # If we run tests with --device=gpu, we should check if waveforms works.
     # Note: mixing numpy inputs with GPU backend might cause issues if not handled.
 
-    sig = baseband.pam(order=2, bipolar=True, num_symbols=10, sps=4, symbol_rate=1e3)
+    sig = Signal.pam(order=2, bipolar=True, num_symbols=10, sps=4, symbol_rate=1e3)
     assert sig.samples.size > 0
     # By default it might be on CPU if inputs were CPU.
     # We can check sig.to(backend_device) works.
@@ -26,12 +26,13 @@ def test_pam_waveform(backend_device, xp):
 
 
 def test_rzpam_waveform(backend_device, xp):
-    sig = baseband.rzpam(
+    sig = Signal.pam(
         order=2,
         bipolar=True,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
+        mode="rz",
         pulse_shape="rect",
     )
     assert sig.samples.size > 0
@@ -40,18 +41,19 @@ def test_rzpam_waveform(backend_device, xp):
 
     # Check invalid pulse shape
     with pytest.raises(ValueError):
-        baseband.rzpam(
+        Signal.pam(
             order=2,
             bipolar=True,
             num_symbols=10,
             sps=4,
             symbol_rate=1e3,
+            mode="rz",
             pulse_shape="rrc",
         )
 
 
 def test_qam_waveform(backend_device, xp):
-    sig = baseband.qam(order=16, num_symbols=10, sps=4, symbol_rate=1e3)
+    sig = Signal.qam(order=16, num_symbols=10, sps=4, symbol_rate=1e3)
     assert sig.samples.size > 0
     sig.to(backend_device)
     assert isinstance(sig.samples, xp.ndarray)
