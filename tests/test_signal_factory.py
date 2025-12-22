@@ -10,7 +10,7 @@ def test_pam_waveform(backend_device, xp):
 
     # We should ensure backend is clear.
     # Current implementation of waveforms seems to support backend via filtering calls,
-    # but generate_waveform creates 'bits' using sequences.random_bits which is numpy based?
+    # but generate_waveform creates 'bits' using mapping.random_bits which is numpy based?
     # Let's check if we can force it.
     # Actually waveforms.py uses 'get_backend()' inside some functions.
 

@@ -1,3 +1,10 @@
+"""
+Logging utilities for the CommsTools library.
+
+This module provides a colorized logger to facilitate debugging and monitoring
+of signal processing workflows.
+"""
+
 import logging
 import sys
 
@@ -24,7 +31,10 @@ class ColorFormatter(logging.Formatter):
         logging.CRITICAL: BOLD_RED,
     }
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Formats the log record with ANSI color codes based on the log level.
+        """
         log_color = self.LEVEL_COLORS.get(record.levelno, self.RESET)
         formatter = logging.Formatter(
             f"{log_color}{self.FORMAT}{self.RESET}",
@@ -33,10 +43,17 @@ class ColorFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-def get_logger(name="commstools"):
+def get_logger(name: str = "commstools") -> logging.Logger:
     """
     Returns a logger instance for the CommsTools library.
+
     If no handlers are present, it adds a StreamHandler with a colorized formatter.
+
+    Args:
+        name: Name of the logger.
+
+    Returns:
+        A configured logging.Logger instance.
     """
     logger = logging.getLogger(name)
 

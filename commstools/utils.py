@@ -2,14 +2,68 @@
 Utility functions.
 
 This module provides general helper functions used across the library:
-- Array normalization (unity_gain, unit_energy, max_amplitude, average_power).
-- Format SI prefixes (format_si).
+- Random bit generation (`random_bits`).
+- Random symbol generation (`random_symbols`).
+- Array normalization (`normalize`).
+- Format SI prefixes (`format_si`).
+- Input array validation and coercion (`validate_array`).
 """
 
-from typing import Optional
+from typing import Any, Optional
 
-from .backend import ArrayType, dispatch
+import numpy as np
+
+from .backend import ArrayType, dispatch, is_cupy_available, to_device
 from .logger import logger
+
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
+
+
+def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
+    """
+    Generates a sequence of random bits (0s and 1s).
+    Uses numpy.random.default_rng() (PCG64 algorithm).
+
+    Args:
+        length: Length of the sequence to generate.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Array of bits (0s and 1s) as a NumPy or CuPy array.
+    """
+    logger.debug(f"Generating {length} random bits (seed={seed}).")
+    rng = np.random.default_rng(seed)
+    bits = rng.integers(0, 2, size=length)
+
+    if is_cupy_available():
+        bits = to_device(bits, "gpu")
+
+    return bits
+
+
+def random_symbols(
+    num_symbols: int, modulation: str, order: int, seed: Optional[int] = None
+) -> ArrayType:
+    """
+    Generates a sequence of random modulation symbols.
+
+    Args:
+        num_symbols: Number of symbols to generate.
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Array of complex symbols on the default backend (GPU if available).
+    """
+    from . import mapping
+
+    k = int(np.log2(order))
+    bits = random_bits(num_symbols * k, seed=seed)
+    return mapping.map_bits(bits, modulation, order)
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -28,7 +82,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
         Normalized array.
 
     Raises:
-        ValueError: If the normalization factor is zero (Numpy only).
+        ValueError: If the normalization mode is unknown.
     """
     logger.debug(f"Normalizing array (mode: {mode}).")
     x, xp, _ = dispatch(x)
@@ -49,7 +103,6 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     safe_norm = xp.where(norm_factor == 0, 1.0, norm_factor)
     result = x / safe_norm
 
-    # Zero out result if norm was 0 (since 0/0 or x/0 should be handled)
     # If norm_factor is 0, it means the signal is all zeros (for energy/power/max/sum)
     # So the normalized result should also be all zeros.
     return xp.where(norm_factor == 0, xp.zeros(x.shape, dtype=x.dtype), result)
@@ -66,8 +119,6 @@ def format_si(value: Optional[float], unit: str = "Hz") -> str:
     Returns:
         Formatted string (e.g., '10.00 MHz').
     """
-    import numpy as np
-
     if value is None:
         return "None"
 
@@ -95,3 +146,36 @@ def format_si(value: Optional[float], unit: str = "Hz") -> str:
 
     scaled = value / (1000.0**rank)
     return f"{scaled:.2f} {si_units[rank]}{unit}"
+
+
+def validate_array(
+    v: Any, name: str = "array", complex_only: bool = False
+) -> ArrayType:
+    """
+    Validates and coerces input into a backend-compatible array (NumPy or CuPy).
+
+    Args:
+        v: Input to validate (array-like, list, tuple).
+        name: Name of the variable for error reporting.
+        complex_only: If True, ensures the array is of complex type.
+
+    Returns:
+        The validated array.
+
+    Raises:
+        ValueError: If the input cannot be converted to a supported array type.
+    """
+    if v is None:
+        return None
+
+    # Coerce lists/tuples or other array-likes to numpy arrays initially
+    if not isinstance(v, (np.ndarray, getattr(cp, "ndarray", type(None)))):
+        try:
+            v = np.asarray(v)
+        except Exception:
+            raise ValueError(f"Could not convert {name} of type {type(v)} to array.")
+
+    if complex_only and not np.iscomplexobj(v):
+        v = v.astype(np.complex128)
+
+    return v

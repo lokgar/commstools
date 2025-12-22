@@ -4,8 +4,7 @@ Core signal processing abstractions.
 This module defines the primary data structures for the library:
 - `Signal`: Encapsulates complex IQ samples, physical layer metadata (sampling rate, symbol rate,
   modulation scheme/order), and methods for signal analysis and transformation.
-- `Frame`: A container for structured signals, allowing the assembly of signals with
-  preambles, pilots, and payloads.
+- `SingleCarrierFrame`: A container for single carrier frames with preambles, pilots, and payloads.
 
 All core classes are built on Pydantic for validation and support both CPU (NumPy) and GPU (CuPy) backends.
 """
@@ -28,6 +27,7 @@ except ImportError:
 from . import utils
 from .backend import (
     ArrayType,
+    dispatch,
     from_jax,
     get_array_module,
     get_scipy_module,
@@ -52,7 +52,7 @@ class Signal(BaseModel):
         symbol_rate: The symbol rate (baud rate) in Hz. Used for SPS calculation.
         modulation_scheme: Identifier for the modulation format (e.g., 'QPSK', '16QAM').
         modulation_order: The number of symbols in the constellation (e.g., 4, 16).
-        source_bits: Optional array of original bits that generated this signal.
+        source_symbols: Optional array of original symbols that generated this signal.
         pulse_shape: Name of the pulse shaping filter applied (e.g., 'rrc', 'rect').
         spectral_domain: The signal's placement in the spectrum ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
         physical_domain: The physical layer domain ('DIG' for digital, 'RF' for radio frequency, 'OPT' for optical).
@@ -63,6 +63,9 @@ class Signal(BaseModel):
         rc_rolloff: Roll-off factor for RC filter.
         smoothrect_bt: BT product for SmoothRect filter.
         gaussian_bt: BT product for Gaussian filter.
+
+    Raises:
+        ValidationError: If the input fields do not satisfy the Pydantic constraints (e.g., non-positive sampling rate).
     """
 
     model_config = ConfigDict(
@@ -74,7 +77,7 @@ class Signal(BaseModel):
     symbol_rate: float = Field(..., gt=0)
     modulation_scheme: Optional[str] = None
     modulation_order: Optional[int] = None
-    source_bits: Optional[Any] = None
+    source_symbols: Optional[Any] = None
     pulse_shape: Optional[str] = None
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
@@ -91,39 +94,47 @@ class Signal(BaseModel):
     @field_validator("samples", mode="before")
     @classmethod
     def validate_samples(cls, v: Any) -> Any:
-        # Coerce lists/tuples to numpy arrays
-        if isinstance(v, (list, tuple)):
-            try:
-                return np.asarray(v)
-            except Exception:
-                raise ValueError(
-                    f"Could not convert input of type {type(v)} to numpy array."
-                )
+        """
+        Validates and coerces the samples input into a backend-compatible array.
 
-        # Ensure it's something we can work with
-        if not isinstance(v, (np.ndarray, getattr(cp, "ndarray", type(None)))):
-            # Try to convert to numpy array to see if it's a valid array-like
-            try:
-                return np.asarray(v)
-            except Exception:
-                raise ValueError(
-                    f"Unsupported samples type: {type(v)}. Must be array-like."
-                )
-        return v
+        Args:
+            v: The input samples (array-like, list, or tuple).
+
+        Returns:
+            The validated samples as a NumPy or CuPy array.
+
+        Raises:
+            ValueError: If the input cannot be converted to a supported array type.
+        """
+        return utils.validate_array(v, name="samples")
 
     def model_post_init(self, __context: Any) -> None:
+        """
+        Post-initialization hook to set the default device.
+        Automatically moves the signal to GPU if a compatible device is discovered.
+        """
         # Default to GPU if available and supported
         if is_cupy_available():
             self.to("gpu")
 
     @property
     def xp(self) -> types.ModuleType:
-        """Returns the array module (numpy or cupy) for the signal's data."""
+        """
+        Returns the array module (numpy or cupy) for the signal's data.
+
+        This property allows for backend-agnostic array operations by returning
+        the appropriate library based on whether the data is on CPU or GPU.
+        """
         return get_array_module(self.samples)
 
     @property
     def sp(self) -> types.ModuleType:
-        """Returns the scipy module (scipy or cupyx.scipy) for the signal's data."""
+        """
+        Returns the scipy module (scipy or cupyx.scipy) for the signal's data.
+
+        Similar to `xp`, this returns the appropriate signal processing library
+        compatible with the current data backend.
+        """
         return get_scipy_module(self.xp)
 
     @property
@@ -135,12 +146,20 @@ class Signal(BaseModel):
 
     @property
     def duration(self) -> float:
-        """Duration of the signal in seconds."""
+        """
+        Duration of the signal in seconds.
+
+        Calculated as the number of samples divided by the sampling rate.
+        """
         return self.samples.shape[0] / self.sampling_rate
 
     @property
     def sps(self) -> float:
-        """Samples per symbol."""
+        """
+        Samples per symbol.
+
+        Calculated as the sampling rate divided by the symbol rate.
+        """
         return self.sampling_rate / self.symbol_rate
 
     def to(self, device: str) -> "Signal":
@@ -193,31 +212,34 @@ class Signal(BaseModel):
         return self
 
     def time_axis(self) -> ArrayType:
-        """Returns the time vector associated with the signal samples."""
-        return self.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
-
-    def source_symbols(self) -> ArrayType:
         """
-        Remaps source_bits to symbols using the current modulation scheme and order.
-        This provides a memory-efficient way to access symbols if only bits are stored.
+        Returns the time vector associated with the signal samples.
+
+        The time vector starts at 0 and increments by 1/sampling_rate for each sample.
 
         Returns:
-            The remapped symbols as an array.
+            An array representing the time axis in seconds.
         """
-        logger.debug(f"Remapping bits to symbols ({self.modulation_scheme}).")
-        if self.source_bits is None:
-            raise ValueError("No source bits available for remapping.")
-        if self.modulation_order is None:
-            raise ValueError("Modulation order must be defined for remapping.")
+        return self.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
+
+    def demap_source_symbols(self) -> Optional[ArrayType]:
+        """
+        Demaps the source_symbols to bits using the current modulation.
+
+        Returns:
+            The demapped bits as an array, or None if source_symbols are not available.
+        """
+        if self.source_symbols is None:
+            return None
 
         from . import mapping
 
-        # Ensure we use bits on the right backend for the mapping
-        # mapping.map_bits currently uses numpy internally but we might want to handle dispatch
-        return mapping.map_bits(
-            self.source_bits,
-            modulation=self.modulation_scheme.split("-")[-1].lower(),
-            order=self.modulation_order,
+        mod = self.modulation_scheme.lower() if self.modulation_scheme else "qam"
+        if "-" in mod:
+            mod = mod.split("-")[-1]
+
+        return mapping.demap_symbols(
+            self.source_symbols, modulation=mod, order=self.modulation_order
         )
 
     def welch_psd(
@@ -488,7 +510,6 @@ class Signal(BaseModel):
 
         Args:
             taps: Filter taps.
-            mode: Convolution mode.
 
         Returns:
             self
@@ -598,19 +619,19 @@ class Signal(BaseModel):
         return self.model_copy(deep=True)
 
     @classmethod
-    def create(
+    def generate(
         cls,
         modulation: str,
         order: int,
         num_symbols: int,
         sps: float,
         symbol_rate: float,
-        pulse_shape: str = "rrc",
+        pulse_shape: str = "none",
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> "Signal":
         """
-        Create a baseband Signal with specified parameters.
+        Generate a baseband Signal with specified parameters.
 
         Args:
             modulation: Modulation scheme ('psk', 'qam', 'ask').
@@ -618,7 +639,7 @@ class Signal(BaseModel):
             num_symbols: Number of symbols to generate.
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'none'.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -630,17 +651,15 @@ class Signal(BaseModel):
         Returns:
             A `Signal` instance containing the generated waveform.
         """
-        from . import filtering, mapping, sequences
+        from . import filtering, utils
 
-        # calculate number of bits
-        k = int(np.log2(order))
-        num_bits = num_symbols * k
+        # Generate symbols directly
+        symbols = utils.random_symbols(
+            num_symbols, modulation=modulation, order=order, seed=seed
+        )
 
-        # Generate random bits (NumPy)
-        bits = sequences.random_bits(num_bits, seed=seed)
-
-        # Map to symbols (NumPy)
-        symbols = mapping.map_bits(bits, modulation=modulation, order=order)
+        if is_cupy_available():
+            symbols = to_device(symbols, "gpu")
 
         # Apply pulse shaping
         samples = filtering.shape_pulse(
@@ -656,7 +675,7 @@ class Signal(BaseModel):
             symbol_rate=symbol_rate,
             modulation_scheme=modulation.upper(),
             modulation_order=order,
-            source_bits=bits,
+            source_symbols=symbols,
             pulse_shape=pulse_shape,
             **kwargs,
         )
@@ -670,7 +689,7 @@ class Signal(BaseModel):
         symbol_rate: float,
         mode: Literal["rz", "nrz"] = "nrz",
         bipolar: bool = True,
-        pulse_shape: Optional[str] = None,
+        pulse_shape: Optional[str] = "rect",
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> "Signal":
@@ -684,7 +703,7 @@ class Signal(BaseModel):
             symbol_rate: Symbol rate in Hz.
             mode: Signaling mode ('nrz' or 'rz').
             bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rect'.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -696,8 +715,7 @@ class Signal(BaseModel):
         Returns:
             A `Signal` instance with PAM samples and metadata.
         """
-        from . import filtering, mapping, sequences
-        import scipy.signal
+        from . import filtering, utils
 
         if mode == "rz":
             if sps % 2 != 0:
@@ -711,13 +729,10 @@ class Signal(BaseModel):
                     f"Allowed: {allowed_rz_pulses}"
                 )
 
-            # Generate symbols
-            k = int(np.log2(order))
-            if 2**k != order:
-                raise ValueError(f"PAM order must be power of 2, got {order}")
-            num_bits = num_symbols * k
-            bits = sequences.random_bits(num_bits, seed=seed)
-            symbols = mapping.map_bits(bits, modulation="ask", order=order)
+            # Generate symbols directly
+            symbols = utils.random_symbols(
+                num_symbols, modulation="ask", order=order, seed=seed
+            )
 
             if not bipolar:
                 symbols = symbols - np.min(symbols)
@@ -733,9 +748,15 @@ class Signal(BaseModel):
                     pulse_width=0.5,
                 )
 
+            if is_cupy_available():
+                symbols = to_device(symbols, "gpu")
+                h = to_device(h, "gpu")
+
+            _, xp, sp = dispatch(symbols)
+
             # RZ hardcoded to 0.5 pulse width
             samples = utils.normalize(
-                scipy.signal.resample_poly(symbols, int(sps), 1, window=h),
+                sp.signal.resample_poly(symbols, int(sps), 1, window=h),
                 "max_amplitude",
             )
 
@@ -745,13 +766,13 @@ class Signal(BaseModel):
                 symbol_rate=symbol_rate,
                 modulation_scheme=f"RZ-PAM{'-BIPOL' if bipolar else '-UNIPOL'}",
                 modulation_order=order,
-                source_bits=bits,
+                source_symbols=symbols,
                 pulse_shape=p_shape,
                 **kwargs,
             )
         else:  # nrz
             p_shape = pulse_shape or "rect"
-            sig = cls.create(
+            sig = cls.generate(
                 modulation="ask",
                 order=order,
                 num_symbols=num_symbols,
@@ -788,7 +809,7 @@ class Signal(BaseModel):
             num_symbols: Number of symbols to generate.
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -796,8 +817,11 @@ class Signal(BaseModel):
                 rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
                 smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
                 gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+
+        Returns:
+            A `Signal` instance with the PSK waveform.
         """
-        return cls.create(
+        return cls.generate(
             modulation="psk",
             order=order,
             num_symbols=num_symbols,
@@ -827,7 +851,7 @@ class Signal(BaseModel):
             num_symbols: Number of symbols to generate.
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -835,8 +859,11 @@ class Signal(BaseModel):
                 rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
                 smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
                 gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+
+        Returns:
+            A `Signal` instance with the QAM waveform.
         """
-        return cls.create(
+        return cls.generate(
             modulation="qam",
             order=order,
             num_symbols=num_symbols,
@@ -848,347 +875,345 @@ class Signal(BaseModel):
         )
 
 
-class Frame(BaseModel):
+class SingleCarrierFrame(BaseModel):
     """
-    Structured signal container for managing frame-based communication.
+    Represents a structured single-carrier frame with preamble, pilots, and payload.
 
-    The `Frame` class facilitates the construction of structured waveforms by
-    grouping a preamble, pilots, and payload. It provides a mechanism to
-    assemble these components into a single, continuous `Signal` object.
+    This class provides a high-level abstraction for constructing frames commonly
+    used in digital communication systems, supporting various pilot patterns
+    (none, block, comb) and guard intervals (zero-padding or cyclic prefix).
 
     Attributes:
-        preamble: Optional array of complex symbols for the preamble.
-        payload_seed: Random seed for generating payload bits.
-        payload_len_symbols: Number of payload symbols to generate.
-        payload_modulation: Modulation scheme for the payload (e.g., 'QPSK').
-        pilot_pattern: Pilot insertion pattern ('none', 'block', 'comb').
-        pilot_period_symbols: Period of pilot insertion (for 'comb' or 'block').
-        pilot_len_symbols: Number of pilots per insertion event (for 'block').
-        pilot_seed: Random seed for generating pilot symbols.
-        pilot_modulation: Modulation scheme for the pilots.
-        guard_period: Number of zero samples to append at the end of the frame.
-        symbol_rate: Symbol rate of the constructed signal.
+        payload_len: Number of data SYMBOLS in the payload.
+        payload_mod_scheme: Modulation scheme for the payload (e.g., "PSK", "QAM").
+        payload_mod_order: Modulation order for the payload (e.g., 2, 4, 16).
+        payload_seed: Random seed for payload bit generation.
+        preamble: Optional leading signal (as an array-like) prepended to the frame.
+        pilot_pattern: The arrangement of pilot symbols ("none", "block", "comb").
+        pilot_period: Periodicity of pilots (for "comb" and "block").
+        pilot_block_len: Length of the pilot block (for "block" pattern) in SYMBOLS.
+        pilot_seed: Random seed for pilot symbol generation.
+        pilot_mod_scheme: Modulation scheme for pilots.
+        pilot_mod_order: Modulation order for pilots.
+        guard_type: Type of guard interval ("zero" for padding, "cp" for cyclic prefix).
+        guard_len: Length of the guard interval in SYMBOLS.
+        symbol_rate: The symbol rate of the frame in Hz.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    preamble: Optional[Any] = None
+    payload_len: int = 1000
     payload_seed: int = 42
-    payload_len_symbols: int = 1000
-    payload_modulation: str = "QPSK"
-    payload_mod_order: Optional[int] = None
+    payload_mod_scheme: str = "PSK"
+    payload_mod_order: int = 4
+
+    preamble: Optional[Any] = None
+
     pilot_pattern: Literal["none", "block", "comb"] = "none"
-    pilot_period_symbols: int = 0
-    pilot_len_symbols: int = 0
+    pilot_period: int = 0
+    pilot_block_len: int = 0
     pilot_seed: int = 1337
-    pilot_modulation: str = "QPSK"
-    pilot_mod_order: Optional[int] = None
-    guard_period: int = 0
+    pilot_mod_scheme: str = "PSK"
+    pilot_mod_order: int = 4
+
+    guard_type: Literal["zero", "cp"] = "zero"
+    guard_len: int = 0
+
     symbol_rate: float = Field(..., gt=0)
 
     @field_validator("preamble", mode="before")
     @classmethod
-    def validate_arrays(cls, v: Any) -> Any:
-        if v is None:
-            return None
-        if isinstance(v, (list, tuple)):
-            return np.asarray(v)
-        return v
-
-    def compose(self, device: Optional[str] = None) -> Signal:
+    def validate_preamble(cls, v: Any) -> Any:
         """
-        Assembles the parts into a single continuous Signal (sps=1).
+        Coerces the preamble input into a backend-compatible array.
 
         Args:
-            device: Target device ('CPU' or 'GPU'). If None, tries to infer from preamble
-                    or defaults to available backend.
+            v: The input preamble (array-like, list, or tuple).
 
         Returns:
-            A new Signal object containing the combined symbol sequence.
+            The validated preamble as a NumPy or CuPy array.
+
+        Raises:
+            ValueError: If the input cannot be converted to a supported array type.
         """
-        logger.info("Composing frame symbols.")
-        from . import mapping, sequences  # Import locally to avoid circular deps
-        from .backend import get_array_module, to_device, is_cupy_available
+        return utils.validate_array(v, name="preamble")
 
-        # Determine target device logic
-        # 1. Explicit argument
-        # 2. Preamble location (if available)
-        # 3. Default (GPU if available)
-        target_device = "cpu"
-        if device:
-            target_device = device.lower()
-        elif self.preamble is not None:
-            # Check if preamble is cupy array
-            xp = get_array_module(self.preamble)
-            if xp.__name__ == "cupy":
-                target_device = "gpu"
-        elif is_cupy_available():
-            target_device = "gpu"
+    def model_post_init(self, __context: Any) -> None:
+        """
+        Post-initialization hook.
+        Ensures the preamble is on the correct device (GPU if available) after initialization.
+        """
+        if is_cupy_available() and self.preamble is not None:
+            self.preamble = to_device(self.preamble, "gpu")
 
-        # Helper to analyze modulation
-        def analyze_mod(scheme: str, explicit_order: Optional[int]):
-            s = scheme.lower()
-            if "psk" in s or "bpsk" in s or "qpsk" in s:
-                mod_type = "psk"
-            elif "ask" in s:
-                mod_type = "ask"
-            else:
-                mod_type = "qam"
+    def _generate_pilot_mask(self) -> Tuple[ArrayType, int]:
+        """
+        Pre-calculates the pilot placement mask and the total frame body length.
 
-            if explicit_order:
-                return mod_type, explicit_order
+        Returns:
+            A tuple containing:
+                - pilot_mask: A boolean array where True indicates a pilot symbol.
+                - body_length: The total number of symbols in the frame body.
+        """
+        xp = cp if is_cupy_available() else np
 
-            # Simple order guessing
-            if "bpsk" in s:
-                order = 2
-            elif "qpsk" in s or "4qam" in s:
-                order = 4
-            elif "8qam" in s:
-                order = 8
-            elif "16qam" in s:
-                order = 16
-            elif "64qam" in s:
-                order = 64
-            elif "256qam" in s:
-                order = 256
-            else:
-                logger.warning(
-                    f"Could not determine order for {scheme}, defaulting to QPSK (4)."
+        # No pilots: simple payload mapping
+        if self.pilot_pattern == "none":
+            body_length = self.payload_len
+            mask = xp.zeros(body_length, dtype=bool)
+            return mask, body_length
+
+        # Comb pattern: single pilot every N symbols
+        if self.pilot_pattern == "comb":
+            if self.pilot_period <= 1:
+                raise ValueError("pilot_period must be > 1 for 'comb' pattern.")
+            data_per_period = self.pilot_period - 1
+            num_full_periods = self.payload_len // data_per_period
+            remainder = self.payload_len % data_per_period
+
+            total_length = num_full_periods * self.pilot_period + remainder
+            # If we have a remainder, we need one more pilot at the start of the partial period
+            if remainder > 0:
+                total_length += 1
+
+            mask = xp.zeros(total_length, dtype=bool)
+            mask[:: self.pilot_period] = True
+            return mask, total_length
+
+        # Block pattern: block of pilots followed by block of data
+        if self.pilot_pattern == "block":
+            if self.pilot_period <= self.pilot_block_len:
+                raise ValueError(
+                    "pilot_period must be > pilot_block_len for 'block' pattern."
                 )
-                order = 4
-            return mod_type, order
+            data_per_block = self.pilot_period - self.pilot_block_len
+            num_blocks = int(xp.ceil(self.payload_len / data_per_block))
 
-        # 1. Generate Payload
-        pay_type, pay_order = analyze_mod(
-            self.payload_modulation, self.payload_mod_order
+            # Create a single block pattern [P P ... P D D ... D]
+            block_pattern = xp.zeros(self.pilot_period, dtype=bool)
+            block_pattern[: self.pilot_block_len] = True
+
+            # Repeat the pattern for all blocks
+            mask = xp.tile(block_pattern, num_blocks)
+
+            # Truncation: Find the exact index where the required payload ends
+            false_indices = xp.where(~mask)[0]
+            last_idx = false_indices[self.payload_len - 1]
+            mask = mask[: last_idx + 1]
+            return mask, len(mask)
+
+        return xp.zeros(self.payload_len, dtype=bool), self.payload_len
+
+    @property
+    def payload_symbols(self) -> ArrayType:
+        """Returns the mapped symbols of the payload."""
+        from .utils import random_symbols
+
+        return random_symbols(
+            self.payload_len,
+            modulation=self.payload_mod_scheme,
+            order=self.payload_mod_order,
+            seed=self.payload_seed,
         )
-        bits_per_sym_pay = int(np.log2(pay_order))
-        num_pay_bits = self.payload_len_symbols * bits_per_sym_pay
 
-        # Generation typically on CPU for reproducibility/sequences module
-        pay_bits = sequences.random_bits(num_pay_bits, seed=self.payload_seed)
-        # Move bits to target device for mapping (mapping can happen on GPU)
-        pay_bits = to_device(pay_bits, target_device)
+    @property
+    def pilot_symbols(self) -> Optional[ArrayType]:
+        """Returns the mapped symbols used for pilots, if any."""
+        if self.pilot_pattern == "none":
+            return None
 
-        pay_syms = mapping.map_bits(pay_bits, pay_type, pay_order)
+        xp = cp if is_cupy_available() else np
+        mask, _ = self._generate_pilot_mask()
+        pilot_count = int(xp.sum(mask))
+        if pilot_count == 0:
+            return None
 
-        # 2. Generate Pilots
-        max_pilots = 0
-        if self.pilot_pattern == "comb" and self.pilot_period_symbols > 0:
-            max_pilots = self.payload_len_symbols // 1 + 10
-        elif self.pilot_pattern == "block" and self.pilot_period_symbols > 0:
-            num_blocks = self.payload_len_symbols // self.pilot_period_symbols + 2
-            max_pilots = num_blocks * self.pilot_len_symbols
+        from .utils import random_symbols
 
-        plt_type, plt_order = analyze_mod(self.pilot_modulation, self.pilot_mod_order)
+        return random_symbols(
+            pilot_count,
+            modulation=self.pilot_mod_scheme,
+            order=self.pilot_mod_order,
+            seed=self.pilot_seed,
+        )
 
-        if max_pilots > 0:
-            bits_per_sym_plt = int(np.log2(plt_order))
-            num_plt_bits = max_pilots * bits_per_sym_plt
-            plt_bits = sequences.random_bits(num_plt_bits, seed=self.pilot_seed)
-            plt_bits = to_device(plt_bits, target_device)
-            all_pilot_syms = mapping.map_bits(plt_bits, plt_type, plt_order)
-        else:
-            # Empty array on correct device
-            xp = get_array_module(pay_syms)  # Should check pay_syms backend
-            all_pilot_syms = xp.array([], dtype=np.complex64)
+    @property
+    def body_symbols(self) -> ArrayType:
+        """Returns the interleaved pilot and payload symbols (frame body)."""
+        xp = cp if is_cupy_available() else np
+        mask, body_length = self._generate_pilot_mask()
+        body = xp.zeros(body_length, dtype=xp.complex128)
 
-        # 3. Construct Body
-        # We need to use valid array op references (xp)
-        xp = get_array_module(pay_syms)
+        if self.pilot_pattern != "none":
+            body[mask] = self.pilot_symbols
 
-        # Optimized Loop
-        body_chunks = []
-        current_len = 0
-        pay_idx = 0
-        plt_idx = 0
+        body[~mask] = self.payload_symbols
+        return body
 
-        while pay_idx < len(pay_syms):
-            # Check pilot condition
-            insert_pilot = False
-            pilots_n = 0
+    def _assemble_symbols(self) -> ArrayType:
+        """
+        Assembles the symbol sequence (sps=1) without guard interval.
+        Combines preamble and frame body.
 
-            if self.pilot_pattern == "comb":
-                if self.pilot_period_symbols > 0 and (
-                    current_len % self.pilot_period_symbols == 0
-                ):
-                    insert_pilot = True
-                    pilots_n = 1
-            elif self.pilot_pattern == "block":
-                if self.pilot_period_symbols > 0 and (
-                    current_len % self.pilot_period_symbols == 0
-                ):
-                    insert_pilot = True
-                    pilots_n = self.pilot_len_symbols
+        Returns:
+            A concatenated array of symbols.
+        """
+        xp = cp if is_cupy_available() else np
+        body = self.body_symbols
 
-            if insert_pilot and plt_idx + pilots_n <= len(all_pilot_syms):
-                chunk = all_pilot_syms[plt_idx : plt_idx + pilots_n]
-                body_chunks.append(chunk)
-                plt_idx += pilots_n
-                current_len += pilots_n
-            else:
-                # Add payload
-                # Optimization: can we add a chunk of payload?
-                # If comb with period P=10, we insert pilot, then 9 payload symbols?
-                # "Pilot every 10 symbols" usually means P D D D D D D D D D
-                # So at 0 (len=0): Pilot.
-                # then 1..9: Payload.
-                # then 10: Pilot.
-
-                # If we just inserted a pilot, we are at len = pilots_n.
-                # Next pilot at len + period? No, at K * period.
-
-                # If we didn't insert pilot, we insert 1 payload symbol.
-                # To avoid symbol-by-symbol list append (slow), ideally we slice.
-                # But simplicity first.
-                chunk = pay_syms[pay_idx : pay_idx + 1]
-                body_chunks.append(chunk)
-                pay_idx += 1
-                current_len += 1
-
-        if body_chunks:
-            body = xp.concatenate(body_chunks)
-        else:
-            body = xp.array([], dtype=np.complex64)
-
-        # 4. Assemble Full Frame
-        parts = []
+        # Assemble Core (Preamble + Body)
         if self.preamble is not None:
-            # Ensure preamble is on target device
-            pre_dev = to_device(self.preamble, target_device)
-            parts.append(pre_dev)
+            preamble = to_device(self.preamble, "gpu" if is_cupy_available() else "cpu")
+            return xp.concatenate([preamble, body])
+        else:
+            return body
 
-        parts.append(body)
+    def generate_sequence(self) -> Signal:
+        """
+        Constructs the complete frame sequence including preamble, pilots, payload, and guard interval.
+        sps=1.
 
-        if self.guard_period > 0:
-            parts.append(xp.zeros(self.guard_period, dtype=np.complex64))
+        Returns:
+            A `Signal` object representing the generated frame.
+        """
+        xp = cp if is_cupy_available() else np
 
-        combined_samples = xp.concatenate(parts)
+        # 1. Assemble Symbols
+        signal_samples = self._assemble_symbols()
 
-        # 5. Create Signal
+        # 2. Apply Guard Interval
+        if self.guard_len > 0:
+            if self.guard_type == "zero":
+                # End-of-frame zero padding
+                zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
+                signal_samples = xp.concatenate([signal_samples, zeros])
+            elif self.guard_type == "cp":
+                # Front-of-frame cyclic prefix
+                cp_slice = signal_samples[-self.guard_len :]
+                signal_samples = xp.concatenate([cp_slice, signal_samples])
+
+        # 3. Create and return Signal metadata
         return Signal(
-            samples=combined_samples,
-            sampling_rate=self.symbol_rate,  # sps=1
+            samples=signal_samples,
+            sampling_rate=self.symbol_rate,
             symbol_rate=self.symbol_rate,
-            modulation_scheme=self.payload_modulation,
-            modulation_order=pay_order,
-            pulse_shape=None,
-            spectral_domain="BASEBAND",
-            physical_domain="DIG",
+            modulation_scheme=self.payload_mod_scheme,
+            modulation_order=self.payload_mod_order,
+            source_symbols=signal_samples,
         )
 
-    def get_waveform(
-        self,
-        pulse_shape: str = "rrc",
-        sps: int = 4,
-        **kwargs: Any,
+    def generate_waveform(
+        self, sps: int = 4, pulse_shape: str = "rrc", **kwargs: Any
     ) -> Signal:
         """
-        Generates the time-domain waveform for the frame.
-
-        This method compiles the frame symbols and applies pulse shaping
-        using the `filtering` module.
+        Generates a proper waveform (upsampled and shaped) for the frame.
 
         Args:
-            pulse_shape: Pulse shape type (e.g., 'rrc', 'root_raised_cosine').
-            sps: Samples per symbol (upsampling factor).
-            **kwargs: Pulse shaping parameters:
-                filter_span (int): Filter span in symbols (default: 10).
-                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+            sps: Samples per symbol.
+            pulse_shape: Pulse shaping type ('rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
+            **kwargs: Additional pulse shaping parameters.
 
         Returns:
-            A Signal object representing the waveform (sps > 1).
+            A `Signal` object representing the shaped waveform.
         """
-        from . import filtering
+        xp = cp if is_cupy_available() else np
+        from .filtering import shape_pulse
 
-        # 1. Compose symbols
-        sig = self.compose()
+        # 1. Assemble Symbols (sps=1)
+        symbols = self._assemble_symbols()
 
-        # 2. Update Signal properties
-        sig.pulse_shape = pulse_shape
-        for k, v in kwargs.items():
-            setattr(sig, k, v)
+        # Determine logical/source symbols at sps=1 including guards
+        xp = cp if is_cupy_available() else np
+        source_symbols = symbols
+        if self.guard_len > 0:
+            if self.guard_type == "zero":
+                source_symbols = xp.concatenate(
+                    [source_symbols, xp.zeros(self.guard_len, dtype=xp.complex128)]
+                )
+            elif self.guard_type == "cp":
+                cp_slice = source_symbols[-self.guard_len :]
+                source_symbols = xp.concatenate([cp_slice, source_symbols])
 
-        # 3. Apply Pulse Shaping
-        shaped_samples = filtering.shape_pulse(
-            sig.samples,
+        # 2. Apply pulse shaping
+        samples = shape_pulse(
+            symbols,
             sps=sps,
             pulse_shape=pulse_shape,
             **kwargs,
         )
 
-        # Update signal samples and rate
-        sig.samples = shaped_samples
-        sig.sampling_rate = sig.symbol_rate * sps
+        # 3. Apply Guard Interval at sample level
+        if self.guard_len > 0:
+            guard_len_samples = int(self.guard_len * sps)
+            if self.guard_type == "zero":
+                zeros = xp.zeros(guard_len_samples, dtype=xp.complex128)
+                samples = xp.concatenate([samples, zeros])
+            elif self.guard_type == "cp":
+                cp_slice = samples[-guard_len_samples:]
+                samples = xp.concatenate([cp_slice, samples])
 
-        return sig
+        return Signal(
+            samples=samples,
+            sampling_rate=self.symbol_rate * sps,
+            symbol_rate=self.symbol_rate,
+            modulation_scheme=self.payload_mod_scheme,
+            modulation_order=self.payload_mod_order,
+            pulse_shape=pulse_shape,
+            source_symbols=source_symbols,
+            **kwargs,
+        )
 
-    def get_map(self) -> Dict[str, Any]:
+    def get_structure_map(
+        self, unit: Literal["symbols", "samples"] = "symbols", sps: int = 1
+    ) -> Dict[str, ArrayType]:
         """
-        Returns a map of the frame structure indices.
+        Returns a dictionary of boolean masks for each part of the frame.
+
+        Args:
+            unit: The unit of the mask length ('symbols' or 'samples').
+            sps: Samples per symbol (only used if unit='samples').
 
         Returns:
-             Dictionary containing indices/slices for preamble, pilots, and payload.
+            A dictionary with keys 'preamble', 'pilot', 'payload', 'guard'.
         """
-        # We need to simulate the composition to get indices
-        # This is a bit inefficient to duplicate logic, but safer than estimating.
-        # TODO: Refactor compose to produce map as artifact?
-
+        xp = cp if is_cupy_available() else np
+        mask, body_length = self._generate_pilot_mask()
         preamble_len = len(self.preamble) if self.preamble is not None else 0
 
-        # Simulate Body Construction
-        # We only need lengths
+        total_len = preamble_len + body_length + self.guard_len
 
-        pilot_indices = []
-        payload_indices = []
+        preamble_bool = xp.zeros(total_len, dtype=bool)
+        pilot_bool = xp.zeros(total_len, dtype=bool)
+        payload_bool = xp.zeros(total_len, dtype=bool)
+        guard_bool = xp.zeros(total_len, dtype=bool)
 
-        curr_idx = preamble_len
-        pay_done = 0
+        if self.guard_type == "cp":
+            g_slice = slice(0, self.guard_len)
+            p_slice = slice(self.guard_len, self.guard_len + preamble_len)
+            b_slice = slice(self.guard_len + preamble_len, total_len)
+        else:
+            p_slice = slice(0, preamble_len)
+            b_slice = slice(preamble_len, preamble_len + body_length)
+            g_slice = slice(preamble_len + body_length, total_len)
 
-        # We need to know loop limits. The compose loop runs until payload is exhausted.
-        # Let's just run a dry loop.
+        if preamble_len > 0:
+            preamble_bool[p_slice] = True
 
-        sim_body_len = 0
-        while pay_done < self.payload_len_symbols:
-            insert_pilot = False
-            pilots_to_insert = 0
+        pilot_bool[b_slice] = mask
+        payload_bool[b_slice] = ~mask
 
-            if self.pilot_pattern == "comb":
-                if self.pilot_period_symbols > 0 and (
-                    sim_body_len % self.pilot_period_symbols == 0
-                ):
-                    insert_pilot = True
-                    pilots_to_insert = 1
+        if self.guard_len > 0:
+            guard_bool[g_slice] = True
 
-            elif self.pilot_pattern == "block":
-                if self.pilot_period_symbols > 0 and (
-                    sim_body_len % self.pilot_period_symbols == 0
-                ):
-                    insert_pilot = True
-                    pilots_to_insert = self.pilot_len_symbols
-
-            if insert_pilot:
-                # Add pilot indices
-                for _ in range(pilots_to_insert):
-                    pilot_indices.append(curr_idx)
-                    curr_idx += 1
-                    sim_body_len += 1
-                # If we run out of pilots in real compose, it behaves differently,
-                # but map should reflect ideal structure or we need to know pilot count.
-                # Assuming infinite pilots for map, or we check against a max limit if needed.
-            else:
-                # Add payload index
-                payload_indices.append(curr_idx)
-                curr_idx += 1
-                sim_body_len += 1
-                pay_done += 1
-
-        return {
-            "preamble": slice(0, preamble_len),
-            "pilots": pilot_indices,
-            "payload": payload_indices,
-            "total_length": curr_idx + self.guard_period,
+        res = {
+            "preamble": preamble_bool,
+            "pilot": pilot_bool,
+            "payload": payload_bool,
+            "guard": guard_bool,
         }
+
+        if unit == "samples":
+            for k in res:
+                res[k] = xp.repeat(res[k], int(sps))
+
+        return res
