@@ -11,7 +11,7 @@ This package provides tools for:
 
 import warnings
 
-from . import baseband, impairments
+from . import impairments
 from .core import Frame, Signal
 from .logger import set_log_level
 from .plotting import apply_default_theme
@@ -22,7 +22,6 @@ warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental
 __all__ = [
     "Signal",
     "Frame",
-    "baseband",
     "impairments",
     "set_log_level",
 ]

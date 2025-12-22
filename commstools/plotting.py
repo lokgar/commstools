@@ -18,9 +18,8 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .backend import dispatch, to_device
+from .backend import ArrayType, dispatch, to_device
 from .logger import logger
-from .utils import interp1d
 
 
 def apply_default_theme() -> None:
@@ -372,14 +371,13 @@ def _plot_eye_traces(
         # Interpolate traces
         target_width = 500
         if trace_len < target_width:
-            # Interpolate traces using commstools.utils.interp1d
             x_old = xp.arange(trace_len, dtype=float)
             x_new = xp.linspace(0, trace_len - 1, target_width, dtype=float)
 
             # Interpolate along the last axis (time)
-            # utils.interp1d expects (x, x_p, f_p, axis), result is interpolated samples
+            # _interp1d expects (x, x_p, f_p, axis), result is interpolated samples
             # f_p is traces
-            traces = interp1d(x_new, x_old, traces, axis=1)
+            traces = _interp1d(x_new, x_old, traces, axis=1)
             trace_len = target_width
 
         # Create time matrix
@@ -641,6 +639,62 @@ def filter_response(
         plt.show()
         return None
     return fig, (ax1, ax2, ax3)
+
+
+def _interp1d(
+    x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
+) -> ArrayType:
+    """
+    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
+    interpolates f_p (values) at query points x, given sample points x_p.
+
+    Args:
+        x: Query points.
+        x_p: Sample points.
+        f_p: Values at sample points.
+        axis: Axis along which to perform interpolation.
+
+    Returns:
+        Interpolated values.
+    """
+    logger.debug(f"Performing linear interpolation (axis={axis}).")
+    x, xp, _ = dispatch(x)
+
+    # Ensure other inputs are on the same backend
+    x_p = xp.asarray(x_p)
+    f_p = xp.asarray(f_p)
+
+    # Move axis to end for easier handling
+    f_p = xp.swapaxes(f_p, axis, -1)
+
+    # Find indices such that xp[i-1] <= x < xp[i]
+    idxs = xp.searchsorted(x_p, x)
+    idxs = xp.clip(idxs, 1, len(x_p) - 1)
+
+    # Get the bounding points
+    x0 = x_p[idxs - 1]
+    x1 = x_p[idxs]
+
+    # Calculate weights
+    denominator = x1 - x0
+    # Avoid division by zero
+    denominator[denominator == 0] = 1.0
+    weights = (x - x0) / denominator
+
+    # Get the bounding values
+    # f_p is (..., T)
+    # idxs is (M,)
+    # We want result (..., M)
+
+    y0 = f_p[..., idxs - 1]
+    y1 = f_p[..., idxs]
+
+    result = y0 * (1 - weights) + y1 * weights
+
+    # Move axis back
+    result = xp.swapaxes(result, axis, -1)
+
+    return result
 
 
 def ideal_constellation(
