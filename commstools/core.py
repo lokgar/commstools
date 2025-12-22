@@ -59,7 +59,6 @@ class Signal(BaseModel):
         physical_domain: The physical layer domain ('DIG' for digital, 'RF' for radio frequency, 'OPT' for optical).
         center_frequency: The carrier or center frequency in Hz.
         digital_frequency_offset: Any applied digital frequency shift in Hz.
-        metadata: Generic dictionary for additional custom attributes (e.g., frame structure info).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -76,7 +75,6 @@ class Signal(BaseModel):
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: float = Field(default=0, ge=0)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -596,57 +594,344 @@ class Frame(BaseModel):
     The `Frame` class facilitates the construction of structured waveforms by
     grouping a preamble, pilots, and payload. It provides a mechanism to
     assemble these components into a single, continuous `Signal` object.
+
+    Attributes:
+        preamble: Optional array of complex symbols for the preamble.
+        payload_seed: Random seed for generating payload bits.
+        payload_len_symbols: Number of payload symbols to generate.
+        payload_modulation: Modulation scheme for the payload (e.g., 'QPSK').
+        pilot_pattern: Pilot insertion pattern ('none', 'block', 'comb').
+        pilot_period_symbols: Period of pilot insertion (for 'comb' or 'block').
+        pilot_len_symbols: Number of pilots per insertion event (for 'block').
+        pilot_seed: Random seed for generating pilot symbols.
+        pilot_modulation: Modulation scheme for the pilots.
+        guard_period: Number of zero samples to append at the end of the frame.
+        symbol_rate: Symbol rate of the constructed signal.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    preamble: Optional[Signal] = None
-    pilots: Optional[Signal] = None
-    payload: Optional[Signal] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    preamble: Optional[Any] = None
+    payload_seed: int = 42
+    payload_len_symbols: int = 1000
+    payload_modulation: str = "QPSK"
+    payload_mod_order: Optional[int] = None
+    pilot_pattern: Literal["none", "block", "comb"] = "none"
+    pilot_period_symbols: int = 0
+    pilot_len_symbols: int = 0
+    pilot_seed: int = 1337
+    pilot_modulation: str = "QPSK"
+    pilot_mod_order: Optional[int] = None
+    guard_period: int = 0
+    symbol_rate: float = Field(..., gt=0)
 
-    def assemble(self) -> Signal:
+    @field_validator("preamble", mode="before")
+    @classmethod
+    def validate_arrays(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)):
+            return np.asarray(v)
+        return v
+
+    def compose(self, device: Optional[str] = None) -> Signal:
         """
-        Assembles the parts into a single continuous Signal.
-        Currently implements simple time-multiplexed concatenation: Preamble -> Payload (with Pilots if applicable).
-        Note: Complex pilot insertion patterns should be handled by specific methods.
+        Assembles the parts into a single continuous Signal (sps=1).
+
+        Args:
+            device: Target device ('CPU' or 'GPU'). If None, tries to infer from preamble
+                    or defaults to available backend.
 
         Returns:
-            A new Signal object containing the combined samples and identifying metadata.
+            A new Signal object containing the combined symbol sequence.
         """
-        logger.info("Assembling frame components.")
+        logger.info("Composing frame symbols.")
+        from . import mapping, sequences  # Import locally to avoid circular deps
+        from .backend import get_array_module, to_device, is_cupy_available
+
+        # Determine target device logic
+        # 1. Explicit argument
+        # 2. Preamble location (if available)
+        # 3. Default (GPU if available)
+        target_device = "cpu"
+        if device:
+            target_device = device.lower()
+        elif self.preamble is not None:
+            # Check if preamble is cupy array
+            xp = get_array_module(self.preamble)
+            if xp.__name__ == "cupy":
+                target_device = "gpu"
+        elif is_cupy_available():
+            target_device = "gpu"
+
+        # Helper to analyze modulation
+        def analyze_mod(scheme: str, explicit_order: Optional[int]):
+            s = scheme.lower()
+            if "psk" in s or "bpsk" in s or "qpsk" in s:
+                mod_type = "psk"
+            elif "ask" in s:
+                mod_type = "ask"
+            else:
+                mod_type = "qam"
+
+            if explicit_order:
+                return mod_type, explicit_order
+
+            # Simple order guessing
+            if "bpsk" in s:
+                order = 2
+            elif "qpsk" in s or "4qam" in s:
+                order = 4
+            elif "8qam" in s:
+                order = 8
+            elif "16qam" in s:
+                order = 16
+            elif "64qam" in s:
+                order = 64
+            elif "256qam" in s:
+                order = 256
+            else:
+                logger.warning(
+                    f"Could not determine order for {scheme}, defaulting to QPSK (4)."
+                )
+                order = 4
+            return mod_type, order
+
+        # 1. Generate Payload
+        pay_type, pay_order = analyze_mod(
+            self.payload_modulation, self.payload_mod_order
+        )
+        bits_per_sym_pay = int(np.log2(pay_order))
+        num_pay_bits = self.payload_len_symbols * bits_per_sym_pay
+
+        # Generation typically on CPU for reproducibility/sequences module
+        pay_bits = sequences.random_bits(num_pay_bits, seed=self.payload_seed)
+        # Move bits to target device for mapping (mapping can happen on GPU)
+        pay_bits = to_device(pay_bits, target_device)
+
+        pay_syms = mapping.map_bits(pay_bits, pay_type, pay_order)
+
+        # 2. Generate Pilots
+        max_pilots = 0
+        if self.pilot_pattern == "comb" and self.pilot_period_symbols > 0:
+            max_pilots = self.payload_len_symbols // 1 + 10
+        elif self.pilot_pattern == "block" and self.pilot_period_symbols > 0:
+            num_blocks = self.payload_len_symbols // self.pilot_period_symbols + 2
+            max_pilots = num_blocks * self.pilot_len_symbols
+
+        plt_type, plt_order = analyze_mod(self.pilot_modulation, self.pilot_mod_order)
+
+        if max_pilots > 0:
+            bits_per_sym_plt = int(np.log2(plt_order))
+            num_plt_bits = max_pilots * bits_per_sym_plt
+            plt_bits = sequences.random_bits(num_plt_bits, seed=self.pilot_seed)
+            plt_bits = to_device(plt_bits, target_device)
+            all_pilot_syms = mapping.map_bits(plt_bits, plt_type, plt_order)
+        else:
+            # Empty array on correct device
+            xp = get_array_module(pay_syms)  # Should check pay_syms backend
+            all_pilot_syms = xp.array([], dtype=np.complex64)
+
+        # 3. Construct Body
+        # We need to use valid array op references (xp)
+        xp = get_array_module(pay_syms)
+
+        # Optimized Loop
+        body_chunks = []
+        current_len = 0
+        pay_idx = 0
+        plt_idx = 0
+
+        while pay_idx < len(pay_syms):
+            # Check pilot condition
+            insert_pilot = False
+            pilots_n = 0
+
+            if self.pilot_pattern == "comb":
+                if self.pilot_period_symbols > 0 and (
+                    current_len % self.pilot_period_symbols == 0
+                ):
+                    insert_pilot = True
+                    pilots_n = 1
+            elif self.pilot_pattern == "block":
+                if self.pilot_period_symbols > 0 and (
+                    current_len % self.pilot_period_symbols == 0
+                ):
+                    insert_pilot = True
+                    pilots_n = self.pilot_len_symbols
+
+            if insert_pilot and plt_idx + pilots_n <= len(all_pilot_syms):
+                chunk = all_pilot_syms[plt_idx : plt_idx + pilots_n]
+                body_chunks.append(chunk)
+                plt_idx += pilots_n
+                current_len += pilots_n
+            else:
+                # Add payload
+                # Optimization: can we add a chunk of payload?
+                # If comb with period P=10, we insert pilot, then 9 payload symbols?
+                # "Pilot every 10 symbols" usually means P D D D D D D D D D
+                # So at 0 (len=0): Pilot.
+                # then 1..9: Payload.
+                # then 10: Pilot.
+
+                # If we just inserted a pilot, we are at len = pilots_n.
+                # Next pilot at len + period? No, at K * period.
+
+                # If we didn't insert pilot, we insert 1 payload symbol.
+                # To avoid symbol-by-symbol list append (slow), ideally we slice.
+                # But simplicity first.
+                chunk = pay_syms[pay_idx : pay_idx + 1]
+                body_chunks.append(chunk)
+                pay_idx += 1
+                current_len += 1
+
+        if body_chunks:
+            body = xp.concatenate(body_chunks)
+        else:
+            body = xp.array([], dtype=np.complex64)
+
+        # 4. Assemble Full Frame
         parts = []
-        if self.preamble:
-            parts.append(self.preamble.samples)
-        if self.payload:
-            parts.append(self.payload.samples)
+        if self.preamble is not None:
+            # Ensure preamble is on target device
+            pre_dev = to_device(self.preamble, target_device)
+            parts.append(pre_dev)
 
-        if not parts:
-            raise ValueError("Frame is empty; cannot assemble.")
+        parts.append(body)
 
-        # Assume all parts share same properties (sampling_rate, etc.) from payload or first part
-        ref = self.payload or self.preamble
-        xp = ref.xp
+        if self.guard_period > 0:
+            parts.append(xp.zeros(self.guard_period, dtype=np.complex64))
 
-        combined_samples = xp.concatenate(parts, axis=0)
+        combined_samples = xp.concatenate(parts)
 
-        frame_metadata = {
-            "is_frame": True,
-            "has_preamble": self.preamble is not None,
-            "has_pilots": self.pilots is not None,
-            **self.metadata,
-        }
-
+        # 5. Create Signal
         return Signal(
             samples=combined_samples,
-            sampling_rate=ref.sampling_rate,
-            symbol_rate=ref.symbol_rate,
-            modulation_scheme=ref.modulation_scheme,
-            modulation_order=ref.modulation_order,
-            pulse_shape=ref.pulse_shape,
-            pulse_params=ref.pulse_params,
-            spectral_domain=ref.spectral_domain,
-            physical_domain=ref.physical_domain,
-            center_frequency=ref.center_frequency,
-            metadata=frame_metadata,
+            sampling_rate=self.symbol_rate,  # sps=1
+            symbol_rate=self.symbol_rate,
+            modulation_scheme=self.payload_modulation,
+            modulation_order=pay_order,
+            pulse_shape=None,
+            spectral_domain="BASEBAND",
+            physical_domain="DIG",
         )
+
+    def get_waveform(
+        self,
+        pulse_shape: str = "rrc",
+        sps: int = 4,
+        pulse_params: Optional[Dict[str, Any]] = None,
+    ) -> Signal:
+        """
+        Generates the time-domain waveform for the frame.
+
+        This method compiles the frame symbols and applies pulse shaping
+        using the `filtering` module.
+
+        Args:
+            pulse_shape: Pulse shape type (e.g., 'rrc', 'root_raised_cosine').
+            sps: Samples per symbol (upsampling factor).
+            pulse_params: Parameters for the pulse shape.
+
+        Returns:
+            A Signal object representing the waveform (sps > 1).
+        """
+        from . import filtering
+
+        # 1. Compose symbols
+        sig = self.compose()
+
+        # 2. Update Signal properties
+        sig.pulse_shape = pulse_shape
+        sig.pulse_params = pulse_params or {}
+
+        # 3. Apply Pulse Shaping
+        # Using filtering.shape_pulse for robustness
+        # Extract params
+        pp = sig.pulse_params
+
+        # Map params to function arguments
+        # shape_pulse(symbols, sps, pulse_shape, filter_span, rrc_rolloff...)
+        shaped_samples = filtering.shape_pulse(
+            sig.samples,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            filter_span=pp.get("filter_span", 10),
+            rrc_rolloff=pp.get("rrc_rolloff", 0.35),
+            rc_rolloff=pp.get("rc_rolloff", 0.35),
+            smoothrect_bt=pp.get("smoothrect_bt", 1.0),
+            gaussian_bt=pp.get("gaussian_bt", 0.3),
+        )
+
+        # Update signal samples and rate
+        sig.samples = shaped_samples
+        sig.sampling_rate = sig.symbol_rate * sps
+
+        return sig
+
+    def get_map(self) -> Dict[str, Any]:
+        """
+        Returns a map of the frame structure indices.
+
+        Returns:
+             Dictionary containing indices/slices for preamble, pilots, and payload.
+        """
+        # We need to simulate the composition to get indices
+        # This is a bit inefficient to duplicate logic, but safer than estimating.
+        # TODO: Refactor compose to produce map as artifact?
+
+        preamble_len = len(self.preamble) if self.preamble is not None else 0
+
+        # Simulate Body Construction
+        # We only need lengths
+
+        pilot_indices = []
+        payload_indices = []
+
+        curr_idx = preamble_len
+        pay_done = 0
+
+        # We need to know loop limits. The compose loop runs until payload is exhausted.
+        # Let's just run a dry loop.
+
+        sim_body_len = 0
+        while pay_done < self.payload_len_symbols:
+            insert_pilot = False
+            pilots_to_insert = 0
+
+            if self.pilot_pattern == "comb":
+                if self.pilot_period_symbols > 0 and (
+                    sim_body_len % self.pilot_period_symbols == 0
+                ):
+                    insert_pilot = True
+                    pilots_to_insert = 1
+
+            elif self.pilot_pattern == "block":
+                if self.pilot_period_symbols > 0 and (
+                    sim_body_len % self.pilot_period_symbols == 0
+                ):
+                    insert_pilot = True
+                    pilots_to_insert = self.pilot_len_symbols
+
+            if insert_pilot:
+                # Add pilot indices
+                for _ in range(pilots_to_insert):
+                    pilot_indices.append(curr_idx)
+                    curr_idx += 1
+                    sim_body_len += 1
+                # If we run out of pilots in real compose, it behaves differently,
+                # but map should reflect ideal structure or we need to know pilot count.
+                # Assuming infinite pilots for map, or we check against a max limit if needed.
+            else:
+                # Add payload index
+                payload_indices.append(curr_idx)
+                curr_idx += 1
+                sim_body_len += 1
+                pay_done += 1
+
+        return {
+            "preamble": slice(0, preamble_len),
+            "pilots": pilot_indices,
+            "payload": payload_indices,
+            "total_length": curr_idx + self.guard_period,
+        }
