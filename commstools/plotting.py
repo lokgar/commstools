@@ -18,7 +18,7 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .backend import ArrayType, dispatch, to_device
+from .backend import dispatch, to_device
 from .logger import logger
 
 
@@ -66,66 +66,10 @@ def apply_default_theme() -> None:
     plt.rcParams["mathtext.bf"] = f"{font_name}:bold"
 
 
-def _interp1d(
-    x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
-) -> ArrayType:
-    """
-    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
-    interpolates f_p (values) at query points x, given sample points x_p.
-
-    Args:
-        x: Query points.
-        x_p: Sample points.
-        f_p: Values at sample points.
-        axis: Axis along which to perform interpolation.
-
-    Returns:
-        Interpolated values.
-    """
-    logger.debug(f"Performing linear interpolation (axis={axis}).")
-    x, xp, _ = dispatch(x)
-
-    # Ensure other inputs are on the same backend
-    x_p = xp.asarray(x_p)
-    f_p = xp.asarray(f_p)
-
-    # Move axis to end for easier handling
-    f_p = xp.swapaxes(f_p, axis, -1)
-
-    # Find indices such that xp[i-1] <= x < xp[i]
-    idxs = xp.searchsorted(x_p, x)
-    idxs = xp.clip(idxs, 1, len(x_p) - 1)
-
-    # Get the bounding points
-    x0 = x_p[idxs - 1]
-    x1 = x_p[idxs]
-
-    # Calculate weights
-    denominator = x1 - x0
-    # Avoid division by zero
-    denominator[denominator == 0] = 1.0
-    weights = (x - x0) / denominator
-
-    # Get the bounding values
-    # f_p is (..., T)
-    # idxs is (M,)
-    # We want result (..., M)
-
-    y0 = f_p[..., idxs - 1]
-    y1 = f_p[..., idxs]
-
-    result = y0 * (1 - weights) + y1 * weights
-
-    # Move axis back
-    result = xp.swapaxes(result, axis, -1)
-
-    return result
-
-
 def psd(
     samples: Any,
     sampling_rate: float = 1.0,
-    nperseg: int = 128,
+    nperseg: int = 256,
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
     center_frequency: float = 0.0,
@@ -166,30 +110,19 @@ def psd(
     else:
         fig = ax.figure
 
-    # Dispatch to get backend modules
-    samples, xp, sp = dispatch(samples)
+    from . import spectral
 
     # Calculate PSD
-    if xp.iscomplexobj(samples):
-        f, Pxx = sp.signal.welch(
-            samples,
-            fs=sampling_rate,
-            nperseg=nperseg,
-            detrend=detrend,
-            average=average,
-            return_onesided=False,
-        )
-        # Shift zero frequency to center if complex
-        f = xp.fft.fftshift(f)
-        Pxx = xp.fft.fftshift(Pxx)
-    else:
-        f, Pxx = sp.signal.welch(
-            samples,
-            fs=sampling_rate,
-            nperseg=nperseg,
-            detrend=detrend,
-            average=average,
-        )
+    f, Pxx = spectral.welch_psd(
+        samples,
+        sampling_rate=sampling_rate,
+        nperseg=nperseg,
+        detrend=detrend,
+        average=average,
+    )
+
+    # Dispatch to get backend modules (for to_device)
+    _, xp, _ = dispatch(samples)
 
     # Move to cpu for plotting
     f = to_device(f, "cpu")
@@ -364,9 +297,9 @@ def _plot_eye_traces(
     samples, xp, sp = dispatch(samples)
 
     # Normalize to max amplitude 1.0
-    max_val = xp.max(xp.abs(samples))
-    if max_val > 0:
-        samples = samples / max_val
+    from .utils import normalize
+
+    samples = normalize(samples, mode="max_amplitude")
 
     # We want to include the endpoint to avoid a gap at the end of the plot
     # So we need one extra sample per trace
@@ -434,9 +367,11 @@ def _plot_eye_traces(
             x_new = xp.linspace(0, trace_len - 1, target_width, dtype=float)
 
             # Interpolate along the last axis (time)
-            # _interp1d expects (x, x_p, f_p, axis), result is interpolated samples
+            # interp1d expects (x, x_p, f_p, axis), result is interpolated samples
             # f_p is traces
-            traces = _interp1d(x_new, x_old, traces, axis=1)
+            from .utils import interp1d
+
+            traces = interp1d(x_new, x_old, traces, axis=1)
             trace_len = target_width
 
         # Create time matrix

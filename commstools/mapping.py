@@ -11,10 +11,13 @@ It supports:
 
 import numpy as np
 
+from functools import lru_cache
+
 from .backend import ArrayType, dispatch
 from .logger import logger
 
 
+@lru_cache(maxsize=128)
 def gray_code(n: int) -> np.ndarray:
     """
     Internal numpy implementation of Gray code.
@@ -35,6 +38,7 @@ def gray_code(n: int) -> np.ndarray:
     return i ^ (i >> 1)
 
 
+@lru_cache(maxsize=128)
 def gray_constellation(modulation: str, order: int) -> ArrayType:
     """
     Generate constellation points with Gray mapping.

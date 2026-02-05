@@ -48,6 +48,23 @@ def test_signal_methods(backend_device, xp):
     # should be unchanged roughly
 
 
+def test_signal_resample_sps(backend_device, xp):
+    data = xp.ones(100)
+    # create signal with sps=4 (fs=4, sym_rate=1)
+    s = Signal(samples=data, sampling_rate=4.0, symbol_rate=1.0).to(backend_device)
+    assert s.sps == 4.0
+
+    # resample to sps=8
+    s.resample(sps_out=8.0)
+    assert s.sps == 8.0
+    assert s.sampling_rate == 8.0
+    assert s.samples.size == 200
+
+    # resample check invalid combinations handled by multirate (implicitly)
+    # Signal.resample only exposes sps_out or up/down, so no conflict possible in signature
+    # but we can check if it calls multirate correctly
+
+
 def test_welch_psd(backend_device, xp):
     data = xp.random.randn(1000) + 1j * xp.random.randn(1000)
     s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0).to(backend_device)
