@@ -259,27 +259,15 @@ class Signal(BaseModel):
         Returns:
             Tuple of (frequency_axis, psd_values).
         """
-        if self.xp.iscomplexobj(self.samples):
-            f, Pxx = self.sp.signal.welch(
-                self.samples,
-                fs=self.sampling_rate,
-                nperseg=nperseg,
-                detrend=detrend,
-                average=average,
-                return_onesided=False,
-            )
-            f = self.xp.fft.fftshift(f)
-            Pxx = self.xp.fft.fftshift(Pxx)
-            return f, Pxx
-        else:
-            return self.sp.signal.welch(
-                self.samples,
-                fs=self.sampling_rate,
-                nperseg=nperseg,
-                detrend=detrend,
-                average=average,
-                return_onesided=True,
-            )
+        from . import spectral
+
+        return spectral.welch_psd(
+            self.samples,
+            sampling_rate=self.sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
+        )
 
     def plot_psd(
         self,
@@ -325,10 +313,6 @@ class Signal(BaseModel):
             **kwargs,
         )
 
-    @staticmethod
-    def _format_si(value: Optional[float], unit: str = "Hz") -> str:
-        return utils.format_si(value, unit)
-
     def print_info(self) -> None:
         """
         Prints a summary of the signal properties.
@@ -359,18 +343,18 @@ class Signal(BaseModel):
                 self.physical_domain,
                 self.modulation_scheme,
                 str(self.modulation_order) if self.modulation_order else "None",
-                self._format_si(self.symbol_rate, "Baud"),
-                self._format_si(
+                utils.format_si(self.symbol_rate, "Baud"),
+                utils.format_si(
                     self.symbol_rate * np.log2(self.modulation_order), "bps"
                 )
                 if self.modulation_order
                 else "None",
-                self._format_si(self.sampling_rate, "Hz"),
+                utils.format_si(self.sampling_rate, "Hz"),
                 f"{self.sps:.2f}",
                 self.pulse_shape.upper() if self.pulse_shape else "None",
-                self._format_si(self.duration, "s"),
-                self._format_si(self.center_frequency, "Hz"),
-                self._format_si(self.digital_frequency_offset, "Hz"),
+                utils.format_si(self.duration, "s"),
+                utils.format_si(self.center_frequency, "Hz"),
+                utils.format_si(self.digital_frequency_offset, "Hz"),
                 self.backend.upper(),
                 str(self.samples.shape),
             ],
@@ -487,21 +471,38 @@ class Signal(BaseModel):
         self.sampling_rate = self.sampling_rate / factor
         return self
 
-    def resample(self, up: int, down: int) -> "Signal":
+    def resample(
+        self,
+        up: Optional[int] = None,
+        down: Optional[int] = None,
+        sps_out: Optional[float] = None,
+    ) -> "Signal":
         """
         Resample the signal by a rational factor.
 
         Args:
             up: Upsampling factor.
             down: Downsampling factor.
+            sps_out: Target samples per symbol (if provided, up and down will be calculated automatically and don't have to be provided).
 
         Returns:
             self
         """
         from . import multirate
 
-        self.samples = multirate.resample(self.samples, up, down)
-        self.sampling_rate = self.sampling_rate * up / down
+        # If sps_out is provided, we use the current signal's sps as input sps
+        sps_in = self.sps if sps_out is not None else None
+
+        self.samples = multirate.resample(
+            self.samples, up=up, down=down, sps_in=sps_in, sps_out=sps_out
+        )
+
+        # Update sampling rate
+        if sps_out is not None:
+            self.sampling_rate = sps_out * self.symbol_rate
+        elif up is not None and down is not None:
+            self.sampling_rate = self.sampling_rate * up / down
+
         return self
 
     def fir_filter(self, taps: ArrayType) -> "Signal":

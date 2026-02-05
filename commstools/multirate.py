@@ -7,7 +7,8 @@ This module provides efficient implementations of multirate operations:
 - Rational rate resampling (polyphase filtering).
 """
 
-from typing import Any
+from fractions import Fraction
+from typing import Any, Optional
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -90,21 +91,44 @@ def decimate(
         raise ValueError(f"Unknown decimation method: {method}")
 
 
-def resample(samples: ArrayType, up: int, down: int) -> ArrayType:
+def resample(
+    samples: ArrayType,
+    up: Optional[int] = None,
+    down: Optional[int] = None,
+    sps_in: Optional[float] = None,
+    sps_out: Optional[float] = None,
+) -> ArrayType:
     """
     Rational resampling: Upsample by 'up', downsample by 'down'.
 
-    Implements efficient polyphase filtering for arbitrary rational rate conversion.
-    New rate = original_rate * (up / down).
+    Can also specify 'sps_in' and 'sps_out' to calculate 'up' and 'down' automatically.
+    New rate = original_rate * (up / down) = original_rate * (sps_out / sps_in).
 
     Args:
         samples: Input sample array.
         up: Upsampling factor.
         down: Downsampling factor.
+        sps_in: Input samples per symbol.
+        sps_out: Target samples per symbol.
 
     Returns:
         Resampled samples at rate (original_rate * up / down) on the same backend.
+
+    Raises:
+        ValueError: If arguments are invalid or insufficient.
     """
+    if (up is not None or down is not None) and (
+        sps_in is not None or sps_out is not None
+    ):
+        raise ValueError("Cannot specify both (up, down) and (sps_in, sps_out).")
+
+    if sps_in is not None and sps_out is not None:
+        ratio = Fraction(sps_out / sps_in).limit_denominator()
+        up = ratio.numerator
+        down = ratio.denominator
+    elif up is None or down is None:
+        raise ValueError("Must specify either (up, down) or (sps_in, sps_out).")
+
     logger.debug(f"Resampling by rational factor {up}/{down} (polyphase).")
     samples, _, sp = dispatch(samples)
     return sp.signal.resample_poly(samples, int(up), int(down))
