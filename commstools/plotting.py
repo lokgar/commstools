@@ -66,6 +66,62 @@ def apply_default_theme() -> None:
     plt.rcParams["mathtext.bf"] = f"{font_name}:bold"
 
 
+def _interp1d(
+    x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
+) -> ArrayType:
+    """
+    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
+    interpolates f_p (values) at query points x, given sample points x_p.
+
+    Args:
+        x: Query points.
+        x_p: Sample points.
+        f_p: Values at sample points.
+        axis: Axis along which to perform interpolation.
+
+    Returns:
+        Interpolated values.
+    """
+    logger.debug(f"Performing linear interpolation (axis={axis}).")
+    x, xp, _ = dispatch(x)
+
+    # Ensure other inputs are on the same backend
+    x_p = xp.asarray(x_p)
+    f_p = xp.asarray(f_p)
+
+    # Move axis to end for easier handling
+    f_p = xp.swapaxes(f_p, axis, -1)
+
+    # Find indices such that xp[i-1] <= x < xp[i]
+    idxs = xp.searchsorted(x_p, x)
+    idxs = xp.clip(idxs, 1, len(x_p) - 1)
+
+    # Get the bounding points
+    x0 = x_p[idxs - 1]
+    x1 = x_p[idxs]
+
+    # Calculate weights
+    denominator = x1 - x0
+    # Avoid division by zero
+    denominator[denominator == 0] = 1.0
+    weights = (x - x0) / denominator
+
+    # Get the bounding values
+    # f_p is (..., T)
+    # idxs is (M,)
+    # We want result (..., M)
+
+    y0 = f_p[..., idxs - 1]
+    y1 = f_p[..., idxs]
+
+    result = y0 * (1 - weights) + y1 * weights
+
+    # Move axis back
+    result = xp.swapaxes(result, axis, -1)
+
+    return result
+
+
 def psd(
     samples: Any,
     sampling_rate: float = 1.0,
@@ -642,62 +698,6 @@ def filter_response(
         plt.show()
         return None
     return fig, (ax1, ax2, ax3)
-
-
-def _interp1d(
-    x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1
-) -> ArrayType:
-    """
-    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
-    interpolates f_p (values) at query points x, given sample points x_p.
-
-    Args:
-        x: Query points.
-        x_p: Sample points.
-        f_p: Values at sample points.
-        axis: Axis along which to perform interpolation.
-
-    Returns:
-        Interpolated values.
-    """
-    logger.debug(f"Performing linear interpolation (axis={axis}).")
-    x, xp, _ = dispatch(x)
-
-    # Ensure other inputs are on the same backend
-    x_p = xp.asarray(x_p)
-    f_p = xp.asarray(f_p)
-
-    # Move axis to end for easier handling
-    f_p = xp.swapaxes(f_p, axis, -1)
-
-    # Find indices such that xp[i-1] <= x < xp[i]
-    idxs = xp.searchsorted(x_p, x)
-    idxs = xp.clip(idxs, 1, len(x_p) - 1)
-
-    # Get the bounding points
-    x0 = x_p[idxs - 1]
-    x1 = x_p[idxs]
-
-    # Calculate weights
-    denominator = x1 - x0
-    # Avoid division by zero
-    denominator[denominator == 0] = 1.0
-    weights = (x - x0) / denominator
-
-    # Get the bounding values
-    # f_p is (..., T)
-    # idxs is (M,)
-    # We want result (..., M)
-
-    y0 = f_p[..., idxs - 1]
-    y1 = f_p[..., idxs]
-
-    result = y0 * (1 - weights) + y1 * weights
-
-    # Move axis back
-    result = xp.swapaxes(result, axis, -1)
-
-    return result
 
 
 def ideal_constellation(
