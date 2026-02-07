@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .backend import ArrayType, dispatch, is_cupy_available, to_device
+from .backend import ArrayType, dispatch, get_array_module, is_cupy_available, to_device
 from .logger import logger
 
 try:
@@ -26,7 +26,9 @@ except ImportError:
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
     """
     Generates a sequence of random bits (0s and 1s).
-    Uses numpy.random.default_rng() (PCG64 algorithm).
+    Uses numpy.random.default_rng() (PCG64 algorithm)
+    for seed consistency, as cupy and numpy give different
+    random sequences for the same seed.
 
     Args:
         length: Length of the sequence to generate.
@@ -46,7 +48,11 @@ def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
 
 
 def random_symbols(
-    num_symbols: int, modulation: str, order: int, seed: Optional[int] = None
+    num_symbols: int,
+    modulation: str,
+    order: int,
+    seed: Optional[int] = None,
+    dtype: Optional[Any] = np.complex64,
 ) -> ArrayType:
     """
     Generates a sequence of random modulation symbols.
@@ -56,6 +62,7 @@ def random_symbols(
         modulation: Modulation type ('psk', 'qam', 'ask').
         order: Modulation order.
         seed: Random seed for reproducibility.
+        dtype: Output dtype (e.g., np.complex64, np.complex128). Default: complex64.
 
     Returns:
         Array of complex symbols on the default backend (GPU if available).
@@ -64,7 +71,7 @@ def random_symbols(
 
     k = int(np.log2(order))
     bits = random_bits(num_symbols * k, seed=seed)
-    return mapping.map_bits(bits, modulation, order)
+    return mapping.map_bits(bits, modulation, order, dtype=dtype)
 
 
 def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
@@ -177,7 +184,8 @@ def validate_array(
             raise ValueError(f"Could not convert {name} of type {type(v)} to array.")
 
     if complex_only and not np.iscomplexobj(v):
-        v = v.astype(np.complex128)
+        xp = get_array_module(v)
+        v = v.astype(xp.complex128)
 
     return v
 

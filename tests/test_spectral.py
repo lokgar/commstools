@@ -1,23 +1,14 @@
 import pytest
 from commstools import spectral
-from commstools.backend import to_device
 
 
 def test_welch_psd_real(backend_device, xp):
     """Test PSD for real-valued signals."""
-    if backend_device == "gpu":
-        try:
-            import cupy
-        except ImportError:
-            pytest.skip("CuPy not installed")
-
     # Generate a simple sine wave
     fs = 100.0
     t = xp.arange(1000) / fs
     freq = 20.0
     samples = xp.sin(2 * xp.pi * freq * t)
-
-    samples = to_device(samples, backend_device)
 
     # 1. Default (one-sided for real)
     f, p = spectral.welch_psd(samples, sampling_rate=fs, nperseg=256)
@@ -51,19 +42,11 @@ def test_welch_psd_real(backend_device, xp):
 
 def test_welch_psd_complex(backend_device, xp):
     """Test PSD for complex-valued signals."""
-    if backend_device == "gpu":
-        try:
-            import cupy
-        except ImportError:
-            pytest.skip("CuPy not installed")
-
     # Complex exponential
     fs = 100.0
     t = xp.arange(1000) / fs
     freq = 20.0
     samples = xp.exp(1j * 2 * xp.pi * freq * t)
-
-    samples = to_device(samples, backend_device)
 
     # 1. Default (two-sided for complex)
     f, p = spectral.welch_psd(samples, sampling_rate=fs, nperseg=256)
@@ -79,3 +62,43 @@ def test_welch_psd_complex(backend_device, xp):
     # 2. Try force one-sided (should fail)
     with pytest.raises(ValueError, match="Cannot compute one-sided PSD"):
         spectral.welch_psd(samples, sampling_rate=fs, return_onesided=True)
+
+
+def test_shift_frequency(backend_device, xp):
+    """Test frequency data manipulation."""
+    # 1. Exact integer shift
+    # fs=100, N=100 -> df=1Hz. Shift by 10Hz.
+    fs = 100.0
+    N = 100
+    t = xp.arange(N) / fs
+    # Signal at 20 Hz
+    s = xp.exp(1j * 2 * xp.pi * 20 * t)
+
+    shifted, actual = spectral.shift_frequency(s, offset=10.0, fs=fs)
+    assert actual == 10.0
+
+    # New frequency should be 30 Hz
+    # Check phase progress:
+    # original phase diff per sample: 2*pi*20/100 = 0.4*pi
+    # actual offset phase diff: 2*pi*10/100 = 0.2*pi
+    # expected total phase diff: 0.6*pi
+    # We can check via simple FFT peak
+    f_axis = xp.fft.fftfreq(N, 1 / fs)
+    peak_idx = xp.argmax(xp.abs(xp.fft.fft(shifted)))
+    peak_freq = f_axis[peak_idx]
+    assert xp.isclose(peak_freq, 30.0)
+
+    # 2. Quantized shift
+    # Shift by 10.5 Hz. Should be quantized to 10 or 11.
+    # df = 1 Hz. 10.5 rounds to 10 or 11 (nearest even? or standard round?)
+    # numpy round to nearest even for .5 cases usually. 10.5 -> 10. 11.5 -> 12.
+    # Let's check return value.
+    shifted_q, actual_q = spectral.shift_frequency(s, offset=10.5, fs=fs)
+    # Check it is integer multiple of df=1
+    assert actual_q % 1.0 == 0.0
+    assert abs(actual_q - 10.5) <= 0.5
+
+    # 3. Energy preservation (unitary)
+    energy_in = xp.sum(xp.abs(s) ** 2)
+    energy_out = xp.sum(xp.abs(shifted_q) ** 2)
+    assert xp.isclose(energy_in, energy_out)

@@ -14,7 +14,77 @@ from .backend import ArrayType, dispatch
 from .logger import logger
 
 
-def expand(samples: ArrayType, factor: int) -> ArrayType:
+def polyphase_resample(
+    samples: ArrayType,
+    up: int,
+    down: int,
+    axis: int = -1,
+    window: Optional[ArrayType] = None,
+) -> ArrayType:
+    """
+    Safe wrapper for polyphase resampling that handles CuPy multidimensional stability issues.
+
+    Args:
+        samples: Input samples.
+        up: Upsampling factor.
+        down: Downsampling factor.
+        axis: Processing axis.
+        window: FIR filter window (taps).
+    """
+    samples, xp, sp = dispatch(samples)
+
+    # Check if CuPy and multidimensional
+    # cupyx.scipy.signal.resample_poly crashes with CUDA_ERROR_INVALID_VALUE on some 2D/3D inputs
+    # even with correct axis alignment. We iterate over channels to avoid this.
+    is_cupy = xp.__name__ == "cupy"
+    if is_cupy and samples.ndim > 1:
+        # Move processing axis to -1 for canonical iteration
+        # Note: axis might be negative
+        samples_moved = xp.moveaxis(samples, axis, -1)
+        original_shape = samples_moved.shape
+        n_samples = original_shape[-1]
+
+        # Flatten non-processing dimensions: (C1, C2, ..., N) -> (FlatC, N)
+        samples_flat = samples_moved.reshape(-1, n_samples)
+
+        # Prepare kwargs
+        kwargs = {}
+        if window is not None:
+            kwargs["window"] = window
+
+        # Pre-allocate output: compute output length from first row
+        first_out = sp.signal.resample_poly(
+            samples_flat[0], up, down, axis=-1, **kwargs
+        )
+        n_out = first_out.shape[-1]
+        n_channels = samples_flat.shape[0]
+
+        # Pre-allocate result array (avoid list.append() in DSP loops)
+        result_flat = xp.empty((n_channels, n_out), dtype=samples_flat.dtype)
+        result_flat[0] = first_out
+
+        for i in range(1, n_channels):
+            result_flat[i] = sp.signal.resample_poly(
+                samples_flat[i], up, down, axis=-1, **kwargs
+            )
+
+        res = result_flat
+
+        # Reshape back to (C1, C2, ..., NewN)
+        new_shape = list(original_shape)
+        new_shape[-1] = res.shape[-1]
+        res = res.reshape(new_shape)
+
+        # Move axis back
+        res = xp.moveaxis(res, -1, axis)
+        return res
+    else:
+        if window is not None:
+            return sp.signal.resample_poly(samples, up, down, axis=axis, window=window)
+        return sp.signal.resample_poly(samples, up, down, axis=axis)
+
+
+def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
     Zero-insertion: Insert (factor-1) zeros between each sample.
 
@@ -28,14 +98,26 @@ def expand(samples: ArrayType, factor: int) -> ArrayType:
     logger.debug(f"Inserting zeros (expansion factor={factor}).")
     samples, xp, _ = dispatch(samples)
 
-    n_in = samples.shape[0]
+    n_in = samples.shape[axis]
     n_out = n_in * factor
-    out = xp.zeros(n_out, dtype=samples.dtype)
-    out[::factor] = samples
+
+    # Construct output shape
+    out_shape = list(samples.shape)
+    out_shape[axis] = n_out
+
+    out = xp.zeros(out_shape, dtype=samples.dtype)
+
+    # Slice logic to insert
+    # We want out[..., ::factor, ...] = samples
+    # Construct slices dynamically
+    slices = [slice(None)] * samples.ndim
+    slices[axis] = slice(None, None, factor)
+    out[tuple(slices)] = samples
+
     return out
 
 
-def upsample(samples: ArrayType, factor: int) -> ArrayType:
+def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
     Upsampling: Expansion (zero-insertion) + anti-imaging filter.
 
@@ -45,17 +127,21 @@ def upsample(samples: ArrayType, factor: int) -> ArrayType:
     Args:
         samples: Input sample array.
         factor: Upsampling factor.
+        axis: Axis along which to upsample.
 
     Returns:
         Upsampled samples at rate (factor * original_rate) on the same backend.
     """
-    logger.debug(f"Upsampling by factor {factor} (polyphase).")
-    samples, _, sp = dispatch(samples)
-    return sp.signal.resample_poly(samples, factor, 1)
+    logger.debug(f"Upsampling by factor {factor} (polyphase, axis={axis}).")
+    return polyphase_resample(samples, factor, 1, axis=axis)
 
 
 def decimate(
-    samples: ArrayType, factor: int, method: str = "decimate", **kwargs: Any
+    samples: ArrayType,
+    factor: int,
+    method: str = "decimate",
+    axis: int = -1,
+    **kwargs: Any,
 ) -> ArrayType:
     """
     Decimate: Anti-aliasing filter followed by downsampling.
@@ -67,6 +153,7 @@ def decimate(
         samples: Input sample array.
         factor: Decimation factor.
         method: Decimation method ('decimate', 'polyphase').
+        axis: Axis along which to decimate.
         **kwargs: Additional filter parameters for 'decimate' method.
 
     Returns:
@@ -80,12 +167,12 @@ def decimate(
         zero_phase = kwargs.get("zero_phase", True)
         ftype = kwargs.get("ftype", "fir")
         return sp.signal.decimate(
-            samples, int(factor), ftype=ftype, zero_phase=zero_phase
+            samples, int(factor), ftype=ftype, axis=axis, zero_phase=zero_phase
         )
 
     elif method == "polyphase":
         # resample_poly with up=1
-        return sp.signal.resample_poly(samples, 1, int(factor))
+        return polyphase_resample(samples, 1, int(factor), axis=axis)
 
     else:
         raise ValueError(f"Unknown decimation method: {method}")
@@ -97,6 +184,7 @@ def resample(
     down: Optional[int] = None,
     sps_in: Optional[float] = None,
     sps_out: Optional[float] = None,
+    axis: int = -1,
 ) -> ArrayType:
     """
     Rational resampling: Upsample by 'up', downsample by 'down'.
@@ -110,6 +198,7 @@ def resample(
         down: Downsampling factor.
         sps_in: Input samples per symbol.
         sps_out: Target samples per symbol.
+        axis: Axis along which to resample.
 
     Returns:
         Resampled samples at rate (original_rate * up / down) on the same backend.
@@ -129,6 +218,5 @@ def resample(
     elif up is None or down is None:
         raise ValueError("Must specify either (up, down) or (sps_in, sps_out).")
 
-    logger.debug(f"Resampling by rational factor {up}/{down} (polyphase).")
-    samples, _, sp = dispatch(samples)
-    return sp.signal.resample_poly(samples, int(up), int(down))
+    logger.debug(f"Resampling by rational factor {up}/{down} (polyphase, axis={axis}).")
+    return polyphase_resample(samples, int(up), int(down), axis=axis)

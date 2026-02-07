@@ -66,6 +66,26 @@ def apply_default_theme() -> None:
     plt.rcParams["mathtext.bf"] = f"{font_name}:bold"
 
 
+def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> Tuple[int, int]:
+    """
+    Compute grid layout (rows, cols) for a given number of axes.
+
+    Limits the number of columns to max_cols to prevent overly wide figures.
+
+    Args:
+        num_axes: Number of axes/subplots needed.
+        max_cols: Maximum number of columns (default: 2).
+
+    Returns:
+        Tuple of (nrows, ncols).
+    """
+    if num_axes <= max_cols:
+        return 1, num_axes
+    ncols = max_cols
+    nrows = (num_axes + ncols - 1) // ncols  # Ceiling division
+    return nrows, ncols
+
+
 def psd(
     samples: Any,
     sampling_rate: float = 1.0,
@@ -105,6 +125,69 @@ def psd(
         Tuple of (figure, axis) if show is False, else None.
     """
     logger.debug(f"Generating PSD plot (sampling_rate={sampling_rate} Hz).")
+
+    samples, xp, _ = dispatch(samples)
+
+    # Handle Multichannel (e.g. Dual-Pol)
+    # Convention: (Channels, Time)
+    if samples.ndim > 1:
+        num_channels = samples.shape[0]
+
+        if ax is None:
+            nrows, ncols = _create_subplot_grid(num_channels)
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False
+            )
+        else:
+            if not isinstance(ax, (list, tuple, np.ndarray)):
+                # If single axis provided but multiple channels, warn and overlay?
+                # Or better, just overlay on the same axis for PSD
+                # Actually, the user asked for "side-by-side".
+                # But if the user provides a single axis, we must respect it.
+                # Let's overlay if single axis provided, or fail.
+                logger.warning(
+                    "Multiple channels detected but single axis provided. Overlaying plots."
+                )
+                axes = np.array([[ax] * num_channels])
+                fig = ax.figure
+            else:
+                axes = np.atleast_2d(ax)
+                fig = axes.flat[0].figure
+
+        for i in range(num_channels):
+            # Recursively call psd for each channel
+            channel_samples = samples[i]
+
+            # Determine target axis using 2D indexing
+            row, col = divmod(i, axes.shape[1])
+            target_ax = axes[row, col] if row < axes.shape[0] else axes.flat[-1]
+
+            ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
+
+            psd(
+                channel_samples,
+                sampling_rate=sampling_rate,
+                nperseg=nperseg,
+                detrend=detrend,
+                average=average,
+                center_frequency=center_frequency,
+                domain=domain,
+                x_axis=x_axis,
+                ax=target_ax,
+                xlim=xlim,
+                ylim=ylim,
+                title=ch_title,
+                show=False,
+                **kwargs,
+            )
+
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    # --- 1D Logic Starts Here ---
+
     if ax is None:
         fig, ax = plt.subplots()
     else:
@@ -120,9 +203,6 @@ def psd(
         detrend=detrend,
         average=average,
     )
-
-    # Dispatch to get backend modules (for to_device)
-    _, xp, _ = dispatch(samples)
 
     # Move to cpu for plotting
     f = to_device(f, "cpu")
@@ -215,6 +295,57 @@ def time_domain(
         Tuple of (figure, axis) if show is False, else None.
     """
     logger.debug("Generating time-domain plot.")
+
+    samples, xp, _ = dispatch(samples)
+
+    # Handle Multichannel
+    # Convention: (Channels, Time)
+    if samples.ndim > 1:
+        num_channels = samples.shape[0]
+
+        if ax is None:
+            nrows, ncols = _create_subplot_grid(num_channels)
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False
+            )
+        else:
+            if not isinstance(ax, (list, tuple, np.ndarray)):
+                logger.warning(
+                    "Multiple channels detected but single axis provided. Overlaying plots."
+                )
+                axes = np.array([[ax] * num_channels])
+                fig = ax.figure
+            else:
+                axes = np.atleast_2d(ax)
+                fig = axes.flat[0].figure
+
+        for i in range(num_channels):
+            channel_samples = samples[i]
+
+            # Determine target axis using 2D indexing
+            row, col = divmod(i, axes.shape[1])
+            target_ax = axes[row, col] if row < axes.shape[0] else axes.flat[-1]
+
+            ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
+
+            time_domain(
+                channel_samples,
+                sampling_rate=sampling_rate,
+                num_symbols=num_symbols,
+                sps=sps,
+                ax=target_ax,
+                title=ch_title,
+                show=False,
+                **kwargs,
+            )
+
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    # --- 1D Logic ---
+
     if ax is None:
         fig, ax = plt.subplots()
     else:
@@ -473,6 +604,68 @@ def eye_diagram(
 
     # Dispatch to check backend
     samples, xp, _ = dispatch(samples)
+
+    # Convention: (Channels, Time)
+    if samples.ndim > 1:
+        num_channels = samples.shape[0]
+
+        # Complex eye uses 2 axes (I/Q). So for N channels we need 2*N axes.
+        is_complex = xp.iscomplexobj(samples)
+        axes_per_channel = 2 if is_complex else 1
+
+        if ax is None:
+            # Grid: Rows = Channels, Cols = Components
+            fig, axes = plt.subplots(
+                num_channels,
+                axes_per_channel,
+                figsize=(5 * axes_per_channel, 3.5 * num_channels),
+                squeeze=False,  # Ensure 2D array
+            )
+        else:
+            # User provided axes. Must be flat list or correct shape
+            # We assume user knows what they are doing or we do best effort
+            if isinstance(ax, (np.ndarray, list, tuple)):
+                # Flatten
+                axes_flat = np.array(ax).flatten()
+                if len(axes_flat) < num_channels * axes_per_channel:
+                    raise ValueError(
+                        f"Not enough axes provided. Need {num_channels * axes_per_channel}."
+                    )
+                # Reshape to (Channels, Components)
+                axes = axes_flat[: num_channels * axes_per_channel].reshape(
+                    num_channels, axes_per_channel
+                )
+                fig = axes[0, 0].figure
+            else:
+                raise ValueError(
+                    "For multichannel eye diagram, you must provide a list of axes."
+                )
+
+        for i in range(num_channels):
+            channel_samples = samples[i]
+            ch_axes = axes[i]
+
+            ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
+
+            # Recursive call with 1D sample
+            eye_diagram(
+                channel_samples,
+                sps=sps,
+                ax=ch_axes,
+                num_symbols=num_symbols,
+                type=type,
+                title=ch_title,
+                show=False,
+                **kwargs,
+            )
+
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    # --- 1D Logic ---
+
     is_complex = xp.iscomplexobj(samples)
 
     if ax is None:
@@ -604,7 +797,7 @@ def filter_response(
 
     # Normalize to Nyquist (0 to 1)
     # w is in radians/sample (0 to pi)
-    freqs = w / (2 * np.pi)
+    freqs = w / (2 * xp.pi)
 
     # Avoid log(0)
     mag = 20 * xp.log10(xp.abs(h) + 1e-12)
@@ -733,6 +926,188 @@ def ideal_constellation(
             zorder=-5,
         )
         ax.add_artist(circle)
+
+    if show:
+        plt.show()
+        return None
+    return fig, ax
+
+
+def constellation(
+    samples: Any,
+    bins: int = 100,
+    cmap: str = "inferno",
+    ax: Optional[Any] = None,
+    overlay_ideal: bool = False,
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
+    title: Optional[str] = "Constellation",
+    show: bool = False,
+    **kwargs: Any,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots a constellation density diagram from received samples.
+
+    Uses 2D histogram (hist2d) for density visualization, which is more
+    suitable for noisy/impaired signals than scatter plots.
+
+    Args:
+        samples: Complex samples to plot (1D or 2D for MIMO).
+        bins: Number of histogram bins per axis (default: 100).
+        cmap: Colormap for density plot (default: 'inferno').
+        ax: Optional matplotlib axis to plot on.
+        overlay_ideal: If True, overlay ideal constellation points.
+        modulation: Modulation type (required if overlay_ideal=True).
+        order: Modulation order (required if overlay_ideal=True).
+        title: Title of the plot. Defaults to "Constellation". If None, no title.
+        show: Whether to call plt.show() after plotting.
+        **kwargs: Additional arguments passed to ax.imshow.
+
+    Returns:
+        Tuple of (figure, axis) if show is False, else None.
+    """
+    logger.debug("Generating constellation density plot.")
+
+    samples, xp, sp = dispatch(samples)
+
+    # Handle Multichannel (e.g. Dual-Pol)
+    # Convention: (Channels, Time)
+    if samples.ndim > 1:
+        num_channels = samples.shape[0]
+
+        if ax is None:
+            nrows, ncols = _create_subplot_grid(num_channels)
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=(5 * ncols, 5 * nrows), squeeze=False
+            )
+        else:
+            if not isinstance(ax, (list, tuple, np.ndarray)):
+                logger.warning(
+                    "Multiple channels detected but single axis provided. Overlaying plots."
+                )
+                axes = np.array([[ax] * num_channels])
+                fig = ax.figure
+            else:
+                axes = np.atleast_2d(ax)
+                fig = axes.flat[0].figure
+
+        for i in range(num_channels):
+            channel_samples = samples[i]
+
+            # Determine target axis using 2D indexing
+            row, col = divmod(i, axes.shape[1])
+            target_ax = axes[row, col] if row < axes.shape[0] else axes.flat[-1]
+
+            ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
+
+            constellation(
+                channel_samples,
+                bins=bins,
+                cmap=cmap,
+                ax=target_ax,
+                overlay_ideal=overlay_ideal,
+                modulation=modulation,
+                order=order,
+                title=ch_title,
+                show=False,
+                **kwargs,
+            )
+
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    # --- 1D Logic ---
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 5))
+    else:
+        fig = ax.figure
+
+    # Ensure samples are complex
+    if not xp.iscomplexobj(samples):
+        logger.warning("Constellation plot expects complex samples. Converting.")
+        samples = samples.astype(xp.complex64)
+
+    # Extract I and Q
+    i_data = samples.real.flatten()
+    q_data = samples.imag.flatten()
+
+    # Move to CPU for plotting
+    i_data = to_device(i_data, "cpu")
+    q_data = to_device(q_data, "cpu")
+
+    # Compute 2D histogram
+    # Determine range based on RMS (robust to noise outliers)
+    signal_rms = np.sqrt(np.mean(np.abs(i_data) ** 2 + np.abs(q_data) ** 2))
+    # Use ~3x RMS as limit (covers most constellation points + noise spread)
+    limit = signal_rms * 2.0
+
+    h, xedges, yedges = np.histogram2d(
+        i_data, q_data, bins=bins, range=[[-limit, limit], [-limit, limit]]
+    )
+
+    # Transpose for imshow (rows=y, cols=x)
+    h = h.T
+
+    # Apply Gaussian smoothing for nicer visuals
+    from scipy.ndimage import gaussian_filter
+
+    h = gaussian_filter(h, sigma=1)
+
+    # Plot using imshow
+    imshow_kwargs = {
+        "origin": "lower",
+        "extent": [-limit, limit, -limit, limit],
+        "aspect": "equal",
+        "cmap": cmap,
+        "interpolation": "bilinear",
+    }
+    imshow_kwargs.update(kwargs)
+
+    ax.imshow(h, **imshow_kwargs)
+
+    # Overlay ideal constellation if requested
+    if overlay_ideal and modulation is not None and order is not None:
+        from .mapping import gray_constellation
+
+        try:
+            const = gray_constellation(modulation, order)
+            const = to_device(const, "cpu")
+
+            # Scale constellation to match signal amplitude
+            # Use RMS-based scaling (robust to noise outliers)
+            const_rms = np.sqrt(np.mean(np.abs(const) ** 2))
+            if const_rms > 0:
+                scale_factor = signal_rms / const_rms
+                const = const * scale_factor
+
+            ax.scatter(
+                const.real,
+                const.imag,
+                c="white",
+                s=50,
+                edgecolors="black",
+                linewidths=1,
+                zorder=10,
+                marker="o",
+            )
+        except ValueError as e:
+            logger.warning(f"Could not overlay ideal constellation: {e}")
+
+    # Add center lines
+    ax.axhline(0, color="white", linewidth=0.5, alpha=0.5, zorder=5)
+    ax.axvline(0, color="white", linewidth=0.5, alpha=0.5, zorder=5)
+
+    ax.set_xlabel("In-Phase (I)")
+    ax.set_ylabel("Quadrature (Q)")
+    if title is not None:
+        ax.set_title(title)
+
+    ax.set_xlim(-limit, limit)
+    ax.set_ylim(-limit, limit)
+    ax.grid(False)
 
     if show:
         plt.show()

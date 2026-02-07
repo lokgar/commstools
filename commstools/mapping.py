@@ -9,6 +9,8 @@ It supports:
 - Symbol-to-bit demapping.
 """
 
+from typing import Any, Optional
+
 import numpy as np
 
 from functools import lru_cache
@@ -301,7 +303,9 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     return final_i_vals + 1j * final_q_vals
 
 
-def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
+def map_bits(
+    bits: ArrayType, modulation: str, order: int, dtype: Optional[Any] = np.complex64
+) -> ArrayType:
     """
     Map a sequence of bits to constellation symbols.
 
@@ -309,6 +313,7 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
         bits: Input array of bits (0s and 1s).
         modulation: Modulation type ('psk', 'qam', 'ask').
         order: Modulation order.
+        dtype: Output dtype (e.g., np.complex64, np.complex128). Default: complex64.
 
     Returns:
         Array of complex symbols on the same backend as the input bits.
@@ -343,6 +348,9 @@ def map_bits(bits: ArrayType, modulation: str, order: int) -> ArrayType:
     # Ensure constellation is on the same backend as indices
     constellation = xp.asarray(constellation)
 
+    # Apply dtype for precision control (default: complex64 for efficiency)
+    constellation = constellation.astype(dtype)
+
     # Map indices to points
     return constellation[indices]
 
@@ -362,6 +370,14 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     logger.debug(f"Demapping {modulation.upper()} {order}-level symbols to bits.")
     symbols, xp, _ = dispatch(symbols)
 
+    # Capture original shape to restore structure later
+    # If input is (N,), output (N*k,)
+    # If input is (C, N), output (C, N*k)
+    original_shape = symbols.shape
+
+    # Ensure 1D for vectorized distance broadcasting
+    symbols_flat = symbols.flatten()
+
     # Get constellation
     constellation = gray_constellation(modulation, order)
     constellation = xp.asarray(constellation)
@@ -370,7 +386,7 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     # We expand dimensions to calculate all-to-all distances
     # symbols: (N,), constellation: (M,)
     # distances shape: (N, M)
-    distances = xp.abs(symbols[:, xp.newaxis] - constellation[xp.newaxis, :])
+    distances = xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :])
     indices = xp.argmin(distances, axis=1)
 
     # 2. Convert indices to bits
@@ -380,4 +396,17 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
     bits = (indices[:, xp.newaxis] >> shifts) & 1
 
-    return bits.flatten()
+    # 3. Reshape to restore original structure
+    # bits is currently (Total_Symbols, k)
+    # We flatten it to (Total_Symbols * k)
+    flat_bits = bits.flatten()
+
+    # Calculate new shape: replace last dimension D with D*k
+    # If original shape was (D1, D2, ..., Dn), new shape is (D1, D2, ..., Dn * k)
+    if len(original_shape) > 0:
+        new_shape = list(original_shape)
+        new_shape[-1] = new_shape[-1] * k
+        return flat_bits.reshape(new_shape)
+    else:
+        # Scalar input case (if supported), returns 1D array of bits
+        return flat_bits

@@ -48,6 +48,7 @@ class Signal(BaseModel):
 
     Attributes:
         samples: The complex IQ samples of the signal. Can be NumPy or CuPy arrays.
+                 Shape should be (N_samples,) for SISO or (N_channels, N_samples) for MIMO.
         sampling_rate: The sampling rate of the signal in Hz. Must be positive.
         symbol_rate: The symbol rate (baud rate) in Hz. Used for SPS calculation.
         modulation_scheme: Identifier for the modulation format (e.g., 'QPSK', '16QAM').
@@ -82,7 +83,7 @@ class Signal(BaseModel):
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
     center_frequency: float = Field(default=0, ge=0)
-    digital_frequency_offset: float = Field(default=0, ge=0)
+    digital_frequency_offset: float = Field(default=0)
 
     # Pulse shaping parameters
     filter_span: int = 10
@@ -96,6 +97,7 @@ class Signal(BaseModel):
     def validate_samples(cls, v: Any) -> Any:
         """
         Validates and coerces the samples input into a backend-compatible array.
+        Enforces (N_samples, N_channels) shape convention for multidimensional inputs.
 
         Args:
             v: The input samples (array-like, list, or tuple).
@@ -106,7 +108,35 @@ class Signal(BaseModel):
         Raises:
             ValueError: If the input cannot be converted to a supported array type.
         """
-        return utils.validate_array(v, name="samples")
+        arr = utils.validate_array(v, name="samples")
+
+        # Check shape conventions
+        # We enforce Time-Last convention: (Channels, Time) or (Time,) for 1D.
+        # This aligns better with C-contiguous operations on the time axis (last axis)
+        # which is critical for CuPy performance/stability.
+
+        if arr.ndim > 2:
+            raise ValueError(
+                f"Samples array has {arr.ndim} dimensions. "
+                "Only 1D (SISO) or 2D (MIMO/Dual-Pol) arrays are supported."
+            )
+
+        if arr.ndim == 2:
+            # Check dimensions to guess orientation
+            s0, s1 = arr.shape
+            # If dim0 (rows) > dim1 (cols) and dim0 >> 10, it's likely (Time, Channels)
+            # We want (Channels, Time).
+            if s0 > s1 and s0 > 32:  # Heuristic: Time dim usually > 32
+                logger.warning(
+                    f"Samples shape is {arr.shape}. Converting to Time-Last convention (N_channels={s1}, N_samples={s0}). "
+                    "Please provide input as (N_channels, N_samples) for MIMO signals."
+                )
+                arr = arr.T  # Transpose to (Channels, Time)
+
+            # If shape is (2, 2), ambiguous but assumes (Channels, Time)
+            # If s1 > s0, likely already correct.
+
+        return arr
 
     def model_post_init(self, __context: Any) -> None:
         """
@@ -145,13 +175,25 @@ class Signal(BaseModel):
         return "GPU" if self.xp == cp else "CPU"
 
     @property
+    def num_streams(self) -> int:
+        """
+        Returns the number of spatial/polarization streams.
+        1 for SISO, N > 1 for MIMO/Dual-Pol.
+        """
+        if self.samples.ndim == 1:
+            return 1
+        return self.samples.shape[0]
+
+    @property
     def duration(self) -> float:
         """
         Duration of the signal in seconds.
 
         Calculated as the number of samples divided by the sampling rate.
         """
-        return self.samples.shape[0] / self.sampling_rate
+        if self.samples.ndim == 1:
+            return self.samples.shape[0] / self.sampling_rate
+        return self.samples.shape[-1] / self.sampling_rate
 
     @property
     def sps(self) -> float:
@@ -220,7 +262,8 @@ class Signal(BaseModel):
         Returns:
             An array representing the time axis in seconds.
         """
-        return self.xp.arange(0, self.samples.shape[0]) / self.sampling_rate
+        n_samples = self.samples.shape[-1]
+        return self.xp.arange(0, n_samples) / self.sampling_rate
 
     def demap_source_symbols(self) -> Optional[ArrayType]:
         """
@@ -258,6 +301,7 @@ class Signal(BaseModel):
 
         Returns:
             Tuple of (frequency_axis, psd_values).
+            If signal is MIMO, psd_values will be (N_channels, N_freqs) or similar depending on implementation.
         """
         from . import spectral
 
@@ -267,6 +311,7 @@ class Signal(BaseModel):
             nperseg=nperseg,
             detrend=detrend,
             average=average,
+            axis=-1,  # Explicitly specify time axis
         )
 
     def plot_psd(
@@ -336,6 +381,7 @@ class Signal(BaseModel):
                 "Center Frequency",
                 "Digital Freq. Offset",
                 "Backend",
+                "Configuration",
                 "Samples Shape",
             ],
             "Value": [
@@ -356,6 +402,7 @@ class Signal(BaseModel):
                 utils.format_si(self.center_frequency, "Hz"),
                 utils.format_si(self.digital_frequency_offset, "Hz"),
                 self.backend.upper(),
+                "SISO" if self.num_streams == 1 else f"MIMO ({self.num_streams}x)",
                 str(self.samples.shape),
             ],
         }
@@ -433,6 +480,46 @@ class Signal(BaseModel):
             **kwargs,
         )
 
+    def plot_constellation(
+        self,
+        bins: int = 100,
+        overlay_ideal: bool = False,
+        ax: Optional[Any] = None,
+        title: Optional[str] = "Constellation",
+        show: bool = False,
+        **kwargs: Any,
+    ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plot the constellation density diagram of the signal.
+
+        Args:
+            bins: Number of histogram bins per axis.
+            overlay_ideal: If True, overlay ideal constellation points.
+            ax: Optional matplotlib axis to plot on.
+            title: Title of the plot.
+            show: Whether to call plt.show().
+            **kwargs: Additional plotting arguments.
+
+        Returns:
+            Tuple of (figure, axis) if show is False, else None.
+        """
+        from . import plotting
+
+        return plotting.constellation(
+            self.samples,
+            bins=bins,
+            cmap="inferno",
+            ax=ax,
+            overlay_ideal=overlay_ideal,
+            modulation=self.modulation_scheme.lower()
+            if self.modulation_scheme
+            else None,
+            order=self.modulation_order,
+            title=title,
+            show=show,
+            **kwargs,
+        )
+
     def upsample(self, factor: int) -> "Signal":
         """
         Upsample the signal.
@@ -445,7 +532,7 @@ class Signal(BaseModel):
         """
         from . import multirate
 
-        self.samples = multirate.upsample(self.samples, factor)
+        self.samples = multirate.upsample(self.samples, factor, axis=-1)
         self.sampling_rate = self.sampling_rate * factor
         return self
 
@@ -466,7 +553,7 @@ class Signal(BaseModel):
         from . import multirate
 
         self.samples = multirate.decimate(
-            self.samples, factor, filter_type=filter_type, **kwargs
+            self.samples, factor, filter_type=filter_type, axis=-1, **kwargs
         )
         self.sampling_rate = self.sampling_rate / factor
         return self
@@ -494,7 +581,7 @@ class Signal(BaseModel):
         sps_in = self.sps if sps_out is not None else None
 
         self.samples = multirate.resample(
-            self.samples, up=up, down=down, sps_in=sps_in, sps_out=sps_out
+            self.samples, up=up, down=down, sps_in=sps_in, sps_out=sps_out, axis=-1
         )
 
         # Update sampling rate
@@ -502,6 +589,28 @@ class Signal(BaseModel):
             self.sampling_rate = sps_out * self.symbol_rate
         elif up is not None and down is not None:
             self.sampling_rate = self.sampling_rate * up / down
+
+        return self
+
+    def shift_frequency(self, offset: float) -> "Signal":
+        """
+        Apply a frequency offset to the signal.
+
+        Args:
+            offset: Desired frequency offset in Hz.
+
+        Returns:
+            self
+        """
+        from . import spectral
+
+        (
+            self.samples,
+            actual_offset,
+        ) = spectral.shift_frequency(self.samples, offset, self.sampling_rate)
+
+        # Update metadata
+        self.digital_frequency_offset += actual_offset
 
         return self
 
@@ -517,7 +626,8 @@ class Signal(BaseModel):
         """
         from . import filtering
 
-        self.samples = filtering.fir_filter(self.samples, taps)
+        # Axis -1 is time
+        self.samples = filtering.fir_filter(self.samples, taps, axis=-1)
         return self
 
     def shaping_filter_taps(self) -> ArrayType:
@@ -597,16 +707,17 @@ class Signal(BaseModel):
         from . import filtering
 
         try:
-            pulse_taps = self.shaping_filter_taps()
+            taps = self.shaping_filter_taps()
         except ValueError as e:
             logger.error(f"Cannot apply matched filter: {e}")
             return self
 
         self.samples = filtering.matched_filter(
             self.samples,
-            pulse_taps=pulse_taps,
+            taps,
             taps_normalization=taps_normalization,
             normalize_output=normalize_output,
+            axis=-1,
         )
         return self
 
@@ -628,7 +739,9 @@ class Signal(BaseModel):
         sps: float,
         symbol_rate: float,
         pulse_shape: str = "none",
+        num_streams: int = 1,
         seed: Optional[int] = None,
+        dtype: Optional[Any] = np.complex64,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -637,11 +750,14 @@ class Signal(BaseModel):
         Args:
             modulation: Modulation scheme ('psk', 'qam', 'ask').
             order: Modulation order.
-            num_symbols: Number of symbols to generate.
+            num_symbols: Number of symbols to generate per stream.
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
             pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'none'.
+            num_streams: Number of independent streams (1 for SISO, 2 for Dual-Pol, etc.).
             seed: Random seed for bit generation.
+            dtype: Output dtype for precision control (e.g., np.complex64, np.complex128).
+                   Default: complex64 for 2x memory savings and faster GPU.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
                 rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
@@ -655,14 +771,23 @@ class Signal(BaseModel):
         from . import filtering, utils
 
         # Generate symbols directly
-        symbols = utils.random_symbols(
-            num_symbols, modulation=modulation, order=order, seed=seed
+        # If num_streams > 1, generate (num_streams, num_symbols)
+        total_symbols = num_symbols * num_streams
+        symbols_flat = utils.random_symbols(
+            total_symbols, modulation=modulation, order=order, seed=seed, dtype=dtype
         )
+
+        if num_streams > 1:
+            # Shape: (Channels, Time)
+            symbols = symbols_flat.reshape(num_streams, num_symbols)
+        else:
+            symbols = symbols_flat
 
         if is_cupy_available():
             symbols = to_device(symbols, "gpu")
 
         # Apply pulse shaping
+        # shape_pulse defaults to axis=-1 (Time) which is correct for (C, T)
         samples = filtering.shape_pulse(
             symbols,
             sps=sps,
@@ -691,6 +816,7 @@ class Signal(BaseModel):
         mode: Literal["rz", "nrz"] = "nrz",
         bipolar: bool = True,
         pulse_shape: Optional[str] = "rect",
+        num_streams: int = 1,
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> "Signal":
@@ -705,6 +831,7 @@ class Signal(BaseModel):
             mode: Signaling mode ('nrz' or 'rz').
             bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
             pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rect'.
+            num_streams: Number of independent streams.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -731,9 +858,16 @@ class Signal(BaseModel):
                 )
 
             # Generate symbols directly
-            symbols = utils.random_symbols(
-                num_symbols, modulation="ask", order=order, seed=seed
+            # Shape: (Channels, Time)
+            total_symbols = num_symbols * num_streams
+            symbols_flat = utils.random_symbols(
+                total_symbols, modulation="ask", order=order, seed=seed
             )
+
+            if num_streams > 1:
+                symbols = symbols_flat.reshape(num_streams, num_symbols)
+            else:
+                symbols = symbols_flat
 
             if not bipolar:
                 symbols = symbols - np.min(symbols)
@@ -756,8 +890,10 @@ class Signal(BaseModel):
             _, xp, sp = dispatch(symbols)
 
             # RZ hardcoded to 0.5 pulse width
+            from . import multirate
+
             samples = utils.normalize(
-                sp.signal.resample_poly(symbols, int(sps), 1, window=h),
+                multirate.polyphase_resample(symbols, int(sps), 1, window=h, axis=-1),
                 "max_amplitude",
             )
 
@@ -780,6 +916,7 @@ class Signal(BaseModel):
                 sps=sps,
                 symbol_rate=symbol_rate,
                 pulse_shape=p_shape,
+                num_streams=num_streams,
                 seed=seed,
                 **kwargs,
             )
@@ -799,6 +936,7 @@ class Signal(BaseModel):
         sps: float,
         symbol_rate: float,
         pulse_shape: str = "rrc",
+        num_streams: int = 1,
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> "Signal":
@@ -811,6 +949,7 @@ class Signal(BaseModel):
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
             pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
+            num_streams: Number of independent streams.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -829,6 +968,7 @@ class Signal(BaseModel):
             sps=sps,
             symbol_rate=symbol_rate,
             pulse_shape=pulse_shape,
+            num_streams=num_streams,
             seed=seed,
             **kwargs,
         )
@@ -841,6 +981,7 @@ class Signal(BaseModel):
         sps: float,
         symbol_rate: float,
         pulse_shape: str = "rrc",
+        num_streams: int = 1,
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> "Signal":
@@ -853,6 +994,7 @@ class Signal(BaseModel):
             sps: Samples per symbol.
             symbol_rate: Symbol rate in Hz.
             pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
+            num_streams: Number of independent streams.
             seed: Random seed for bit generation.
             **kwargs: Pulse shaping parameters:
                 filter_span (int): Filter span in symbols (default: 10).
@@ -871,6 +1013,7 @@ class Signal(BaseModel):
             sps=sps,
             symbol_rate=symbol_rate,
             pulse_shape=pulse_shape,
+            num_streams=num_streams,
             seed=seed,
             **kwargs,
         )
@@ -883,9 +1026,10 @@ class SingleCarrierFrame(BaseModel):
     This class provides a high-level abstraction for constructing frames commonly
     used in digital communication systems, supporting various pilot patterns
     (none, block, comb) and guard intervals (zero-padding or cyclic prefix).
+    Also supports MIMO frames (spatial multiplexing).
 
     Attributes:
-        payload_len: Number of data SYMBOLS in the payload.
+        payload_len: Number of data SYMBOLS in the payload per stream.
         payload_mod_scheme: Modulation scheme for the payload (e.g., "PSK", "QAM").
         payload_mod_order: Modulation order for the payload (e.g., 2, 4, 16).
         payload_seed: Random seed for payload bit generation.
@@ -899,6 +1043,7 @@ class SingleCarrierFrame(BaseModel):
         guard_type: Type of guard interval ("zero" for padding, "cp" for cyclic prefix).
         guard_len: Length of the guard interval in SYMBOLS.
         symbol_rate: The symbol rate of the frame in Hz.
+        num_streams: Number of independent spatial streams (default: 1).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -921,6 +1066,7 @@ class SingleCarrierFrame(BaseModel):
     guard_len: int = 0
 
     symbol_rate: float = Field(..., gt=0)
+    num_streams: int = Field(default=1, ge=1)
 
     @field_validator("preamble", mode="before")
     @classmethod
@@ -1010,12 +1156,18 @@ class SingleCarrierFrame(BaseModel):
         """Returns the mapped symbols of the payload."""
         from .utils import random_symbols
 
-        return random_symbols(
-            self.payload_len,
+        # Prepare shape handling for MIMO
+        total_symbols = self.payload_len * self.num_streams
+        symbols = random_symbols(
+            total_symbols,
             modulation=self.payload_mod_scheme,
             order=self.payload_mod_order,
             seed=self.payload_seed,
         )
+        if self.num_streams > 1:
+            # Shape: (Channels, Time)
+            return symbols.reshape(self.num_streams, self.payload_len)
+        return symbols
 
     @property
     def pilot_symbols(self) -> Optional[ArrayType]:
@@ -1031,24 +1183,37 @@ class SingleCarrierFrame(BaseModel):
 
         from .utils import random_symbols
 
-        return random_symbols(
-            pilot_count,
+        total_pilots = pilot_count * self.num_streams
+        pilots = random_symbols(
+            total_pilots,
             modulation=self.pilot_mod_scheme,
             order=self.pilot_mod_order,
             seed=self.pilot_seed,
         )
+        if self.num_streams > 1:
+            # Shape: (Channels, Time)
+            return pilots.reshape(self.num_streams, pilot_count)
+        return pilots
 
     @property
     def body_symbols(self) -> ArrayType:
         """Returns the interleaved pilot and payload symbols (frame body)."""
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
-        body = xp.zeros(body_length, dtype=xp.complex128)
+        if self.num_streams > 1:
+            # Shape: (Channels, Time)
+            body = xp.zeros((self.num_streams, body_length), dtype=xp.complex128)
 
-        if self.pilot_pattern != "none":
-            body[mask] = self.pilot_symbols
+            if self.pilot_pattern != "none":
+                body[:, mask] = self.pilot_symbols
 
-        body[~mask] = self.payload_symbols
+            body[:, ~mask] = self.payload_symbols
+        else:
+            body = xp.zeros(body_length, dtype=xp.complex128)
+            if self.pilot_pattern != "none":
+                body[mask] = self.pilot_symbols
+            body[~mask] = self.payload_symbols
+
         return body
 
     def _assemble_symbols(self) -> ArrayType:
@@ -1065,7 +1230,17 @@ class SingleCarrierFrame(BaseModel):
         # Assemble Core (Preamble + Body)
         if self.preamble is not None:
             preamble = to_device(self.preamble, "gpu" if is_cupy_available() else "cpu")
-            return xp.concatenate([preamble, body])
+            # Broadcast preamble if needed
+            if self.num_streams > 1 and preamble.ndim == 1:
+                # Need (Channels, Time)
+                # (L,) -> (1, L) -> (C, L)
+                preamble = xp.tile(preamble[None, :], (self.num_streams, 1))
+
+            # Concatenate along time axis (-1)
+            # If 1D: (L1) + (L2) -> (L1+L2)
+            # If 2D: (C, L1) + (C, L2) -> (C, L1+L2)
+            # axis=-1 typically works for 1D too (last axis)
+            return xp.concatenate([preamble, body], axis=-1)
         else:
             return body
 
@@ -1086,12 +1261,19 @@ class SingleCarrierFrame(BaseModel):
         if self.guard_len > 0:
             if self.guard_type == "zero":
                 # End-of-frame zero padding
-                zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
-                signal_samples = xp.concatenate([signal_samples, zeros])
+                if self.num_streams > 1:
+                    zeros = xp.zeros(
+                        (self.num_streams, self.guard_len), dtype=xp.complex128
+                    )
+                else:
+                    zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
+                signal_samples = xp.concatenate([signal_samples, zeros], axis=-1)
             elif self.guard_type == "cp":
-                # Front-of-frame cyclic prefix
-                cp_slice = signal_samples[-self.guard_len :]
-                signal_samples = xp.concatenate([cp_slice, signal_samples])
+                # Front-of-frame cyclic prefix (axis -1)
+                # If 1D: [-L:]
+                # If 2D: [..., -L:]
+                cp_slice = signal_samples[..., -self.guard_len :]
+                signal_samples = xp.concatenate([cp_slice, signal_samples], axis=-1)
 
         # 3. Create and return Signal metadata
         return Signal(
@@ -1128,12 +1310,17 @@ class SingleCarrierFrame(BaseModel):
         source_symbols = symbols
         if self.guard_len > 0:
             if self.guard_type == "zero":
-                source_symbols = xp.concatenate(
-                    [source_symbols, xp.zeros(self.guard_len, dtype=xp.complex128)]
-                )
+                if self.num_streams > 1:
+                    zeros = xp.zeros(
+                        (self.num_streams, self.guard_len), dtype=xp.complex128
+                    )
+                else:
+                    zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
+
+                source_symbols = xp.concatenate([source_symbols, zeros], axis=-1)
             elif self.guard_type == "cp":
-                cp_slice = source_symbols[-self.guard_len :]
-                source_symbols = xp.concatenate([cp_slice, source_symbols])
+                cp_slice = source_symbols[..., -self.guard_len :]
+                source_symbols = xp.concatenate([cp_slice, source_symbols], axis=-1)
 
         # 2. Apply pulse shaping
         samples = shape_pulse(
@@ -1147,11 +1334,16 @@ class SingleCarrierFrame(BaseModel):
         if self.guard_len > 0:
             guard_len_samples = int(self.guard_len * sps)
             if self.guard_type == "zero":
-                zeros = xp.zeros(guard_len_samples, dtype=xp.complex128)
-                samples = xp.concatenate([samples, zeros])
+                if self.num_streams > 1:
+                    zeros = xp.zeros(
+                        (self.num_streams, guard_len_samples), dtype=xp.complex128
+                    )
+                else:
+                    zeros = xp.zeros(guard_len_samples, dtype=xp.complex128)
+                samples = xp.concatenate([samples, zeros], axis=-1)
             elif self.guard_type == "cp":
-                cp_slice = samples[-guard_len_samples:]
-                samples = xp.concatenate([cp_slice, samples])
+                cp_slice = samples[..., -guard_len_samples:]
+                samples = xp.concatenate([cp_slice, samples], axis=-1)
 
         return Signal(
             samples=samples,

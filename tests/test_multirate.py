@@ -1,11 +1,9 @@
 import pytest
-import numpy as np
-from commstools import multirate, backend
+from commstools import multirate
 
 
 def test_upsample(backend_device, xp):
-    data = np.array([1.0, 2.0, 3.0])
-    data = backend.to_device(data, backend_device)
+    data = xp.array([1.0, 2.0, 3.0])
 
     factor = 2
     out = multirate.upsample(data, factor)
@@ -15,9 +13,8 @@ def test_upsample(backend_device, xp):
 
 
 def test_decimate(backend_device, xp):
-    data = np.zeros(100)
+    data = xp.zeros(100)
     data[::2] = 1.0
-    data = backend.to_device(data, backend_device)
 
     factor = 2
     out = multirate.decimate(data, factor)
@@ -27,8 +24,7 @@ def test_decimate(backend_device, xp):
 
 
 def test_resample(backend_device, xp):
-    data = np.ones(100)
-    data = backend.to_device(data, backend_device)
+    data = xp.ones(100)
 
     up = 3
     down = 2
@@ -40,8 +36,7 @@ def test_resample(backend_device, xp):
 
 
 def test_resample_sps(backend_device, xp):
-    data = np.ones(100)
-    data = backend.to_device(data, backend_device)
+    data = xp.ones(100)
 
     # integer ratio
     sps_in = 4
@@ -57,8 +52,7 @@ def test_resample_sps(backend_device, xp):
 
 
 def test_resample_errors(backend_device, xp):
-    data = np.zeros(10)
-    data = backend.to_device(data, backend_device)
+    data = xp.zeros(10)
 
     with pytest.raises(ValueError, match="Cannot specify both"):
         multirate.resample(data, up=2, sps_in=4)
