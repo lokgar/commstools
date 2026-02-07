@@ -112,6 +112,56 @@ Core building blocks for any practical receiver:
 
 **Gap**: Some hardcoded NumPy calls in plotting (acceptable for CPU-only matplotlib).
 
+### Frame Structure (`SingleCarrierFrame`)
+
+**Current design**:
+- Frame operates at **symbol level**: `payload_len` = number of symbols
+- Preamble, pilots, guard intervals all specified in symbols
+- Payload symbols generated via `random_symbols()` (index-based RNG)
+
+**Implications for channel coding**:
+
+| Frame Component | Current | FEC Requirement |
+|-----------------|---------|-----------------|
+| Payload | Random symbols (seeded) | Encoded bits → mapped symbols |
+| Payload length | In symbols | Must also track bit count (varies with code rate) |
+| Source data | Not stored | Need `source_bits` for BER calculation |
+
+**Structural gaps for FEC integration**:
+
+1. **No bit-level granularity**: Frame length specified in symbols, but FEC operates on bits
+   - Code rate R = k/n means k info bits → n coded bits → n/log₂(M) symbols
+   - Need: `info_bits` → `coded_bits` → `symbols` chain with length tracking
+
+2. **No codeword boundaries**: Current frame is flat symbol array
+   - LDPC/Turbo need codeword-aligned blocks
+   - Need: `CodeBlock` abstraction with (info_len, coded_len, codeword_size)
+
+3. **Preamble as raw array**: User must provide pre-mapped sequence
+   - OK for known sequences (Barker, Zadoff-Chu)
+   - For coded preambles, need integration with coding pipeline
+
+**Recommended Frame evolution**:
+
+```
+SingleCarrierFrame (current, uncoded)
+       │
+       ├── Add: source_bits, coded_bits properties
+       │
+       └── New: CodedFrame(SingleCarrierFrame)
+              │
+              ├── fec_encoder: Encoder
+              ├── interleaver: Interleaver  
+              ├── info_bits_per_codeword: int
+              └── num_codewords: int
+```
+
+**Migration path**:
+1. Keep `SingleCarrierFrame` for uncoded simulations (backward compatible)
+2. Add `CodedFrame` subclass with FEC-aware generation
+3. Add `source_bits` property that returns demapped payload (for BER)
+4. Later: Add OFDM frame variants
+
 ---
 
 ## Architecture Recommendations
