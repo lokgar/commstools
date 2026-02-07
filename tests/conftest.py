@@ -32,7 +32,7 @@ def pytest_generate_tests(metafunc):
         else:
             params = ["cpu"]  # Default fallback
 
-        metafunc.parametrize("backend_device", params)
+        metafunc.parametrize("backend_device", params, indirect=True)
 
 
 @pytest.fixture
@@ -42,6 +42,7 @@ def backend_device(request):
     Skips GPU tests if CuPy is not available or functional.
     Forces CPU mode when device is 'cpu' to ensure isolation.
     """
+
     device = request.param
     if device == "gpu":
         backend.use_cpu_only(False)
@@ -63,9 +64,6 @@ def backend_device(request):
         backend.use_cpu_only(True)
 
     yield device
-
-    # Restore default state (allow GPU) after test
-    backend.use_cpu_only(False)
 
     # Restore default state (allow GPU) after test
     backend.use_cpu_only(False)

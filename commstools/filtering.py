@@ -363,23 +363,52 @@ def bandstop_taps(
 # shape_pulse: Apply pulse shaping to symbols
 
 
-def fir_filter(samples: ArrayType, taps: ArrayType) -> ArrayType:
+def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType:
     """
     Apply FIR filter via convolution.
 
     Args:
         samples: Input sample array.
         taps: FIR filter taps (impulse response, should be odd length).
+        axis: Axis along which to apply the filter.
 
     Returns:
         Filtered samples.
     """
-    logger.debug(f"Applying FIR filter via convolution ({len(taps)} taps).")
+    logger.debug(
+        f"Applying FIR filter via convolution ({len(taps)} taps, axis={axis})."
+    )
     samples, xp, sp = dispatch(samples)
     # Ensure taps are on the correct backend
     taps = xp.asarray(taps)
 
-    return sp.signal.convolve(samples, taps, mode="same", method="fft")
+    # Handle N-D convolution
+    # If samples is N-D, we need to reshape taps to broadcast correctly
+    # or iterate.
+    # sc.signal.convolve computes N-dimensional convolution.
+    # To filter along one axis only, we can use 1D taps expanded to matching dimensions.
+
+    if samples.ndim > 1:
+        # Construct slices to expand taps
+        # E.g. if samples is (Time, Channel) and axis=0,
+        # taps should be (Taps, 1) -> broadcasting will apply convolution along axis 0
+        # Wait, sp.signal.convolve broadcasts correctly?
+        # Typically we rely on convolve1d or explicit reshaping.
+        # But 'convolve' does N-D convolution.
+        # If we reshape taps to be (Taps, 1), and convolve with (Time, Channel),
+        # it will convolve axis 0 with taps, and axis 1 with 1 (identity).
+
+        # Ensure axis is positive
+        axis = axis % samples.ndim
+
+        new_shape = [1] * samples.ndim
+        new_shape[axis] = len(taps)
+        taps_nd = taps.reshape(new_shape)
+
+        return sp.signal.convolve(samples, taps_nd, mode="same", method="fft")
+    else:
+        # 1D case
+        return sp.signal.convolve(samples, taps, mode="same", method="fft")
 
 
 def shape_pulse(
@@ -417,9 +446,13 @@ def shape_pulse(
 
     symbols, xp, sp = dispatch(symbols)
 
+    # Determine processing axis
+    axis = -1
+
     if pulse_shape == "none":
         logger.info("Pulse shaping disabled, expanding symbols by sps")
-        return normalize(expand(symbols, int(sps)), "max_amplitude")
+        return normalize(expand(symbols, int(sps), axis=axis), "max_amplitude")
+
     elif pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
     elif pulse_shape == "smoothrect":
@@ -442,10 +475,13 @@ def shape_pulse(
     # Ensure h is on the correct backend
     h = xp.asarray(h)
 
-    return normalize(
-        sp.signal.resample_poly(symbols, int(sps), 1, window=h),
-        "max_amplitude",
-    )
+    # Apply Pulse Shaping via Polyphase Resampling
+    # efficient_polyphase_resample handles CuPy stability workaround for multidimensional arrays
+    from .multirate import polyphase_resample
+
+    res = polyphase_resample(symbols, int(sps), 1, window=h, axis=axis)
+
+    return normalize(res, "max_amplitude")
 
 
 def matched_filter(
@@ -453,6 +489,7 @@ def matched_filter(
     pulse_taps: ArrayType,
     taps_normalization: str = "unity_gain",
     normalize_output: bool = False,
+    axis: int = -1,
 ) -> ArrayType:
     """
     Apply matched filter (time-reversed conjugate of pulse shape).
@@ -464,6 +501,7 @@ def matched_filter(
                             Options: 'unity_gain', 'unit_energy'.
         normalize_output: If True, normalizes the output samples to have a maximum
                           absolute value of 1.0.
+        axis: Axis along which to apply the filter.
 
     Returns:
         Matched filtered samples.
@@ -484,7 +522,7 @@ def matched_filter(
         raise ValueError(f"Not implemented taps normalization: {taps_normalization}")
 
     # Apply filter
-    output = fir_filter(samples, matched_taps)
+    output = fir_filter(samples, matched_taps, axis=axis)
 
     if normalize_output:
         output = normalize(output, mode="max_amplitude")

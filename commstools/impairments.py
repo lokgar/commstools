@@ -64,13 +64,16 @@ def add_gaussian_noise(
         # For complex noise, power is split between real and imag
         noise_std_component = xp.sqrt(noise_power / 2)
 
-        # Generate noise on backend
-        noise = xp.random.normal(
-            0, noise_std_component, samples.shape
-        ) + 1j * xp.random.normal(0, noise_std_component, samples.shape)
+        # Generate noise on backend (preserve input dtype precision)
+        real_dtype = samples.real.dtype
+        noise = xp.random.normal(0, noise_std_component, samples.shape).astype(
+            real_dtype
+        ) + 1j * xp.random.normal(0, noise_std_component, samples.shape).astype(
+            real_dtype
+        )
     else:
-        # Real noise
-        noise = xp.random.normal(0, noise_std, samples.shape)
+        # Real noise (preserve input dtype)
+        noise = xp.random.normal(0, noise_std, samples.shape).astype(samples.dtype)
 
     # noise is already on backend
     noisy_samples = samples + noise

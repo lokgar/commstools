@@ -1,16 +1,14 @@
-import pytest
-import numpy as np
 from commstools.core import SingleCarrierFrame
 
 
-def test_sc_frame_none():
+def test_sc_frame_none(backend_device, xp):
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, pilot_pattern="none")
     sig = frame.generate_sequence()
     assert len(sig.samples) == 100
     assert sig.symbol_rate == 1e6
 
 
-def test_sc_frame_comb():
+def test_sc_frame_comb(backend_device, xp):
     # payload=10, period=4 -> data_per_period=3
     # 3 periods: 3*3=9 data. remainder=1.
     # total_length = 3*4 + 1 (data) + 1 (leading pilot) = 14
@@ -20,13 +18,13 @@ def test_sc_frame_comb():
     )
     mask, length = frame._generate_pilot_mask()
     assert length == 14
-    assert np.sum(mask) == 4
+    assert xp.sum(mask) == 4
 
     sig = frame.generate_sequence()
     assert len(sig.samples) == 14
 
 
-def test_sc_frame_block():
+def test_sc_frame_block(backend_device, xp):
     # payload=10, period=4, len=2 -> data_per_block=2
     # num_blocks = ceil(10/2) = 5
     # Mask [T, T, F, F] * 5 -> [T, T, F, F, T, T, F, F, T, T, F, F, T, T, F, F, T, T, F, F]
@@ -42,22 +40,35 @@ def test_sc_frame_block():
     )
     mask, length = frame._generate_pilot_mask()
     assert length == 20
-    assert np.sum(mask) == 10
+    assert xp.sum(mask) == 10
 
     sig = frame.generate_sequence()
     assert len(sig.samples) == 20
 
 
-def test_sc_frame_guard_zero():
+# This test logic in original file seems buggy for "zero" guard.
+# It says: guard_type="zero", guard_len=20.
+# assert np.all(sig.samples[-20:] == 0)
+# But wait, SingleCarrierFrame.generate_sequence implementation for guard_type="zero":
+# In core.py:
+# if self.guard_type == "zero":
+#     # End-of-frame zero padding
+#     zeros = xp.zeros(...)
+#     signal_samples = xp.concatenate([signal_samples, zeros], axis=-1)
+# So it pads at the END.
+# So checking [-20:] should be zeros. Correct.
+
+
+def test_sc_frame_guard_zero(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="zero", guard_len=20
     )
     sig = frame.generate_sequence()
     assert len(sig.samples) == 120
-    assert np.all(sig.samples[-20:] == 0)
+    assert xp.all(sig.samples[-20:] == 0)
 
 
-def test_sc_frame_guard_cp():
+def test_sc_frame_guard_cp(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="cp", guard_len=20
     )
@@ -65,13 +76,18 @@ def test_sc_frame_guard_cp():
     assert len(sig.samples) == 120
     # CP should match the last 20 samples of the *original* body
     # Original body length is 100.
-    # sig.samples = [body[-20:], body]
-    assert np.allclose(sig.samples[:20], sig.samples[-20:])
+    # In generate_sequence for cp:
+    # cp_slice = signal_samples[..., -self.guard_len :]
+    # signal_samples = xp.concatenate([cp_slice, signal_samples], axis=-1)
+    # So new structure: [CP (20), Body (100)]
+    # CP is a copy of Body[-20:]
+    # So sig.samples[:20] == sig.samples[-20:]
+    assert xp.allclose(sig.samples[:20], sig.samples[-20:])
 
 
-def test_sc_frame_preamble():
-    preamble = np.ones(50) + 1j * np.ones(50)
+def test_sc_frame_preamble(backend_device, xp):
+    preamble = xp.ones(50) + 1j * xp.ones(50)
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, preamble=preamble)
     sig = frame.generate_sequence()
     assert len(sig.samples) == 150
-    assert np.allclose(sig.samples[:50], preamble)
+    assert xp.allclose(sig.samples[:50], preamble)

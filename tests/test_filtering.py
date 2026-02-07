@@ -1,10 +1,8 @@
-import pytest
 import numpy as np
 from commstools import filtering
-from commstools import backend
 
 
-def test_rrc_taps(backend_device, xp):
+def test_rrc_taps():
     # Tap generation is now always on CPU/NumPy
     taps = filtering.rrc_taps(sps=4, span=10, rolloff=0.35)
 
@@ -14,12 +12,11 @@ def test_rrc_taps(backend_device, xp):
 
 
 def test_fir_filter(backend_device, xp):
-    data = np.ones(100)
-    taps = np.ones(5) / 5.0  # Moving average
+    # Create data directly on device using xp
+    data = xp.ones(100)
+    taps = xp.ones(5) / 5.0  # Moving average
 
-    # Move to target backend
-    data = backend.to_device(data, backend_device)
-    # Taps can be passed as numpy, fir_filter handles conversion
+    # taps is also xp array now, filtering.fir_filter handles it
 
     filtered = filtering.fir_filter(data, taps)
 
