@@ -6,7 +6,7 @@ def test_awgn(backend_device, xp):
 
     snr_db = 10.0
 
-    noisy = impairments.add_gaussian_noise(data, snr_db)
+    noisy = impairments.add_awgn(data, snr_db)
 
     assert isinstance(noisy, xp.ndarray)
     assert noisy.shape == data.shape

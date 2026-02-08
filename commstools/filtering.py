@@ -41,7 +41,7 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
         bt: Bandwidth-Time product.
 
     Returns:
-        Gaussian filter taps with unity gain normalization.
+        Gaussian filter taps with unit energy normalization.
     """
     logger.debug(f"Generating Gaussian taps: sps={sps}, span={span}, bt={bt}")
     # Ensure odd number of taps to have a center peak
@@ -57,7 +57,7 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
     alpha = np.sqrt(np.log(2) / 2) / bt
     h = (np.sqrt(np.pi) / alpha) * np.exp(-((np.pi * t / alpha) ** 2))
 
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def smoothrect_taps(
@@ -78,7 +78,7 @@ def smoothrect_taps(
                      Default is 1.0 (NRZ), for RZ use 0.5.
 
     Returns:
-        Centered pulse shaping taps with unity gain normalization.
+        Centered pulse shaping taps with unit energy normalization.
     """
     logger.debug(
         f"Generating SmoothRect taps: sps={sps}, span={span}, bt={bt}, width={pulse_width}"
@@ -107,7 +107,7 @@ def smoothrect_taps(
         - scipy.special.erf((t - w_half) / (sigma * np.sqrt(2)))
     )
 
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
@@ -120,7 +120,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
         span: Total filter span in symbols.
 
     Returns:
-        RRC filter taps with unity gain normalization.
+        RRC filter taps with unit energy normalization.
     """
     logger.debug(f"Generating RRC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
@@ -168,7 +168,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     denom_safe = np.where(idx_general, denom, 1.0)
     h = np.where(idx_general, numer / denom_safe, h)
 
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
@@ -181,7 +181,7 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
         span: Total filter span in symbols.
 
     Returns:
-        RC filter taps with unity gain normalization.
+        RC filter taps with unit energy normalization.
     """
     logger.debug(f"Generating RC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
@@ -233,7 +233,7 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     res = sinc_t * cos_t / denom_safe
     h = np.where(idx_general, res, h)
 
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def lowpass_taps(
@@ -252,13 +252,13 @@ def lowpass_taps(
         window: Window function type.
 
     Returns:
-        Filter taps.
+        Filter taps with unit energy normalization.
     """
     logger.debug(f"Designing Lowpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
     )
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def highpass_taps(
@@ -277,14 +277,14 @@ def highpass_taps(
         window: Window function type.
 
     Returns:
-        Filter taps.
+        Filter taps with unit energy normalization.
     """
     logger.debug(f"Designing Highpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     # pass_zero=False for highpass
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=False
     )
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def bandpass_taps(
@@ -305,7 +305,7 @@ def bandpass_taps(
         window: Window function type.
 
     Returns:
-        Filter taps.
+        Filter taps with unit energy normalization.
     """
     logger.debug(
         f"Designing Bandpass FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
@@ -318,7 +318,7 @@ def bandpass_taps(
         fs=sampling_rate,
         pass_zero=False,
     )
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 def bandstop_taps(
@@ -339,7 +339,7 @@ def bandstop_taps(
         window: Window function type.
 
     Returns:
-        Filter taps.
+        Filter taps with unit energy normalization.
     """
     logger.debug(
         f"Designing Bandstop FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
@@ -352,7 +352,7 @@ def bandstop_taps(
         fs=sampling_rate,
         pass_zero=True,
     )
-    return normalize(h, "unity_gain")
+    return normalize(h, "unit_energy")
 
 
 # ============================================================================
@@ -379,25 +379,11 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
         f"Applying FIR filter via convolution ({len(taps)} taps, axis={axis})."
     )
     samples, xp, sp = dispatch(samples)
+
     # Ensure taps are on the correct backend
     taps = xp.asarray(taps)
 
-    # Handle N-D convolution
-    # If samples is N-D, we need to reshape taps to broadcast correctly
-    # or iterate.
-    # sc.signal.convolve computes N-dimensional convolution.
-    # To filter along one axis only, we can use 1D taps expanded to matching dimensions.
-
     if samples.ndim > 1:
-        # Construct slices to expand taps
-        # E.g. if samples is (Time, Channel) and axis=0,
-        # taps should be (Taps, 1) -> broadcasting will apply convolution along axis 0
-        # Wait, sp.signal.convolve broadcasts correctly?
-        # Typically we rely on convolve1d or explicit reshaping.
-        # But 'convolve' does N-D convolution.
-        # If we reshape taps to be (Taps, 1), and convolve with (Time, Channel),
-        # it will convolve axis 0 with taps, and axis 1 with 1 (identity).
-
         # Ensure axis is positive
         axis = axis % samples.ndim
 
@@ -432,7 +418,7 @@ def shape_pulse(
             gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
 
     Returns:
-        The shaped sample array at rate (sps * symbol_rate).
+        The shaped sample array at rate (sps * symbol_rate), peak absolute value normalized to 1.
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
@@ -446,12 +432,9 @@ def shape_pulse(
 
     symbols, xp, sp = dispatch(symbols)
 
-    # Determine processing axis
-    axis = -1
-
     if pulse_shape == "none":
         logger.info("Pulse shaping disabled, expanding symbols by sps")
-        return normalize(expand(symbols, int(sps), axis=axis), "max_amplitude")
+        return normalize(expand(symbols, int(sps), axis=-1), "max_amplitude")
 
     elif pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
@@ -479,7 +462,7 @@ def shape_pulse(
     # efficient_polyphase_resample handles CuPy stability workaround for multidimensional arrays
     from .multirate import polyphase_resample
 
-    res = polyphase_resample(symbols, int(sps), 1, window=h, axis=axis)
+    res = polyphase_resample(symbols, int(sps), 1, window=h, axis=-1)
 
     return normalize(res, "max_amplitude")
 
@@ -487,7 +470,7 @@ def shape_pulse(
 def matched_filter(
     samples: ArrayType,
     pulse_taps: ArrayType,
-    taps_normalization: str = "unity_gain",
+    taps_normalization: str = "unit_energy",
     normalize_output: bool = False,
     axis: int = -1,
 ) -> ArrayType:
@@ -498,9 +481,9 @@ def matched_filter(
         samples: Received sample array.
         pulse_taps: Pulse shape filter taps.
         taps_normalization: Normalization to apply to the matched filter taps.
-                            Options: 'unity_gain', 'unit_energy'.
+                            Options: 'unity_gain', 'unit_energy'. Default is 'unit_energy'.
         normalize_output: If True, normalizes the output samples to have a maximum
-                          absolute value of 1.0.
+                          absolute value of 1.0. Default is False.
         axis: Axis along which to apply the filter.
 
     Returns:

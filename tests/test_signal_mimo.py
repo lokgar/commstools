@@ -62,7 +62,12 @@ def test_frame_mimo_pilots(backend_device, xp):
 
 def test_frame_mimo_preamble_broadcasting(backend_device, xp):
     # Test 1D preamble broadcasting to 2 streams
-    preamble = xp.ones(10)
+    from commstools.core import Preamble
+
+    # Create preamble with bit-first architecture (BPSK: 10 bits -> 10 symbols)
+    # NOTE: bits must be integer type for array indexing
+    preamble_bits = xp.zeros(10, dtype=int)  # All zeros -> all -1 symbols for BPSK
+    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
     frame = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, num_streams=2, preamble=preamble
     )
@@ -71,10 +76,10 @@ def test_frame_mimo_preamble_broadcasting(backend_device, xp):
     # Total: 10 preamble + 20 payload = 30
     assert sig.samples.shape == (2, 30)
 
-    # Check preamble on both streams
+    # Check preamble on both streams (should be broadcast)
     # (Channels, Time)
-    assert xp.allclose(sig.samples[0, :10], preamble)
-    assert xp.allclose(sig.samples[1, :10], preamble)
+    assert xp.allclose(sig.samples[0, :10], preamble.symbols)
+    assert xp.allclose(sig.samples[1, :10], preamble.symbols)
 
 
 def test_frame_mimo_waveform(backend_device, xp):

@@ -579,6 +579,8 @@ def eye_diagram(
     num_symbols: int = 2,
     type: str = "hist",
     title: Optional[str] = "Eye Diagram",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
     show: bool = False,
     **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
@@ -592,7 +594,11 @@ def eye_diagram(
         num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
         type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
         title: Title of the plot. Defaults to "Eye Diagram". If None, no title is set.
+        vmin: Minimum density value for colormap (hist mode only). If None, auto-scaled.
+        vmax: Maximum density value for colormap (hist mode only). If None, auto-scaled.
+              Histogram is normalized to [0, 1], so vmax=1 shows full range.
         show: Whether to call plt.show() after plotting.
+        **kwargs: Additional arguments passed to plot (line mode) or imshow (hist mode).
 
     Returns:
         Tuple of (figure, axis) if show is False, else None.
@@ -655,6 +661,8 @@ def eye_diagram(
                 num_symbols=num_symbols,
                 type=type,
                 title=ch_title,
+                vmin=vmin,
+                vmax=vmax,
                 show=False,
                 **kwargs,
             )
@@ -670,7 +678,7 @@ def eye_diagram(
 
     if ax is None:
         if is_complex:
-            fig, ax = plt.subplots(2, 1, figsize=(5, 7))
+            fig, ax = plt.subplots(1, 2, figsize=(10, 3.5))
         else:
             fig, ax = plt.subplots(1, 1)
             # Handle the fact that plt.subplots(1, 1) returns a single ax, not a list
@@ -942,6 +950,8 @@ def constellation(
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     title: Optional[str] = "Constellation",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
     show: bool = False,
     **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
@@ -960,6 +970,9 @@ def constellation(
         modulation: Modulation type (required if overlay_ideal=True).
         order: Modulation order (required if overlay_ideal=True).
         title: Title of the plot. Defaults to "Constellation". If None, no title.
+        vmin: Minimum density value for colormap scaling. If None, auto-scaled.
+        vmax: Maximum density value for colormap scaling. If None, auto-scaled.
+              Histogram is normalized to [0, 1], so vmax=1 shows full range.
         show: Whether to call plt.show() after plotting.
         **kwargs: Additional arguments passed to ax.imshow.
 
@@ -1009,6 +1022,8 @@ def constellation(
                 modulation=modulation,
                 order=order,
                 title=ch_title,
+                vmin=vmin,
+                vmax=vmax,
                 show=False,
                 **kwargs,
             )
@@ -1056,6 +1071,11 @@ def constellation(
 
     h = gaussian_filter(h, sigma=1)
 
+    # Normalize histogram to [0, 1] for consistent colormap scaling
+    h_max = np.max(h)
+    if h_max > 0:
+        h = h / h_max
+
     # Plot using imshow
     imshow_kwargs = {
         "origin": "lower",
@@ -1064,6 +1084,10 @@ def constellation(
         "cmap": cmap,
         "interpolation": "bilinear",
     }
+    if vmin is not None:
+        imshow_kwargs["vmin"] = vmin
+    if vmax is not None:
+        imshow_kwargs["vmax"] = vmax
     imshow_kwargs.update(kwargs)
 
     ax.imshow(h, **imshow_kwargs)

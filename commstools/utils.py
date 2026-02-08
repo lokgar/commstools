@@ -74,17 +74,23 @@ def random_symbols(
     return mapping.map_bits(bits, modulation, order, dtype=dtype)
 
 
-def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
+def normalize(
+    x: ArrayType, mode: str = "unity_gain", axis: Optional[int] = None
+) -> ArrayType:
     """
     Normalize array based on the specified mode.
 
     Args:
         x: Input array.
         mode: Normalization mode.
-            'unity_gain': Sum of elements is 1.
-            'unit_energy': Sum of squared magnitudes is 1.
-            'max_amplitude': Maximum absolute value is 1.
-            'average_power': Mean of squared magnitudes is 1.
+            'unity_gain': Sum of elements is 1. Use for filter taps where DC gain = 1.
+            'unit_energy': L2 norm is 1 (sum of |x|² = 1). Use for matched filter taps.
+            'max_amplitude': Peak of I/Q channels is 1. Use for DAC waveforms.
+            'average_power': RMS value is 1 (mean of |x|² = 1). Use for power normalization.
+        axis: Axis along which to compute normalization factor. If None (default),
+              normalizes over the entire array (global). For MIMO signals with
+              shape (channels, samples), use axis=-1 to normalize each channel
+              independently, or axis=None for joint normalization (DAC output).
 
     Returns:
         Normalized array.
@@ -92,17 +98,38 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     Raises:
         ValueError: If the normalization mode is unknown.
     """
-    logger.debug(f"Normalizing array (mode: {mode}).")
+    logger.debug(f"Normalizing array (mode: {mode}, axis={axis}).")
     x, xp, _ = dispatch(x)
 
+    # keepdims for proper broadcasting when axis is specified
+    keepdims = axis is not None
+
     if mode == "unity_gain":
-        norm_factor = xp.sum(x)
+        # DC gain = 1: H(0) = sum(h) = 1
+        # Use case: filter taps where you want unity passband gain
+        norm_factor = xp.sum(x, axis=axis, keepdims=keepdims)
+
     elif mode == "unit_energy":
-        norm_factor = xp.sqrt(xp.sum(xp.abs(x) ** 2))
+        # L2 norm = 1: ||x||₂ = sqrt(sum(|x|²)) = 1
+        # Use case: matched filter taps (preserves SNR after correlation)
+        norm_factor = xp.sqrt(xp.sum(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
+
     elif mode == "max_amplitude":
-        norm_factor = xp.max(xp.abs(x))
+        # Peak normalization: max of any channel = 1
+        # For complex: max(max(|I|), max(|Q|)) to prevent DAC/ADC clipping
+        # For real: max(|x|) = 1
+        if xp.iscomplexobj(x):
+            max_real = xp.max(xp.abs(x.real), axis=axis, keepdims=keepdims)
+            max_imag = xp.max(xp.abs(x.imag), axis=axis, keepdims=keepdims)
+            norm_factor = xp.maximum(max_real, max_imag)
+        else:
+            norm_factor = xp.max(xp.abs(x), axis=axis, keepdims=keepdims)
+
     elif mode == "average_power":
-        norm_factor = xp.sqrt(xp.mean(xp.abs(x) ** 2))
+        # RMS = 1: sqrt(mean(|x|²)) = 1, so mean(|x|²) = 1
+        # Use case: signals where average power should be normalized
+        norm_factor = xp.sqrt(xp.mean(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
+
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
 
@@ -111,8 +138,7 @@ def normalize(x: ArrayType, mode: str = "unity_gain") -> ArrayType:
     safe_norm = xp.where(norm_factor == 0, 1.0, norm_factor)
     result = x / safe_norm
 
-    # If norm_factor is 0, it means the signal is all zeros (for energy/power/max/sum)
-    # So the normalized result should also be all zeros.
+    # If norm_factor is 0, the input was all zeros → output should also be zeros
     return xp.where(norm_factor == 0, xp.zeros(x.shape, dtype=x.dtype), result)
 
 

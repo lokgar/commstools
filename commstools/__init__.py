@@ -14,7 +14,7 @@ import warnings
 __version__ = "0.1.0"
 
 from . import impairments
-from .core import Signal, SingleCarrierFrame
+from .core import Preamble, Signal, SingleCarrierFrame
 from .logger import set_log_level
 from .plotting import apply_default_theme
 
@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental
 
 __all__ = [
     "__version__",
+    "Preamble",
     "Signal",
     "SingleCarrierFrame",
     "impairments",

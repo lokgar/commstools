@@ -86,8 +86,14 @@ def test_sc_frame_guard_cp(backend_device, xp):
 
 
 def test_sc_frame_preamble(backend_device, xp):
-    preamble = xp.ones(50) + 1j * xp.ones(50)
+    from commstools.core import Preamble
+
+    # Create preamble with bit-first architecture
+    # BPSK = 1 bit/symbol, so 50 bits -> 50 symbols
+    preamble_bits = xp.array([0, 1] * 25)  # 50 bits for 50 BPSK symbols
+    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, preamble=preamble)
     sig = frame.generate_sequence()
-    assert len(sig.samples) == 150
-    assert xp.allclose(sig.samples[:50], preamble)
+    assert len(sig.samples) == 150  # 50 preamble + 100 payload
+    # Verify preamble symbols match mapped bits
+    assert xp.allclose(sig.samples[:50], preamble.symbols)

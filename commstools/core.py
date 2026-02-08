@@ -78,6 +78,7 @@ class Signal(BaseModel):
     symbol_rate: float = Field(..., gt=0)
     modulation_scheme: Optional[str] = None
     modulation_order: Optional[int] = None
+    source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
     pulse_shape: Optional[str] = None
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
@@ -140,9 +141,22 @@ class Signal(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """
-        Post-initialization hook to set the default device.
-        Automatically moves the signal to GPU if a compatible device is discovered.
+        Post-initialization hook.
+        - Auto-derives source_symbols from source_bits if bits provided but symbols not.
+        - Moves the signal to GPU if a compatible device is discovered.
         """
+        # Bit-first: derive symbols from bits if not provided
+        if self.source_bits is not None and self.source_symbols is None:
+            if self.modulation_scheme and self.modulation_order:
+                from . import mapping
+
+                mod = self.modulation_scheme.lower()
+                if "-" in mod:
+                    mod = mod.split("-")[-1]
+                self.source_symbols = mapping.map_bits(
+                    self.source_bits, mod, self.modulation_order
+                )
+
         # Default to GPU if available and supported
         if is_cupy_available():
             self.to("gpu")
@@ -265,25 +279,29 @@ class Signal(BaseModel):
         n_samples = self.samples.shape[-1]
         return self.xp.arange(0, n_samples) / self.sampling_rate
 
-    def demap_source_symbols(self) -> Optional[ArrayType]:
+    @property
+    def num_bits(self) -> Optional[int]:
         """
-        Demaps the source_symbols to bits using the current modulation.
+        Total number of source bits.
 
         Returns:
-            The demapped bits as an array, or None if source_symbols are not available.
+            Number of bits if source_bits is available, else None.
         """
-        if self.source_symbols is None:
-            return None
+        if self.source_bits is not None:
+            return int(self.source_bits.size)
+        return None
 
-        from . import mapping
+    @property
+    def bits_per_symbol(self) -> Optional[int]:
+        """
+        Bits per symbol for current modulation.
 
-        mod = self.modulation_scheme.lower() if self.modulation_scheme else "qam"
-        if "-" in mod:
-            mod = mod.split("-")[-1]
-
-        return mapping.demap_symbols(
-            self.source_symbols, modulation=mod, order=self.modulation_order
-        )
+        Returns:
+            Bits per symbol if modulation_order is defined, else None.
+        """
+        if self.modulation_order:
+            return int(np.log2(self.modulation_order))
+        return None
 
     def welch_psd(
         self,
@@ -452,6 +470,8 @@ class Signal(BaseModel):
         ax: Optional[Any] = None,
         type: str = "hist",
         title: Optional[str] = "Eye Diagram",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
@@ -462,8 +482,11 @@ class Signal(BaseModel):
             ax: Optional matplotlib axis (or list of axes for complex signals) to plot on.
             type: Type of plot ('hist' or 'line').
             title: Title of the plot.
+            vmin: Minimum density value for colormap (hist mode only). If None, auto-scaled.
+            vmax: Maximum density value for colormap (hist mode only). If None, auto-scaled.
+                  Histogram is normalized to [0, 1], so vmax=1 shows full range.
             show: Whether to call plt.show().
-            **kwargs: Additional plotting arguments.
+            **kwargs: Additional arguments passed to plot (line mode) or imshow (hist mode).
 
         Returns:
             Tuple of (figure, axis) if show is False, else None.
@@ -476,6 +499,8 @@ class Signal(BaseModel):
             sps=self.sps,
             type=type,
             title=title,
+            vmin=vmin,
+            vmax=vmax,
             show=show,
             **kwargs,
         )
@@ -483,9 +508,12 @@ class Signal(BaseModel):
     def plot_constellation(
         self,
         bins: int = 100,
+        cmap: str = "inferno",
         overlay_ideal: bool = False,
         ax: Optional[Any] = None,
         title: Optional[str] = "Constellation",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         show: bool = False,
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
@@ -494,11 +522,15 @@ class Signal(BaseModel):
 
         Args:
             bins: Number of histogram bins per axis.
+            cmap: Colormap for density plot (default: 'inferno').
             overlay_ideal: If True, overlay ideal constellation points.
             ax: Optional matplotlib axis to plot on.
             title: Title of the plot.
+            vmin: Minimum density value for colormap. If None, auto-scaled.
+            vmax: Maximum density value for colormap. If None, auto-scaled.
+                  Histogram is normalized to [0, 1], so vmax=1 shows full range.
             show: Whether to call plt.show().
-            **kwargs: Additional plotting arguments.
+            **kwargs: Additional arguments passed to imshow.
 
         Returns:
             Tuple of (figure, axis) if show is False, else None.
@@ -508,7 +540,7 @@ class Signal(BaseModel):
         return plotting.constellation(
             self.samples,
             bins=bins,
-            cmap="inferno",
+            cmap=cmap,
             ax=ax,
             overlay_ideal=overlay_ideal,
             modulation=self.modulation_scheme.lower()
@@ -516,6 +548,8 @@ class Signal(BaseModel):
             else None,
             order=self.modulation_order,
             title=title,
+            vmin=vmin,
+            vmax=vmax,
             show=show,
             **kwargs,
         )
@@ -565,12 +599,20 @@ class Signal(BaseModel):
         sps_out: Optional[float] = None,
     ) -> "Signal":
         """
-        Resample the signal by a rational factor.
+        Resample the signal by a rational factor using polyphase filtering.
+
+        This method applies anti-aliasing/anti-imaging filtering during resampling.
+        Use this when changing sample rate BEFORE matched filtering or for general
+        rate conversion.
+
+        NOTE: Do NOT use this after matched filtering to go to 1 sps!
+        The polyphase filter will degrade the already-filtered signal.
+        Use `downsample_to_symbols()` instead for post-matched-filter decimation.
 
         Args:
             up: Upsampling factor.
             down: Downsampling factor.
-            sps_out: Target samples per symbol (if provided, up and down will be calculated automatically and don't have to be provided).
+            sps_out: Target samples per symbol (calculates up/down automatically).
 
         Returns:
             self
@@ -589,6 +631,44 @@ class Signal(BaseModel):
             self.sampling_rate = sps_out * self.symbol_rate
         elif up is not None and down is not None:
             self.sampling_rate = self.sampling_rate * up / down
+
+        return self
+
+    def downsample_to_symbols(self, offset: int = 0) -> "Signal":
+        """
+        Extract symbols by simple decimation (no additional filtering).
+
+        Use this AFTER matched filtering to go from oversampled to 1 sps.
+        Unlike `resample()`, this does NOT apply additional filtering, which is
+        correct when matched filter has already removed out-of-band noise.
+
+        When to use:
+        - downsample_to_symbols: After matched filter, for clean symbol extraction
+        - resample: For general rate changes, BEFORE matched filtering
+
+        Args:
+            offset: Timing offset in samples (0 to sps-1). Adjusts the sampling
+                    phase to find optimal eye opening. Default 0 assumes the
+                    matched filter peak is at the first sample of each symbol.
+
+        Returns:
+            self (modified in-place)
+
+        Example:
+            >>> sig.matched_filter()
+            >>> sig.downsample_to_symbols()  # Clean symbols at 1 sps
+        """
+        from . import multirate
+
+        sps = int(self.sps)
+        if sps <= 1:
+            logger.warning("Signal already at 1 sps, no downsampling needed.")
+            return self
+
+        self.samples = multirate.downsample_to_symbols(
+            self.samples, sps=sps, offset=offset, axis=-1
+        )
+        self.sampling_rate = self.symbol_rate
 
         return self
 
@@ -688,7 +768,7 @@ class Signal(BaseModel):
 
     def matched_filter(
         self,
-        taps_normalization: str = "unity_gain",
+        taps_normalization: str = "unit_energy",
         normalize_output: bool = False,
     ) -> "Signal":
         """
@@ -697,9 +777,9 @@ class Signal(BaseModel):
 
         Args:
             taps_normalization: Normalization to apply to the matched filter taps.
-                                Options: 'unity_gain', 'unit_energy'.
+                                Options: 'unity_gain', 'unit_energy'. Default is 'unit_energy'.
             normalize_output: If True, normalizes the output samples to have a maximum
-                              absolute value of 1.0.
+                              absolute value of 1.0. Default is False.
 
         Returns:
             self
@@ -768,23 +848,29 @@ class Signal(BaseModel):
         Returns:
             A `Signal` instance containing the generated waveform.
         """
-        from . import filtering, utils
+        from . import filtering, mapping, utils
 
-        # Generate symbols directly
-        # If num_streams > 1, generate (num_streams, num_symbols)
+        # Bit-first architecture: generate bits → map to symbols
+        k = int(np.log2(order))  # bits per symbol
         total_symbols = num_symbols * num_streams
-        symbols_flat = utils.random_symbols(
-            total_symbols, modulation=modulation, order=order, seed=seed, dtype=dtype
-        )
+        total_bits = total_symbols * k
+
+        # Generate source bits
+        bits = utils.random_bits(total_bits, seed=seed)
+
+        # Map bits to symbols
+        symbols_flat = mapping.map_bits(bits, modulation, order, dtype=dtype)
 
         if num_streams > 1:
             # Shape: (Channels, Time)
             symbols = symbols_flat.reshape(num_streams, num_symbols)
+            bits = bits.reshape(num_streams, num_symbols * k)
         else:
             symbols = symbols_flat
 
         if is_cupy_available():
             symbols = to_device(symbols, "gpu")
+            bits = to_device(bits, "gpu")
 
         # Apply pulse shaping
         # shape_pulse defaults to axis=-1 (Time) which is correct for (C, T)
@@ -801,6 +887,7 @@ class Signal(BaseModel):
             symbol_rate=symbol_rate,
             modulation_scheme=modulation.upper(),
             modulation_order=order,
+            source_bits=bits,
             source_symbols=symbols,
             pulse_shape=pulse_shape,
             **kwargs,
@@ -1019,6 +1106,71 @@ class Signal(BaseModel):
         )
 
 
+class Preamble(BaseModel):
+    """
+    Structured preamble container for frame synchronization sequences.
+
+    Uses bit-first architecture: bits are the primary representation,
+    symbols are derived automatically via mapping.
+
+    Attributes:
+        bits: Source bits (primary representation).
+        symbols: Mapped symbols (derived from bits).
+        modulation_scheme: Modulation type used ('PSK', 'QAM', 'ASK').
+        modulation_order: Modulation order (2, 4, 16, etc.).
+        sequence_type: Type of preamble sequence ('custom', 'barker', 'zc').
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    bits: Any
+    symbols: Optional[Any] = None
+    modulation_scheme: str = "PSK"
+    modulation_order: int = 2
+    sequence_type: str = "custom"
+
+    @field_validator("bits", mode="before")
+    @classmethod
+    def validate_bits(cls, v: Any) -> Any:
+        """Validates and coerces the bits input into a backend-compatible array."""
+        return utils.validate_array(v, name="preamble_bits")
+
+    def model_post_init(self, __context: Any) -> None:
+        """
+        Post-initialization hook.
+        Maps bits to symbols if symbols not provided.
+        Moves data to GPU if available.
+        """
+        from . import mapping
+
+        # Map bits to symbols if not provided
+        if self.symbols is None and self.bits is not None:
+            self.symbols = mapping.map_bits(
+                self.bits, self.modulation_scheme.lower(), self.modulation_order
+            )
+
+        # Move to GPU if available
+        if is_cupy_available():
+            if self.bits is not None:
+                self.bits = to_device(self.bits, "gpu")
+            if self.symbols is not None:
+                self.symbols = to_device(self.symbols, "gpu")
+
+    @property
+    def num_symbols(self) -> int:
+        """Number of symbols in the preamble."""
+        if self.symbols is None:
+            return 0
+        return int(self.symbols.size)
+
+    @property
+    def num_bits(self) -> int:
+        """Number of bits in the preamble."""
+        if self.bits is None:
+            return 0
+        return int(self.bits.size)
+
+
 class SingleCarrierFrame(BaseModel):
     """
     Represents a structured single-carrier frame with preamble, pilots, and payload.
@@ -1033,7 +1185,7 @@ class SingleCarrierFrame(BaseModel):
         payload_mod_scheme: Modulation scheme for the payload (e.g., "PSK", "QAM").
         payload_mod_order: Modulation order for the payload (e.g., 2, 4, 16).
         payload_seed: Random seed for payload bit generation.
-        preamble: Optional leading signal (as an array-like) prepended to the frame.
+        preamble: Structured Preamble object containing sync sequence.
         pilot_pattern: The arrangement of pilot symbols ("none", "block", "comb").
         pilot_period: Periodicity of pilots (for "comb" and "block").
         pilot_block_len: Length of the pilot block (for "block" pattern) in SYMBOLS.
@@ -1053,7 +1205,7 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = 4
 
-    preamble: Optional[Any] = None
+    preamble: Optional[Preamble] = None
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = 0
@@ -1068,30 +1220,12 @@ class SingleCarrierFrame(BaseModel):
     symbol_rate: float = Field(..., gt=0)
     num_streams: int = Field(default=1, ge=1)
 
-    @field_validator("preamble", mode="before")
-    @classmethod
-    def validate_preamble(cls, v: Any) -> Any:
-        """
-        Coerces the preamble input into a backend-compatible array.
-
-        Args:
-            v: The input preamble (array-like, list, or tuple).
-
-        Returns:
-            The validated preamble as a NumPy or CuPy array.
-
-        Raises:
-            ValueError: If the input cannot be converted to a supported array type.
-        """
-        return utils.validate_array(v, name="preamble")
-
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook.
-        Ensures the preamble is on the correct device (GPU if available) after initialization.
+        Preamble handles its own GPU transfer.
         """
-        if is_cupy_available() and self.preamble is not None:
-            self.preamble = to_device(self.preamble, "gpu")
+        pass  # Preamble handles its own device placement
 
     def _generate_pilot_mask(self) -> Tuple[ArrayType, int]:
         """
@@ -1229,18 +1363,22 @@ class SingleCarrierFrame(BaseModel):
 
         # Assemble Core (Preamble + Body)
         if self.preamble is not None:
-            preamble = to_device(self.preamble, "gpu" if is_cupy_available() else "cpu")
+            preamble_symbols = to_device(
+                self.preamble.symbols, "gpu" if is_cupy_available() else "cpu"
+            )
             # Broadcast preamble if needed
-            if self.num_streams > 1 and preamble.ndim == 1:
+            if self.num_streams > 1 and preamble_symbols.ndim == 1:
                 # Need (Channels, Time)
                 # (L,) -> (1, L) -> (C, L)
-                preamble = xp.tile(preamble[None, :], (self.num_streams, 1))
+                preamble_symbols = xp.tile(
+                    preamble_symbols[None, :], (self.num_streams, 1)
+                )
 
             # Concatenate along time axis (-1)
             # If 1D: (L1) + (L2) -> (L1+L2)
             # If 2D: (C, L1) + (C, L2) -> (C, L1+L2)
             # axis=-1 typically works for 1D too (last axis)
-            return xp.concatenate([preamble, body], axis=-1)
+            return xp.concatenate([preamble_symbols, body], axis=-1)
         else:
             return body
 
@@ -1371,7 +1509,7 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
-        preamble_len = len(self.preamble) if self.preamble is not None else 0
+        preamble_len = self.preamble.num_symbols if self.preamble is not None else 0
 
         total_len = preamble_len + body_length + self.guard_len
 
