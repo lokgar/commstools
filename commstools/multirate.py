@@ -84,6 +84,48 @@ def polyphase_resample(
         return sp.signal.resample_poly(samples, up, down, axis=axis)
 
 
+def downsample_to_symbols(
+    samples: ArrayType,
+    sps: int,
+    offset: int = 0,
+    axis: int = -1,
+) -> ArrayType:
+    """
+    Simple decimation to symbol rate by taking every sps-th sample.
+
+    Use this AFTER matched filtering when going from oversampled to 1 sps.
+    Unlike resample/decimate, this does NOT apply any additional filtering,
+    which is correct when the matched filter has already removed out-of-band noise.
+
+    When to use this vs other methods:
+    - downsample_to_symbols: After matched filter, for clean symbol extraction
+    - decimate: When you need anti-alias filtering (no prior matched filter)
+    - resample: When changing sample rate by arbitrary rational factor
+
+    Args:
+        samples: Input oversampled array (already matched-filtered).
+        sps: Samples per symbol (decimation factor).
+        offset: Timing offset in samples (0 to sps-1). Use to find optimal
+                sampling instant. Default 0 assumes matched filter peak is aligned.
+        axis: Axis along which to downsample.
+
+    Returns:
+        Decimated samples at symbol rate.
+
+    Example:
+        >>> # After matched filter, extract symbols
+        >>> symbols = downsample_to_symbols(samples, sps=4, offset=0)
+    """
+    logger.debug(f"Downsampling to symbols: sps={sps}, offset={offset}")
+    samples, xp, _ = dispatch(samples)
+
+    # Build slicing for arbitrary axis
+    slices = [slice(None)] * samples.ndim
+    slices[axis] = slice(offset, None, sps)
+
+    return samples[tuple(slices)]
+
+
 def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
     Zero-insertion: Insert (factor-1) zeros between each sample.
@@ -148,6 +190,14 @@ def decimate(
 
     Reduces the sample rate by filtering to remove high-frequency content
     (which would alias) and then keeping every Nth sample.
+
+    When to use this vs other methods:
+    - decimate: General downsampling with anti-alias filtering (no prior filter)
+    - downsample_to_symbols: After matched filter (no additional filtering needed)
+    - resample: Arbitrary rational rate changes
+
+    NOTE: Do NOT use after matched filtering! The additional anti-alias filter
+    will degrade the signal. Use downsample_to_symbols() instead.
 
     Args:
         samples: Input sample array.

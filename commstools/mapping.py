@@ -314,9 +314,11 @@ def map_bits(
         modulation: Modulation type ('psk', 'qam', 'ask').
         order: Modulation order.
         dtype: Output dtype (e.g., np.complex64, np.complex128). Default: complex64.
+            For ASK modulation, automatically converts to real dtype (float32/float64).
 
     Returns:
-        Array of complex symbols on the same backend as the input bits.
+        Array of symbols on the same backend as the input bits.
+        Complex for PSK/QAM, real for ASK.
     """
     logger.debug(f"Mapping bits to {modulation.upper()} {order}-level symbols.")
     bits, xp, _ = dispatch(bits)
@@ -348,8 +350,18 @@ def map_bits(
     # Ensure constellation is on the same backend as indices
     constellation = xp.asarray(constellation)
 
-    # Apply dtype for precision control (default: complex64 for efficiency)
-    constellation = constellation.astype(dtype)
+    # Apply dtype for precision control
+    # For ASK (real-valued), use corresponding real dtype
+    if modulation.lower() == "ask":
+        # Map complex dtype to real dtype
+        if dtype in (np.complex64, np.complex128):
+            real_dtype = np.float32 if dtype == np.complex64 else np.float64
+        else:
+            real_dtype = dtype if dtype is not None else np.float32
+        constellation = constellation.astype(real_dtype)
+    else:
+        # Complex modulations (PSK, QAM)
+        constellation = constellation.astype(dtype)
 
     # Map indices to points
     return constellation[indices]
