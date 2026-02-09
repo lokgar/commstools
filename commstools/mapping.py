@@ -41,6 +41,36 @@ def gray_code(n: int) -> np.ndarray:
 
 
 @lru_cache(maxsize=128)
+def gray_to_binary(n: int) -> np.ndarray:
+    """
+    Compute inverse Gray code mapping: symbol index -> binary bits.
+
+    For soft demapping, we need to know which bits correspond to each
+    constellation point. Since gray_code(n)[i] gives the Gray code for
+    natural binary i, we need the inverse: given symbol index s,
+    what is the natural binary representation?
+
+    Args:
+        n: Number of bits per symbol.
+
+    Returns:
+        Array where result[s] gives the natural binary value that maps to symbol s.
+        Shape: (2^n,). result[s] is the bit pattern for symbol s.
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if n == 0:
+        return np.array([0], dtype=int)
+
+    # gray_code gives: natural_binary -> gray_symbol
+    # We want: gray_symbol -> natural_binary (inverse)
+    gray = gray_code(n)
+    inverse = np.zeros(1 << n, dtype=int)
+    inverse[gray] = np.arange(1 << n)
+    return inverse
+
+
+@lru_cache(maxsize=128)
 def gray_constellation(modulation: str, order: int) -> ArrayType:
     """
     Generate constellation points with Gray mapping.
@@ -422,3 +452,201 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     else:
         # Scalar input case (if supported), returns 1D array of bits
         return flat_bits
+
+
+def demap_symbols_soft(
+    symbols: ArrayType,
+    modulation: str,
+    order: int,
+    noise_var: float,
+    method: str = "maxlog",
+    vectorized: bool = True,
+) -> ArrayType:
+    """
+    Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
+
+    LLRs indicate bit reliability: positive values favor bit=0, negative favor bit=1.
+    The magnitude indicates confidence level.
+
+    Args:
+        symbols: Received noisy symbols. Shape: (..., N).
+        modulation: Modulation type ('psk', 'qam', 'ask').
+        order: Modulation order.
+        noise_var: Noise variance per complex dimension (σ²).
+            For AWGN with Es/N0: σ² = N0/2 = Es / (2 * 10^(Es_N0_dB/10))
+            For unit-power symbols (Es=1): σ² = 0.5 * 10^(-Es_N0_dB/10)
+        method: LLR computation method:
+            - "maxlog": Max-log approximation (fast, slight degradation at low SNR).
+            - "exact": Numerically stable exact computation using log-sum-exp.
+        vectorized: If True (default), use fully vectorized computation.
+            Falls back to loop-based for very large arrays to avoid OOM.
+
+    Returns:
+        LLR array with shape (..., N*k) where k = log2(order).
+        LLR > 0 indicates bit 0 more likely.
+        LLR < 0 indicates bit 1 more likely.
+
+    Note:
+        - For coded systems, feed LLRs directly to soft-input decoders (LDPC, Turbo).
+        - The max-log approximation: LLR ≈ (1/σ²) * (min_{s∈S₁} |r-s|² - min_{s∈S₀} |r-s|²)
+        - At high SNR (>10 dB), max-log is nearly identical to exact.
+
+    Example:
+        >>> rx = add_awgn(tx_symbols, esn0_db=10)
+        >>> # For Es/N0 = 10 dB with unit-power symbols:
+        >>> noise_var = 0.5 * 10 ** (-10/10)  # σ² = N0/2
+        >>> llrs = demap_symbols_soft(rx, "qam", 16, noise_var)
+    """
+    logger.debug(
+        f"Soft demapping {modulation.upper()} {order}-level (method={method})."
+    )
+    symbols, xp, _ = dispatch(symbols)
+
+    k = int(np.log2(order))
+    if 2**k != order:
+        raise ValueError(f"Order must be a power of 2, got {order}")
+
+    # Capture original shape for output reshaping
+    original_shape = symbols.shape
+    symbols_flat = symbols.flatten()
+    num_symbols = symbols_flat.size
+
+    # Get constellation points indexed by symbol value
+    constellation = gray_constellation(modulation, order)
+    constellation = xp.asarray(constellation)
+
+    # Build bit mapping table using Gray code
+    # gray_to_binary(k)[s] gives the natural binary value that maps to symbol s
+    # We then extract the individual bits from this value
+    binary_values = gray_to_binary(k)  # Shape: (M,) - NumPy cached
+    binary_values = xp.asarray(binary_values)
+    shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
+    # bits_table[s, i] = i-th bit of symbol s (MSB first, Gray-coded)
+    bits_table = ((binary_values[:, xp.newaxis] >> shifts) & 1).astype(
+        xp.int32
+    )  # Shape: (M, k)
+
+    # Avoid division by zero in noise variance
+    sigma_sq = max(noise_var, 1e-20)
+
+    # Memory estimate for fully vectorized: (N, M, k) tensor
+    # Each element is float32 (4 bytes), threshold at ~500MB
+    tensor_elements = num_symbols * order * k
+    memory_threshold = 128 * 1024 * 1024  # 128M elements ~ 512MB for float32
+
+    use_vectorized = vectorized and (tensor_elements < memory_threshold)
+
+    if use_vectorized:
+        # === FULLY VECTORIZED IMPLEMENTATION ===
+        # Compute squared distances: |r - s|² for all symbols
+        # symbols_flat: (N,), constellation: (M,)
+        # distances_sq: (N, M)
+        distances_sq = (
+            xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :]) ** 2
+        )
+
+        # Transpose bits_table for broadcasting: (M, k) -> (k, M)
+        bits_table_t = bits_table.T  # (k, M)
+
+        # Create masks for all bits simultaneously
+        # mask_0[b, m] = True if bit b of symbol m is 0
+        mask_0 = bits_table_t == 0  # (k, M)
+        mask_1 = bits_table_t == 1  # (k, M)
+
+        if method == "maxlog":
+            # Expand distances for all bits: (N, M) -> (N, 1, M) -> broadcast with (k, M)
+            # Result: (N, k, M) via broadcasting
+            dist_expanded = distances_sq[:, xp.newaxis, :]  # (N, 1, M)
+
+            # Apply masks: where mask is False, set to inf
+            # Broadcasting: (N, 1, M) * (k, M) -> (N, k, M)
+            dist_0 = xp.where(mask_0, dist_expanded, xp.inf)  # (N, k, M)
+            dist_1 = xp.where(mask_1, dist_expanded, xp.inf)  # (N, k, M)
+
+            # Minimum over constellation points
+            min_dist_0 = xp.min(dist_0, axis=2)  # (N, k)
+            min_dist_1 = xp.min(dist_1, axis=2)  # (N, k)
+
+            # LLR = (1/σ²) * (min_d1 - min_d0)
+            llrs = (min_dist_1 - min_dist_0) / sigma_sq  # (N, k)
+
+        elif method == "exact":
+            # Exact LLR using log-sum-exp
+            neg_exp = -distances_sq / sigma_sq  # (N, M)
+            neg_exp_expanded = neg_exp[:, xp.newaxis, :]  # (N, 1, M)
+
+            # Apply masks
+            neg_exp_0 = xp.where(mask_0, neg_exp_expanded, -xp.inf)  # (N, k, M)
+            neg_exp_1 = xp.where(mask_1, neg_exp_expanded, -xp.inf)  # (N, k, M)
+
+            # Log-sum-exp with numerical stability
+            max_0 = xp.max(neg_exp_0, axis=2, keepdims=True)
+            max_1 = xp.max(neg_exp_1, axis=2, keepdims=True)
+
+            max_0 = xp.where(xp.isinf(max_0), 0.0, max_0)
+            max_1 = xp.where(xp.isinf(max_1), 0.0, max_1)
+
+            log_sum_0 = max_0.squeeze(axis=2) + xp.log(
+                xp.sum(xp.exp(neg_exp_0 - max_0), axis=2)
+            )
+            log_sum_1 = max_1.squeeze(axis=2) + xp.log(
+                xp.sum(xp.exp(neg_exp_1 - max_1), axis=2)
+            )
+
+            llrs = log_sum_0 - log_sum_1  # (N, k)
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
+
+    else:
+        # === LOOP-BASED IMPLEMENTATION (for large arrays) ===
+        logger.debug(
+            f"Using loop-based soft demapping (tensor size {tensor_elements} exceeds threshold)."
+        )
+
+        # Compute squared distances: (N, M)
+        distances_sq = (
+            xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :]) ** 2
+        )
+
+        llrs = xp.zeros((num_symbols, k), dtype=symbols_flat.real.dtype)
+
+        for bit_idx in range(k):
+            mask_0 = bits_table[:, bit_idx] == 0
+            mask_1 = bits_table[:, bit_idx] == 1
+
+            if method == "maxlog":
+                dist_0 = xp.where(mask_0, distances_sq, xp.inf)
+                dist_1 = xp.where(mask_1, distances_sq, xp.inf)
+                min_dist_0 = xp.min(dist_0, axis=1)
+                min_dist_1 = xp.min(dist_1, axis=1)
+                llrs[:, bit_idx] = (min_dist_1 - min_dist_0) / sigma_sq
+
+            elif method == "exact":
+                neg_exp = -distances_sq / sigma_sq
+                neg_exp_0 = xp.where(mask_0, neg_exp, -xp.inf)
+                neg_exp_1 = xp.where(mask_1, neg_exp, -xp.inf)
+
+                max_0 = xp.max(neg_exp_0, axis=1, keepdims=True)
+                max_1 = xp.max(neg_exp_1, axis=1, keepdims=True)
+                max_0 = xp.where(xp.isinf(max_0), 0.0, max_0)
+                max_1 = xp.where(xp.isinf(max_1), 0.0, max_1)
+
+                log_sum_0 = max_0.squeeze() + xp.log(
+                    xp.sum(xp.exp(neg_exp_0 - max_0), axis=1)
+                )
+                log_sum_1 = max_1.squeeze() + xp.log(
+                    xp.sum(xp.exp(neg_exp_1 - max_1), axis=1)
+                )
+                llrs[:, bit_idx] = log_sum_0 - log_sum_1
+            else:
+                raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
+
+    # Reshape LLRs to match input symbol structure
+    flat_llrs = llrs.flatten()
+
+    if len(original_shape) > 1:
+        new_shape = list(original_shape)
+        new_shape[-1] = new_shape[-1] * k
+        return flat_llrs.reshape(new_shape)
+    else:
+        return flat_llrs

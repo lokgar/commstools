@@ -1,7 +1,5 @@
 # DSP Roadmap
 
-should do something with generate_sequence in Frame??
-
 ---
 
 ## ✅ Completed
@@ -10,31 +8,25 @@ should do something with generate_sequence in Frame??
 - **Backend Consistency**: `dispatch()` pattern, `xp.pi`, dtype propagation
 - **Precision Control**: `dtype` parameter in mapping/generation functions
 - **Es/N0 AWGN**: `add_awgn()` now uses standard Es/N0 with sps handling
+- **Performance Metrics** (`metrics.py`): EVM, SNR estimation, BER, Q-factor
+- **Synchronization Utilities** (`sync.py`): Correlation, frame detection, Barker/ZC sequences
+- **Soft Demapping** (`mapping.py`): LLR calculation with max-log and exact methods
 
 ---
 
 ## 🔴 Critical - Next Priority
 
-### 1. Performance Metrics Module (`metrics.py`)
+### 1. Symbol Timing Recovery
 
-| Metric | Purpose |
-|--------|---------|
-| **EVM** | Error Vector Magnitude - primary signal quality metric |
-| **SNR Estimation** | Estimate SNR from received symbols |
-| **BER** | Bit Error Rate (pre/post-FEC) |
-| **Q-factor** | Optical/RF quality metric |
+- Gardner timing error detector
+- Mueller-Muller algorithm
+- Interpolation-based correction
 
-### 2. Synchronization Utilities (`sync.py`)
+### 2. Frequency Offset Estimation
 
-- Symbol timing recovery (Gardner, Mueller-Muller)
-- Frame/preamble detection via correlation
-- Coarse/fine frequency offset estimation
-- Barker/Zadoff-Chu sequence generation
-
-### 3. Soft Demapping (`mapping.py` extension)
-
-- **LLR calculation** - Essential for coded systems
-- Symbol-level decision regions
+- Coarse estimation (data-aided)
+- Fine estimation (blind/DD)
+- Carrier phase recovery
 
 ---
 

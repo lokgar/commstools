@@ -14,6 +14,8 @@ import warnings
 __version__ = "0.1.0"
 
 from . import impairments
+from . import metrics
+from . import sync
 from .core import Preamble, Signal, SingleCarrierFrame
 from .logger import set_log_level
 from .plotting import apply_default_theme
@@ -27,7 +29,9 @@ __all__ = [
     "Signal",
     "SingleCarrierFrame",
     "impairments",
+    "metrics",
     "set_log_level",
+    "sync",
 ]
 
 apply_default_theme()

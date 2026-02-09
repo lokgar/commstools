@@ -13,7 +13,7 @@ import types
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 try:
     import cupy as cp
@@ -36,6 +36,35 @@ from .backend import (
     to_jax,
 )
 from .logger import logger
+
+
+class FrameInfo(BaseModel):
+    """
+    Describes frame structure within a Signal.
+
+    This class holds metadata about the frame structure when a Signal
+    is generated from a SingleCarrierFrame, enabling distinguishing
+    frame-generated Signals from standalone Signals.
+
+    Attributes:
+        preamble_len: Number of preamble symbols.
+        payload_len: Number of payload symbols.
+        pilot_count: Total number of pilot symbols.
+        guard_len: Guard interval length in symbols.
+        guard_type: Type of guard ('zero' or 'cp').
+        preamble_mod_scheme: Modulation scheme used for preamble.
+        preamble_mod_order: Modulation order used for preamble.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    preamble_len: int = 0
+    payload_len: int = 0
+    pilot_count: int = 0
+    guard_len: int = 0
+    guard_type: Literal["zero", "cp"] = "zero"
+    preamble_mod_scheme: Optional[str] = None
+    preamble_mod_order: Optional[int] = None
 
 
 class Signal(BaseModel):
@@ -92,6 +121,9 @@ class Signal(BaseModel):
     rc_rolloff: float = 0.35
     gaussian_bt: float = 0.3
     smoothrect_bt: float = 1.0
+
+    # Frame structure info (populated when Signal is generated from Frame)
+    frame_info: Optional[FrameInfo] = None
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -945,14 +977,19 @@ class Signal(BaseModel):
                 )
 
             # Generate symbols directly
-            # Shape: (Channels, Time)
+            # Bit-first architecture: generate bits → map to symbols
             total_symbols = num_symbols * num_streams
-            symbols_flat = utils.random_symbols(
-                total_symbols, modulation="ask", order=order, seed=seed
-            )
+            k = int(np.log2(order))  # bits per symbol
+            bits = utils.random_bits(total_symbols * k, seed=seed)
+
+            # Import mapping here to avoid circular imports
+            from . import mapping
+
+            symbols_flat = mapping.map_bits(bits, "ask", order, dtype=np.complex64)
 
             if num_streams > 1:
                 symbols = symbols_flat.reshape(num_streams, num_symbols)
+                bits = bits.reshape(num_streams, num_symbols * k)
             else:
                 symbols = symbols_flat
 
@@ -972,6 +1009,7 @@ class Signal(BaseModel):
 
             if is_cupy_available():
                 symbols = to_device(symbols, "gpu")
+                bits = to_device(bits, "gpu")
                 h = to_device(h, "gpu")
 
             _, xp, sp = dispatch(symbols)
@@ -990,6 +1028,7 @@ class Signal(BaseModel):
                 symbol_rate=symbol_rate,
                 modulation_scheme=f"RZ-PAM{'-BIPOL' if bipolar else '-UNIPOL'}",
                 modulation_order=order,
+                source_bits=bits,
                 source_symbols=symbols,
                 pulse_shape=p_shape,
                 **kwargs,
@@ -1105,6 +1144,181 @@ class Signal(BaseModel):
             **kwargs,
         )
 
+    # =========================================================================
+    # Metrics Methods - Signal-centric interface for quality assessment
+    # =========================================================================
+
+    def evm(
+        self,
+        reference_symbols: Optional[ArrayType] = None,
+    ) -> Tuple[float, float]:
+        """
+        Compute Error Vector Magnitude comparing current symbols to reference.
+
+        Uses source_symbols as reference by default, enabling simple workflow:
+            sig = Signal.qam(16, 1000, ...)  # Has source_symbols
+            noisy = add_awgn(sig, esn0_db=15)
+            evm_pct, evm_db = noisy.evm()  # Uses source_symbols as ref
+
+        Args:
+            reference_symbols: Optional explicit reference. If None, uses
+                source_symbols attribute.
+
+        Returns:
+            (evm_percent, evm_db): EVM as percentage and in decibels.
+
+        Raises:
+            ValueError: If no reference available (no source_symbols and no
+                explicit reference provided).
+        """
+        from . import metrics
+
+        ref = reference_symbols
+        if ref is None:
+            if self.source_symbols is None:
+                raise ValueError(
+                    "No reference available. Either set source_symbols or provide "
+                    "reference_symbols argument."
+                )
+            ref = self.source_symbols
+
+        # Get symbols at symbol rate (downsample if needed)
+        rx_symbols = self._get_symbol_rate_samples()
+
+        return metrics.evm(rx_symbols, ref)
+
+    def snr_estimate(
+        self,
+        reference_symbols: Optional[ArrayType] = None,
+    ) -> float:
+        """
+        Estimate SNR using data-aided method.
+
+        Uses source_symbols as reference by default.
+
+        Args:
+            reference_symbols: Optional explicit reference. If None, uses
+                source_symbols attribute.
+
+        Returns:
+            Estimated SNR in dB.
+
+        Raises:
+            ValueError: If no reference available.
+        """
+        from . import metrics
+
+        ref = reference_symbols
+        if ref is None:
+            if self.source_symbols is None:
+                raise ValueError(
+                    "No reference available. Either set source_symbols or provide "
+                    "reference_symbols argument."
+                )
+            ref = self.source_symbols
+
+        rx_symbols = self._get_symbol_rate_samples()
+
+        return metrics.snr_estimate(rx_symbols, ref)
+
+    def ber(
+        self,
+        reference_bits: Optional[ArrayType] = None,
+        noise_var: Optional[float] = None,
+    ) -> float:
+        """
+        Compute Bit Error Rate.
+
+        If samples need demapping, performs hard decision demapping first.
+        Uses source_bits as reference by default.
+
+        Args:
+            reference_bits: Optional explicit reference bits. If None, uses
+                source_bits attribute.
+            noise_var: Noise variance for soft demapping. If None, uses
+                hard demapping.
+
+        Returns:
+            Bit error rate (0 to 1).
+
+        Raises:
+            ValueError: If no reference bits available or modulation info missing.
+        """
+        from . import metrics
+
+        ref = reference_bits
+        if ref is None:
+            if self.source_bits is None:
+                raise ValueError(
+                    "No reference bits available. Either set source_bits or provide "
+                    "reference_bits argument."
+                )
+            ref = self.source_bits
+
+        # Demap to get recovered bits
+        rx_bits = self.demap(hard=True)
+
+        return metrics.ber(rx_bits, ref)
+
+    def demap(
+        self,
+        hard: bool = True,
+        noise_var: Optional[float] = None,
+        method: str = "maxlog",
+    ) -> ArrayType:
+        """
+        Demap symbols to bits (hard or soft decision).
+
+        Args:
+            hard: If True, returns hard bit decisions (0/1).
+                  If False, returns LLRs (soft decision).
+            noise_var: Noise variance for soft demapping. Required if hard=False.
+            method: LLR method for soft demapping ('maxlog' or 'exact').
+
+        Returns:
+            Hard demapping: Bit array (0s and 1s).
+            Soft demapping: LLR array (positive = bit 0 likely).
+
+        Raises:
+            ValueError: If modulation info is missing or noise_var not provided
+                for soft demapping.
+        """
+        from .mapping import demap_symbols, demap_symbols_soft
+
+        if self.modulation_scheme is None or self.modulation_order is None:
+            raise ValueError("Modulation scheme and order required for demapping.")
+
+        rx_symbols = self._get_symbol_rate_samples()
+
+        if hard:
+            return demap_symbols(
+                rx_symbols, self.modulation_scheme, self.modulation_order
+            )
+        else:
+            if noise_var is None:
+                raise ValueError("noise_var required for soft demapping.")
+            return demap_symbols_soft(
+                rx_symbols,
+                self.modulation_scheme,
+                self.modulation_order,
+                noise_var,
+                method=method,
+            )
+
+    def _get_symbol_rate_samples(self) -> ArrayType:
+        """Get samples at symbol rate (1 sps), downsampling if needed."""
+        sps = self.sps
+        if sps is None or sps <= 1:
+            # Already at symbol rate
+            return self.samples
+
+        # Downsample by taking every sps-th sample
+        sps_int = int(round(sps))
+        if self.samples.ndim == 2:
+            # MIMO: downsample each stream, shape (num_streams, num_symbols)
+            return self.samples[:, ::sps_int]
+        return self.samples[::sps_int]
+
 
 class Preamble(BaseModel):
     """
@@ -1119,6 +1333,7 @@ class Preamble(BaseModel):
         modulation_scheme: Modulation type used ('PSK', 'QAM', 'ASK').
         modulation_order: Modulation order (2, 4, 16, etc.).
         sequence_type: Type of preamble sequence ('custom', 'barker', 'zc').
+        dtype: Data type for symbols (default: np.complex64).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -1128,6 +1343,7 @@ class Preamble(BaseModel):
     modulation_scheme: str = "PSK"
     modulation_order: int = 2
     sequence_type: str = "custom"
+    dtype: Any = np.complex64
 
     @field_validator("bits", mode="before")
     @classmethod
@@ -1146,7 +1362,10 @@ class Preamble(BaseModel):
         # Map bits to symbols if not provided
         if self.symbols is None and self.bits is not None:
             self.symbols = mapping.map_bits(
-                self.bits, self.modulation_scheme.lower(), self.modulation_order
+                self.bits,
+                self.modulation_scheme.lower(),
+                self.modulation_order,
+                dtype=self.dtype,
             )
 
         # Move to GPU if available
@@ -1169,6 +1388,46 @@ class Preamble(BaseModel):
         if self.bits is None:
             return 0
         return int(self.bits.size)
+
+    def to_waveform(
+        self,
+        sps: int,
+        symbol_rate: float,
+        pulse_shape: str = "rrc",
+        **kwargs: Any,
+    ) -> Signal:
+        """
+        Generate a preamble waveform as a Signal with clear metadata.
+
+        Args:
+            sps: Samples per symbol.
+            symbol_rate: Symbol rate in Hz.
+            pulse_shape: Pulse shaping type ('rect', 'rrc', etc.).
+            **kwargs: Additional pulse shaping parameters.
+
+        Returns:
+            A Signal object with modulation_scheme marked as 'PREAMBLE-{scheme}'.
+        """
+        from .filtering import shape_pulse
+
+        samples = shape_pulse(
+            self.symbols,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            **kwargs,
+        )
+
+        return Signal(
+            samples=samples,
+            sampling_rate=symbol_rate * sps,
+            symbol_rate=symbol_rate,
+            modulation_scheme=f"PREAMBLE-{self.modulation_scheme}",
+            modulation_order=self.modulation_order,
+            source_bits=self.bits,
+            source_symbols=self.symbols,
+            pulse_shape=pulse_shape,
+            **kwargs,
+        )
 
 
 class SingleCarrierFrame(BaseModel):
@@ -1196,6 +1455,7 @@ class SingleCarrierFrame(BaseModel):
         guard_len: Length of the guard interval in SYMBOLS.
         symbol_rate: The symbol rate of the frame in Hz.
         num_streams: Number of independent spatial streams (default: 1).
+        dtype: Data type for symbol arrays (default: np.complex64).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -1219,6 +1479,13 @@ class SingleCarrierFrame(BaseModel):
 
     symbol_rate: float = Field(..., gt=0)
     num_streams: int = Field(default=1, ge=1)
+    dtype: Any = Field(default=np.complex64)
+
+    # Cached bit-first data (not serialized)
+    _payload_bits: Optional[Any] = PrivateAttr(default=None)
+    _payload_symbols: Optional[Any] = PrivateAttr(default=None)
+    _pilot_bits: Optional[Any] = PrivateAttr(default=None)
+    _pilot_symbols: Optional[Any] = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """
@@ -1285,49 +1552,89 @@ class SingleCarrierFrame(BaseModel):
 
         return xp.zeros(self.payload_len, dtype=bool), self.payload_len
 
+    def _ensure_payload_generated(self) -> None:
+        """Generate and cache payload bits → symbols (bit-first architecture)."""
+        if self._payload_bits is not None:
+            return
+
+        from . import mapping
+
+        k = int(np.log2(self.payload_mod_order))
+        total_symbols = self.payload_len * self.num_streams
+        bits = utils.random_bits(total_symbols * k, seed=self.payload_seed)
+        symbols = mapping.map_bits(
+            bits, self.payload_mod_scheme, self.payload_mod_order, dtype=self.dtype
+        )
+
+        if self.num_streams > 1:
+            bits = bits.reshape(self.num_streams, self.payload_len * k)
+            symbols = symbols.reshape(self.num_streams, self.payload_len)
+
+        if is_cupy_available():
+            bits = to_device(bits, "gpu")
+            symbols = to_device(symbols, "gpu")
+
+        self._payload_bits = bits
+        self._payload_symbols = symbols
+
+    def _ensure_pilot_generated(self) -> None:
+        """Generate and cache pilot bits → symbols (bit-first architecture)."""
+        if self._pilot_bits is not None or self.pilot_pattern == "none":
+            return
+
+        from . import mapping
+
+        xp = cp if is_cupy_available() else np
+        mask, _ = self._generate_pilot_mask()
+        pilot_count = int(xp.sum(mask))
+        if pilot_count == 0:
+            return
+
+        k = int(np.log2(self.pilot_mod_order))
+        total_pilots = pilot_count * self.num_streams
+        bits = utils.random_bits(total_pilots * k, seed=self.pilot_seed)
+        symbols = mapping.map_bits(
+            bits, self.pilot_mod_scheme, self.pilot_mod_order, dtype=self.dtype
+        )
+
+        if self.num_streams > 1:
+            bits = bits.reshape(self.num_streams, pilot_count * k)
+            symbols = symbols.reshape(self.num_streams, pilot_count)
+
+        if is_cupy_available():
+            bits = to_device(bits, "gpu")
+            symbols = to_device(symbols, "gpu")
+
+        self._pilot_bits = bits
+        self._pilot_symbols = symbols
+
+    @property
+    def payload_bits(self) -> ArrayType:
+        """Returns the payload bits (bit-first architecture)."""
+        self._ensure_payload_generated()
+        return self._payload_bits
+
     @property
     def payload_symbols(self) -> ArrayType:
         """Returns the mapped symbols of the payload."""
-        from .utils import random_symbols
+        self._ensure_payload_generated()
+        return self._payload_symbols
 
-        # Prepare shape handling for MIMO
-        total_symbols = self.payload_len * self.num_streams
-        symbols = random_symbols(
-            total_symbols,
-            modulation=self.payload_mod_scheme,
-            order=self.payload_mod_order,
-            seed=self.payload_seed,
-        )
-        if self.num_streams > 1:
-            # Shape: (Channels, Time)
-            return symbols.reshape(self.num_streams, self.payload_len)
-        return symbols
+    @property
+    def pilot_bits(self) -> Optional[ArrayType]:
+        """Returns the pilot bits (bit-first architecture), if any."""
+        if self.pilot_pattern == "none":
+            return None
+        self._ensure_pilot_generated()
+        return self._pilot_bits
 
     @property
     def pilot_symbols(self) -> Optional[ArrayType]:
         """Returns the mapped symbols used for pilots, if any."""
         if self.pilot_pattern == "none":
             return None
-
-        xp = cp if is_cupy_available() else np
-        mask, _ = self._generate_pilot_mask()
-        pilot_count = int(xp.sum(mask))
-        if pilot_count == 0:
-            return None
-
-        from .utils import random_symbols
-
-        total_pilots = pilot_count * self.num_streams
-        pilots = random_symbols(
-            total_pilots,
-            modulation=self.pilot_mod_scheme,
-            order=self.pilot_mod_order,
-            seed=self.pilot_seed,
-        )
-        if self.num_streams > 1:
-            # Shape: (Channels, Time)
-            return pilots.reshape(self.num_streams, pilot_count)
-        return pilots
+        self._ensure_pilot_generated()
+        return self._pilot_symbols
 
     @property
     def body_symbols(self) -> ArrayType:
@@ -1336,14 +1643,14 @@ class SingleCarrierFrame(BaseModel):
         mask, body_length = self._generate_pilot_mask()
         if self.num_streams > 1:
             # Shape: (Channels, Time)
-            body = xp.zeros((self.num_streams, body_length), dtype=xp.complex128)
+            body = xp.zeros((self.num_streams, body_length), dtype=self.dtype)
 
             if self.pilot_pattern != "none":
                 body[:, mask] = self.pilot_symbols
 
             body[:, ~mask] = self.payload_symbols
         else:
-            body = xp.zeros(body_length, dtype=xp.complex128)
+            body = xp.zeros(body_length, dtype=self.dtype)
             if self.pilot_pattern != "none":
                 body[mask] = self.pilot_symbols
             body[~mask] = self.payload_symbols
@@ -1382,47 +1689,6 @@ class SingleCarrierFrame(BaseModel):
         else:
             return body
 
-    def generate_sequence(self) -> Signal:
-        """
-        Constructs the complete frame sequence including preamble, pilots, payload, and guard interval.
-        sps=1.
-
-        Returns:
-            A `Signal` object representing the generated frame.
-        """
-        xp = cp if is_cupy_available() else np
-
-        # 1. Assemble Symbols
-        signal_samples = self._assemble_symbols()
-
-        # 2. Apply Guard Interval
-        if self.guard_len > 0:
-            if self.guard_type == "zero":
-                # End-of-frame zero padding
-                if self.num_streams > 1:
-                    zeros = xp.zeros(
-                        (self.num_streams, self.guard_len), dtype=xp.complex128
-                    )
-                else:
-                    zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
-                signal_samples = xp.concatenate([signal_samples, zeros], axis=-1)
-            elif self.guard_type == "cp":
-                # Front-of-frame cyclic prefix (axis -1)
-                # If 1D: [-L:]
-                # If 2D: [..., -L:]
-                cp_slice = signal_samples[..., -self.guard_len :]
-                signal_samples = xp.concatenate([cp_slice, signal_samples], axis=-1)
-
-        # 3. Create and return Signal metadata
-        return Signal(
-            samples=signal_samples,
-            sampling_rate=self.symbol_rate,
-            symbol_rate=self.symbol_rate,
-            modulation_scheme=self.payload_mod_scheme,
-            modulation_order=self.payload_mod_order,
-            source_symbols=signal_samples,
-        )
-
     def generate_waveform(
         self, sps: int = 4, pulse_shape: str = "rrc", **kwargs: Any
     ) -> Signal:
@@ -1435,7 +1701,7 @@ class SingleCarrierFrame(BaseModel):
             **kwargs: Additional pulse shaping parameters.
 
         Returns:
-            A `Signal` object representing the shaped waveform.
+            A `Signal` object representing the shaped waveform with FrameInfo metadata.
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
@@ -1444,16 +1710,15 @@ class SingleCarrierFrame(BaseModel):
         symbols = self._assemble_symbols()
 
         # Determine logical/source symbols at sps=1 including guards
-        xp = cp if is_cupy_available() else np
         source_symbols = symbols
         if self.guard_len > 0:
             if self.guard_type == "zero":
                 if self.num_streams > 1:
                     zeros = xp.zeros(
-                        (self.num_streams, self.guard_len), dtype=xp.complex128
+                        (self.num_streams, self.guard_len), dtype=self.dtype
                     )
                 else:
-                    zeros = xp.zeros(self.guard_len, dtype=xp.complex128)
+                    zeros = xp.zeros(self.guard_len, dtype=self.dtype)
 
                 source_symbols = xp.concatenate([source_symbols, zeros], axis=-1)
             elif self.guard_type == "cp":
@@ -1474,14 +1739,32 @@ class SingleCarrierFrame(BaseModel):
             if self.guard_type == "zero":
                 if self.num_streams > 1:
                     zeros = xp.zeros(
-                        (self.num_streams, guard_len_samples), dtype=xp.complex128
+                        (self.num_streams, guard_len_samples), dtype=self.dtype
                     )
                 else:
-                    zeros = xp.zeros(guard_len_samples, dtype=xp.complex128)
+                    zeros = xp.zeros(guard_len_samples, dtype=self.dtype)
                 samples = xp.concatenate([samples, zeros], axis=-1)
             elif self.guard_type == "cp":
                 cp_slice = samples[..., -guard_len_samples:]
                 samples = xp.concatenate([cp_slice, samples], axis=-1)
+
+        # 4. Build FrameInfo metadata
+        mask, _ = self._generate_pilot_mask()
+        pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
+
+        frame_info = FrameInfo(
+            preamble_len=self.preamble.num_symbols if self.preamble else 0,
+            payload_len=self.payload_len,
+            pilot_count=pilot_count,
+            guard_len=self.guard_len,
+            guard_type=self.guard_type,
+            preamble_mod_scheme=self.preamble.modulation_scheme
+            if self.preamble
+            else None,
+            preamble_mod_order=self.preamble.modulation_order
+            if self.preamble
+            else None,
+        )
 
         return Signal(
             samples=samples,
@@ -1489,8 +1772,10 @@ class SingleCarrierFrame(BaseModel):
             symbol_rate=self.symbol_rate,
             modulation_scheme=self.payload_mod_scheme,
             modulation_order=self.payload_mod_order,
-            pulse_shape=pulse_shape,
+            source_bits=self.payload_bits,
             source_symbols=source_symbols,
+            pulse_shape=pulse_shape,
+            frame_info=frame_info,
             **kwargs,
         )
 
