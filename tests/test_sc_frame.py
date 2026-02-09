@@ -3,9 +3,11 @@ from commstools.core import SingleCarrierFrame
 
 def test_sc_frame_none(backend_device, xp):
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, pilot_pattern="none")
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 100
     assert sig.symbol_rate == 1e6
+    assert sig.frame_info is not None
+    assert sig.frame_info.payload_len == 100
 
 
 def test_sc_frame_comb(backend_device, xp):
@@ -20,8 +22,9 @@ def test_sc_frame_comb(backend_device, xp):
     assert length == 14
     assert xp.sum(mask) == 4
 
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 14
+    assert sig.frame_info.pilot_count == 4
 
 
 def test_sc_frame_block(backend_device, xp):
@@ -42,47 +45,37 @@ def test_sc_frame_block(backend_device, xp):
     assert length == 20
     assert xp.sum(mask) == 10
 
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 20
-
-
-# This test logic in original file seems buggy for "zero" guard.
-# It says: guard_type="zero", guard_len=20.
-# assert np.all(sig.samples[-20:] == 0)
-# But wait, SingleCarrierFrame.generate_sequence implementation for guard_type="zero":
-# In core.py:
-# if self.guard_type == "zero":
-#     # End-of-frame zero padding
-#     zeros = xp.zeros(...)
-#     signal_samples = xp.concatenate([signal_samples, zeros], axis=-1)
-# So it pads at the END.
-# So checking [-20:] should be zeros. Correct.
 
 
 def test_sc_frame_guard_zero(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="zero", guard_len=20
     )
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 120
     assert xp.all(sig.samples[-20:] == 0)
+    assert sig.frame_info.guard_len == 20
+    assert sig.frame_info.guard_type == "zero"
 
 
 def test_sc_frame_guard_cp(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="cp", guard_len=20
     )
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 120
     # CP should match the last 20 samples of the *original* body
     # Original body length is 100.
-    # In generate_sequence for cp:
-    # cp_slice = signal_samples[..., -self.guard_len :]
-    # signal_samples = xp.concatenate([cp_slice, signal_samples], axis=-1)
+    # In generate_waveform for cp:
+    # cp_slice = samples[..., -guard_len_samples:]
+    # samples = xp.concatenate([cp_slice, samples], axis=-1)
     # So new structure: [CP (20), Body (100)]
     # CP is a copy of Body[-20:]
     # So sig.samples[:20] == sig.samples[-20:]
     assert xp.allclose(sig.samples[:20], sig.samples[-20:])
+    assert sig.frame_info.guard_type == "cp"
 
 
 def test_sc_frame_preamble(backend_device, xp):
@@ -93,7 +86,42 @@ def test_sc_frame_preamble(backend_device, xp):
     preamble_bits = xp.array([0, 1] * 25)  # 50 bits for 50 BPSK symbols
     preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, preamble=preamble)
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 150  # 50 preamble + 100 payload
     # Verify preamble symbols match mapped bits
     assert xp.allclose(sig.samples[:50], preamble.symbols)
+    # Verify FrameInfo
+    assert sig.frame_info.preamble_len == 50
+    assert sig.frame_info.preamble_mod_scheme == "PSK"
+
+
+def test_sc_frame_bit_first(backend_device, xp):
+    """Verify Frame preserves source bits (bit-first architecture)."""
+    frame = SingleCarrierFrame(
+        payload_len=100, symbol_rate=1e6, payload_mod_order=4, payload_seed=42
+    )
+    # Access bits and symbols
+    bits = frame.payload_bits
+    symbols = frame.payload_symbols
+
+    # Bits should exist and have correct length (100 symbols * 2 bits/symbol)
+    assert bits is not None
+    assert bits.size == 200
+
+    # Signal should have source_bits
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    assert sig.source_bits is not None
+
+
+def test_preamble_to_waveform(backend_device, xp):
+    """Verify Preamble.to_waveform() works correctly."""
+    from commstools.core import Preamble
+
+    preamble_bits = xp.array([0, 1] * 10)  # 20 bits -> 20 BPSK symbols
+    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
+
+    sig = preamble.to_waveform(sps=4, symbol_rate=1e6, pulse_shape="rrc")
+
+    assert len(sig.samples) == 20 * 4  # 20 symbols * 4 sps
+    assert sig.modulation_scheme == "PREAMBLE-PSK"
+    assert sig.source_bits is not None
