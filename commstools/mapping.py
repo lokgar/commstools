@@ -101,7 +101,11 @@ def gray_to_binary(n: int) -> np.ndarray:
 
 
 @lru_cache(maxsize=128)
-def gray_constellation(modulation: str, order: int) -> np.ndarray:
+def gray_constellation(
+    modulation: str,
+    order: int,
+    normalize: bool = False,
+) -> np.ndarray:
     """
     Generate constellation points with Gray mapping.
 
@@ -115,6 +119,8 @@ def gray_constellation(modulation: str, order: int) -> np.ndarray:
         Modulation type.
     order : int
         Modulation order (number of symbols). Must be a power of 2.
+    normalize : bool, default False
+        If True, scales the constellation to unit average power (E_s = 1).
 
     Returns
     -------
@@ -124,7 +130,7 @@ def gray_constellation(modulation: str, order: int) -> np.ndarray:
         Complex for 'psk' and 'qam', Float for 'ask'.
     """
     logger.debug(
-        f"Generating Gray-coded constellation: modulation={modulation}, order={order}"
+        f"Generating Gray-coded constellation: modulation={modulation}, order={order}, normalize={normalize}"
     )
     modulation = modulation.lower()
 
@@ -149,6 +155,15 @@ def gray_constellation(modulation: str, order: int) -> np.ndarray:
             result = _gray_qam_cross(order)
     else:
         raise ValueError(f"Unsupported modulation type: {modulation}")
+
+    if normalize:
+        if modulation == "psk":
+            # PSK is already on unit circle (E_s = 1)
+            pass
+        else:
+            from . import utils
+
+            result = utils.normalize(result, mode="average_power")
 
     return result
 
@@ -393,7 +408,11 @@ def _gray_qam_cross(order: int) -> np.ndarray:
 
 
 def map_bits(
-    bits: ArrayType, modulation: str, order: int, dtype: Optional[Any] = np.complex64
+    bits: ArrayType,
+    modulation: str,
+    order: int,
+    dtype: Optional[Any] = np.complex64,
+    normalize: bool = False,
 ) -> ArrayType:
     """
     Map a sequence of bits to constellation symbols.
@@ -409,6 +428,8 @@ def map_bits(
     dtype : data-type, optional
         Output symbol dtype. Default is `np.complex64`.
         For 'ask', automatically maps to corresponding real type (e.g., `float32`).
+    normalize : bool, default False
+        If True, scales the constellation to unit average power (E_s = 1).
 
     Returns
     -------
@@ -432,40 +453,31 @@ def map_bits(
     num_symbols = len(bits) // k
 
     # Pack bits into integer indices
-    # We can reshape to (num_symbols, k) and multiply by powers of 2
     bits_reshaped = bits.reshape((num_symbols, k))
-
-    # Powers of 2: [2^(k-1), ..., 2^0] for MSB first mapping
-    # Note: bits might be int8. powers will be int64/int32.
-    # The multiplication will promote to the larger type, preventing overflow.
     powers = 2 ** xp.arange(k - 1, -1, -1, dtype=int)
-    # Perform dot product
     indices = xp.sum(bits_reshaped * powers, axis=1)
 
     # Get constellation (returns NumPy)
-    constellation = gray_constellation(modulation, order)
+    constellation = gray_constellation(modulation, order, normalize=normalize)
 
-    # Ensure constellation is on the same backend as indices
+    # Ensure constellation is on the same backend and dtype
     constellation = xp.asarray(constellation)
-
-    # Apply dtype for precision control
-    # For ASK (real-valued), use corresponding real dtype
     if modulation.lower() == "ask":
-        # Map complex dtype to real dtype
         if dtype in (np.complex64, np.complex128):
             real_dtype = np.float32 if dtype == np.complex64 else np.float64
         else:
             real_dtype = dtype if dtype is not None else np.float32
         constellation = constellation.astype(real_dtype)
     else:
-        # Complex modulations (PSK, QAM)
         constellation = constellation.astype(dtype)
 
     # Map indices to points
     return constellation[indices]
 
 
-def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
+def demap_symbols(
+    symbols: ArrayType, modulation: str, order: int, normalize: bool = False
+) -> ArrayType:
     """
     Maps complex symbols back to a sequence of bits (hard decisions).
 
@@ -480,6 +492,8 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
         Modulation type.
     order : int
         Modulation order.
+    normalize : bool, default False
+        Whether the constellation was normalized to unit power.
 
     Returns
     -------
@@ -499,7 +513,7 @@ def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     symbols_flat = symbols.flatten()
 
     # Get constellation
-    constellation = gray_constellation(modulation, order)
+    constellation = gray_constellation(modulation, order, normalize=normalize)
     constellation = xp.asarray(constellation)
 
     # 1. Find nearest constellation point (Hard Decision)
@@ -539,6 +553,7 @@ def demap_symbols_soft(
     noise_var: float,
     method: str = "maxlog",
     vectorized: bool = True,
+    normalize: bool = False,
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision demapping.
@@ -564,6 +579,8 @@ def demap_symbols_soft(
         If True, use high-performance vectorized operations.
         Automatically falls back to loops for extremely large arrays to
         prevent Out-Of-Memory (OOM) errors.
+    normalize : bool, default False
+        Whether the constellation was normalized to unit power.
 
     Returns
     -------
@@ -590,7 +607,7 @@ def demap_symbols_soft(
     num_symbols = symbols_flat.size
 
     # Get constellation points indexed by symbol value
-    constellation = gray_constellation(modulation, order)
+    constellation = gray_constellation(modulation, order, normalize=normalize)
     constellation = xp.asarray(constellation)
 
     # Build bit mapping table

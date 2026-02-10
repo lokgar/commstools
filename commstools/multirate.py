@@ -91,7 +91,7 @@ def polyphase_resample(
 
         # Pre-allocate output: compute output length from first row
         first_out = sp.signal.resample_poly(
-            samples_flat[0], up, down, axis=-1, **kwargs
+            samples_flat[0], up, down, axis=-1, padtype="constant", **kwargs
         )
         n_out = first_out.shape[-1]
         n_channels = samples_flat.shape[0]
@@ -102,7 +102,7 @@ def polyphase_resample(
 
         for i in range(1, n_channels):
             result_flat[i] = sp.signal.resample_poly(
-                samples_flat[i], up, down, axis=-1, **kwargs
+                samples_flat[i], up, down, axis=-1, padtype="constant", **kwargs
             )
 
         res = result_flat

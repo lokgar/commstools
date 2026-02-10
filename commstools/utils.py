@@ -70,6 +70,7 @@ def random_symbols(
     order: int,
     seed: Optional[int] = None,
     dtype: Optional[Any] = np.complex64,
+    normalize: bool = False,
 ) -> ArrayType:
     """
     Generates a sequence of random modulation symbols.
@@ -89,6 +90,8 @@ def random_symbols(
         Random seed for reproducible results.
     dtype : data-type, default np.complex64
         Desired data type of the output symbols.
+    normalize : bool, default False
+        If True, scales symbols to unit average power.
 
     Returns
     -------
@@ -99,7 +102,31 @@ def random_symbols(
 
     k = int(np.log2(order))
     bits = random_bits(num_symbols * k, seed=seed)
-    return mapping.map_bits(bits, modulation, order, dtype=dtype)
+    return mapping.map_bits(bits, modulation, order, dtype=dtype, normalize=normalize)
+
+
+def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> ArrayType:
+    """
+    Computes the Root-Mean-Square (RMS) value of an array.
+
+    RMS is defined as: $\\sqrt{E[|x|^2]}$.
+
+    Parameters
+    ----------
+    x : array_like
+        Input array.
+    axis : int, optional
+        Axis along which to compute the RMS. If None, computes global RMS.
+    keepdims : bool, default False
+        If True, the reduced axes are left in the result as dimensions with size one.
+
+    Returns
+    -------
+    array_like or float
+        The RMS value of the input.
+    """
+    x, xp, _ = dispatch(x)
+    return xp.sqrt(xp.mean(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
 
 
 def normalize(
@@ -112,12 +139,12 @@ def normalize(
     ----------
     x : array_like
         Input signal or filter taps.
-    mode : {"unity_gain", "unit_energy", "max_amplitude", "average_power"}, default "unity_gain"
+    mode : {"unity_gain", "unit_energy", "max_amplitude", "average_power", "rms"}, default "unity_gain"
         Normalization strategy:
         - "unity_gain": Sum of elements is 1.0 (DC gain normalization).
         - "unit_energy": L2-norm is 1.0 ($\sum |x|^2 = 1$).
         - "max_amplitude": Peak absolute value is 1.0 ($\max |x| = 1$).
-        - "average_power": Mean power is 1.0 ($E[|x|^2] = 1$).
+        - "average_power" or "rms": Mean power (RMS) is 1.0 ($E[|x|^2] = 1$).
     axis : int, optional
         The axis along which to compute the normalization factor.
         If `None`, normalizes the entire array globally.
@@ -154,10 +181,10 @@ def normalize(
         else:
             norm_factor = xp.max(xp.abs(x), axis=axis, keepdims=keepdims)
 
-    elif mode == "average_power":
+    elif mode in ("average_power", "rms"):
         # RMS = 1: sqrt(mean(|x|²)) = 1, so mean(|x|²) = 1
         # Use case: signals where average power should be normalized
-        norm_factor = xp.sqrt(xp.mean(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
+        norm_factor = rms(x, axis=axis, keepdims=keepdims)
 
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
@@ -257,6 +284,12 @@ def validate_array(
             v = np.asarray(v)
         except Exception:
             raise ValueError(f"Could not convert {name} of type {type(v)} to array.")
+
+    # Ensure it's a numeric array (not object, string, etc.)
+    if v.dtype.kind not in "biufc":
+        raise ValueError(
+            f"Expected numeric array for {name}, got dtype {v.dtype} (kind {v.dtype.kind})"
+        )
 
     if complex_only and not np.iscomplexobj(v):
         xp = get_array_module(v)

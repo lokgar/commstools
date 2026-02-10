@@ -63,21 +63,20 @@ def test_frame_mimo_pilots(backend_device, xp):
 
 def test_frame_mimo_preamble_broadcasting(backend_device, xp):
     """Verify that a 1D preamble is correctly broadcasted across all MIMO streams."""
-    # Create preamble with bit-first architecture (BPSK: 10 bits -> 10 symbols)
-    preamble_bits = xp.zeros(10, dtype=int)  # All zeros -> all -1 symbols for BPSK
-    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
+    # Create Barker-13 preamble
+    preamble = Preamble(sequence_type="barker", length=13)
     frame = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, num_streams=2, preamble=preamble
     )
 
     sig = frame.generate_waveform(sps=1, pulse_shape="none")
-    # Total: 10 preamble + 20 payload = 30
-    assert sig.samples.shape == (2, 30)
+    # Total: 13 preamble + 20 payload = 33
+    assert sig.samples.shape == (2, 33)
 
     # Check preamble on both streams (should be broadcast)
     # (Channels, Time)
-    assert xp.allclose(sig.samples[0, :10], preamble.symbols)
-    assert xp.allclose(sig.samples[1, :10], preamble.symbols)
+    assert xp.allclose(sig.samples[0, :13], preamble.symbols)
+    assert xp.allclose(sig.samples[1, :13], preamble.symbols)
 
 
 def test_frame_mimo_waveform(backend_device, xp):

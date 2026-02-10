@@ -33,6 +33,7 @@ import numpy as np
 
 from .backend import dispatch, to_device
 from .logger import logger
+from . import utils
 
 
 def apply_default_theme() -> None:
@@ -966,7 +967,8 @@ def ideal_constellation(
     order: int,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
-    size=5,
+    size: float = 5,
+    normalize: bool = False,
     show: bool = False,
 ) -> Optional[Tuple[Any, Any]]:
     """
@@ -987,6 +989,8 @@ def ideal_constellation(
         Plot title.
     size : float, default 5
         Figure size (square).
+    normalize : bool, default False
+        If True, scales the constellation to unit average power.
     show : bool, default False
         If True, calls `plt.show()`.
 
@@ -1007,7 +1011,7 @@ def ideal_constellation(
 
     try:
         # Generate constellation on backend (returns NumPy)
-        const = gray_constellation(modulation, order)
+        const = gray_constellation(modulation, order, normalize=normalize)
     except ValueError as e:
         logger.error(f"Error generating constellation: {e}")
         return None
@@ -1208,7 +1212,8 @@ def constellation(
 
     # Compute 2D histogram
     # Determine range based on RMS (robust to noise outliers)
-    signal_rms = np.sqrt(np.mean(np.abs(i_data) ** 2 + np.abs(q_data) ** 2))
+    # Using np.sqrt(np.mean(|I|² + |Q|²)) is equivalent to rms(complex_signal)
+    signal_rms = utils.rms(i_data + 1j * q_data)
     # Use ~3x RMS as limit (covers most constellation points + noise spread)
     limit = signal_rms * 2.0
 
@@ -1255,7 +1260,7 @@ def constellation(
 
             # Scale constellation to match signal amplitude
             # Use RMS-based scaling (robust to noise outliers)
-            const_rms = np.sqrt(np.mean(np.abs(const) ** 2))
+            const_rms = utils.rms(const)
             if const_rms > 0:
                 scale_factor = signal_rms / const_rms
                 const = const * scale_factor

@@ -131,3 +131,71 @@ def test_signal_shift_frequency(backend_device, xp):
     peak = f[xp.argmax(p)]
     # 25 Hz expected
     assert abs(peak - 25.0) < (fs / 64)
+
+
+def test_signal_resolution_and_demap(backend_device, xp):
+    """Verify manual symbol resolution and bit demapping with caching."""
+    # Generate a simple BPSK signal at 4 SPS
+    symbol_rate = 1e6
+    sps = 4
+    num_symbols = 100
+    sig = Signal.psk(
+        order=2,
+        num_symbols=num_symbols,
+        sps=sps,
+        symbol_rate=symbol_rate,
+        seed=42,
+    )
+
+    # Initially resolved attributes should be None
+    assert sig.resolved_symbols is None
+    assert sig.resolved_bits is None
+
+    # Calling demap before resolve_symbols should raise ValueError
+    with pytest.raises(ValueError, match="No resolved symbols available"):
+        sig.demap()
+
+    # Resolve symbols with offset
+    sig.resolve_symbols(offset=0)
+    assert sig.resolved_symbols is not None
+    assert len(sig.resolved_symbols) == num_symbols
+    assert isinstance(sig.resolved_symbols, xp.ndarray)
+
+    # Demap
+    bits = sig.demap(hard=True)
+    assert sig.resolved_bits is not None
+    assert len(sig.resolved_bits) == num_symbols
+    assert xp.array_equal(bits, sig.resolved_bits)
+
+    # Metrics should now work
+    evm_pct, evm_db = sig.evm()
+    assert evm_pct >= 0
+
+    snr_db = sig.snr()
+    assert snr_db > 0
+
+    # Test BER with manual reference bits
+    ref_bits = sig.source_bits
+    if ref_bits is not None:
+        # ber() requires resolved_bits (populated by demap above)
+        ber = sig.ber(reference_bits=ref_bits)
+        assert 0 <= ber <= 1
+
+    # Test that BER raises if resolved_bits is missing
+    sig.resolved_bits = None
+    with pytest.raises(ValueError, match="Please call `demap\(\)` first"):
+        sig.ber(reference_bits=ref_bits)
+
+
+def test_signal_ber_soft_demap(backend_device, xp):
+    """Verify that BER uses the results of soft demapping correctly."""
+    sig = Signal.psk(order=4, num_symbols=100, sps=1, symbol_rate=1e6, seed=42)
+    sig.resolve_symbols()
+
+    # Perform soft demapping
+    sig.demap(hard=False, noise_var=0.1)
+    assert sig.resolved_llr is not None
+    assert sig.resolved_bits is not None  # Populated from LLRs
+
+    ber_soft = sig.ber()
+    assert 0 <= ber_soft <= 1
