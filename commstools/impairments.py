@@ -1,10 +1,14 @@
 """
-Impairment models for communication channels.
+Channel impairments and signal degradation models.
 
-This module provides functions to simulate various physical channel impairments,
-allowing for the evaluation of receiver performance under realistic conditions.
-Currently supported:
-- **Additive White Gaussian Noise (AWGN)**: Adds random noise to the signal based on a target SNR.
+This module provides routines for simulating physical layer impairments,
+enabling the evaluation of receiver performance under realistic channel
+conditions.
+
+Functions
+---------
+add_awgn :
+    Adds Additive White Gaussian Noise based on Es/N0.
 """
 
 from typing import TYPE_CHECKING, Union
@@ -22,31 +26,38 @@ def add_awgn(
     sps: float = 1.0,
 ) -> Union[ArrayType, "Signal"]:
     """
-    Adds Additive White Gaussian Noise (AWGN) to a signal based on Es/N0.
+    Adds Additive White Gaussian Noise (AWGN) to a signal based on $E_s/N_0$.
 
-    Uses the standard communications definition where Es/N0 is the ratio of
+    Uses the standard communications definition where $E_s/N_0$ is the ratio of
     symbol energy to noise spectral density. This accounts for oversampling
-    so the specified Es/N0 matches what you'd measure in the signal bandwidth.
+    so the specified $E_s/N_0$ matches what you'd measure in the signal bandwidth.
 
-    Args:
-        signal: The input signal (NumPy/CuPy array or `Signal` object).
-        esn0_db: Symbol energy to noise spectral density ratio (Es/N0) in dB.
-        sps: Samples per symbol. For `Signal` objects, this is extracted
-             automatically. For raw arrays, defaults to 1 (symbol-rate).
+    Parameters
+    ----------
+    signal : array_like or Signal
+        The input signal samples. Shape: (..., N_samples).
+    esn0_db : float
+        Symbol energy to noise spectral density ratio ($E_s/N_0$) in dB.
+    sps : float, default 1.0
+        Samples per symbol. For `Signal` objects, this is extracted
+        automatically from the metadata.
 
-    Returns:
-        The noisy signal. If the input was a `Signal` object, a new `Signal`
-        instance with updated samples is returned.
+    Returns
+    -------
+    array_like or Signal
+        The noisy signal with the same type and backend as the input.
 
-    Note:
-        - For symbol-rate signals (sps=1), Es/N0 equals the sample-level SNR.
-        - For oversampled signals, noise power is scaled by sps to maintain
-          the correct Es/N0 in the signal bandwidth.
-        - For complex signals, noise power is split equally between I and Q.
+    Notes
+    -----
+    - For symbol-rate signals (sps=1), $E_s/N_0$ equals the sample-level SNR.
+    - For oversampled signals, noise power is scaled by `sps` to maintain
+      the correct $E_s/N_0$ in the signal bandwidth.
+    - For complex signals, noise power is split equally between I and Q.
 
-    Example:
-        >>> sig = Signal.pam(order=4, num_symbols=1000, sps=4, symbol_rate=1e6)
-        >>> noisy = add_awgn(sig, esn0_db=20)  # sps extracted from Signal
+    Examples
+    --------
+    >>> sig = Signal.pam(order=4, num_symbols=1000, sps=4, symbol_rate=1e6)
+    >>> noisy = add_awgn(sig, esn0_db=20)  # sps extracted from Signal
     """
     logger.info(f"Adding AWGN (Es/N0 target: {esn0_db:.2f} dB).")
 

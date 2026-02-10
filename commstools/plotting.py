@@ -1,14 +1,27 @@
 """
-Signal visualization and plotting tools.
+Signal visualization and publication-quality plotting tools.
 
-This module provides high-level plotting functions optimized for communication signals,
-designed to produce publication-quality figures with minimal effort.
-Features:
-- Power Spectral Density (PSD) with automatic SI scaling.
-- Time-domain waveforms (I/Q or real-valued).
-- Eye diagrams (optimized vectorized line mode and high-definition density plots).
-- Constellation diagrams with Gray-coded bit annotations.
-- Filter response analysis (Impulse, Magnitude, Phase).
+This module provides high-level plotting functions optimized for
+communication signals. It leverages Matplotlib to produce high-density,
+professional diagrams with automatic SI scaling and backend-agnostic data
+handling.
+
+Functions
+---------
+apply_default_theme :
+    Sets the library's visual style (fonts, grid, colors).
+psd :
+    Plots Power Spectral Density with frequency/wavelength scaling.
+time_domain :
+    Plots I/Q waveforms or real-valued time-series data.
+eye_diagram :
+    Visualizes signal quality via vectorized traces or 2D density histograms.
+constellation :
+    Generates high-definition constellation density diagrams for noisy signals.
+ideal_constellation :
+    Draws theoretical constellations with Gray-coded bit annotations.
+filter_response :
+    Analyzes FIR filters in both time and frequency domains.
 """
 
 from typing import Any, Optional, Tuple, Union
@@ -23,6 +36,20 @@ from .logger import logger
 
 
 def apply_default_theme() -> None:
+    """
+    Applies the library's default visual theme to Matplotlib.
+
+    This theme configures publication-quality defaults, including:
+    - Roboto or standard sans-serif typography.
+    - Optimized figure dimensions and DPI.
+    - Consistent grid styling and axis formatting.
+    - Improved LaTeX math rendering.
+
+    Notes
+    -----
+    This function modifies `matplotlib.rcParams` globally. It is recommended
+    to call this at the start of a script or notebook for consistent styling.
+    """
     logger.debug("Applying default plotting theme.")
     try:
         font_prop = fm.FontProperties(family="Roboto", weight="regular")
@@ -68,16 +95,23 @@ def apply_default_theme() -> None:
 
 def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> Tuple[int, int]:
     """
-    Compute grid layout (rows, cols) for a given number of axes.
+    Computes a grid layout (rows, cols) for a given number of axes.
 
-    Limits the number of columns to max_cols to prevent overly wide figures.
+    Limits the maximum number of columns to prevent excessively wide figures.
 
-    Args:
-        num_axes: Number of axes/subplots needed.
-        max_cols: Maximum number of columns (default: 2).
+    Parameters
+    ----------
+    num_axes : int
+        Total number of subplots required.
+    max_cols : int, default 2
+        Maximum allowed number of columns.
 
-    Returns:
-        Tuple of (nrows, ncols).
+    Returns
+    -------
+    nrows : int
+        Number of rows in the grid.
+    ncols : int
+        Number of columns in the grid.
     """
     if num_axes <= max_cols:
         return 1, num_axes
@@ -105,24 +139,46 @@ def psd(
     """
     Plots the Power Spectral Density (PSD) of the signal.
 
-    Args:
-        samples: The signal samples to plot.
-        sampling_rate: Sampling rate in Hz.
-        nperseg: Length of each segment.
-        detrend: Detrend method.
-        average: Averaging method.
-        center_frequency: Center frequency of the signal in Hz.
-        domain: Signal domain ('RF' or 'OPT').
-        x_axis: X-axis type ('frequency' or 'wavelength').
-        ax: Optional matplotlib axis to plot on.
-        xlim: X-axis limits.
-        ylim: Y-axis limits.
-        title: Title of the plot. Defaults to "Spectrum". If None, no title is set.
-        show: Whether to call plt.show() after plotting.
-        **kwargs: Additional arguments passed to ax.plot.
+    Supports automatic frequency scaling (Hz, MHz, GHz, etc.) or wavelength
+    conversion for optical signals. Handles multidimensional (MIMO) signals
+    by generating a grid of subplots.
 
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    sampling_rate : float, default 1.0
+        Sampling rate in Hz.
+    nperseg : int, default 256
+        Length of each segment for Welch's method. Higher values provide
+        better frequency resolution but more noise.
+    detrend : str or bool, default False
+        Specifies how to detrend each segment (e.g., 'constant', 'linear').
+    average : str, default "mean"
+        Method to use for averaging segments ('mean' or 'median').
+    center_frequency : float, default 0.0
+        Frequency offset to apply to the x-axis in Hz.
+    domain : {"RF", "OPT"}, default "RF"
+        Signal domain. If "OPT", wavelength scaling is enabled.
+    x_axis : {"frequency", "wavelength"}, default "frequency"
+        Units for the horizontal axis.
+    ax : matplotlib.axes.Axes, optional
+        Existing axis to plot on. If `None`, a new figure is created.
+    xlim, ylim : tuple of float, optional
+        Axis limits for the plot.
+    title : str, optional
+        Plot title. Defaults to "Spectrum".
+    show : bool, default False
+        If True, calls `plt.show()` immediately.
+    **kwargs : Any
+        Additional keyword arguments passed to `ax.plot`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes or ndarray
+        The axis or array of axes used for the plot.
     """
     logger.debug(f"Generating PSD plot (sampling_rate={sampling_rate} Hz).")
 
@@ -281,18 +337,34 @@ def time_domain(
     """
     Plots the time-domain representation of the signal.
 
-    Args:
-        samples: The signal samples to plot.
-        sampling_rate: Sampling rate in Hz.
-        num_symbols: Number of symbols to plot (requires sps).
-        sps: Samples per symbol (required if num_symbols is used).
-        ax: Optional matplotlib axis to plot on.
-        title: Title of the plot. Defaults to "Waveform". If None, no title is set.
-        show: Whether to call plt.show() after plotting.
-        **kwargs: Additional arguments passed to ax.plot.
+    For complex signals, both In-Phase (I) and Quadrature (Q) components
+    are plotted. Handles SI scaling (s, ms, us, etc.) for the time axis.
 
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    sampling_rate : float, default 1.0
+        Sampling rate in Hz.
+    num_symbols : int, optional
+        Limit plot to a specific number of symbol periods. Requires `sps`.
+    sps : float, optional
+        Samples per symbol (required if `num_symbols` is used).
+    ax : matplotlib.axes.Axes, optional
+        Existing axis to plot on.
+    title : str, optional
+        Plot title. Defaults to "Waveform".
+    show : bool, default False
+        If True, calls `plt.show()`.
+    **kwargs : Any
+        Additional keyword arguments passed to `ax.plot`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes or ndarray
+        The axis or array of axes used for the plot.
     """
     logger.debug("Generating time-domain plot.")
 
@@ -423,7 +495,24 @@ def _plot_eye_traces(
     **kwargs: Any,
 ) -> None:
     """
-    Internal helper to plot eye diagram traces for a single component (I or Q).
+    Internal helper to plot eye diagram traces for a single signal component.
+
+    Parameters
+    ----------
+    samples : array_like
+        The component samples (e.g., Real or Imaginary part).
+    sps : float
+        Samples per symbol.
+    num_symbols : int
+        Number of symbol periods per window.
+    ax : matplotlib.axes.Axes
+        The axis to plot on.
+    type : {"line", "hist"}
+        Plotting strategy.
+    title : str, optional
+        Title for the subplot.
+    **kwargs : Any
+        Additional plotting parameters.
     """
     samples, xp, sp = dispatch(samples)
 
@@ -587,21 +676,45 @@ def eye_diagram(
     """
     Plots the eye diagram of the signal.
 
-    Args:
-        samples: The signal samples to plot.
-        sps: Samples per symbol.
-        ax: Optional matplotlib axis to plot on.
-        num_symbols: Number of symbol periods to display in the eye diagram. Defaults to 2.
-        type: Type of plot ('line' or 'hist'). 'line' plots overlapping traces, 'hist' plots a 2D histogram.
-        title: Title of the plot. Defaults to "Eye Diagram". If None, no title is set.
-        vmin: Minimum density value for colormap (hist mode only). If None, auto-scaled.
-        vmax: Maximum density value for colormap (hist mode only). If None, auto-scaled.
-              Histogram is normalized to [0, 1], so vmax=1 shows full range.
-        show: Whether to call plt.show() after plotting.
-        **kwargs: Additional arguments passed to plot (line mode) or imshow (hist mode).
+    Visualizes signal quality by overlapping segments of the signal
+    synchronized to the symbol clock. Supports both fast trace-based
+    plotting and high-definition density histograms.
 
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Usually matched-filtered.
+    sps : float
+        Samples per symbol (must be an integer for windowing).
+    ax : matplotlib.axes.Axes or array_like, optional
+        Target axis or list of axes. For complex signals, two axes are
+        required per channel (I and Q).
+    num_symbols : int, default 2
+        Number of symbol periods TO display in each eye window.
+    type : {"hist", "line"}, default "hist"
+        Visualization mode:
+        - "hist": 2D density histogram (recommended for noisy signals).
+        - "line": Vectorized overlapping traces (classic look).
+    title : str, optional
+        Base title for the plot.
+    vmin, vmax : float, optional
+         Color scaling limits for "hist" mode.
+    show : bool, default False
+        If True, calls `plt.show()`.
+    **kwargs : Any
+        Additional keyword arguments passed to the plotting backend.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes or ndarray
+        The axis or array of axes used.
+
+    Notes
+    -----
+    The signal should typically be synchronized (no CFO or timing offset)
+    and matched-filtered before plotting to produce a clear "eye".
     """
     logger.debug(f"Generating eye diagram ({type} mode).")
 
@@ -743,14 +856,26 @@ def filter_response(
     """
     Plots the impulse and frequency response of a filter.
 
-    Args:
-        taps: Filter taps.
-        sps: Samples per symbol. Used for time axis normalization.
-        ax: Optional matplotlib axes. If provided, should be a list/tuple of 3 axes.
-        show: Whether to call plt.show() after plotting.
+    Provides a 3-panel analysis showing the filter taps in the time domain,
+    the magnitude response in dB, and the unwrapped phase response.
 
-    Returns:
-        Tuple of (figure, (ax_impulse, ax_mag, ax_phase)) if show is False, else None.
+    Parameters
+    ----------
+    taps : array_like
+        Filter taps (impulse response).
+    sps : float, default 1.0
+        Samples per symbol for time-axis normalization.
+    ax : array_like, optional
+        A list or tuple of 3 axes to plot on.
+    show : bool, default False
+        If True, calls `plt.show()`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    axes : tuple of matplotlib.axes.Axes
+        The (impulse, magnitude, phase) axes.
     """
 
     import matplotlib.ticker as ticker
@@ -845,17 +970,32 @@ def ideal_constellation(
     show: bool = False,
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Plots the ideal constellation diagram for a given modulation and order.
+    Plots the ideal constellation diagram for a modulation format.
 
-    Args:
-        modulation: Modulation type ('psk', 'qam', 'ask-bipol', 'ask-unipol').
-        order: Modulation order.
-        ax: Optional matplotlib axis to plot on.
-        title: Title of the plot.
-        show: Whether to call plt.show() after plotting.
+    Draws theoretical symbol points with their associated Gray-coded bit
+    sequences. Includes concentric rings and center axes for reference.
 
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
+    Parameters
+    ----------
+    modulation : {"psk", "qam", "ask", "pam"}
+        Modulation scheme identifier.
+    order : int
+        Modulation order (e.g., 4, 16, 64).
+    ax : matplotlib.axes.Axes, optional
+        Target axis.
+    title : str, optional
+        Plot title.
+    size : float, default 5
+        Figure size (square).
+    show : bool, default False
+        If True, calls `plt.show()`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes
+        The plotting axis.
     """
     logger.debug(f"Generating ideal constellation for {modulation} ({order}-level).")
     from .mapping import gray_constellation
@@ -958,26 +1098,39 @@ def constellation(
     """
     Plots a constellation density diagram from received samples.
 
-    Uses 2D histogram (hist2d) for density visualization, which is more
-    suitable for noisy/impaired signals than scatter plots.
+    Uses high-definition 2D histograms with Gaussian smoothing to
+    visualize noisy or impaired signals. This is significantly more
+    informative than scatter plots for large sample sets.
 
-    Args:
-        samples: Complex samples to plot (1D or 2D for MIMO).
-        bins: Number of histogram bins per axis (default: 100).
-        cmap: Colormap for density plot (default: 'inferno').
-        ax: Optional matplotlib axis to plot on.
-        overlay_ideal: If True, overlay ideal constellation points.
-        modulation: Modulation type (required if overlay_ideal=True).
-        order: Modulation order (required if overlay_ideal=True).
-        title: Title of the plot. Defaults to "Constellation". If None, no title.
-        vmin: Minimum density value for colormap scaling. If None, auto-scaled.
-        vmax: Maximum density value for colormap scaling. If None, auto-scaled.
-              Histogram is normalized to [0, 1], so vmax=1 shows full range.
-        show: Whether to call plt.show() after plotting.
-        **kwargs: Additional arguments passed to ax.imshow.
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Received complex samples. Shape: (..., N_symbols).
+    bins : int, default 100
+        Density resolution (bins per axis).
+    cmap : str, default "inferno"
+        Colormap for the density field.
+    ax : matplotlib.axes.Axes, optional
+        Target axis.
+    overlay_ideal : bool, default False
+        If True, overlays theoretical points and scales them to signal power.
+    modulation, order : str, int, optional
+        Required parameters if `overlay_ideal` is enabled.
+    title : str, optional
+        Plot title.
+    vmin, vmax : float, optional
+        Color scaling limits. Defaults to auto-range [0, 1].
+    show : bool, default False
+        If True, calls `plt.show()`.
+    **kwargs : Any
+        Additional theoretical arguments passed to `ax.imshow`.
 
-    Returns:
-        Tuple of (figure, axis) if show is False, else None.
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes or ndarray
+        The axis or array of axes used.
     """
     logger.debug("Generating constellation density plot.")
 

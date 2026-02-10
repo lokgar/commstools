@@ -1,9 +1,16 @@
 """
-Spectral tools.
+Spectral analysis and frequency-domain processing.
 
-This module provides functions for spectral-related operations:
-- Frequency shift.
-- PSD estimation (Welch's method).
+This module provides high-performance routines for spectral estimation and
+manipulation, optimized for both CPU and GPU backends. It supports Welch's
+Power Spectral Density (PSD) method and phase-continuous frequency shifting.
+
+Functions
+---------
+shift_frequency :
+    Applies a complex frequency shift (mixing) to a signal.
+welch_psd :
+    Estimates the Power Spectral Density using Welch's method.
 """
 
 from typing import Optional, Tuple, Union
@@ -16,19 +23,39 @@ def shift_frequency(
     samples: ArrayType, offset: float, fs: float
 ) -> Tuple[ArrayType, float]:
     """
-    Apply a frequency offset to the signal.
+    Applies a frequency offset (complex mixing) to a signal.
 
-    Shifts the signal spectrum by `offset` Hz.
-    To maintain phase continuity (circularity), the applied offset is quantized
-    to the frequency resolution of the signal (fs / N).
+    This function shifts the signal spectrum by a specified offset in Hz
+    by multiplying the samples with a complex phasor:
+    $s_{shifted}(t) = s(t) \cdot e^{j 2 \pi f_{offset} t}$
 
-    Args:
-        samples: Input signal samples.
-        offset: Desired frequency offset in Hz.
-        fs: Sampling rate in Hz.
+    To maintain phase continuity and prevent spectral leakage when the
+    signal is treated as periodic (e.g., in circular convolution or
+    FFT-based operations), the applied offset is quantized to the
+    fundamental frequency resolution of the signal ($\Delta f = f_s / N$).
 
-    Returns:
-        Tuple of (shifted_samples, actual_offset).
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    offset : float
+        Target frequency shift in Hz. Positive values shift the spectrum
+        towards higher frequencies.
+    fs : float
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    shifted_samples : array_like
+        The frequency-shifted signal on the same backend as the input.
+    actual_offset : float
+        The actual quantized frequency shift applied to the signal.
+
+    Notes
+    -----
+    The quantization ensures that the applied shift corresponds to an
+    integer number of cycles over the signal duration, which is critical
+    for preserving the circularity of the signal's phase.
     """
     samples, xp, _ = dispatch(samples)
 
@@ -74,23 +101,44 @@ def welch_psd(
     axis: int = -1,
 ) -> Tuple[ArrayType, ArrayType]:
     """
-    Compute the Power Spectral Density (PSD) using Welch's method.
+    Estimates the Power Spectral Density (PSD) using Welch's method.
 
-    Args:
-        samples: Input signal samples.
-        sampling_rate: Sampling rate in Hz.
-        nperseg: Length of each segment.
-        detrend: Detrend method (default: False).
-        average: Averaging method (default: 'mean').
-        return_onesided: If True, return a one-sided spectrum for real data.
-                         If False, return a two-sided spectrum.
-                         If None (default), behavior depends on input type:
-                         - Complex data: False (two-sided, centered)
-                         - Real data: True (one-sided)
-        axis: Axis along which the PSD is computed. Defaults to -1 (Time-Last).
+    Welch's method provides a lower-variance estimate of the PSD
+    compared to a raw periodogram by averaging spectra computed over
+    overlapping segments of the signal.
 
-    Returns:
-        Tuple of (frequency_axis, psd_values).
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    sampling_rate : float
+        Sampling rate in Hz.
+    nperseg : int, default 256
+        Length of each segment. A longer segment increases frequency
+        resolution but also increases the variance of the estimate.
+    detrend : str or bool, default False
+        Specifies how to detrend each segment (e.g., 'constant', 'linear').
+    average : {"mean", "median"}, default "mean"
+        Method to use for averaging segments. Median is more robust to
+        transient outliers.
+    return_onesided : bool, optional
+        If True, returns a one-sided spectrum (frequencies 0 to $f_s/2$)
+        for real-valued data. For complex data, only two-sided spectra
+        (frequencies $-f_s/2$ to $f_s/2$) are supported.
+    axis : int, default -1
+        The axis along which to compute the PSD.
+
+    Returns
+    -------
+    f : array_like
+        Array of sample frequencies.
+    Pxx : array_like
+        Power spectral density (linear scale, units: $V^2/Hz$).
+
+    Raises
+    ------
+    ValueError
+        If `return_onesided` set to True for complex-valued inputs.
     """
     samples, xp, sp = dispatch(samples)
     is_complex = xp.iscomplexobj(samples)

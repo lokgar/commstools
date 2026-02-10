@@ -1,12 +1,25 @@
 """
-Core signal processing abstractions.
+Core signal processing abstractions and data containers.
 
-This module defines the primary data structures for the library:
-- `Signal`: Encapsulates complex IQ samples, physical layer metadata (sampling rate, symbol rate,
-  modulation scheme/order), and methods for signal analysis and transformation.
-- `SingleCarrierFrame`: A container for single carrier frames with preambles, pilots, and payloads.
+This module defines the primary data structures used throughout the library.
+It provides high-level abstractions for handling raw IQ samples, physical
+layer metadata, and complex frame structures.
 
-All core classes are built on Pydantic for validation and support both CPU (NumPy) and GPU (CuPy) backends.
+All core classes are built on Pydantic for robust validation and support
+transparent backend switching between CPU (NumPy) and GPU (CuPy).
+
+Classes
+-------
+Signal :
+    The primary container for IQ samples and signal-centric metadata.
+    Includes methods for filtering, resampling, and visualization.
+Preamble :
+    A structured container for frame synchronization sequences.
+SingleCarrierFrame :
+    A complex frame container supporting pilot patterns, guard intervals,
+    and spatial multiplexing (MIMO).
+FrameInfo :
+    Metadata structure describing the physical bounds of a frame.
 """
 
 import types
@@ -40,20 +53,40 @@ from .logger import logger
 
 class FrameInfo(BaseModel):
     """
-    Describes frame structure within a Signal.
+    Metadata describing the framed structure within a `Signal`.
 
-    This class holds metadata about the frame structure when a Signal
-    is generated from a SingleCarrierFrame, enabling distinguishing
-    frame-generated Signals from standalone Signals.
+    This class encapsulates timing and structure parameters when a `Signal`
+    is generated from a `SingleCarrierFrame`. It allows downstream processing
+    (like synchronization and equalization) to distinguish between preamble,
+    pilots, and payload segments.
 
-    Attributes:
-        preamble_len: Number of preamble symbols.
-        payload_len: Number of payload symbols.
-        pilot_count: Total number of pilot symbols.
-        guard_len: Guard interval length in symbols.
-        guard_type: Type of guard ('zero' or 'cp').
-        preamble_mod_scheme: Modulation scheme used for preamble.
-        preamble_mod_order: Modulation order used for preamble.
+    Attributes
+    ----------
+    preamble_len : int
+        Number of symbols in the preamble/training sequence.
+    payload_len : int
+        Number of symbols in the data payload.
+    pilot_count : int
+        Total number of pilot/reference symbols embedded in the frame.
+    guard_len : int
+        Length of the guard interval (e.g., cyclic prefix) in symbols.
+    guard_type : {"zero", "cp"}
+        Type of guard interval: "zero" for zero-padding, "cp" for cyclic prefix.
+    preamble_mod_scheme : str, optional
+        Modulation scheme used for the preamble (e.g., 'BPSK').
+    preamble_mod_order : int, optional
+        Order of the preamble modulation (e.g., 2 for BPSK).
+
+    Notes
+    -----
+    The frame structure typically follows: [Guard] + [Preamble] + [Body],
+    where the [Body] contains both [Payload] and [Pilots] symbols interleaved
+    according to a specific pattern (e.g., block or comb).
+
+    Total Symbols = guard_len + preamble_len + payload_len + pilot_count.
+
+    The [Guard] interval can be either Zero-Padding (appended at the end)
+    or a Cyclic Prefix (prepended at the start).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -69,33 +102,53 @@ class FrameInfo(BaseModel):
 
 class Signal(BaseModel):
     """
-    Represents a digital signal with associated physical layer metadata.
+    Primary container for digital baseband or RF signals.
 
-    This class serves as the primary data container for the library, encapsulating
-    both the raw IQ samples and the contextual information required for digital
-    signal processing (DSP) and analysis.
+    The `Signal` class encapsulates complex-valued IQ samples along with the
+    physical layer metadata (sampling rate, modulation, etc.) required for
+    comprehensive Digital Signal Processing (DSP) pipelines. It supports
+    seamless switching between CPU (NumPy) and GPU (CuPy) backends.
 
-    Attributes:
-        samples: The complex IQ samples of the signal. Can be NumPy or CuPy arrays.
-                 Shape should be (N_samples,) for SISO or (N_channels, N_samples) for MIMO.
-        sampling_rate: The sampling rate of the signal in Hz. Must be positive.
-        symbol_rate: The symbol rate (baud rate) in Hz. Used for SPS calculation.
-        modulation_scheme: Identifier for the modulation format (e.g., 'QPSK', '16QAM').
-        modulation_order: The number of symbols in the constellation (e.g., 4, 16).
-        source_symbols: Optional array of original symbols that generated this signal.
-        pulse_shape: Name of the pulse shaping filter applied (e.g., 'rrc', 'rect').
-        spectral_domain: The signal's placement in the spectrum ('BASEBAND', 'PASSBAND', 'INTERMEDIATE').
-        physical_domain: The physical layer domain ('DIG' for digital, 'RF' for radio frequency, 'OPT' for optical).
-        center_frequency: The carrier or center frequency in Hz.
-        digital_frequency_offset: Any applied digital frequency shift in Hz.
-        filter_span: Filter span in symbols for pulse shaping.
-        rrc_rolloff: Roll-off factor for RRC filter.
-        rc_rolloff: Roll-off factor for RC filter.
-        smoothrect_bt: BT product for SmoothRect filter.
-        gaussian_bt: BT product for Gaussian filter.
-
-    Raises:
-        ValidationError: If the input fields do not satisfy the Pydantic constraints (e.g., non-positive sampling rate).
+    Attributes
+    ----------
+    samples : array_like
+        The complex IQ samples.
+        Shape: (N_samples,) for SISO or (N_channels, N_samples) for MIMO.
+        The last dimension is always assumed to be Time.
+    sampling_rate : float
+        Sampling frequency in Hertz (Hz). Must be > 0.
+    symbol_rate : float
+        Symbol frequency (Baud rate) in Hertz (Hz). Must be > 0.
+    modulation_scheme : str, optional
+        Identifier for the modulation format (e.g., 'QPSK', '16QAM').
+    modulation_order : int, optional
+        The size of the symbol constellation (e.g., 4, 16).
+    source_bits : array_like, optional
+        The original binary data that generated the signal.
+    source_symbols : array_like, optional
+        The mapped constellation symbols before pulse shaping.
+    pulse_shape : str, optional
+        Name of the pulse shaping filter (e.g., 'rrc', 'rect', 'gaussian').
+    spectral_domain : {"BASEBAND", "PASSBAND", "INTERMEDIATE"}
+        The signal's current placement in the frequency spectrum.
+    physical_domain : {"DIG", "RF", "OPT"}
+        The physical transmission domain: 'DIG' (Digital), 'RF' (Radio), 'OPT' (Optical).
+    center_frequency : float
+        The carrier or center frequency in Hz.
+    digital_frequency_offset : float
+        Cumulative digital frequency shift applied to the signal in Hz.
+    filter_span : int
+        Span of the pulse-shaping filter in symbols.
+    rrc_rolloff : float
+        Roll-off factor for the Root-Raised Cosine (RRC) filter.
+    rc_rolloff : float
+        Roll-off factor for the Raised Cosine (RC) filter.
+    gaussian_bt : float
+        Bandwidth-Time (BT) product for Gaussian pulse shaping.
+    smoothrect_bt : float
+        BT product for SmoothRect shaping filters.
+    frame_info : FrameInfo, optional
+        Metadata describing the frame structure if this signal is part of a frame.
     """
 
     model_config = ConfigDict(
@@ -130,16 +183,31 @@ class Signal(BaseModel):
     def validate_samples(cls, v: Any) -> Any:
         """
         Validates and coerces the samples input into a backend-compatible array.
-        Enforces (N_samples, N_channels) shape convention for multidimensional inputs.
 
-        Args:
-            v: The input samples (array-like, list, or tuple).
+        This validator ensures that the input is converted to a NumPy or CuPy array
+        and enforces a (Channels, Time) shape convention for multidimensional inputs.
 
-        Returns:
+        Parameters
+        ----------
+        v : array_like
+            Input samples (list, tuple, NumPy array, CuPy array, or JAX array).
+
+        Returns
+        -------
+        array_like
             The validated samples as a NumPy or CuPy array.
 
-        Raises:
-            ValueError: If the input cannot be converted to a supported array type.
+        Raises
+        ------
+        ValueError
+            If the input cannot be converted to a supported array type or has
+            unsupported dimensions (> 2).
+
+        Notes
+        -----
+        The library enforces a **Time-Last** convention: (N_channels, N_samples)
+        or simply (N_samples,) for 1D signals. This aligns with C-contiguous
+        memory layout which is generally more performant for time-axis operations.
         """
         arr = utils.validate_array(v, name="samples")
 
@@ -173,9 +241,11 @@ class Signal(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """
-        Post-initialization hook.
-        - Auto-derives source_symbols from source_bits if bits provided but symbols not.
-        - Moves the signal to GPU if a compatible device is discovered.
+        Post-initialization hook to handle metadata derivation and device placement.
+
+        This method automatically derives `source_symbols` from `source_bits` if
+        modulation parameters are present, and moves the signal samples to
+        the GPU if a compatible device is available.
         """
         # Bit-first: derive symbols from bits if not provided
         if self.source_bits is not None and self.source_symbols is None:
@@ -196,35 +266,51 @@ class Signal(BaseModel):
     @property
     def xp(self) -> types.ModuleType:
         """
-        Returns the array module (numpy or cupy) for the signal's data.
+        Access the active array backend (NumPy or CuPy).
 
-        This property allows for backend-agnostic array operations by returning
-        the appropriate library based on whether the data is on CPU or GPU.
+        This property allows for backend-agnostic code by returning the
+        appropriate module based on where the samples currently reside.
+
+        Returns
+        -------
+        module
+            `numpy` if data is on CPU, `cupy` if on GPU.
         """
         return get_array_module(self.samples)
 
     @property
     def sp(self) -> types.ModuleType:
         """
-        Returns the scipy module (scipy or cupyx.scipy) for the signal's data.
+        Access the signal processing module (`scipy` or `cupyx.scipy`).
 
-        Similar to `xp`, this returns the appropriate signal processing library
-        compatible with the current data backend.
+        Returns
+        -------
+        module
+            Appropriate signal processing library for the current backend.
         """
         return get_scipy_module(self.xp)
 
     @property
     def backend(self) -> str:
         """
-        Returns the name of the backend ('CPU' or 'GPU').
+        Returns the current computational backend name.
+
+        Returns
+        -------
+        {"CPU", "GPU"}
+            A string indicating the device location of samples.
         """
         return "GPU" if self.xp == cp else "CPU"
 
     @property
     def num_streams(self) -> int:
         """
-        Returns the number of spatial/polarization streams.
-        1 for SISO, N > 1 for MIMO/Dual-Pol.
+        Returns the number of spatial or polarization streams.
+
+        Returns
+        -------
+        int
+            1 for SISO signals, N for MIMO/Dual-Pol signals.
         """
         if self.samples.ndim == 1:
             return 1
@@ -233,9 +319,12 @@ class Signal(BaseModel):
     @property
     def duration(self) -> float:
         """
-        Duration of the signal in seconds.
+        Returns the total duration of the signal.
 
-        Calculated as the number of samples divided by the sampling rate.
+        Returns
+        -------
+        float
+            Duration in seconds.
         """
         if self.samples.ndim == 1:
             return self.samples.shape[0] / self.sampling_rate
@@ -246,33 +335,53 @@ class Signal(BaseModel):
         """
         Samples per symbol.
 
-        Calculated as the sampling rate divided by the symbol rate.
+        Returns
+        -------
+        float
+            Ratio of sampling rate to symbol rate.
         """
         return self.sampling_rate / self.symbol_rate
 
     def to(self, device: str) -> "Signal":
         """
-        Moves the signal data to the specified device.
+        Transfers signal data to the target device (CPU or GPU).
 
-        Args:
-            device: The target device ('CPU' or 'GPU').
+        Parameters
+        ----------
+        device : {"CPU", "GPU"}
+            The target device. Case-insensitive.
 
-        Returns:
-            self
+        Returns
+        -------
+        Signal
+            Returns self for method chaining.
+
+        Raises
+        ------
+        ImportError
+            If GPU is requested but CuPy is not installed/functional.
         """
         self.samples = to_device(self.samples, device)
         return self
 
     def export_samples_to_jax(self, device: Optional[str] = None) -> Any:
         """
-        Exports the signal samples to a JAX array, ensuring consistency with the signal backend.
+        Exports the signal samples to a JAX array.
 
-        Args:
-            device: Optional target device ('CPU', 'GPU', or 'TPU').
-                    If None, the signal's current backend is used.
+        Ensures zero-copy transfer to JAX when possible, preserving the
+        device affinity of the underlying samples unless otherwise specified.
 
-        Returns:
-            A JAX array containing the signal samples.
+        Parameters
+        ----------
+        device : {"CPU", "GPU", "TPU"}, optional
+            Target JAX device. If None, it targets the device matching the
+            signal's current backend (CPU or GPU).
+
+        Returns
+        -------
+        jax.Array
+            JAX array containing signal samples.
+            Shape: (N_channels, N_samples) or (N_samples,).
         """
         # If device is not explicitly requested, use the signal's backend
         target_device = device if device is not None else self.backend
@@ -280,13 +389,20 @@ class Signal(BaseModel):
 
     def update_samples_from_jax(self, jax_array: Any) -> "Signal":
         """
-        Updates the signal samples from a JAX array, preserving the original signal backend.
+        Updates signal samples from a JAX array.
 
-        Args:
-            jax_array: Input JAX array.
+        Converts the JAX array back to the signal's original backend (NumPy
+        or CuPy) to maintain consistent state.
 
-        Returns:
-            self
+        Parameters
+        ----------
+        jax_array : jax.Array
+            Input JAX array. Shape must match signal's expected shape.
+
+        Returns
+        -------
+        Signal
+            Returns self for method chaining.
         """
         original_backend = self.backend
         # Convert JAX array to backend-compatible array
@@ -301,12 +417,13 @@ class Signal(BaseModel):
 
     def time_axis(self) -> ArrayType:
         """
-        Returns the time vector associated with the signal samples.
+        Generates the time vector associated with signal samples.
 
-        The time vector starts at 0 and increments by 1/sampling_rate for each sample.
-
-        Returns:
-            An array representing the time axis in seconds.
+        Returns
+        -------
+        array_like
+            Time axis in seconds, starting at 0.
+            Shape: (N_samples,).
         """
         n_samples = self.samples.shape[-1]
         return self.xp.arange(0, n_samples) / self.sampling_rate
@@ -314,10 +431,12 @@ class Signal(BaseModel):
     @property
     def num_bits(self) -> Optional[int]:
         """
-        Total number of source bits.
+        Total number of original source bits.
 
-        Returns:
-            Number of bits if source_bits is available, else None.
+        Returns
+        -------
+        int or None
+            Size of the `source_bits` array if available, otherwise None.
         """
         if self.source_bits is not None:
             return int(self.source_bits.size)
@@ -326,10 +445,12 @@ class Signal(BaseModel):
     @property
     def bits_per_symbol(self) -> Optional[int]:
         """
-        Bits per symbol for current modulation.
+        Bits per symbol for the active modulation scheme.
 
-        Returns:
-            Bits per symbol if modulation_order is defined, else None.
+        Returns
+        -------
+        int or None
+            Calculated as $\log_2(\text{modulation\_order})$.
         """
         if self.modulation_order:
             return int(np.log2(self.modulation_order))
@@ -344,14 +465,22 @@ class Signal(BaseModel):
         """
         Compute the Power Spectral Density (PSD) using Welch's method.
 
-        Args:
-            nperseg: Length of each segment.
-            detrend: Detrend method.
-            average: Averaging method.
+        Parameters
+        ----------
+        nperseg : int, default 256
+            Length of each segment for FFT.
+        detrend : str or bool, default False
+            Specifies how to detrend each segment (e.g., 'constant', 'linear').
+        average : {"mean", "median"}, default "mean"
+            Method to use for averaging overlapping segments.
 
-        Returns:
-            Tuple of (frequency_axis, psd_values).
-            If signal is MIMO, psd_values will be (N_channels, N_freqs) or similar depending on implementation.
+        Returns
+        -------
+        f : array_like
+            Array of sample frequencies. Shape: (N_freqs,).
+        Pxx : array_like
+            Power spectral density of the signal.
+            Shape: (N_channels, N_freqs) or (N_freqs,).
         """
         from . import spectral
 
@@ -376,20 +505,31 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
         """
-        Plot the Power Spectral Density (PSD) of the signal.
+        Plots the Power Spectral Density (PSD) of the signal.
 
-        Args:
-            nperseg: Length of each segment.
-            detrend: Detrend method.
-            average: Averaging method.
-            ax: Optional matplotlib axis to plot on.
-            title: Title of the plot.
-            x_axis: X-axis type ('frequency' or 'wavelength').
-            show: Whether to call plt.show().
-            **kwargs: Additional plotting arguments.
+        Parameters
+        ----------
+        nperseg : int, default 128
+            Length of each segment for Welch's method.
+        detrend : str or bool, default False
+            Specifies how to detrend each segment.
+        average : {"mean", "median"}, default "mean"
+            Method to use for averaging segments.
+        ax : matplotlib.axes.Axes, optional
+            Pre-existing axis for plotting.
+        title : str, default "Spectrum"
+            Plot title.
+        x_axis : {"frequency", "wavelength"}, default "frequency"
+            The metric for the x-axis.
+        show : bool, default False
+            If True, calls `plt.show()` immediately.
+        **kwargs : Any
+            Additional arguments passed to `plotting.psd`.
 
-        Returns:
-            Tuple of (figure, axis) if show is False, else None.
+        Returns
+        -------
+        figure, axis : tuple or None
+            The matplotlib figure and axis objects, or None if `show=True`.
         """
         from . import plotting
 
@@ -410,7 +550,10 @@ class Signal(BaseModel):
 
     def print_info(self) -> None:
         """
-        Prints a summary of the signal properties.
+        Prints a formatted summary of the signal's physical and digital properties.
+
+        In Jupyter/IPython environments, this renders as an HTML table. In standard
+        shells, it outputs a clean logarithmic log message.
         """
         import pandas as pd
         from IPython import get_ipython
@@ -472,17 +615,25 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
         """
-        Plot the time-domain waveform of the signal.
+        Plots the time-domain waveform of the signal symbols.
 
-        Args:
-            num_symbols: Number of symbols to plot.
-            ax: Optional matplotlib axis to plot on.
-            title: Title of the plot.
-            show: Whether to call plt.show().
-            **kwargs: Additional plotting arguments.
+        Parameters
+        ----------
+        num_symbols : int, optional
+            Number of symbols to display. If None, plots the entire signal.
+        ax : matplotlib.axes.Axes, optional
+            Pre-existing axis for plotting.
+        title : str, default "Waveform"
+            Plot title.
+        show : bool, default False
+            If True, calls `plt.show()` immediately.
+        **kwargs : Any
+            Additional arguments passed to `plotting.time_domain`.
 
-        Returns:
-            Tuple of (figure, axis) if show is False, else None.
+        Returns
+        -------
+        figure, axis : tuple or None
+            The matplotlib figure and axis objects, or None if `show=True`.
         """
         from . import plotting
 
@@ -508,20 +659,33 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
         """
-        Plot the eye diagram of the signal.
+        Plots the eye diagram of the signal.
 
-        Args:
-            ax: Optional matplotlib axis (or list of axes for complex signals) to plot on.
-            type: Type of plot ('hist' or 'line').
-            title: Title of the plot.
-            vmin: Minimum density value for colormap (hist mode only). If None, auto-scaled.
-            vmax: Maximum density value for colormap (hist mode only). If None, auto-scaled.
-                  Histogram is normalized to [0, 1], so vmax=1 shows full range.
-            show: Whether to call plt.show().
-            **kwargs: Additional arguments passed to plot (line mode) or imshow (hist mode).
+        The eye diagram is a critical tool for assessing ISI and timing
+        jitter. This method supports both high-density histograms and
+        classic trace-based line plots.
 
-        Returns:
-            Tuple of (figure, axis) if show is False, else None.
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes or list, optional
+            Plotting axis. For complex signals, a list of two axes can be
+            provided (for I and Q eyes).
+        type : {"hist", "line"}, default "hist"
+            "hist": 2D histogram density plot (recommended for noisy signals).
+            "line": Overlaid individual signal traces.
+        title : str, default "Eye Diagram"
+            Plot title.
+        vmin, vmax : float, optional
+            Density scale limits for "hist" mode.
+        show : bool, default False
+            If True, calls `plt.show()` immediately.
+        **kwargs : Any
+            Additional parameters passed to the underlying plotting functions.
+
+        Returns
+        -------
+        figure, axis : tuple or None
+            The matplotlib figure and axis objects, or None if `show=True`.
         """
         from . import plotting
 
@@ -550,22 +714,36 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
         """
-        Plot the constellation density diagram of the signal.
+        Plots the constellation diagram of the signal.
 
-        Args:
-            bins: Number of histogram bins per axis.
-            cmap: Colormap for density plot (default: 'inferno').
-            overlay_ideal: If True, overlay ideal constellation points.
-            ax: Optional matplotlib axis to plot on.
-            title: Title of the plot.
-            vmin: Minimum density value for colormap. If None, auto-scaled.
-            vmax: Maximum density value for colormap. If None, auto-scaled.
-                  Histogram is normalized to [0, 1], so vmax=1 shows full range.
-            show: Whether to call plt.show().
-            **kwargs: Additional arguments passed to imshow.
+        Uses 2D histogram density mapping to visualize the distribution of
+        received symbols, providing better insight into noise and
+        impairments than traditional scatter plots.
 
-        Returns:
-            Tuple of (figure, axis) if show is False, else None.
+        Parameters
+        ----------
+        bins : int, default 100
+            Number of bins per axis for the 2D density histogram.
+        cmap : str, default "inferno"
+            Matplotlib colormap for the density visualization.
+        overlay_ideal : bool, default False
+            If True, overlays the ideal constellation points (crosses)
+            on the plot.
+        ax : matplotlib.axes.Axes, optional
+            Pre-existing axis for plotting.
+        title : str, default "Constellation"
+            Plot title.
+        vmin, vmax : float, optional
+            Density scale limits.
+        show : bool, default False
+            If True, calls `plt.show()` immediately.
+        **kwargs : Any
+            Additional arguments passed to `plotting.constellation`.
+
+        Returns
+        -------
+        figure, axis : tuple or None
+            The matplotlib figure and axis objects, or None if `show=True`.
         """
         from . import plotting
 
@@ -588,13 +766,20 @@ class Signal(BaseModel):
 
     def upsample(self, factor: int) -> "Signal":
         """
-        Upsample the signal.
+        Upsamples the signal by an integer factor using polyphase filtering.
 
-        Args:
-            factor: Upsampling factor.
+        This method increases the sampling rate by inserting zeros and
+        applying an anti-imaging filter.
 
-        Returns:
-            self
+        Parameters
+        ----------
+        factor : int
+            Upsampling factor (interpolation).
+
+        Returns
+        -------
+        Signal
+            self (modified in-place).
         """
         from . import multirate
 
@@ -606,15 +791,27 @@ class Signal(BaseModel):
         self, factor: int, filter_type: str = "fir", **kwargs: Any
     ) -> "Signal":
         """
-        Decimate the signal.
+        Decimates the signal by an integer factor using anti-aliasing filtering.
 
-        Args:
-            factor: Decimation factor.
-            filter_type: Filter type.
-            **kwargs: Additional arguments for decimate.
+        Parameters
+        ----------
+        factor : int
+            Decimation factor (e.g., 2 to reduce sample rate by half).
+        filter_type : {"fir", "polyphase"}, default "fir"
+            The type of decimation filter to use.
+        **kwargs : Any
+            Additional parameters passed to the decimation algorithm.
 
-        Returns:
-            self
+        Returns
+        -------
+        Signal
+            self (modified in-place).
+
+        Notes
+        -----
+        This method applies an anti-aliasing filter before downsampling. If
+        the signal has already been matched-filtered, you should likely use
+        `downsample_to_symbols` instead to avoid double-filtering.
         """
         from . import multirate
 
@@ -631,23 +828,35 @@ class Signal(BaseModel):
         sps_out: Optional[float] = None,
     ) -> "Signal":
         """
-        Resample the signal by a rational factor using polyphase filtering.
+        Resamples the signal by a rational factor using polyphase filtering.
 
-        This method applies anti-aliasing/anti-imaging filtering during resampling.
-        Use this when changing sample rate BEFORE matched filtering or for general
-        rate conversion.
+        This method is the canonical way to change the sampling rate of a
+        signal while maintaining spectral integrity through anti-aliasing
+        and anti-imaging filters.
 
-        NOTE: Do NOT use this after matched filtering to go to 1 sps!
-        The polyphase filter will degrade the already-filtered signal.
-        Use `downsample_to_symbols()` instead for post-matched-filter decimation.
+        Parameters
+        ----------
+        up : int, optional
+            Upsampling factor (interpolation).
+        down : int, optional
+            Downsampling factor (decimation).
+        sps_out : float, optional
+            Desired samples per symbol in the output signal. If provided,
+            the required `up/down` factors are calculated automatically
+            relative to the current `sps`.
 
-        Args:
-            up: Upsampling factor.
-            down: Downsampling factor.
-            sps_out: Target samples per symbol (calculates up/down automatically).
+        Returns
+        -------
+        Signal
+            self (modified in-place, sampling rate updated).
 
-        Returns:
-            self
+        Notes
+        -----
+        .. warning::
+            Do NOT use this method on a signal that has already been
+            matched-filtered if the goal is to extract symbols at $1\text{ sps}$.
+            The polyphase filter's transition band will distort the
+            optimally filtered pulse shape. Use `downsample_to_symbols` instead.
         """
         from . import multirate
 
@@ -668,27 +877,28 @@ class Signal(BaseModel):
 
     def downsample_to_symbols(self, offset: int = 0) -> "Signal":
         """
-        Extract symbols by simple decimation (no additional filtering).
+        Extracts symbols from an oversampled signal via direct slicing.
 
-        Use this AFTER matched filtering to go from oversampled to 1 sps.
-        Unlike `resample()`, this does NOT apply additional filtering, which is
-        correct when matched filter has already removed out-of-band noise.
+        This method is the canonical way to recover symbols at $1 \text{ sps}$
+        after matched filtering. It does not apply any additional filtering,
+        ensuring that the matched filter remains the optimal receiver.
 
-        When to use:
-        - downsample_to_symbols: After matched filter, for clean symbol extraction
-        - resample: For general rate changes, BEFORE matched filtering
+        Parameters
+        ----------
+        offset : int, default 0
+            The sampling phase offset in samples. Adjust this to sample
+            at the peak of the impulse response or the maximum eye opening.
 
-        Args:
-            offset: Timing offset in samples (0 to sps-1). Adjusts the sampling
-                    phase to find optimal eye opening. Default 0 assumes the
-                    matched filter peak is at the first sample of each symbol.
+        Returns
+        -------
+        Signal
+            self (modified in-place, sampling rate updated to symbol rate).
 
-        Returns:
-            self (modified in-place)
-
-        Example:
-            >>> sig.matched_filter()
-            >>> sig.downsample_to_symbols()  # Clean symbols at 1 sps
+        Notes
+        -----
+        Use `resample` or `decimate` for general rate changes where
+        anti-aliasing is required. Use this method ONLY when the signal
+        is already filtered and aligned.
         """
         from . import multirate
 
@@ -696,66 +906,73 @@ class Signal(BaseModel):
         if sps <= 1:
             logger.warning("Signal already at 1 sps, no downsampling needed.")
             return self
-
         self.samples = multirate.downsample_to_symbols(
             self.samples, sps=sps, offset=offset, axis=-1
         )
         self.sampling_rate = self.symbol_rate
-
         return self
 
     def shift_frequency(self, offset: float) -> "Signal":
         """
-        Apply a frequency offset to the signal.
+        Applies a frequency offset (mixing) to the signal.
 
-        Args:
-            offset: Desired frequency offset in Hz.
+        This method shifts the signal's spectrum in the frequency domain.
+        Metadata is updated to track total digital frequency offset.
 
-        Returns:
-            self
+        Parameters
+        ----------
+        offset : float
+            Desired frequency shift in Hz.
+
+        Returns
+        -------
+        Signal
+            self (modified in-place).
         """
         from . import spectral
 
-        (
-            self.samples,
-            actual_offset,
-        ) = spectral.shift_frequency(self.samples, offset, self.sampling_rate)
-
-        # Update metadata
+        self.samples, actual_offset = spectral.shift_frequency(
+            self.samples, offset, self.sampling_rate
+        )
         self.digital_frequency_offset += actual_offset
-
         return self
 
     def fir_filter(self, taps: ArrayType) -> "Signal":
         """
-        Apply FIR filter to the signal.
+        Applies a Finite Impulse Response (FIR) filter to the signal.
 
-        Args:
-            taps: Filter taps.
+        Parameters
+        ----------
+        taps : array_like
+            FIR filter coefficients. Shape: (N_taps,).
 
-        Returns:
-            self
+        Returns
+        -------
+        Signal
+            self (modified in-place).
         """
         from . import filtering
 
-        # Axis -1 is time
         self.samples = filtering.fir_filter(self.samples, taps, axis=-1)
         return self
 
     def shaping_filter_taps(self) -> ArrayType:
         """
-        Calculates and returns the shaping filter taps based on the signal's
-        pulse shape parameters.
+        Computes shaping filter taps based on signal metadata.
 
-        Returns:
-            Filter taps array.
+        Returns
+        -------
+        array_like
+            Generated filter taps normalized according to pulse type.
+            Resides on the same device as the signal samples.
 
-        Raises:
-            ValueError: If pulse shape is not defined.
+        Raises
+        -------
+        ValueError
+            If `pulse_shape` is missing or unsupported.
         """
         if not self.pulse_shape or self.pulse_shape == "none":
             raise ValueError("No pulse shape defined for this signal.")
-
         logger.debug(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
         from . import filtering
 
@@ -804,17 +1021,22 @@ class Signal(BaseModel):
         normalize_output: bool = False,
     ) -> "Signal":
         """
-        Apply matched filter to the signal.
-        The filter taps are calculated automatically based on the signal properties.
+        Applies a matched filter to the signal samples.
 
-        Args:
-            taps_normalization: Normalization to apply to the matched filter taps.
-                                Options: 'unity_gain', 'unit_energy'. Default is 'unit_energy'.
-            normalize_output: If True, normalizes the output samples to have a maximum
-                              absolute value of 1.0. Default is False.
+        The filter taps are automatically derived from the `pulse_shape`
+        and related parameters stored in the signal metadata.
 
-        Returns:
-            self
+        Parameters
+        ----------
+        taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
+            Normalization strategy for the matched filter taps.
+        normalize_output : bool, default False
+            If True, normalizes the filtered samples to a peak amplitude of 1.0.
+
+        Returns
+        -------
+        Signal
+            self (modified in-place).
         """
         from . import filtering
 
@@ -823,7 +1045,6 @@ class Signal(BaseModel):
         except ValueError as e:
             logger.error(f"Cannot apply matched filter: {e}")
             return self
-
         self.samples = filtering.matched_filter(
             self.samples,
             taps,
@@ -835,10 +1056,12 @@ class Signal(BaseModel):
 
     def copy(self) -> "Signal":
         """
-        Creates a deep copy of the Signal object.
+        Creates a deep copy of the `Signal` instance.
 
-        Returns:
-            A new Signal object with copied data.
+        Returns
+        -------
+        Signal
+            A new signal object with identical data and metadata.
         """
         return self.model_copy(deep=True)
 
@@ -857,28 +1080,39 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> "Signal":
         """
-        Generate a baseband Signal with specified parameters.
+        Generates a generic baseband waveform with specified modulation.
 
-        Args:
-            modulation: Modulation scheme ('psk', 'qam', 'ask').
-            order: Modulation order.
-            num_symbols: Number of symbols to generate per stream.
-            sps: Samples per symbol.
-            symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'none'.
-            num_streams: Number of independent streams (1 for SISO, 2 for Dual-Pol, etc.).
-            seed: Random seed for bit generation.
-            dtype: Output dtype for precision control (e.g., np.complex64, np.complex128).
-                   Default: complex64 for 2x memory savings and faster GPU.
-            **kwargs: Pulse shaping parameters:
-                filter_span (int): Filter span in symbols (default: 10).
-                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        This is the primary factory method for creating synthetic signals.
+        It follows a bit-first architecture: random bits are generated,
+        mapped to symbols, upsampled, and pulse-shaped.
 
-        Returns:
-            A `Signal` instance containing the generated waveform.
+        Parameters
+        ----------
+        modulation : {"psk", "qam", "ask"}
+            The modulation scheme identifier.
+        order : int
+            Modulation order (e.g., 4, 16, 64).
+        num_symbols : int
+            Number of symbols to generate per stream.
+        sps : float
+            Samples per symbol.
+        symbol_rate : float
+            Symbol rate in symbols per second (Baud).
+        pulse_shape : str, default "none"
+            Pulse shaping filter type (e.g., 'rrc', 'rect').
+        num_streams : int, default 1
+            Number of independent streams (MIMO).
+        seed : int, optional
+            Seed for reproducible random generation.
+        dtype : data-type, default np.complex64
+            Output precision.
+        **kwargs : Any
+            Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
+
+        Returns
+        -------
+        Signal
+            A new `Signal` instance.
         """
         from . import filtering, mapping, utils
 
@@ -940,27 +1174,40 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> "Signal":
         """
-        Generate a PAM baseband waveform (NRZ or RZ).
+        Generates a Pulse Amplitude Modulation (PAM) baseband waveform.
 
-        Args:
-            order: Modulation order (2, 4, 8, etc.).
-            num_symbols: Number of symbols to generate.
-            sps: Samples per symbol (integer).
-            symbol_rate: Symbol rate in Hz.
-            mode: Signaling mode ('nrz' or 'rz').
-            bipolar: Whether to use bipolar (True) or unipolar (False) PAM.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rect'.
-            num_streams: Number of independent streams.
-            seed: Random seed for bit generation.
-            **kwargs: Pulse shaping parameters:
-                filter_span (int): Filter span in symbols (default: 10).
-                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        Supports both NRZ (Non-Return-to-Zero) and RZ (Return-to-Zero)
+        signaling, with configurable pulse shaping and bipolar/unipolar
+        constellations.
 
-        Returns:
-            A `Signal` instance with PAM samples and metadata.
+        Parameters
+        ----------
+        order : int
+            Modulation order (e.g., 2, 4, 8).
+        num_symbols : int
+            Total number of symbols to generate per stream.
+        sps : int
+            Samples per symbol. For RZ mode, this must be an even integer.
+        symbol_rate : float
+            Symbol rate in symbols per second (Baud).
+        mode : {"nrz", "rz"}, default "nrz"
+            Signaling mode. RZ uses a 50% duty cycle by default.
+        bipolar : bool, default True
+            If True, uses a symmetric bipolar constellation (e.g., -1, +1).
+            If False, uses a unipolar constellation starting from 0 (e.g., 0, 1).
+        pulse_shape : str, optional
+            Pulse shaping filter type. Default is "rect" for PAM.
+        num_streams : int, default 1
+            Number of independent streams (channels) to generate.
+        seed : int, optional
+            Random seed for reproducible bit and symbol generation.
+        **kwargs : Any
+            Additional parameters passed to the pulse shaping filter.
+
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the generated PAM waveform.
         """
         from . import filtering, utils
 
@@ -1067,25 +1314,31 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> "Signal":
         """
-        Generate a PSK baseband waveform.
+        Generates a Phase Shift Keying (PSK) baseband waveform.
 
-        Args:
-            order: Modulation order.
-            num_symbols: Number of symbols to generate.
-            sps: Samples per symbol.
-            symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
-            num_streams: Number of independent streams.
-            seed: Random seed for bit generation.
-            **kwargs: Pulse shaping parameters:
-                filter_span (int): Filter span in symbols (default: 10).
-                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        Parameters
+        ----------
+        order : int
+            Modulation order (e.g., 2 for BPSK, 4 for QPSK, 8 for 8-PSK).
+        num_symbols : int
+            Total number of symbols to generate per stream.
+        sps : float
+            Samples per symbol.
+        symbol_rate : float
+            Symbol rate in symbols per second (Baud).
+        pulse_shape : str, default "rrc"
+            Pulse shaping filter type.
+        num_streams : int, default 1
+            Number of independent streams (channels) to generate.
+        seed : int, optional
+            Random seed for bit and symbol generation.
+        **kwargs : Any
+            Additional parameters passed to `filtering.shape_pulse`.
 
-        Returns:
-            A `Signal` instance with the PSK waveform.
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the PSK waveform.
         """
         return cls.generate(
             modulation="psk",
@@ -1112,25 +1365,31 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> "Signal":
         """
-        Generate a QAM baseband waveform.
+        Generates a Quadrature Amplitude Modulation (QAM) baseband waveform.
 
-        Args:
-            order: Modulation order.
-            num_symbols: Number of symbols to generate.
-            sps: Samples per symbol.
-            symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc'). Default: 'rrc'.
-            num_streams: Number of independent streams.
-            seed: Random seed for bit generation.
-            **kwargs: Pulse shaping parameters:
-                filter_span (int): Filter span in symbols (default: 10).
-                rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-                rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-                smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-                gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+        Parameters
+        ----------
+        order : int
+            Modulation order (e.g., 16, 64, 256).
+        num_symbols : int
+            Number of symbols to generate per stream.
+        sps : float
+            Samples per symbol.
+        symbol_rate : float
+            Symbol rate in symbols per second (Baud).
+        pulse_shape : str, default "rrc"
+            Pulse shaping filter type.
+        num_streams : int, default 1
+            Number of MIMO streams.
+        seed : int, optional
+            Seed for random generation.
+        **kwargs : Any
+            Additional filter parameters.
 
-        Returns:
-            A `Signal` instance with the QAM waveform.
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the QAM waveform.
         """
         return cls.generate(
             modulation="qam",
@@ -1153,23 +1412,28 @@ class Signal(BaseModel):
         reference_symbols: Optional[ArrayType] = None,
     ) -> Tuple[float, float]:
         """
-        Compute Error Vector Magnitude comparing current symbols to reference.
+        Computes the Error Vector Magnitude (EVM).
 
-        Uses source_symbols as reference by default, enabling simple workflow:
-            sig = Signal.qam(16, 1000, ...)  # Has source_symbols
-            noisy = add_awgn(sig, esn0_db=15)
-            evm_pct, evm_db = noisy.evm()  # Uses source_symbols as ref
+        EVM is a measure of the difference between the received symbols and
+        the ideal reference symbols.
 
-        Args:
-            reference_symbols: Optional explicit reference. If None, uses
-                source_symbols attribute.
+        Parameters
+        ----------
+        reference_symbols : array_like, optional
+            Known transmitted symbols. If None, defaults to `source_symbols`
+            stored in the signal metadata.
 
-        Returns:
-            (evm_percent, evm_db): EVM as percentage and in decibels.
+        Returns
+        -------
+        evm_percent : float
+            EVM expressed as a percentage of the average symbol power.
+        evm_db : float
+            EVM expressed in decibels (dB).
 
-        Raises:
-            ValueError: If no reference available (no source_symbols and no
-                explicit reference provided).
+        Raises
+        -------
+        ValueError
+            If no reference symbols are available.
         """
         from . import metrics
 
@@ -1187,24 +1451,32 @@ class Signal(BaseModel):
 
         return metrics.evm(rx_symbols, ref)
 
-    def snr_estimate(
+    def snr(
         self,
         reference_symbols: Optional[ArrayType] = None,
     ) -> float:
         """
-        Estimate SNR using data-aided method.
+        Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
 
-        Uses source_symbols as reference by default.
+        This method calculates the ratio of reference signal power over
+        the variance of the error vector.
 
-        Args:
-            reference_symbols: Optional explicit reference. If None, uses
-                source_symbols attribute.
+        Parameters
+        ----------
+        reference_symbols : array_like, optional
+            The known transmitted symbols. If None, defaults to the
+            `source_symbols` stored in the signal metadata.
 
-        Returns:
-            Estimated SNR in dB.
+        Returns
+        -------
+        float
+            Estimated SNR in decibels (dB).
 
-        Raises:
-            ValueError: If no reference available.
+        Raises
+        ------
+        ValueError
+            If no reference symbols are available (neither provided
+            nor stored in metadata).
         """
         from . import metrics
 
@@ -1216,10 +1488,8 @@ class Signal(BaseModel):
                     "reference_symbols argument."
                 )
             ref = self.source_symbols
-
         rx_symbols = self._get_symbol_rate_samples()
-
-        return metrics.snr_estimate(rx_symbols, ref)
+        return metrics.snr(rx_symbols, ref)
 
     def ber(
         self,
@@ -1227,22 +1497,30 @@ class Signal(BaseModel):
         noise_var: Optional[float] = None,
     ) -> float:
         """
-        Compute Bit Error Rate.
+        Computes the Bit Error Rate (BER).
 
-        If samples need demapping, performs hard decision demapping first.
-        Uses source_bits as reference by default.
+        Performs hard-decision demapping on signal samples and compares the
+        recovered bits against the reference bit sequence.
 
-        Args:
-            reference_bits: Optional explicit reference bits. If None, uses
-                source_bits attribute.
-            noise_var: Noise variance for soft demapping. If None, uses
-                hard demapping.
+        Parameters
+        ----------
+        reference_bits : array_like, optional
+            The original transmitted bits. If None, defaults to
+            `source_bits` stored in metadata.
+        noise_var : float, optional
+            Optional noise variance for soft-decision demapping. If
+            None (default), hard-decision demapping is used.
 
-        Returns:
-            Bit error rate (0 to 1).
+        Returns
+        -------
+        float
+            Bit Error Rate as a ratio in the range [0, 1].
 
-        Raises:
-            ValueError: If no reference bits available or modulation info missing.
+        Raises
+        ------
+        ValueError
+            If no reference bits are available or if modulation
+            info is missing.
         """
         from . import metrics
 
@@ -1254,10 +1532,8 @@ class Signal(BaseModel):
                     "reference_bits argument."
                 )
             ref = self.source_bits
-
         # Demap to get recovered bits
         rx_bits = self.demap(hard=True)
-
         return metrics.ber(rx_bits, ref)
 
     def demap(
@@ -1267,21 +1543,31 @@ class Signal(BaseModel):
         method: str = "maxlog",
     ) -> ArrayType:
         """
-        Demap symbols to bits (hard or soft decision).
+        Demaps signal symbols back into bits using hard or soft decisions.
 
-        Args:
-            hard: If True, returns hard bit decisions (0/1).
-                  If False, returns LLRs (soft decision).
-            noise_var: Noise variance for soft demapping. Required if hard=False.
-            method: LLR method for soft demapping ('maxlog' or 'exact').
+        Parameters
+        ----------
+        hard : bool, default True
+            If True, performs hard-decision demapping and returns binary bits (0/1).
+            If False, performs soft-decision demapping and returns Log-Likelihood
+            Ratios (LLRs).
+        noise_var : float, optional
+            Estimated noise variance ($\sigma^2$). Required for soft-decision
+            LLR calculation.
+        method : {"maxlog", "exact"}, default "maxlog"
+            The LLR computation method for soft demapping.
 
-        Returns:
-            Hard demapping: Bit array (0s and 1s).
-            Soft demapping: LLR array (positive = bit 0 likely).
+        Returns
+        -------
+        ndarray
+            If `hard=True`: Array of recovered bits (dtype=int32).
+            If `hard=False`: Array of LLRs (dtype=float32).
 
-        Raises:
-            ValueError: If modulation info is missing or noise_var not provided
-                for soft demapping.
+        Raises
+        ------
+        ValueError
+            If modulation metadata is missing or if `noise_var` is not
+            provided for soft demapping.
         """
         from .mapping import demap_symbols, demap_symbols_soft
 
@@ -1306,7 +1592,14 @@ class Signal(BaseModel):
             )
 
     def _get_symbol_rate_samples(self) -> ArrayType:
-        """Get samples at symbol rate (1 sps), downsampling if needed."""
+        """
+        Internal utility to retrieve samples decimated to the symbol rate ($1\text{ sps}$).
+
+        Returns
+        -------
+        array_like
+            Decimated samples.
+        """
         sps = self.sps
         if sps is None or sps <= 1:
             # Already at symbol rate
@@ -1322,18 +1615,27 @@ class Signal(BaseModel):
 
 class Preamble(BaseModel):
     """
-    Structured preamble container for frame synchronization sequences.
+    Structured container for frame synchronization sequences (preambles).
 
-    Uses bit-first architecture: bits are the primary representation,
-    symbols are derived automatically via mapping.
+    The `Preamble` follows a bit-first architecture: digital bits define
+     the sequence, while symbols are automatically derived via mapping
+    schemes compatible with both CPU and GPU backends.
 
-    Attributes:
-        bits: Source bits (primary representation).
-        symbols: Mapped symbols (derived from bits).
-        modulation_scheme: Modulation type used ('PSK', 'QAM', 'ASK').
-        modulation_order: Modulation order (2, 4, 16, etc.).
-        sequence_type: Type of preamble sequence ('custom', 'barker', 'zc').
-        dtype: Data type for symbols (default: np.complex64).
+    Attributes
+    ----------
+    bits : array_like
+        Primary bit sequence (0s and 1s).
+    symbols : array_like, optional
+        Derived IQ symbols. If not provided, they are mapped during
+        initialization.
+    modulation_scheme : str, default "PSK"
+        Modulation used to map bits to symbols.
+    modulation_order : int, default 2
+        Modulation order (e.g., 2 for BPSK).
+    sequence_type : str, default "custom"
+        Descriptor for the sequence (e.g., 'barker', 'zc').
+    dtype : data-type, default np.complex64
+        Output data type for symbols.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -1348,14 +1650,28 @@ class Preamble(BaseModel):
     @field_validator("bits", mode="before")
     @classmethod
     def validate_bits(cls, v: Any) -> Any:
-        """Validates and coerces the bits input into a backend-compatible array."""
+        """
+        Validates the preamble bits and ensures they are in a backend-compatible array.
+
+        Parameters
+        ----------
+        v : array_like
+            Input bits.
+
+        Returns
+        -------
+        array_like
+            Validated bit array.
+        """
         return utils.validate_array(v, name="preamble_bits")
 
     def model_post_init(self, __context: Any) -> None:
         """
-        Post-initialization hook.
-        Maps bits to symbols if symbols not provided.
-        Moves data to GPU if available.
+        Post-initialization hook to automate bit-to-symbol mapping and device placement.
+
+        This ensures that if only bits are provided, the corresponding IQ symbols
+        are generated using the specified modulation parameters. It also moves
+        data to the GPU if a compatible device is detected.
         """
         from . import mapping
 
@@ -1377,14 +1693,28 @@ class Preamble(BaseModel):
 
     @property
     def num_symbols(self) -> int:
-        """Number of symbols in the preamble."""
+        """
+        Total number of symbols in the preamble.
+
+        Returns
+        -------
+        int
+            Count derived from the `symbols` array size.
+        """
         if self.symbols is None:
             return 0
         return int(self.symbols.size)
 
     @property
     def num_bits(self) -> int:
-        """Number of bits in the preamble."""
+        """
+        Total number of bits in the preamble.
+
+        Returns
+        -------
+        int
+            Count derived from the `bits` array size.
+        """
         if self.bits is None:
             return 0
         return int(self.bits.size)
@@ -1397,16 +1727,24 @@ class Preamble(BaseModel):
         **kwargs: Any,
     ) -> Signal:
         """
-        Generate a preamble waveform as a Signal with clear metadata.
+        Generates a shaped waveform from the preamble sequence.
 
-        Args:
-            sps: Samples per symbol.
-            symbol_rate: Symbol rate in Hz.
-            pulse_shape: Pulse shaping type ('rect', 'rrc', etc.).
-            **kwargs: Additional pulse shaping parameters.
+        Parameters
+        ----------
+        sps : int
+            Samples per symbol.
+        symbol_rate : float
+            Symbol rate in Hz.
+        pulse_shape : str, default "rrc"
+            The pulse shaping type to apply.
+        **kwargs : Any
+            Additional filter parameters.
 
-        Returns:
-            A Signal object with modulation_scheme marked as 'PREAMBLE-{scheme}'.
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the upsampled and shaped
+            preamble samples.
         """
         from .filtering import shape_pulse
 
@@ -1432,30 +1770,49 @@ class Preamble(BaseModel):
 
 class SingleCarrierFrame(BaseModel):
     """
-    Represents a structured single-carrier frame with preamble, pilots, and payload.
+    Represents a structured single-carrier frame with Preamble, Pilots, and Payload.
 
-    This class provides a high-level abstraction for constructing frames commonly
-    used in digital communication systems, supporting various pilot patterns
-    (none, block, comb) and guard intervals (zero-padding or cyclic prefix).
-    Also supports MIMO frames (spatial multiplexing).
+    This class provides a high-level abstraction for constructing frames
+    used in digital communication systems ($1/10/100\text{GbE}$, $5\text{G}$, etc.).
+    It supports various pilot patterns for channel estimation and guard
+    intervals for multi-path mitigation.
 
-    Attributes:
-        payload_len: Number of data SYMBOLS in the payload per stream.
-        payload_mod_scheme: Modulation scheme for the payload (e.g., "PSK", "QAM").
-        payload_mod_order: Modulation order for the payload (e.g., 2, 4, 16).
-        payload_seed: Random seed for payload bit generation.
-        preamble: Structured Preamble object containing sync sequence.
-        pilot_pattern: The arrangement of pilot symbols ("none", "block", "comb").
-        pilot_period: Periodicity of pilots (for "comb" and "block").
-        pilot_block_len: Length of the pilot block (for "block" pattern) in SYMBOLS.
-        pilot_seed: Random seed for pilot symbol generation.
-        pilot_mod_scheme: Modulation scheme for pilots.
-        pilot_mod_order: Modulation order for pilots.
-        guard_type: Type of guard interval ("zero" for padding, "cp" for cyclic prefix).
-        guard_len: Length of the guard interval in SYMBOLS.
-        symbol_rate: The symbol rate of the frame in Hz.
-        num_streams: Number of independent spatial streams (default: 1).
-        dtype: Data type for symbol arrays (default: np.complex64).
+    Attributes
+    ----------
+    payload_len : int, default 1000
+        Number of data symbols per spatial stream.
+    payload_mod_scheme : str, default "PSK"
+        Modulation for payload data (e.g., 'QAM').
+    payload_mod_order : int, default 4
+        Modulation order for payload (e.g., 16 for 16-QAM).
+    payload_seed : int, default 42
+        Seed for reproducible payload data generation.
+    preamble : Preamble, optional
+        Structured preamble for synchronization.
+    pilot_pattern : {"none", "block", "comb"}, default "none"
+        "block": A block of symbols at the start of the frame body.
+        "comb": Single pilot symbols interleaved every `pilot_period`.
+    pilot_period : int, default 0
+        The period of pilot insertion.
+    pilot_block_len : int, default 0
+        Length of the pilot block (mode="block").
+    pilot_seed : int, default 1337
+        Seed for pilot symbol generation.
+    pilot_mod_scheme : str, default "PSK"
+        Modulation for pilots.
+    pilot_mod_order : int, default 4
+        Modulation order for pilots.
+    guard_type : {"zero", "cp"}, default "zero"
+        "zero": Zero-padding at the end of the frame.
+        "cp": Cyclic Prefix prepended to the frame.
+    guard_len : int, default 0
+        Length of the guard interval in symbols.
+    symbol_rate : float
+        The symbol rate of the transmission in Hertz.
+    num_streams : int, default 1
+        Number of independent spatial streams (MIMO).
+    dtype : data-type, default np.complex64
+        Data type for generated symbols.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -1490,18 +1847,22 @@ class SingleCarrierFrame(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook.
-        Preamble handles its own GPU transfer.
+
+        Currently a placeholder as `Preamble` and other components handle their
+        own device placement and initialization.
         """
-        pass  # Preamble handles its own device placement
+        pass
 
     def _generate_pilot_mask(self) -> Tuple[ArrayType, int]:
         """
-        Pre-calculates the pilot placement mask and the total frame body length.
+        Calculates the pilot placement mask and total frame length.
 
-        Returns:
-            A tuple containing:
-                - pilot_mask: A boolean array where True indicates a pilot symbol.
-                - body_length: The total number of symbols in the frame body.
+        Returns
+        -------
+        mask : array_like (bool)
+            Boolean mask where True indicates a pilot symbol location.
+        body_length : int
+            Total number of symbols in the frame body (payload + pilots).
         """
         xp = cp if is_cupy_available() else np
 
@@ -1553,7 +1914,12 @@ class SingleCarrierFrame(BaseModel):
         return xp.zeros(self.payload_len, dtype=bool), self.payload_len
 
     def _ensure_payload_generated(self) -> None:
-        """Generate and cache payload bits → symbols (bit-first architecture)."""
+        """
+        Generates and caches payload bits and symbols.
+
+        This internal method ensures that the bit-first representations are available
+        and correctly mapped to the target modulation scheme.
+        """
         if self._payload_bits is not None:
             return
 
@@ -1578,7 +1944,12 @@ class SingleCarrierFrame(BaseModel):
         self._payload_symbols = symbols
 
     def _ensure_pilot_generated(self) -> None:
-        """Generate and cache pilot bits → symbols (bit-first architecture)."""
+        """
+        Generates and caches pilot bits and symbols.
+
+        This internal method ensuring pilots are generated with the correct
+        seed and modulation before frame assembly.
+        """
         if self._pilot_bits is not None or self.pilot_pattern == "none":
             return
 
@@ -1610,19 +1981,40 @@ class SingleCarrierFrame(BaseModel):
 
     @property
     def payload_bits(self) -> ArrayType:
-        """Returns the payload bits (bit-first architecture)."""
+        """
+        Returns the raw payload bits.
+
+        Returns
+        -------
+        array_like
+            Binary bits (0s and 1s).
+        """
         self._ensure_payload_generated()
         return self._payload_bits
 
     @property
     def payload_symbols(self) -> ArrayType:
-        """Returns the mapped symbols of the payload."""
+        """
+        Returns the modulated payload symbols.
+
+        Returns
+        -------
+        array_like
+            IQ symbols.
+        """
         self._ensure_payload_generated()
         return self._payload_symbols
 
     @property
     def pilot_bits(self) -> Optional[ArrayType]:
-        """Returns the pilot bits (bit-first architecture), if any."""
+        """
+        Returns the raw pilot bits, if pilots are enabled.
+
+        Returns
+        -------
+        array_like or None
+            Binary bits if `pilot_pattern` is not "none".
+        """
         if self.pilot_pattern == "none":
             return None
         self._ensure_pilot_generated()
@@ -1630,7 +2022,14 @@ class SingleCarrierFrame(BaseModel):
 
     @property
     def pilot_symbols(self) -> Optional[ArrayType]:
-        """Returns the mapped symbols used for pilots, if any."""
+        """
+        Returns the modulated pilot symbols.
+
+        Returns
+        -------
+        array_like or None
+            IQ symbols if `pilot_pattern` is not "none".
+        """
         if self.pilot_pattern == "none":
             return None
         self._ensure_pilot_generated()
@@ -1638,7 +2037,14 @@ class SingleCarrierFrame(BaseModel):
 
     @property
     def body_symbols(self) -> ArrayType:
-        """Returns the interleaved pilot and payload symbols (frame body)."""
+        """
+        Returns the interleaved payload and pilot symbols.
+
+        Returns
+        -------
+        array_like
+            Determined by `pilot_pattern` and `pilot_period`.
+        """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
         if self.num_streams > 1:
@@ -1657,13 +2063,23 @@ class SingleCarrierFrame(BaseModel):
 
         return body
 
-    def _assemble_symbols(self) -> ArrayType:
+    def assemble_symbols(self) -> ArrayType:
         """
-        Assembles the symbol sequence (sps=1) without guard interval.
-        Combines preamble and frame body.
+        Assembles the full sequence of symbols at symbol rate ($1\text{ sps}$).
 
-        Returns:
-            A concatenated array of symbols.
+        This method combines the preamble and the interleaved payload/pilots
+        (body) into a single contiguous array.
+
+        Returns
+        -------
+        array_like
+            The assembled symbols. Shape: (N_channels, N_symbols) or (N_symbols,).
+
+        Notes
+        -----
+        Guard intervals (Zero-padding or CP) are NOT included in this
+        sequence. They are applied during physical waveform generation in
+        `generate_waveform`.
         """
         xp = cp if is_cupy_available() else np
         body = self.body_symbols
@@ -1693,21 +2109,31 @@ class SingleCarrierFrame(BaseModel):
         self, sps: int = 4, pulse_shape: str = "rrc", **kwargs: Any
     ) -> Signal:
         """
-        Generates a proper waveform (upsampled and shaped) for the frame.
+        Generates a shaped, oversampled waveform from the frame description.
 
-        Args:
-            sps: Samples per symbol.
-            pulse_shape: Pulse shaping type ('rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
-            **kwargs: Additional pulse shaping parameters.
+        This is the primary method for moving from a logical frame to
+        physical IQ samples. It handles upsampling, pulse shaping,
+        guard interval insertion, and metadata population.
 
-        Returns:
-            A `Signal` object representing the shaped waveform with FrameInfo metadata.
+        Parameters
+        ----------
+        sps : int, default 4
+            Samples per symbol (oversampling factor).
+        pulse_shape : str, default "rrc"
+            Pulse shaping filter type.
+        **kwargs : Any
+            Additional parameters passed to the shaping filter.
+
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the IQ samples and `FrameInfo` metadata.
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
 
         # 1. Assemble Symbols (sps=1)
-        symbols = self._assemble_symbols()
+        symbols = self.assemble_symbols()
 
         # Determine logical/source symbols at sps=1 including guards
         source_symbols = symbols
@@ -1783,14 +2209,23 @@ class SingleCarrierFrame(BaseModel):
         self, unit: Literal["symbols", "samples"] = "symbols", sps: int = 1
     ) -> Dict[str, ArrayType]:
         """
-        Returns a dictionary of boolean masks for each part of the frame.
+        Generates boolean masks identifying the segments of the frame.
 
-        Args:
-            unit: The unit of the mask length ('symbols' or 'samples').
-            sps: Samples per symbol (only used if unit='samples').
+        Parameters
+        ----------
+        unit : {"symbols", "samples"}, default "symbols"
+            The scale of the returned masks.
+        sps : int, default 1
+            Samples per symbol (required if unit="samples").
 
-        Returns:
-            A dictionary with keys 'preamble', 'pilot', 'payload', 'guard'.
+        Returns
+        -------
+        dict
+            Dictionary containing boolean masks for:
+            - 'preamble'
+            - 'pilot'
+            - 'payload'
+            - 'guard'
         """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()

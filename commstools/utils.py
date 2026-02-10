@@ -1,13 +1,24 @@
 """
-Utility functions.
+General library utility functions.
 
-This module provides general helper functions used across the library:
-- Random bit generation (`random_bits`).
-- Random symbol generation (`random_symbols`).
-- Array normalization (`normalize`).
-- Format SI prefixes (`format_si`).
-- Input array validation and coercion (`validate_array`).
-- Linear interpolation (`interp1d`).
+This module provides essential helper routines used throughout the library,
+including random sequence generation, SI prefix formatting, and
+multi-backend array validation.
+
+Functions
+---------
+random_bits :
+    Generates reproducible random binary sequences.
+random_symbols :
+    Generates random modulation symbols.
+normalize :
+    Applies various normalization strategies (unit energy, max amplitude, etc.).
+format_si :
+    Converts numeric values into human-readable SI-formatted strings.
+validate_array :
+    Ensures input data is coerced into a supported backend array type.
+interp1d :
+    High-performance linear interpolation for NumPy and CuPy backends.
 """
 
 from typing import Any, Optional
@@ -25,21 +36,27 @@ except ImportError:
 
 def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
     """
-    Generates a sequence of random bits (0s and 1s).
-    Uses numpy.random.default_rng() (PCG64 algorithm)
-    for seed consistency, as cupy and numpy give different
-    random sequences for the same seed.
+    Generates a sequence of random binary bits (0s and 1s).
 
-    Args:
-        length: Length of the sequence to generate.
-        seed: Random seed for reproducibility.
+    Uses `numpy.random.default_rng()` for consistent seed behavior across
+    different platforms and backends.
 
-    Returns:
-        Array of bits (0s and 1s) as a NumPy or CuPy array.
+    Parameters
+    ----------
+    length : int
+        Total number of bits to generate.
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    array_like
+        Array of bits (0 or 1). Shape: (length,).
+        Data type is `int8`.
     """
     logger.debug(f"Generating {length} random bits (seed={seed}).")
     rng = np.random.default_rng(seed)
-    bits = rng.integers(0, 2, size=length)
+    bits = rng.integers(0, 2, size=length, dtype=np.int8)
 
     if is_cupy_available():
         bits = to_device(bits, "gpu")
@@ -57,15 +74,26 @@ def random_symbols(
     """
     Generates a sequence of random modulation symbols.
 
-    Args:
-        num_symbols: Number of symbols to generate.
-        modulation: Modulation type ('psk', 'qam', 'ask').
-        order: Modulation order.
-        seed: Random seed for reproducibility.
-        dtype: Output dtype (e.g., np.complex64, np.complex128). Default: complex64.
+    This is a high-level utility that combines bit generation and mapping
+    to produce synthetic symbol sequences.
 
-    Returns:
-        Array of complex symbols on the default backend (GPU if available).
+    Parameters
+    ----------
+    num_symbols : int
+        Number of symbols to generate.
+    modulation : {"psk", "qam", "ask"}
+        The modulation scheme identifier.
+    order : int
+        Modulation order (e.g., 4, 16, 64).
+    seed : int, optional
+        Random seed for reproducible results.
+    dtype : data-type, default np.complex64
+        Desired data type of the output symbols.
+
+    Returns
+    -------
+    array_like
+        Array of complex symbols on the active device (CPU or GPU).
     """
     from . import mapping
 
@@ -78,25 +106,26 @@ def normalize(
     x: ArrayType, mode: str = "unity_gain", axis: Optional[int] = None
 ) -> ArrayType:
     """
-    Normalize array based on the specified mode.
+    Normalizes an array according to the specified strategy.
 
-    Args:
-        x: Input array.
-        mode: Normalization mode.
-            'unity_gain': Sum of elements is 1. Use for filter taps where DC gain = 1.
-            'unit_energy': L2 norm is 1 (sum of |x|² = 1). Use for matched filter taps.
-            'max_amplitude': Peak of I/Q channels is 1. Use for DAC waveforms.
-            'average_power': RMS value is 1 (mean of |x|² = 1). Use for power normalization.
-        axis: Axis along which to compute normalization factor. If None (default),
-              normalizes over the entire array (global). For MIMO signals with
-              shape (channels, samples), use axis=-1 to normalize each channel
-              independently, or axis=None for joint normalization (DAC output).
+    Parameters
+    ----------
+    x : array_like
+        Input signal or filter taps.
+    mode : {"unity_gain", "unit_energy", "max_amplitude", "average_power"}, default "unity_gain"
+        Normalization strategy:
+        - "unity_gain": Sum of elements is 1.0 (DC gain normalization).
+        - "unit_energy": L2-norm is 1.0 ($\sum |x|^2 = 1$).
+        - "max_amplitude": Peak absolute value is 1.0 ($\max |x| = 1$).
+        - "average_power": Mean power is 1.0 ($E[|x|^2] = 1$).
+    axis : int, optional
+        The axis along which to compute the normalization factor.
+        If `None`, normalizes the entire array globally.
 
-    Returns:
-        Normalized array.
-
-    Raises:
-        ValueError: If the normalization mode is unknown.
+    Returns
+    -------
+    array_like
+        The normalized array.
     """
     logger.debug(f"Normalizing array (mode: {mode}, axis={axis}).")
     x, xp, _ = dispatch(x)
@@ -144,14 +173,23 @@ def normalize(
 
 def format_si(value: Optional[float], unit: str = "Hz") -> str:
     """
-    Format a value with SI prefixes.
+    Formats a numeric value into a human-readable string with SI prefixes.
 
-    Args:
-        value: The value to format.
-        unit: The unit string (e.g., 'Hz', 'Baud', 's').
+    Automatically selects the appropriate SI prefix (e.g., k, M, G, m, u, n)
+    based on the magnitude of the value. Supports a wide range from
+    femto ($10^{-15}$) to Peta ($10^{15}$).
 
-    Returns:
-        Formatted string (e.g., '10.00 MHz').
+    Parameters
+    ----------
+    value : float or None
+        The numeric value to format. If `None`, returns "None".
+    unit : str, default "Hz"
+        The unit suffix to append (e.g., 'Hz', 'Baud', 's', 'W').
+
+    Returns
+    -------
+    str
+        The formatted string (e.g., '10.00 MHz', '50.00 ns').
     """
     if value is None:
         return "None"
@@ -186,18 +224,29 @@ def validate_array(
     v: Any, name: str = "array", complex_only: bool = False
 ) -> ArrayType:
     """
-    Validates and coerces input into a backend-compatible array (NumPy or CuPy).
+    Validates and coerces input data into a backend-compatible array.
 
-    Args:
-        v: Input to validate (array-like, list, tuple).
-        name: Name of the variable for error reporting.
-        complex_only: If True, ensures the array is of complex type.
+    Handles conversion from Python scalars, lists, and tuples into NumPy
+    or CuPy arrays. Can optionally enforce complex-valued data types.
 
-    Returns:
-        The validated array.
+    Parameters
+    ----------
+    v : array_like or any
+        Input data to validate.
+    name : str, default "array"
+        Variable name used in error messages.
+    complex_only : bool, default False
+        If True, ensures the resulting array is complex-valued.
 
-    Raises:
-        ValueError: If the input cannot be converted to a supported array type.
+    Returns
+    -------
+    array_like
+        A backend-native array (NumPy/CuPy).
+
+    Raises
+    ------
+    ValueError
+        If the input cannot be converted to a supported array type.
     """
     if v is None:
         return None
@@ -218,17 +267,27 @@ def validate_array(
 
 def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> ArrayType:
     """
-    Linear interpolation logic (future-safe replacement for scipy.interpolate.interp1d).
-    interpolates f_p (values) at query points x, given sample points x_p.
+    Performs 1D linear interpolation across a specified axis.
 
-    Args:
-        x: Query points.
-        x_p: Sample points.
-        f_p: Values at sample points.
-        axis: Axis along which to perform interpolation.
+    This function provides a backend-agnostic (NumPy/CuPy) implementation of
+    linear interpolation, serving as a high-performance replacement for
+    generic interpolation routines.
 
-    Returns:
-        Interpolated values.
+    Parameters
+    ----------
+    x : array_like
+        Target coordinates (query points).
+    x_p : array_like
+        Original sample coordinates (must be monotonically increasing).
+    f_p : array_like
+        Original sample values at coordinates `x_p`.
+    axis : int, default -1
+        The axis along which to perform interpolation.
+
+    Returns
+    -------
+    array_like
+        Interpolated values at the target coordinates `x`.
     """
     logger.debug(f"Performing linear interpolation (axis={axis}).")
     x, xp, _ = dispatch(x)

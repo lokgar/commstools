@@ -27,7 +27,7 @@ def test_frame_mimo_generation(backend_device, xp):
         guard_len=10,
     )
 
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     # Length: 100 payload + 10 guard = 110 symbols
     assert sig.samples.shape == (2, 110)
     assert sig.num_streams == 2
@@ -50,7 +50,7 @@ def test_frame_mimo_pilots(backend_device, xp):
     # data_per_period = 1.
     # total len = 10 data -> 10 periods -> 20 symbols.
 
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     assert sig.samples.shape == (2, 20)
 
     # Check mask and body
@@ -72,7 +72,7 @@ def test_frame_mimo_preamble_broadcasting(backend_device, xp):
         payload_len=20, symbol_rate=1e6, num_streams=2, preamble=preamble
     )
 
-    sig = frame.generate_sequence()
+    sig = frame.generate_waveform(sps=1, pulse_shape="none")
     # Total: 10 preamble + 20 payload = 30
     assert sig.samples.shape == (2, 30)
 

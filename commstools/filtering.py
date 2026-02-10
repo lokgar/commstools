@@ -1,12 +1,29 @@
 """
 Digital filtering and pulse shaping.
 
-This module implements digital filter design and application routines:
-- Pulse shaping filter design (RRC, RC, Gaussian, SmoothRect).
-- Standard FIR filter design (Lowpass, Highpass, Bandpass, Bandstop).
-- FIR filtering and matched filtering operations.
+This module provides routines for design and application of digital filters
+commonly used in communication systems. It supports both standard FIR filters
+and specialized pulse-shaping filters, with high-performance execution on
+both CPU and GPU backends.
 
-Taps are generated on CPU as they are short.
+Functions
+---------
+gaussian_taps :
+    Gaussian pulse-shaping filter design.
+smoothrect_taps :
+    Gaussian-smoothed rectangular pulse design.
+rrc_taps :
+    Root Raised Cosine (RRC) filter design.
+rc_taps :
+    Raised Cosine (RC) filter design.
+lowpass_taps, highpass_taps, bandpass_taps, bandstop_taps :
+    Standard FIR filter design using the window method.
+fir_filter :
+    Generic FIR filtering operation via FFT convolution.
+shape_pulse :
+    Primary interface for applying pulse shaping to symbols.
+matched_filter :
+    Matched filtering operation maximizing SNR in AWGN.
 """
 
 from typing import Any
@@ -31,17 +48,29 @@ from .utils import normalize
 # bandstop_taps: Band stop filter taps
 
 
-def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> ArrayType:
+def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> np.ndarray:
     """
-    Generates Gaussian filter taps.
+    Generates Gaussian pulse-shaping filter taps.
 
-    Args:
-        sps: Samples per symbol.
-        span: Total filter span in symbols.
-        bt: Bandwidth-Time product.
+    The Gaussian filter is typically used in GMSK/GFSK modulation to minimize
+    occupied bandwidth while introducing controlled Inter-Symbol Interference (ISI).
 
-    Returns:
-        Gaussian filter taps with unit energy normalization.
+    Parameters
+    ----------
+    sps : float
+        Samples per symbol.
+    span : int, default 4
+        Total filter span in symbols. The number of taps will be `span * sps + 1`
+        to ensure symmetry.
+    bt : float, default 0.3
+        Bandwidth-Time (BT) product. Lower values result in narrower bandwidths
+        but more ISI.
+
+    Returns
+    -------
+    ndarray
+        Gaussian filter taps normalized to unit energy.
+        Shape: (N_taps,).
     """
     logger.debug(f"Generating Gaussian taps: sps={sps}, span={span}, bt={bt}")
     # Ensure odd number of taps to have a center peak
@@ -64,21 +93,29 @@ def smoothrect_taps(
     sps: int, span: int, bt: float = 1.0, pulse_width: float = 1.0
 ) -> ArrayType:
     """
-    Generates a perfectly centered Gaussian-smoothed rectangular pulse
-    using the analytical closed-form solution (Error Function).
+    Generates a perfectly centered Gaussian-smoothed rectangular pulse.
 
-    This avoids the 0.5 sample shift artifact caused by convolving
+    This method uses the analytical closed-form solution (Error Function)
+    to avoid the 0.5 sample shift artifact typically caused by convolving
     odd/even discrete arrays.
 
-    Args:
-        sps: Samples per symbol.
-        span: Filter span in symbols.
-        bt: Bandwidth-Time product of the Gaussian filter.
-        pulse_width: Width of the rectangular pulse in symbol periods.
-                     Default is 1.0 (NRZ), for RZ use 0.5.
+    Parameters
+    ----------
+    sps : int
+        Samples per symbol.
+    span : int
+        Filter span in symbols. The number of taps will be approximately `span * sps`.
+    bt : float, default 1.0
+        Bandwidth-Time (BT) product of the Gaussian smoothing filter.
+    pulse_width : float, default 1.0
+        Width of the rectangular pulse in symbol periods. Use 1.0 for NRZ
+        and 0.5 for RZ signaling.
 
-    Returns:
-        Centered pulse shaping taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        Gaussian-smoothed rectangular pulse taps normalized to unit energy.
+        Shape: (N_taps,).
     """
     logger.debug(
         f"Generating SmoothRect taps: sps={sps}, span={span}, bt={bt}, width={pulse_width}"
@@ -110,17 +147,27 @@ def smoothrect_taps(
     return normalize(h, "unit_energy")
 
 
-def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
+def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> np.ndarray:
     """
     Generates Root Raised Cosine (RRC) filter taps.
 
-    Args:
-        sps: Samples per symbol.
-        rolloff: Roll-off factor (0 to 1).
-        span: Total filter span in symbols.
+    RRC filters are used at both the transmitter (pulse shaping) and
+    receiver (matched filtering) to satisfy the Nyquist ISI criterion.
 
-    Returns:
-        RRC filter taps with unit energy normalization.
+    Parameters
+    ----------
+    sps : float
+        Samples per symbol.
+    rolloff : float, default 0.35
+        Roll-off factor ($\alpha$), range [0, 1].
+    span : int, default 8
+        Filter span in symbols.
+
+    Returns
+    -------
+    ndarray
+        RRC filter taps normalized to unit energy.
+        Shape: (N_taps,).
     """
     logger.debug(f"Generating RRC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
@@ -175,13 +222,20 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     """
     Generates Raised Cosine (RC) filter taps.
 
-    Args:
-        sps: Samples per symbol.
-        rolloff: Roll-off factor (0 to 1).
-        span: Total filter span in symbols.
+    Parameters
+    ----------
+    sps : float
+        Samples per symbol.
+    rolloff : float, default 0.35
+        Roll-off factor ($\alpha$), range [0, 1].
+    span : int, default 8
+        Filter span in symbols.
 
-    Returns:
-        RC filter taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        RC filter taps normalized to unit energy.
+        Shape: (N_taps,).
     """
     logger.debug(f"Generating RC taps: sps={sps}, rolloff={rolloff}, span={span}")
     # Ensure odd number of taps
@@ -243,16 +297,24 @@ def lowpass_taps(
     window: str = "hamming",
 ) -> ArrayType:
     """
-    Design Lowpass FIR filter.
+    Design Lowpass FIR filter using the window method.
 
-    Args:
-        num_taps: Number of filter coefficients.
-        cutoff: Cutoff frequency in Hz.
-        sampling_rate: Sampling rate in Hz.
-        window: Window function type.
+    Parameters
+    ----------
+    num_taps : int
+        Number of filter coefficients.
+    cutoff : float
+        Cutoff frequency in Hz.
+    sampling_rate : float, default 1.0
+        The sampling rate of the signal in Hz.
+    window : str, default "hamming"
+        Type of window function to apply (e.g., 'hamming', 'blackman').
 
-    Returns:
-        Filter taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        Filter taps normalized to unit energy.
+        Shape: (num_taps,).
     """
     logger.debug(f"Designing Lowpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     h = scipy.signal.firwin(
@@ -268,16 +330,25 @@ def highpass_taps(
     window: str = "hamming",
 ) -> ArrayType:
     """
-    Design Highpass FIR filter.
+    Design Highpass FIR filter using the window method.
 
-    Args:
-        num_taps: Number of filter coefficients (should be odd).
-        cutoff: Cutoff frequency in Hz.
-        sampling_rate: Sampling rate in Hz.
-        window: Window function type.
+    Parameters
+    ----------
+    num_taps : int
+        Number of filter coefficients. For highpass filters, this should
+        typically be an odd integer to avoid a zero at the Nyquist frequency.
+    cutoff : float
+        Cutoff frequency in Hz.
+    sampling_rate : float, default 1.0
+        The sampling rate of the signal in Hz.
+    window : str, default "hamming"
+        Type of window function to apply.
 
-    Returns:
-        Filter taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        Filter taps normalized to unit energy.
+        Shape: (num_taps,).
     """
     logger.debug(f"Designing Highpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     # pass_zero=False for highpass
@@ -295,17 +366,26 @@ def bandpass_taps(
     window: str = "hamming",
 ) -> ArrayType:
     """
-    Design Bandpass FIR filter.
+    Design Bandpass FIR filter using the window method.
 
-    Args:
-        num_taps: Number of filter coefficients.
-        low_cutoff: Lower cutoff frequency in Hz.
-        high_cutoff: Upper cutoff frequency in Hz.
-        sampling_rate: Sampling rate in Hz.
-        window: Window function type.
+    Parameters
+    ----------
+    num_taps : int
+        Number of filter coefficients.
+    low_cutoff : float
+        Lower cutoff frequency in Hz.
+    high_cutoff : float
+        Upper cutoff frequency in Hz.
+    sampling_rate : float, default 1.0
+        The sampling rate of the signal in Hz.
+    window : str, default "hamming"
+        Type of window function to apply.
 
-    Returns:
-        Filter taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        Filter taps normalized to unit energy.
+        Shape: (num_taps,).
     """
     logger.debug(
         f"Designing Bandpass FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
@@ -329,17 +409,26 @@ def bandstop_taps(
     window: str = "hamming",
 ) -> ArrayType:
     """
-    Design Bandstop FIR filter.
+    Design Bandstop FIR filter using the window method.
 
-    Args:
-        num_taps: Number of filter coefficients (should be odd).
-        low_cutoff: Lower cutoff frequency in Hz.
-        high_cutoff: Upper cutoff frequency in Hz.
-        sampling_rate: Sampling rate in Hz.
-        window: Window function type.
+    Parameters
+    ----------
+    num_taps : int
+        Number of filter coefficients. Should typically be odd.
+    low_cutoff : float
+        Lower cutoff frequency in Hz.
+    high_cutoff : float
+        Upper cutoff frequency in Hz.
+    sampling_rate : float, default 1.0
+        The sampling rate of the signal in Hz.
+    window : str, default "hamming"
+        Type of window function to apply.
 
-    Returns:
-        Filter taps with unit energy normalization.
+    Returns
+    -------
+    ndarray
+        Filter taps normalized to unit energy.
+        Shape: (num_taps,).
     """
     logger.debug(
         f"Designing Bandstop FIR: range=[{low_cutoff}, {high_cutoff}] Hz, taps={num_taps}"
@@ -365,15 +454,24 @@ def bandstop_taps(
 
 def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType:
     """
-    Apply FIR filter via convolution.
+    Apply a Finite Impulse Response (FIR) filter to signal samples.
 
-    Args:
-        samples: Input sample array.
-        taps: FIR filter taps (impulse response, should be odd length).
-        axis: Axis along which to apply the filter.
+    The filter is applied via FFT-based convolution for high throughput,
+    efficiently handling both CPU and GPU backends.
 
-    Returns:
-        Filtered samples.
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    taps : array_like
+        FIR filter coefficients (impulse response). Shape: (N_taps,).
+    axis : int, default -1
+        The axis along which the filter is applied (typically the Time axis).
+
+    Returns
+    -------
+    array_like
+        Filtered samples with the same shape as `samples` (mode='same').
     """
     logger.debug(
         f"Applying FIR filter via convolution ({len(taps)} taps, axis={axis})."
@@ -406,19 +504,30 @@ def shape_pulse(
     """
     Applies pulse shaping to a symbol sequence.
 
-    Args:
-        symbols: Input symbol array.
-        sps: Samples per symbol (upsampling factor).
-        pulse_shape: Pulse shaping type ('none', 'rect', 'smoothrect', 'gaussian', 'rrc', 'rc', 'sinc').
-        **kwargs: Pulse shaping parameters:
-            filter_span (int): Filter span in symbols (default: 10).
-            rrc_rolloff (float): Roll-off factor for RRC filter (default: 0.35).
-            rc_rolloff (float): Roll-off factor for RC filter (default: 0.35).
-            smoothrect_bt (float): BT product for SmoothRect filter (default: 1.0).
-            gaussian_bt (float): BT product for Gaussian filter (default: 0.3).
+    Parameters
+    ----------
+    symbols : array_like
+        Input symbol sequence. Shape: (..., N_symbols).
+    sps : float
+        Samples per symbol (upsampling factor).
+    pulse_shape : {"none", "rect", "smoothrect", "gaussian", "rrc", "rc", "sinc"}, default "none"
+        Identifier for the pulse shaping filter type.
+    **kwargs : Any
+        Filter-specific parameters:
+        filter_span (int): Filter span in symbols (default 10).
+        rrc_rolloff / rc_rolloff (float): Rolloff factor (default 0.35).
+        smoothrect_bt / gaussian_bt (float): BT product (default 1.0 / 0.3).
 
-    Returns:
-        The shaped sample array at rate (sps * symbol_rate), peak absolute value normalized to 1.
+    Returns
+    -------
+    array_like
+        The pulse-shaped waveform at rate `sps * symbol_rate`. The peak
+        absolute amplitude is normalized to 1.0.
+
+    Notes
+    -----
+    This method implements pulse shaping via polyphase resampling, which is
+    computationally more efficient than zero-stuffing followed by convolution.
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
@@ -475,19 +584,30 @@ def matched_filter(
     axis: int = -1,
 ) -> ArrayType:
     """
-    Apply matched filter (time-reversed conjugate of pulse shape).
+    Applies a matched filter to the received signal.
 
-    Args:
-        samples: Received sample array.
-        pulse_taps: Pulse shape filter taps.
-        taps_normalization: Normalization to apply to the matched filter taps.
-                            Options: 'unity_gain', 'unit_energy'. Default is 'unit_energy'.
-        normalize_output: If True, normalizes the output samples to have a maximum
-                          absolute value of 1.0. Default is False.
-        axis: Axis along which to apply the filter.
+    The matched filter is the time-reversed complex conjugate of the pulse
+    shaping filter. It maximizes the Signal-to-Noise Ratio (SNR) in the
+    presence of AWGN.
 
-    Returns:
-        Matched filtered samples.
+    Parameters
+    ----------
+    samples : array_like
+        Input received samples. Shape: (..., N_samples).
+    pulse_taps : array_like
+        Taps of the pulse-shaping filter used at the transmitter.
+        Shape: (N_taps,).
+    taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
+        Designates how the matched filter taps are normalized.
+    normalize_output : bool, default False
+        Whether to normalize the output amplitude to 1.0.
+    axis : int, default -1
+        The axis along which to apply the filter.
+
+    Returns
+    -------
+    array_like
+        Matched filtered samples. Shape: (..., N_samples).
     """
     logger.debug(f"Applying Matched Filter (taps length={len(pulse_taps)}).")
     samples, xp, _ = dispatch(samples)

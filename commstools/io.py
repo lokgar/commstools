@@ -1,7 +1,11 @@
 """
 Signal I/O and file management utilities.
 
-This module is a placeholder for future I/O functionality such as:
-- Reading/writing SigMF metadata.
-- Loading/saving signal samples from binary files.
+This module provides infrastructure for loading and saving signal data and
+associated metadata. It supports standard formats for interoperability with
+other SDR and signal analysis tools.
+
+Functions
+---------
+(Placeholder for future I/O routines: read_sigmf, write_sigmf, load_binary)
 """

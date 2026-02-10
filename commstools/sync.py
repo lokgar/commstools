@@ -1,11 +1,22 @@
 """
-Synchronization utilities for frame detection and sequence generation.
+Synchronization and frame detection utilities.
 
-This module provides primitives for:
-- **Cross-correlation**: For preamble detection and timing recovery.
-- **Frame detection**: Finding frame start via preamble correlation.
-- **Barker sequences**: Low auto-correlation sync sequences.
-- **Zadoff-Chu sequences**: CAZAC sequences for timing/frequency sync.
+This module provides routines for time and frequency synchronization,
+including the generation of optimal synchronization sequences (Barker,
+Zadoff-Chu) and robust frame detection algorithms using cross-correlation.
+
+Functions
+---------
+barker_sequence :
+    Generates Barker codes with optimal auto-correlation.
+zadoff_chu_sequence :
+    Generates Constant Amplitude Zero Auto-Correlation (CAZAC) sequences.
+correlate :
+    Multi-backend cross-correlation for sequence detection.
+detect_frame :
+    Identifies frame start position via preamble correlation.
+generate_preamble_bits :
+    Factory for standard synchronization bit sequences.
 """
 
 from typing import TYPE_CHECKING, Optional, Tuple, Union
@@ -33,23 +44,32 @@ _BARKER_SEQUENCES = {
 
 def barker_sequence(length: int) -> ArrayType:
     """
-    Generate a Barker sequence of specified length.
+    Generates a Barker sequence of the specified length.
 
-    Barker sequences have optimal auto-correlation properties with sidelobe
-    levels at most 1/N of the peak. Commonly used for frame synchronization.
+    Barker sequences are binary sequences (+1, -1) with optimal cyclic
+    auto-correlation properties, where the sidelobes are at most 1. They are
+    widely used for frame synchronization and pulse compression.
 
-    Args:
-        length: Sequence length. Must be one of: 2, 3, 4, 5, 7, 11, 13.
+    Parameters
+    ----------
+    length : {2, 3, 4, 5, 7, 11, 13}
+        Total length of the Barker sequence.
 
-    Returns:
-        Array of BPSK symbols (+1/-1) on default backend.
+    Returns
+    -------
+    array_like
+        BPSK symbols (+1.0, -1.0). Shape: (length,).
+        Backend depends on system availability (CuPy if available, else NumPy).
 
-    Raises:
-        ValueError: If length is not a valid Barker length.
+    Raises
+    ------
+    ValueError
+        If the requested length is not a valid Barker length.
 
-    Note:
-        Only lengths with known Barker sequences are supported.
-        No Barker sequences exist for lengths > 13.
+    Examples
+    --------
+    >>> barker_sequence(7)
+    array([ 1.,  1.,  1., -1., -1.,  1., -1.], dtype=float32)
     """
     if length not in _BARKER_SEQUENCES:
         valid = sorted(_BARKER_SEQUENCES.keys())
@@ -66,26 +86,33 @@ def barker_sequence(length: int) -> ArrayType:
 
 def zadoff_chu_sequence(length: int, root: int = 1) -> ArrayType:
     """
-    Generate a Zadoff-Chu (ZC) sequence.
+    Generates a Zadoff-Chu (ZC) synchronization sequence.
 
-    ZC sequences are CAZAC (Constant Amplitude Zero Auto-Correlation) sequences
-    used extensively in LTE/5G for synchronization signals (PSS, SRS).
+    ZC sequences are Complex-valued, Constant Amplitude Zero
+    Auto-Correlation (CAZAC) sequences. They possess the unique property
+    that their periodic auto-correlation is zero at all non-zero lags,
+    and their DFT is also a ZC sequence. This makes them ideal for
+    timing and frequency synchronization in systems like LTE and 5G NR.
 
-    Args:
-        length: Sequence length N (should be prime for optimal properties).
-        root: Root index u (must be coprime with length). Default: 1.
+    Parameters
+    ----------
+    length : int
+        The sequence length ($N_{ZC}$). For optimal cross-correlation
+        properties, this should be a prime number.
+    root : int, default 1
+        The root index ($u$). Must be relatively prime to `length`.
 
-    Returns:
-        Complex array of unit-magnitude samples on default backend.
+    Returns
+    -------
+    array_like
+        Complex Zadoff-Chu symbols of unit magnitude.
+        Shape: (length,). Data type: `complex64`.
 
-    Note:
-        - ZC sequences have perfect periodic auto-correlation.
-        - Cross-correlation between different roots is low.
-        - For LTE PSS, use lengths 63 or 839 with roots 25, 29, 34.
-
-    Example:
-        >>> zc = zadoff_chu_sequence(63, root=25)  # LTE PSS
-        >>> assert np.allclose(np.abs(zc), 1.0)  # Unit magnitude
+    Notes
+    -----
+    - For odd lengths: $x[n] = \exp(-j \frac{\pi u n (n+1)}{N_{ZC}})$
+    - For even lengths: $x[n] = \exp(-j \frac{\pi u n^2}{N_{ZC}})$
+    - ZC sequences have exceptionally low Peak-to-Average Power Ratio (PAPR).
     """
     if length < 1:
         raise ValueError("Length must be positive.")
@@ -122,25 +149,27 @@ def correlate(
     normalize: bool = False,
 ) -> ArrayType:
     """
-    Cross-correlation between signal and template.
+    Cross-correlates a signal with a template sequence.
 
-    Uses FFT-based correlation for efficiency with long sequences.
+    Uses FFT-based correlation for optimal performance on both CPU and GPU.
+    This is essential for detecting synchronization sequences (preambles)
+    in received data.
 
-    Args:
-        signal: Input signal array. Shape: (N,) or (Channels, N).
-        template: Template/reference to correlate against. Shape: (M,).
-        mode: Output size mode:
-            - "full": Full correlation, length N+M-1 (default).
-            - "same": Same size as signal, length N.
-            - "valid": Only complete overlaps, length max(N,M) - min(N,M) + 1.
-        normalize: If True, normalize by template energy for detection threshold.
+    Parameters
+    ----------
+    signal : array_like
+        Input signal samples. Shape: (N_samples,) or (N_channels, N_samples).
+    template : array_like
+        The reference sequence to correlate against. Shape: (N_template,).
+    mode : {"full", "same", "valid"}, default "full"
+        The output size mode of the correlation.
+    normalize : bool, default False
+        If True, the output is normalized by the template energy.
 
-    Returns:
-        Correlation output array.
-
-    Note:
-        For frame detection, the peak location indicates timing offset.
-        Normalize=True gives output in [0, 1] for threshold-based detection.
+    Returns
+    -------
+    array_like
+        Correlation metric. Shape depends on `mode` and `signal` dimensions.
     """
     signal, xp, sp = dispatch(signal)
     template = xp.asarray(template)
@@ -165,7 +194,29 @@ def _correlate_1d(
     xp,
     sp,
 ) -> ArrayType:
-    """1D correlation helper."""
+    """
+    Internal helper for 1D cross-correlation.
+
+    Parameters
+    ----------
+    signal : array_like
+        The input sequence.
+    template : array_like
+        The reference sequence.
+    mode : {"full", "same", "valid"}
+        Correlation output mode.
+    normalize : bool
+        Whether to apply energy-based normalization.
+    xp : module
+        Active array backend (NumPy/CuPy).
+    sp : module
+        Active signal processing backend (SciPy/CuPyX).
+
+    Returns
+    -------
+    array_like
+        The correlation metric.
+    """
     # Use scipy's correlate which handles mode correctly
     # For matched filtering, we want correlation (not convolution)
     # scipy.correlate computes: sum_k(signal[n+k] * conj(template[k]))
@@ -195,31 +246,47 @@ def detect_frame(
     search_range: Optional[Tuple[int, int]] = None,
 ) -> Union[int, Tuple[int, float]]:
     """
-    Detect frame start via preamble correlation.
+    Detects the start of a frame via preamble correlation.
 
-    Finds the sample index where the preamble begins by correlating
-    the received signal with the known preamble sequence.
+    This function performs a sliding cross-correlation between the received
+    signal and a known reference preamble. The frame start is identified
+    as the index of the maximum correlation peak that exceeds the specified
+    relative threshold.
 
-    Args:
-        signal: Received signal (array or Signal object).
-                For Signal objects, uses samples directly.
-        preamble: Known preamble (array or Preamble object).
-                  For Preamble objects, uses symbols.
-        threshold: Detection threshold (0-1). Peak must exceed this.
-        return_metric: If True, also return the normalized correlation peak.
-        search_range: Optional (start, end) sample range to search.
-                      Default: search entire signal.
+    Parameters
+    ----------
+    signal : array_like or Signal
+        Received signal samples. For multidimensional (MIMO) signals,
+        the first channel is used for detection.
+    preamble : array_like or Preamble
+        The known preamble symbols (reference sequence).
+    threshold : float, default 0.5
+        Detection threshold normalized between 0 and 1. A peak is only
+        considered valid if the normalized correlation coefficient exceeds
+        this value.
+    return_metric : bool, default False
+        If True, returns both the detected index and the peak metric.
+    search_range : tuple of int, optional
+        A `(start, end)` sample range to restrict the detection search.
+        Useful for gated receivers or known frame intervals.
 
-    Returns:
-        frame_start: Sample index where preamble begins.
-        If return_metric=True: (frame_start, peak_metric).
+    Returns
+    -------
+    frame_start : int
+        The sample index where the preamble begins.
+    peak_metric : float, optional
+        The normalized correlation coefficient at the detected peak.
+        Only returned if `return_metric=True`.
 
-    Raises:
-        ValueError: If no peak exceeds threshold.
+    Raises
+    ------
+    ValueError
+        If no correlation peak is found that satisfies the threshold criteria.
 
-    Note:
-        - For oversampled signals, ensure preamble is at same sample rate.
-        - The returned index is relative to the start of the signal (or search_range).
+    Notes
+    -----
+    The returned index is compensated for the preamble length and corresponds
+    to the very first sample of the detected preamble.
     """
     from .core import Preamble, Signal
 
@@ -299,18 +366,25 @@ def detect_frame(
 
 def generate_preamble_bits(sequence_type: str, length: int, **kwargs) -> ArrayType:
     """
-    Generate standard preamble bit sequences.
+    Generates standard bit sequences for synchronization preambles.
 
-    Args:
-        sequence_type: Type of sequence:
-            - "barker": Barker sequence (length must be valid Barker length).
-            - "zc" or "zadoff_chu": Zadoff-Chu (returns BPSK-quantized version).
-            - "random": Random bits.
-        length: Sequence length (in bits for Barker/random, symbols for ZC).
-        **kwargs: Additional parameters (e.g., root for ZC).
+    This utility provides a consistent interface for creating binary
+    sequences suitable for use with the `Preamble` and `Signal` classes.
 
-    Returns:
-        Bit array (0s and 1s) suitable for Preamble class.
+    Parameters
+    ----------
+    sequence_type : {"barker", "zc", "zadoff_chu", "random"}
+        The type of sequence to generate.
+    length : int
+        The desired sequence length in bits or symbols.
+    **kwargs : Any
+        Additional parameters for sequence generation (e.g., `root` for
+        ZC sequences, `seed` for random sequences).
+
+    Returns
+    -------
+    array_like
+        An array of bits (0s and 1s).
     """
     if sequence_type.lower() == "barker":
         # Barker sequence as bits: +1 -> 1, -1 -> 0

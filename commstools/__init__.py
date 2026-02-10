@@ -1,12 +1,35 @@
 """
-Commstools: A library for digital communication signal processing.
+`commstools` is a high-performance library for simulating and analyzing
+digital communication systems. It provides a unified API for generating,
+transforming, and assessing signals across diverse computational backends
+(CPU, GPU, and JAX).
 
-This package provides tools for:
-- Generating standard baseband waveforms (PAM, PSK, QAM).
-- Simulating channel impairments.
-- Performing filtering and pulse shaping.
-- Visualizing signals (Time, Frequency, Eye diagrams).
-- Supporting execution on both CPU (NumPy) and GPU (CuPy).
+Main Features
+-------------
+- **Signal Abstractions**: Unified `Signal` and `SingleCarrierFrame` containers.
+- **Modulation**: Support for PAM, PSK, and QAM (NRZ/RZ) with Gray coding.
+- **Impairments**: Simulation of AWGN, Phase Noise, and Frequency Offset.
+- **Synchronization**: Time and frequency synchronization algorithms.
+- **Execution backends**: Transparent NumPy, CuPy, and JAX support.
+
+Subpackages
+-----------
+core :
+    Primary data structures and signal analysis methods.
+impairments :
+    Channel models and signal degradation effects.
+metrics :
+    Quality assessment tools (BER, SNR, EVM).
+sync :
+    Synchronization and timing recovery algorithms.
+mapping :
+    Bits-to-symbols and LLR demapping logic.
+filtering :
+    Digital filter design and pulse shaping.
+multirate :
+    Resampling and polyphase filtering.
+spectral :
+    Frequency domain analysis and transformations.
 """
 
 import warnings
