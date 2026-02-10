@@ -1,6 +1,5 @@
 """Tests for performance metrics module."""
 
-import numpy as np
 from commstools import metrics
 from commstools.impairments import add_awgn
 from commstools.utils import random_symbols
@@ -29,7 +28,7 @@ def test_evm_with_known_error(backend_device, xp):
     assert abs(evm_pct - 10.0) < 1.0  # Within 1% tolerance
 
 
-def test_snr_estimate_matches_applied(backend_device, xp):
+def test_snr_matches_applied(backend_device, xp):
     """SNR estimate should approximately match applied AWGN level."""
     # Generate random QPSK symbols
     symbols = random_symbols(10000, "qam", 4, seed=42)
@@ -38,8 +37,7 @@ def test_snr_estimate_matches_applied(backend_device, xp):
     target_snr_db = 20.0
     noisy = add_awgn(symbols, esn0_db=target_snr_db, sps=1)
 
-    # Estimate SNR
-    estimated_snr = metrics.snr_estimate(noisy, symbols)
+    estimated_snr = metrics.snr(noisy, symbols)
 
     # Should be within 1 dB of target
     assert abs(estimated_snr - target_snr_db) < 1.0, (
@@ -47,11 +45,11 @@ def test_snr_estimate_matches_applied(backend_device, xp):
     )
 
 
-def test_snr_estimate_high_snr(backend_device, xp):
+def test_snr_high_snr(backend_device, xp):
     """Very high SNR should return very high estimate."""
     symbols = xp.array([1 + 1j, -1 + 1j, -1 - 1j, 1 - 1j])
 
-    snr_db = metrics.snr_estimate(symbols, symbols)
+    snr_db = metrics.snr(symbols, symbols)
 
     assert snr_db > 100  # Essentially infinite for identical signals
 
@@ -121,7 +119,7 @@ def test_q_factor_db(backend_device, xp):
     assert abs(q_db - expected_db) < 0.1
 
 
-def test_signal_evm_method():
+def test_signal_evm_method(backend_device, xp):
     """Test Signal.evm() method using source_symbols as reference."""
     from commstools.core import Signal
 
@@ -135,7 +133,7 @@ def test_signal_evm_method():
     assert evm_pct < 1e-5  # Near-zero EVM for perfect signal
 
 
-def test_signal_ber_method():
+def test_signal_ber_method(backend_device, xp):
     """Test Signal.ber() method using source_bits as reference."""
     from commstools.core import Signal
 
@@ -149,7 +147,7 @@ def test_signal_ber_method():
     assert ber_val == 0.0  # Perfect signal, no errors
 
 
-def test_signal_demap_hard():
+def test_signal_demap_hard(backend_device, xp):
     """Test Signal.demap() hard decision."""
     from commstools.core import Signal
 
@@ -161,6 +159,4 @@ def test_signal_demap_hard():
     bits = sig.demap(hard=True)
 
     # Should match source_bits
-    import numpy as np
-
-    assert np.array_equal(bits.flatten(), sig.source_bits.flatten())
+    assert xp.array_equal(bits.flatten(), sig.source_bits.flatten())

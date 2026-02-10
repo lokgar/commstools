@@ -1,12 +1,24 @@
 """
-Symbol mapping and constellation generation.
+Symbol mapping, demapping, and constellation management.
 
-This module handles the mapping of bits to complex symbols and vice versa.
-It supports:
-- Gray coding and decoding.
-- Constellation generation for PSK, QAM (Square, Cross, Rectangular, Star), and ASK.
-- Bit-to-symbol mapping.
-- Symbol-to-bit demapping.
+This module provides high-performance routines for the transition between
+digital bits and physical IQ symbols. It supports standardized mapping
+strategies (Gray coding) and advanced demapping algorithms (Soft-decision LLR).
+
+Functions
+---------
+gray_code :
+    Generates Gray code sequences for bit-to-symbol assignment.
+gray_to_binary :
+    Inverse Gray code mapping for bit retrieval.
+gray_constellation :
+    Primary interface for generating Gray-coded constellation arrays.
+map_bits :
+    Maps bit sequences to complex/float symbols.
+demap_symbols :
+    Performs hard-decision demapping from symbols to bits.
+demap_symbols_soft :
+    Computes Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 """
 
 from typing import Any, Optional
@@ -22,20 +34,34 @@ from .logger import logger
 @lru_cache(maxsize=128)
 def gray_code(n: int) -> np.ndarray:
     """
-    Internal numpy implementation of Gray code.
+    Generates a Gray code sequence for `n` bits.
 
-    Args:
-        n: Number of bits.
+    Gray coding ensures that adjacent symbols in the constellation differ
+    by only one bit, minimizing bit error rate (BER) for a given symbol
+    error rate (SER).
 
-    Returns:
+    Parameters
+    ----------
+    n : int
+        Number of bits.
+
+    Returns
+    -------
+    ndarray
         Array of integers representing the Gray code sequence.
+        Shape: (2^n,).
+
+    Examples
+    --------
+    >>> gray_code(2)
+    array([0, 1, 3, 2])
     """
     if n < 0:
         raise ValueError("n must be non-negative")
     if n == 0:
         return np.array([0], dtype=int)
 
-    # Vectorized implementation for speed
+    # Vectorized implementation: s ^ (s >> 1)
     i = np.arange(1 << n, dtype=int)
     return i ^ (i >> 1)
 
@@ -43,19 +69,23 @@ def gray_code(n: int) -> np.ndarray:
 @lru_cache(maxsize=128)
 def gray_to_binary(n: int) -> np.ndarray:
     """
-    Compute inverse Gray code mapping: symbol index -> binary bits.
+    Computes the inverse Gray code mapping: symbol index to bit pattern.
 
-    For soft demapping, we need to know which bits correspond to each
-    constellation point. Since gray_code(n)[i] gives the Gray code for
-    natural binary i, we need the inverse: given symbol index s,
-    what is the natural binary representation?
+    In soft demapping, it is necessary to identify which bits correspond to
+    each constellation point. Since `gray_code(n)[i]` provides the Gray
+    code for natural binary `i`, this inverse mapping finds the natural
+    binary representation corresponding to a specific Gray-coded index.
 
-    Args:
-        n: Number of bits per symbol.
+    Parameters
+    ----------
+    n : int
+        Number of bits per symbol.
 
-    Returns:
-        Array where result[s] gives the natural binary value that maps to symbol s.
-        Shape: (2^n,). result[s] is the bit pattern for symbol s.
+    Returns
+    -------
+    ndarray
+        Array where `result[s]` provides the natural binary integer
+        representing the bit pattern for symbol `s`. Shape: (2^n,).
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -71,19 +101,27 @@ def gray_to_binary(n: int) -> np.ndarray:
 
 
 @lru_cache(maxsize=128)
-def gray_constellation(modulation: str, order: int) -> ArrayType:
+def gray_constellation(modulation: str, order: int) -> np.ndarray:
     """
     Generate constellation points with Gray mapping.
 
-    The returned array is indexed by the symbol value (0 to order-1).
-    constellation[s] is the complex/float value for symbol s.
+    The returned array is indexed by the symbol's natural binary value.
+    `constellation[i]` is the complex/float value for the symbol representing
+    the bit pattern for integer `i`.
 
-    Args:
-        modulation: Modulation type ('psk', 'qam', 'ask').
-        order: Modulation order.
+    Parameters
+    ----------
+    modulation : {"psk", "qam", "ask"}
+        Modulation type.
+    order : int
+        Modulation order (number of symbols). Must be a power of 2.
 
-    Returns:
+    Returns
+    -------
+    ndarray
         Array of constellation points (NumPy).
+        Shape: (order,).
+        Complex for 'psk' and 'qam', Float for 'ask'.
     """
     logger.debug(
         f"Generating Gray-coded constellation: modulation={modulation}, order={order}"
@@ -117,13 +155,17 @@ def gray_constellation(modulation: str, order: int) -> ArrayType:
 
 def _gray_psk(order: int) -> np.ndarray:
     """
-    Generate M-PSK constellation with Gray mapping (Numpy).
+    Generates an M-PSK constellation with Gray mapping.
 
-    Args:
-        order: Modulation order (must be a power of 2).
+    Parameters
+    ----------
+    order : int
+        Modulation order (must be a power of 2).
 
-    Returns:
-        Complex array of constellation points.
+    Returns
+    -------
+    ndarray
+        Complex array of PSK constellation points.
     """
     # Bits per symbol
     k = int(np.log2(order))
@@ -152,14 +194,20 @@ def _gray_psk(order: int) -> np.ndarray:
 
 def _gray_ask(order: int) -> np.ndarray:
     """
-    Generate M-ASK (Amplitude Shift Keying) constellation with Gray mapping (Numpy).
-    ATTENTION: Always returns bipolar values centered at 0.
+    Generates an M-ASK constellation with Gray mapping.
 
-    Args:
-        order: Modulation order (must be a power of 2).
+    This function always returns bipolar values centered at zero
+    (e.g., [-3, -1, 1, 3] for 4-ASK).
 
-    Returns:
-        Real array of constellation points (centered at 0).
+    Parameters
+    ----------
+    order : int
+        Modulation order (must be a power of 2).
+
+    Returns
+    -------
+    ndarray
+        Real-valued array of ASK constellation points.
     """
     k = int(np.log2(order))
     if 2**k != order:
@@ -176,15 +224,20 @@ def _gray_ask(order: int) -> np.ndarray:
 
 def _gray_qam_square(order: int) -> np.ndarray:
     """
-    Generate Square M-QAM constellation (M = 2^2k) with Gray mapping (Numpy).
+    Generates a Square M-QAM constellation with Gray mapping.
 
-    Constructed as the Cartesian product of two Gray-coded ASK constellations.
+    Constructed as the Cartesian product of two Gray-coded ASK
+    constellations. Valid for orders where log2(M) is even.
 
-    Args:
-        order: Modulation order (must be an even power of 2).
+    Parameters
+    ----------
+    order : int
+        Modulation order (must be an even power of 2, e.g., 16, 64).
 
-    Returns:
-        Complex array of constellation points.
+    Returns
+    -------
+    ndarray
+        Complex array of square QAM constellation points.
     """
     # M = 2^(2k). I bits = k, Q bits = k.
     k_total = int(np.log2(order))
@@ -210,13 +263,12 @@ def _gray_qam_square(order: int) -> np.ndarray:
 
 def _gray_qam_8_rect() -> np.ndarray:
     """
-    Generate 8-QAM constellation with Rectangular Gray mapping (Numpy).
+    Generates an 8-QAM constellation with Rectangular Gray mapping.
 
-    Args:
-        order: Modulation order (must be 8).
-
-    Returns:
-        Complex array of constellation points.
+    Returns
+    -------
+    ndarray
+        Complex array of 8-QAM constellation points.
     """
 
     points = np.zeros(8, dtype=complex)
@@ -250,13 +302,20 @@ def _gray_qam_8_rect() -> np.ndarray:
 
 def _gray_qam_cross(order: int) -> np.ndarray:
     """
-    Generate Cross-QAM constellation (M = 2^(2k+1)) using a Quasi-Gray mapping (Numpy).
+    Generates a Cross-QAM constellation using a Quasi-Gray mapping.
 
-    Args:
-        order: Modulation order (must be an odd power of 2).
+    Cross constellations are used for QAM orders where log2(M) is odd (e.g., 32, 128)
+    to maintain a more circular/compact shape than a purely rectangular grid.
 
-    Returns:
-        Complex array of constellation points.
+    Parameters
+    ----------
+    order : int
+        Modulation order (must be an odd power of 2).
+
+    Returns
+    -------
+    ndarray
+        Complex array of cross QAM constellation points.
     """
     # M = 2^(2k+1).
     k_total = int(np.log2(order))
@@ -339,16 +398,23 @@ def map_bits(
     """
     Map a sequence of bits to constellation symbols.
 
-    Args:
-        bits: Input array of bits (0s and 1s).
-        modulation: Modulation type ('psk', 'qam', 'ask').
-        order: Modulation order.
-        dtype: Output dtype (e.g., np.complex64, np.complex128). Default: complex64.
-            For ASK modulation, automatically converts to real dtype (float32/float64).
+    Parameters
+    ----------
+    bits : array_like
+        Input array of bits (0s and 1s). Shape: (N_bits,).
+    modulation : {"psk", "qam", "ask"}
+        Modulation type.
+    order : int
+        Modulation order.
+    dtype : data-type, optional
+        Output symbol dtype. Default is `np.complex64`.
+        For 'ask', automatically maps to corresponding real type (e.g., `float32`).
 
-    Returns:
-        Array of symbols on the same backend as the input bits.
-        Complex for PSK/QAM, real for ASK.
+    Returns
+    -------
+    array_like
+        Array of symbols. Shape: (N_bits / log2(order),).
+        Backend (NumPy/CuPy) matches the input `bits`.
     """
     logger.debug(f"Mapping bits to {modulation.upper()} {order}-level symbols.")
     bits, xp, _ = dispatch(bits)
@@ -370,6 +436,8 @@ def map_bits(
     bits_reshaped = bits.reshape((num_symbols, k))
 
     # Powers of 2: [2^(k-1), ..., 2^0] for MSB first mapping
+    # Note: bits might be int8. powers will be int64/int32.
+    # The multiplication will promote to the larger type, preventing overflow.
     powers = 2 ** xp.arange(k - 1, -1, -1, dtype=int)
     # Perform dot product
     indices = xp.sum(bits_reshaped * powers, axis=1)
@@ -399,15 +467,25 @@ def map_bits(
 
 def demap_symbols(symbols: ArrayType, modulation: str, order: int) -> ArrayType:
     """
-    Map complex symbols back to a sequence of bits (hard decisions).
+    Maps complex symbols back to a sequence of bits (hard decisions).
 
-    Args:
-        symbols: Input array of complex symbols.
-        modulation: Modulation type ('psk', 'qam', 'ask').
-        order: Modulation order.
+    This function performs minimum Euclidean distance decoding to find the
+    most likely bit pattern for each received symbol.
 
-    Returns:
-        Array of bits (0s and 1s) on the same backend as the input symbols.
+    Parameters
+    ----------
+    symbols : array_like
+        Input array of received symbols. Shape: (..., N_symbols).
+    modulation : {"psk", "qam", "ask"}
+        Modulation type.
+    order : int
+        Modulation order.
+
+    Returns
+    -------
+    array_like
+        Sequence of bits (0s and 1s). Shape: (..., N_symbols * log2(order)).
+        The backend (NumPy/CuPy) matches the input `symbols`.
     """
     logger.debug(f"Demapping {modulation.upper()} {order}-level symbols to bits.")
     symbols, xp, _ = dispatch(symbols)
@@ -463,39 +541,39 @@ def demap_symbols_soft(
     vectorized: bool = True,
 ) -> ArrayType:
     """
-    Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
+    Compute Log-Likelihood Ratios (LLRs) for soft-decision demapping.
 
-    LLRs indicate bit reliability: positive values favor bit=0, negative favor bit=1.
-    The magnitude indicates confidence level.
+    LLRs represent the reliability of each bit. Positive values favor bit 0,
+    while negative values favor bit 1 (assuming $0 \rightarrow +1$ and
+    $1 \rightarrow -1$ mapping convention). The magnitude indicates confidence.
 
-    Args:
-        symbols: Received noisy symbols. Shape: (..., N).
-        modulation: Modulation type ('psk', 'qam', 'ask').
-        order: Modulation order.
-        noise_var: Noise variance per complex dimension (σ²).
-            For AWGN with Es/N0: σ² = N0/2 = Es / (2 * 10^(Es_N0_dB/10))
-            For unit-power symbols (Es=1): σ² = 0.5 * 10^(-Es_N0_dB/10)
-        method: LLR computation method:
-            - "maxlog": Max-log approximation (fast, slight degradation at low SNR).
-            - "exact": Numerically stable exact computation using log-sum-exp.
-        vectorized: If True (default), use fully vectorized computation.
-            Falls back to loop-based for very large arrays to avoid OOM.
+    Parameters
+    ----------
+    symbols : array_like
+        Received noisy symbols. Shape: (..., N_symbols).
+    modulation : {"psk", "qam", "ask"}
+        Modulation type.
+    order : int
+        Modulation order.
+    noise_var : float
+        Noise variance per complex dimension ($\sigma^2$).
+        For AWGN with unit-power symbols: $\sigma^2 = 0.5 \cdot 10^{-E_s/N_0 / 10}$.
+    method : {"maxlog", "exact"}, default "maxlog"
+        Computation algorithm. "maxlog" is much faster; "exact" uses log-sum-exp.
+    vectorized : bool, default True
+        If True, use high-performance vectorized operations.
+        Automatically falls back to loops for extremely large arrays to
+        prevent Out-Of-Memory (OOM) errors.
 
-    Returns:
-        LLR array with shape (..., N*k) where k = log2(order).
-        LLR > 0 indicates bit 0 more likely.
-        LLR < 0 indicates bit 1 more likely.
+    Returns
+    -------
+    array_like
+        LLR values. Shape: (..., N_symbols * log2(order)).
 
-    Note:
-        - For coded systems, feed LLRs directly to soft-input decoders (LDPC, Turbo).
-        - The max-log approximation: LLR ≈ (1/σ²) * (min_{s∈S₁} |r-s|² - min_{s∈S₀} |r-s|²)
-        - At high SNR (>10 dB), max-log is nearly identical to exact.
-
-    Example:
-        >>> rx = add_awgn(tx_symbols, esn0_db=10)
-        >>> # For Es/N0 = 10 dB with unit-power symbols:
-        >>> noise_var = 0.5 * 10 ** (-10/10)  # σ² = N0/2
-        >>> llrs = demap_symbols_soft(rx, "qam", 16, noise_var)
+    Notes
+    -----
+    The Max-Log approximation simplifies the exact LLR:
+    $LLR \approx \frac{1}{\sigma^2} (\min_{s \in S_1} |r-s|^2 - \min_{s \in S_0} |r-s|^2)$
     """
     logger.debug(
         f"Soft demapping {modulation.upper()} {order}-level (method={method})."
@@ -515,14 +593,13 @@ def demap_symbols_soft(
     constellation = gray_constellation(modulation, order)
     constellation = xp.asarray(constellation)
 
-    # Build bit mapping table using Gray code
-    # gray_to_binary(k)[s] gives the natural binary value that maps to symbol s
-    # We then extract the individual bits from this value
-    binary_values = gray_to_binary(k)  # Shape: (M,) - NumPy cached
-    binary_values = xp.asarray(binary_values)
+    # Build bit mapping table
+    # Constellation points in 'constellation' array are already indexed by their bit value
+    # (Natural Binary Indexing).
+    # So the bits for constellation[s] are simply the bits of integer s.
+    s_indices = xp.arange(order, dtype=xp.int32)
     shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
-    # bits_table[s, i] = i-th bit of symbol s (MSB first, Gray-coded)
-    bits_table = ((binary_values[:, xp.newaxis] >> shifts) & 1).astype(
+    bits_table = ((s_indices[:, xp.newaxis] >> shifts) & 1).astype(
         xp.int32
     )  # Shape: (M, k)
 

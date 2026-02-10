@@ -1,8 +1,15 @@
 """
 Logging utilities for the CommsTools library.
 
-This module provides a colorized logger to facilitate debugging and monitoring
-of signal processing workflows.
+This module provides a unified, colorized logging interface for monitoring
+signal processing workflows and debugging complex system failures.
+
+Functions
+---------
+get_logger :
+    Retrieves or creates a colorized logger instance.
+set_log_level :
+    Dynamically adjusts the library's verbosity.
 """
 
 import logging
@@ -11,7 +18,10 @@ import sys
 
 class ColorFormatter(logging.Formatter):
     """
-    Custom logging formatter that adds ANSI color codes to the log levels.
+    Custom logging formatter providing ANSI-colored output based on log levels.
+
+    This formatter enhances readability by using distinct colors for different
+    severities (e.g., Cyan for DEBUG, Red for ERROR).
     """
 
     GREY = "\x1b[38;20m"
@@ -33,7 +43,17 @@ class ColorFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """
-        Formats the log record with ANSI color codes based on the log level.
+        Formats the log record with ANSI color codes.
+
+        Parameters
+        ----------
+        record : logging.LogRecord
+            The log record containing the message and metadata.
+
+        Returns
+        -------
+        str
+            The formatted log message with embedded ANSI escape sequences.
         """
         log_color = self.LEVEL_COLORS.get(record.levelno, self.RESET)
         formatter = logging.Formatter(
@@ -45,15 +65,20 @@ class ColorFormatter(logging.Formatter):
 
 def get_logger(name: str = "commstools") -> logging.Logger:
     """
-    Returns a logger instance for the CommsTools library.
+    Retrieves and configures a logger instance for the library.
 
-    If no handlers are present, it adds a StreamHandler with a colorized formatter.
+    If the requested logger has no handlers, a `StreamHandler` with the
+    `ColorFormatter` is automatically attached to ensure immediate visibility.
 
-    Args:
-        name: Name of the logger.
+    Parameters
+    ----------
+    name : str, default "commstools"
+        The namespace for the logger.
 
-    Returns:
-        A configured logging.Logger instance.
+    Returns
+    -------
+    logging.Logger
+        A configured logger instance.
     """
     logger = logging.getLogger(name)
 
@@ -72,10 +97,13 @@ logger = get_logger()
 
 def set_log_level(level):
     """
-    Sets the log level for the CommsTools logger.
+    Sets the global log level for the CommsTools library.
 
-    Args:
-        level: logging.DEBUG, logging.INFO, etc. or string "DEBUG", "INFO", etc.
+    Parameters
+    ----------
+    level : int or str
+        The logging level to apply. Accepts standard `logging` constants
+        (e.g., `logging.DEBUG`) or string identifiers (e.g., "DEBUG", "INFO").
     """
     if isinstance(level, str):
         level = getattr(logging, level.upper())

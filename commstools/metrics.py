@@ -1,11 +1,21 @@
 """
 Performance metrics for digital communications.
 
-This module provides signal quality and error rate metrics:
-- **EVM** (Error Vector Magnitude): Measures distortion between received and reference symbols.
-- **SNR estimation**: Data-aided SNR estimation from known reference.
-- **BER** (Bit Error Rate): Ratio of erroneous bits.
-- **Q-factor**: Quality metric derived from BER or EVM.
+This module provides high-performance routines for evaluating signal quality,
+error rates, and reliability across different computational backends.
+
+Functions
+---------
+evm :
+    Calculates Error Vector Magnitude between received and reference symbols.
+snr :
+    Performs data-aided SNR estimation.
+ber :
+    Computes Bit Error Rate between bit sequences.
+q_factor :
+    Calculates communication quality Q-factor from BER or EVM.
+q_factor_db :
+    Expresses Q-factor in decibels.
 """
 
 from typing import TYPE_CHECKING, Optional, Tuple, Union
@@ -25,24 +35,34 @@ def evm(
     normalize: bool = True,
 ) -> Tuple[float, float]:
     """
-    Compute Error Vector Magnitude (EVM) between received and reference symbols.
+    Computes Error Vector Magnitude (EVM) between received and reference symbols.
 
-    EVM measures the deviation of received symbols from ideal constellation points,
-    expressed as a percentage of the reference signal's RMS amplitude.
+    EVM is a standard measure of signal quality that quantifies the deviation
+    of received symbols from their ideal constellation points. It is
+    calculated as the ratio of the RMS error to the RMS amplitude of the
+    reference signal.
 
-    Args:
-        rx_symbols: Received symbols (array or Signal). Shape: (..., N).
-        tx_symbols: Reference/transmitted symbols (array or Signal). Shape: (..., N).
-        normalize: If True, normalize EVM by RMS of reference (standard definition).
-                   If False, return raw RMS error.
+    Parameters
+    ----------
+    rx_symbols : array_like or Signal
+        Received symbols to evaluate. Shape: (..., N_symbols).
+    tx_symbols : array_like or Signal
+        Ideal reference (transmitted) symbols. Shape: (..., N_symbols).
+    normalize : bool, default True
+        If True, normalizes the error by the RMS amplitude of the reference
+        signal (standard definition).
 
-    Returns:
-        Tuple of (evm_percent, evm_db):
-            - evm_percent: EVM as percentage (0-100+).
-            - evm_db: EVM in dB (20*log10(evm_percent/100)).
+    Returns
+    -------
+    evm_percent : float
+        EVM expressed as a percentage (e.g., 5.0 for 5%).
+    evm_db : float
+        EVM expressed in decibels (dB), calculated as $20 \log_{10}(EVM_{ratio})$.
 
-    Note:
-        For MIMO signals with shape (Channels, N), computes EVM across all samples.
+    Notes
+    -----
+    For MIMO or multichannel signals, the EVM is computed across all spatial
+    and temporal samples to provide a single aggregate metric.
     """
     from .core import Signal
 
@@ -96,26 +116,34 @@ def evm(
     return evm_percent, evm_db
 
 
-def snr_estimate(
+def snr(
     rx_symbols: Union[ArrayType, "Signal"],
     tx_symbols: Union[ArrayType, "Signal"],
 ) -> float:
     """
-    Estimate SNR from received symbols using known reference (data-aided).
+    Estimates SNR from received symbols using a known reference (Data-Aided).
 
-    Computes SNR as the ratio of signal power to error power:
-        SNR = P_signal / P_noise = P_tx / P_error
+    SNR is computed as the ratio of average signal power to noise (error)
+    power:
+    $SNR_{linear} = \frac{P_{signal}}{P_{noise}} = \frac{E[|tx|^2]}{E[|rx - tx|^2]}$
 
-    Args:
-        rx_symbols: Received symbols (array or Signal). Shape: (..., N).
-        tx_symbols: Reference/transmitted symbols (array or Signal). Shape: (..., N).
+    Parameters
+    ----------
+    rx_symbols : array_like or Signal
+        Received noisy symbols. Shape: (..., N_symbols).
+    tx_symbols : array_like or Signal
+        Known transmitted symbols. Shape: (..., N_symbols).
 
-    Returns:
+    Returns
+    -------
+    float
         Estimated SNR in dB.
 
-    Note:
-        This is a data-aided estimate requiring known transmitted symbols.
-        For blind estimation, use dedicated algorithms (M2M4, etc.).
+    Notes
+    -----
+    This method requires knowledge of the transmitted data. For non-data-aided
+    (blind) estimation, more complex algorithms (e.g., moments-based M2M4)
+    are required.
     """
     from .core import Signal
 
@@ -164,17 +192,24 @@ def ber(
     bits_tx: ArrayType,
 ) -> float:
     """
-    Compute Bit Error Rate (BER) between received and transmitted bits.
+    Computes the Bit Error Rate (BER) between two bit sequences.
 
-    Args:
-        bits_rx: Received bit sequence (0s and 1s). Shape: (..., N).
-        bits_tx: Transmitted bit sequence (0s and 1s). Shape: (..., N).
+    Parameters
+    ----------
+    bits_rx : array_like
+        Received bit sequence (binary 0/1). Shape: (..., N).
+    bits_tx : array_like
+        Original transmitted bit sequence (binary 0/1). Shape: (..., N).
 
-    Returns:
-        BER as a ratio in [0, 1]. BER = num_errors / total_bits.
+    Returns
+    -------
+    float
+        BER as a ratio in the range [0, 1]. Calculated as `errors / total_bits`.
 
-    Note:
-        Both arrays must have the same shape.
+    Notes
+    -----
+    The calculation is backend-agnostic and supports comparison of massive
+    bit sequences on both CPU and GPU.
     """
     bits_rx, xp, _ = dispatch(bits_rx)
     bits_tx = xp.asarray(bits_tx)
@@ -207,28 +242,39 @@ def q_factor(
     order: Optional[int] = None,
 ) -> float:
     """
-    Compute Q-factor from BER or EVM.
+    Computes the Q-factor from BER or EVM.
 
-    Q-factor is a quality metric commonly used in optical communications.
-    It represents the "distance" (in standard deviations) between signal levels.
+    The Q-factor is a dimensionless quality metric that represents the
+    normalized distance between constellation levels in terms of standard
+    deviation. It is widely used in optical and high-speed communications.
 
-    Args:
-        ber_value: Bit Error Rate (0 to 0.5). Uses Q = sqrt(2) * erfc^-1(2*BER).
-        evm_percent: EVM in percent. Uses modulation-aware calculation.
-        modulation: Modulation type ('psk', 'qam', 'pam'). Required for EVM.
-        order: Modulation order. Required for EVM.
+    Parameters
+    ----------
+    ber_value : float, optional
+        Bit Error Rate (0 to 0.5). If provided, calculates
+        $Q = \sqrt{2} \cdot \text{erfc}^{-1}(2 \cdot BER)$.
+    evm_percent : float, optional
+        EVM in percent. Requires `modulation` and `order` for accurate mapping.
+    modulation : {"psk", "qam", "ask", "pam"}, optional
+        Modulation type used for EVM-based calculation.
+    order : int, optional
+        Modulation order (e.g., 4, 16, 64).
 
-    Returns:
-        Q-factor (linear, dimensionless).
+    Returns
+    -------
+    float
+        Linear Q-factor.
 
-    Raises:
-        ValueError: If neither ber_value nor evm_percent provided,
-            or if EVM given without modulation info.
+    Raises
+    ------
+    ValueError
+        If neither `ber_value` nor `evm_percent` is provided.
 
-    Note:
-        - Q > 6 typically indicates good performance (BER < 1e-9).
-        - For EVM: Q = d_min / (2 * σ) where σ relates to EVM.
-        - Different modulations have different d_min relative to symbol power.
+    Notes
+    -----
+    - For EVM, $Q = \frac{d_{min}}{2\sigma}$, where $d_{min}$ is the
+      minimum distance between points in a unit-power constellation.
+    - $Q > 6$ typically indicates excellent performance ($BER < 10^{-9}$).
     """
     from scipy.special import erfcinv
 
@@ -295,16 +341,23 @@ def q_factor_db(
     order: Optional[int] = None,
 ) -> float:
     """
-    Compute Q-factor in dB.
+    Computes the Q-factor in decibels ($20 \log_{10}(Q)$).
 
-    Args:
-        ber_value: Bit Error Rate (0 to 0.5).
-        evm_percent: EVM in percent.
-        modulation: Modulation type ('psk', 'qam', 'pam').
-        order: Modulation order.
+    Parameters
+    ----------
+    ber_value : float, optional
+        Bit Error Rate.
+    evm_percent : float, optional
+        EVM in percent.
+    modulation : str, optional
+        Modulation identifier.
+    order : int, optional
+        Modulation order.
 
-    Returns:
-        Q-factor in dB: 20 * log10(Q).
+    Returns
+    -------
+    float
+        Q-factor in dB.
     """
     q = q_factor(
         ber_value=ber_value, evm_percent=evm_percent, modulation=modulation, order=order

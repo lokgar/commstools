@@ -52,7 +52,6 @@ def test_soft_demap_sign_correctness(backend_device, xp):
     """LLR sign should match hard decision for noiseless symbols."""
     modulation = "qam"
     order = 16
-    k = 4  # log2(16)
 
     # Generate known bits and map to symbols
     bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=xp.int32)
@@ -76,7 +75,6 @@ def test_soft_demap_roundtrip(backend_device, xp):
     """Hard decision from LLR should match direct hard demapping."""
     modulation = "psk"
     order = 8
-    k = 3
 
     # Generate random symbols
     bits = xp.array([0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0], dtype=xp.int32)
@@ -125,7 +123,6 @@ def test_soft_demap_mimo_shape(backend_device, xp):
     """Soft demapping should preserve MIMO channel structure."""
     modulation = "qam"
     order = 4
-    k = 2
 
     # 2 streams, 4 symbols each
     bits = xp.zeros(16, dtype=xp.int32)

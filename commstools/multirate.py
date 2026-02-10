@@ -1,10 +1,24 @@
 """
-Multirate signal processing.
+Multirate signal processing and resampling.
 
-This module provides efficient implementations of multirate operations:
-- Upsampling (interpolation).
-- Downsampling (decimation).
-- Rational rate resampling (polyphase filtering).
+This module provides high-performance implementations of multirate
+operations, including interpolation, decimation, and rational rate
+conversion using polyphase filter banks.
+
+Functions
+---------
+polyphase_resample :
+    Performs rational rate conversion via polyphase filtering.
+resample :
+    High-level interface for arbitrary rate changes.
+upsample :
+    Increases sampling rate by an integer factor with anti-imaging.
+decimate :
+    Reduces sampling rate with anti-aliasing filtering.
+expand :
+    Inserts zeros between samples (zero-stuffing).
+downsample_to_symbols :
+    Optimized symbol extraction after matched filtering.
 """
 
 from fractions import Fraction
@@ -22,14 +36,37 @@ def polyphase_resample(
     window: Optional[ArrayType] = None,
 ) -> ArrayType:
     """
-    Safe wrapper for polyphase resampling that handles CuPy multidimensional stability issues.
+    Rational resampling using polyphase filtering.
 
-    Args:
-        samples: Input samples.
-        up: Upsampling factor.
-        down: Downsampling factor.
-        axis: Processing axis.
-        window: FIR filter window (taps).
+    This method changes the sampling rate of a signal by a rational factor
+    `up/down`. It applies an anti-aliasing/anti-imaging filter during the
+    process to prevent spectral overlap.
+
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    up : int
+        Upsampling factor (interpolation).
+    down : int
+        Downsampling factor (decimation).
+    axis : int, default -1
+        The axis along which to perform resampling.
+    window : array_like, optional
+        Custom FIR filter taps (window) to use for the polyphase filter.
+        If None, a Kaiser window is used by default. Shape: (N_taps,).
+
+    Returns
+    -------
+    array_like
+        Resampled signal. Shape: (..., N_samples * up / down).
+        Backend (NumPy/CuPy) matches the input `samples`.
+
+    Notes
+    -----
+    The CuPy implementation includes a stability workaround for
+    multidimensional arrays by iterating over channels when necessary,
+    avoiding certain CUDA-level kernel errors in `resample_poly`.
     """
     samples, xp, sp = dispatch(samples)
 
@@ -91,30 +128,29 @@ def downsample_to_symbols(
     axis: int = -1,
 ) -> ArrayType:
     """
-    Simple decimation to symbol rate by taking every sps-th sample.
+    Decimates an oversampled signal to symbol-rate by direct slicing.
 
-    Use this AFTER matched filtering when going from oversampled to 1 sps.
-    Unlike resample/decimate, this does NOT apply any additional filtering,
-    which is correct when the matched filter has already removed out-of-band noise.
+    This function should be used **after** matched filtering to extract
+    pulse-shaped symbols at $1 \text{ sps}$. It does not apply additional
+    filtering, which is correct since the matched filter has already
+    performed optimal noise suppression.
 
-    When to use this vs other methods:
-    - downsample_to_symbols: After matched filter, for clean symbol extraction
-    - decimate: When you need anti-alias filtering (no prior matched filter)
-    - resample: When changing sample rate by arbitrary rational factor
+    Parameters
+    ----------
+    samples : array_like
+        Input matched-filtered signal. Shape: (..., N_samples).
+    sps : int
+        Samples per symbol (decimation factor).
+    offset : int, default 0
+        Sampling phase offset in samples [0, sps-1]. Adjust this to
+        sample at the peak of the impulse response (center of the eye).
+    axis : int, default -1
+        The axis along which to downsample.
 
-    Args:
-        samples: Input oversampled array (already matched-filtered).
-        sps: Samples per symbol (decimation factor).
-        offset: Timing offset in samples (0 to sps-1). Use to find optimal
-                sampling instant. Default 0 assumes matched filter peak is aligned.
-        axis: Axis along which to downsample.
-
-    Returns:
-        Decimated samples at symbol rate.
-
-    Example:
-        >>> # After matched filter, extract symbols
-        >>> symbols = downsample_to_symbols(samples, sps=4, offset=0)
+    Returns
+    -------
+    array_like
+        Symbols at 1 sps. Shape: (..., N_samples / sps).
     """
     logger.debug(f"Downsampling to symbols: sps={sps}, offset={offset}")
     samples, xp, _ = dispatch(samples)
@@ -128,14 +164,27 @@ def downsample_to_symbols(
 
 def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
-    Zero-insertion: Insert (factor-1) zeros between each sample.
+    Inserts zeros between samples (up-sampling by zero-stuffing).
 
-    Args:
-        samples: Input sample array.
-        factor: Expansion factor (samples per symbol).
+    This operation increases the sampling rate by an integer factor by
+    inserting `factor - 1` zeros between each original sample. This is the
+    first step in traditional interpolation but requires subsequent
+    filtering to remove spectral images.
 
-    Returns:
-        Expanded array with zeros inserted (length = len(samples) * factor) on the same backend.
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    factor : int
+        The expansion factor (number of output samples per input sample).
+    axis : int, default -1
+        The axis along which to perform expansion.
+
+    Returns
+    -------
+    array_like
+        The expanded sample array with zeros inserted.
+        Shape: (..., N_samples * factor).
     """
     logger.debug(f"Inserting zeros (expansion factor={factor}).")
     samples, xp, _ = dispatch(samples)
@@ -161,18 +210,25 @@ def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
 
 def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
-    Upsampling: Expansion (zero-insertion) + anti-imaging filter.
+    Increases the sampling rate by an integer factor with filtering.
 
-    Increases sample rate by inserting zeros and applying lowpass filter
-    to suppress spectral images.
+    This is a convenience wrapper around `polyphase_resample` that performs
+    both zero-insertion (expansion) and anti-imaging filtering to suppress
+    spectral replicas.
 
-    Args:
-        samples: Input sample array.
-        factor: Upsampling factor.
-        axis: Axis along which to upsample.
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    factor : int
+        The interpolation factor.
+    axis : int, default -1
+        The axis along which to perform upsampling.
 
-    Returns:
-        Upsampled samples at rate (factor * original_rate) on the same backend.
+    Returns
+    -------
+    array_like
+        The upsampled signal. Shape: (..., N_samples * factor).
     """
     logger.debug(f"Upsampling by factor {factor} (polyphase, axis={axis}).")
     return polyphase_resample(samples, factor, 1, axis=axis)
@@ -186,28 +242,38 @@ def decimate(
     **kwargs: Any,
 ) -> ArrayType:
     """
-    Decimate: Anti-aliasing filter followed by downsampling.
+    Reduces the sampling rate with anti-aliasing filtering.
 
-    Reduces the sample rate by filtering to remove high-frequency content
-    (which would alias) and then keeping every Nth sample.
+    Decimation combines lowpass filtering (to prevent aliasing) with
+    downsampling (keeping every Nth sample).
 
-    When to use this vs other methods:
-    - decimate: General downsampling with anti-alias filtering (no prior filter)
-    - downsample_to_symbols: After matched filter (no additional filtering needed)
-    - resample: Arbitrary rational rate changes
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    factor : int
+        The decimation factor.
+    method : {"decimate", "polyphase"}, default "decimate"
+        The implementation strategy:
+        - "decimate": Uses `scipy.signal.decimate` (Chebyshev I or FIR).
+        - "polyphase": Uses `polyphase_resample` for filter-and-sample.
+    axis : int, default -1
+        The axis along which to perform decimation.
+    **kwargs : Any
+        Additional parameters passed to the underlying filter design, such
+        as `zero_phase` or `ftype`.
 
-    NOTE: Do NOT use after matched filtering! The additional anti-alias filter
-    will degrade the signal. Use downsample_to_symbols() instead.
+    Returns
+    -------
+    array_like
+        The decimated signal. Shape: (..., N_samples / factor).
 
-    Args:
-        samples: Input sample array.
-        factor: Decimation factor.
-        method: Decimation method ('decimate', 'polyphase').
-        axis: Axis along which to decimate.
-        **kwargs: Additional filter parameters for 'decimate' method.
-
-    Returns:
-        Decimated samples at rate (original_rate / factor) on the same backend.
+    Notes
+    -----
+    Do NOT use this function for symbol extraction after a matched filter.
+    Matched filters already perform optimal noise suppression and
+    anti-aliasing; adding an extra decimation filter will degrade the
+    signal. Use `downsample_to_symbols` instead.
     """
     logger.debug(f"Decimating by factor {factor} (method: {method}).")
     samples, _, sp = dispatch(samples)
@@ -237,24 +303,36 @@ def resample(
     axis: int = -1,
 ) -> ArrayType:
     """
-    Rational resampling: Upsample by 'up', downsample by 'down'.
+    Performs rational resampling of a signal.
 
-    Can also specify 'sps_in' and 'sps_out' to calculate 'up' and 'down' automatically.
-    New rate = original_rate * (up / down) = original_rate * (sps_out / sps_in).
+    Changes the sampling rate of the input by a rational factor. The rate
+    can be specified either as direct integer factors (`up`, `down`) or
+    relative to symbols (`sps_in`, `sps_out`).
 
-    Args:
-        samples: Input sample array.
-        up: Upsampling factor.
-        down: Downsampling factor.
-        sps_in: Input samples per symbol.
-        sps_out: Target samples per symbol.
-        axis: Axis along which to resample.
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: (..., N_samples).
+    up : int, optional
+        Integer upsampling factor.
+    down : int, optional
+        Integer downsampling factor.
+    sps_in : float, optional
+        Input samples per symbol.
+    sps_out : float, optional
+        Target samples per symbol.
+    axis : int, default -1
+        The axis along which to perform resampling.
 
-    Returns:
-        Resampled samples at rate (original_rate * up / down) on the same backend.
+    Returns
+    -------
+    array_like
+        The resampled signal. Shape: (..., N_samples * Ratio).
 
-    Raises:
-        ValueError: If arguments are invalid or insufficient.
+    Raises
+    ------
+    ValueError
+        If parameters are insufficient or contradictory.
     """
     if (up is not None or down is not None) and (
         sps_in is not None or sps_out is not None

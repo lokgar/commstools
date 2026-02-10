@@ -1,11 +1,28 @@
 """
-Computational backend management.
+Computational backend management and device orchestration.
 
-This module abstracts the underlying computational library (NumPy or CuPy) to support
-transparent execution on CPU and GPU using a stateless, data-driven approach.
-It defines helper functions to:
-- Infer the active backend module (NumPy or CuPy) from data.
-- Manage data transfer between devices.
+This module provides the infrastructure for backend-agnostic execution across
+CPU (NumPy), GPU (CuPy), and JAX. It implements a data-driven dispatch mechanism
+that allows the library to automatically adjust its internal logic based on where
+the input data resides.
+
+The backend system is designed to be stateless and transparent, requiring
+minimal explicit device management from the user.
+
+Functions
+---------
+get_array_module :
+    Infers the correct array module (NumPy/CuPy) from data.
+get_scipy_module :
+    Retrieves the compatible signal processing library.
+to_device :
+    Moves data between CPU and GPU devices.
+dispatch :
+    Returns the resolved array and signal processing modules for given data.
+to_jax / from_jax :
+    Utilities for high-performance JAX interoperability.
+use_cpu_only :
+    Explicitly disables GPU discovery.
 """
 
 import types
@@ -51,10 +68,16 @@ def _get_jax() -> Tuple[
     Optional[types.ModuleType], Optional[types.ModuleType], Optional[Any]
 ]:
     """
-    Lazy loader for JAX modules to avoid repeated import overhead.
+    Lazy loader for JAX modules and its DLPack interface.
 
-    Returns:
-        Tuple of (jax, jax.numpy, jax.dlpack) if available, else (None, None, None).
+    Returns
+    -------
+    jax : module or None
+        The base `jax` module if installed, else None.
+    jnp : module or None
+        The `jax.numpy` namespace if installed, else None.
+    dlpack : module or None
+        The `jax.dlpack` interface for zero-copy transfers, else None.
     """
     if "jax" not in _JAX_CACHE:
         try:
@@ -74,13 +97,18 @@ def _get_jax() -> Tuple[
 @lru_cache(maxsize=8)
 def _get_jax_device(platform: str) -> Optional[Any]:
     """
-    Cached lookup for JAX devices by platform name.
+    Retrieves a specific JAX device by platform name.
 
-    Args:
-        platform: The target platform ('cpu', 'gpu', or 'tpu').
+    Parameters
+    ----------
+    platform : {"cpu", "gpu", "tpu"}
+        The target hardware platform identifier.
 
-    Returns:
-        The first discovered device for the specified platform, or None if not found.
+    Returns
+    -------
+    device : Device or None
+        The first discovered device for the specified platform, or None
+        if JAX is missing or the platform is unsupported.
     """
     jax, _, _ = _get_jax()
     if jax is None:
@@ -99,17 +127,30 @@ _FORCE_CPU = False
 
 def use_cpu_only(force: bool = True) -> None:
     """
-    Forces the library to use CPU only, pretending CuPy is not available.
+    Enforces a CPU-only execution path, disabling GPU discovery.
 
-    Args:
-        force: If True, blocks CuPy availability.
+    This function effectively hides CuPy from the library, even if a
+    functional NVIDIA GPU and CuPy installation are present.
+
+    Parameters
+    ----------
+    force : bool, default True
+        If True, blocks all CUDA-accelerated operations.
     """
     global _FORCE_CPU
     _FORCE_CPU = force
 
 
 def is_cupy_available() -> bool:
-    """Returns True if CuPy is available and functional, and not forced off."""
+    """
+    Checks if NVIDIA GPU acceleration is functional via CuPy.
+
+    Returns
+    -------
+    bool
+        True if CuPy is installed, functional, and not explicitly disabled
+        via `use_cpu_only`.
+    """
     if _FORCE_CPU:
         return False
     return _CUPY_AVAILABLE
@@ -117,13 +158,18 @@ def is_cupy_available() -> bool:
 
 def get_array_module(data: Any) -> types.ModuleType:
     """
-    Returns the array module (numpy or cupy) for the given data.
+    Infers the array module (NumPy or CuPy) for the given data.
 
-    Args:
-        data: Input data (array or list).
+    Parameters
+    ----------
+    data : array_like or list
+        The input data to inspect.
 
-    Returns:
-        The numpy module if data is on CPU (or a list), or cupy if on GPU.
+    Returns
+    -------
+    module
+        `numpy` if the data is on CPU or is a basic sequence,
+        `cupy` if the data resides on a CUDA device.
     """
     if is_cupy_available():
         return cp.get_array_module(data)
@@ -133,13 +179,17 @@ def get_array_module(data: Any) -> types.ModuleType:
 @lru_cache(maxsize=None)
 def get_scipy_module(xp: types.ModuleType) -> types.ModuleType:
     """
-    Returns the signal library (scipy or cupyx.scipy) corresponding to the array module.
+    Returns the signal processing library compatible with the given array module.
 
-    Args:
-        xp: The array module (numpy or cupy).
+    Parameters
+    ----------
+    xp : module
+        The array module (typically `numpy` or `cupy`).
 
-    Returns:
-        The corresponding scipy-compatible module.
+    Returns
+    -------
+    sp : module
+        The corresponding signal processing module (`scipy` or `cupyx.scipy`).
     """
     if is_cupy_available() and xp == cp:
         import cupyx.scipy
@@ -159,14 +209,32 @@ def get_scipy_module(xp: types.ModuleType) -> types.ModuleType:
 
 def to_device(data: Any, device: str) -> ArrayType:
     """
-    Moves data to the specified device.
+    Moves data between CPU and GPU devices.
 
-    Args:
-        data: Input data.
-        device: 'CPU' or 'GPU'.
+    Parameters
+    ----------
+    data : array_like
+        The data to move.
+    device : {"CPU", "GPU"}
+        Target device name (case-insensitive).
 
-    Returns:
-        Array on the target device.
+    Returns
+    -------
+    array_like
+        The data residing on the target device.
+
+    Raises
+    ------
+    ImportError
+        If "GPU" is requested but CuPy is not available.
+    ValueError
+        If an unsupported device name is provided.
+
+    Notes
+    -----
+    If the data is already on the target device, this operation
+    typically returns a view or the original array to avoid
+    unnecessary copies.
     """
     logger.debug(f"Moving data to {device.upper()}.")
     device = device.lower()
@@ -195,14 +263,24 @@ def dispatch(
     data: Any,
 ) -> Tuple[ArrayType, types.ModuleType, types.ModuleType]:
     """
-    Prepare data and return appropriate backend modules (xp, sp).
-    Infers backend from the input data.
+    Inspects data and returns appropriate backend modules.
 
-    Args:
-        data: Input data.
+    This helper is used throughout the library to implement backend-agnostic
+    functional logic.
 
-    Returns:
-        Tuple of (data_array, xp_module, sp_module).
+    Parameters
+    ----------
+    data : array_like
+        The input data to analyze.
+
+    Returns
+    -------
+    data_array : array_like
+        The input data forced to an array on its current device.
+    xp : module
+        The array module (`numpy` or `cupy`).
+    sp : module
+        The signal processing module (`scipy` or `cupyx.scipy`).
     """
     xp = get_array_module(data)
     sp = get_scipy_module(xp)
@@ -215,19 +293,31 @@ def dispatch(
 
 def to_jax(data: Any, device: Optional[str] = None) -> Any:
     """
-    Converts data to a JAX array, preserving the device if possible or targeting a specific device.
+    Converts data to a JAX array with optimized device placement.
 
-    Args:
-        data: Input data (NumPy array, CuPy array, list, etc.).
-        device: Optional target device ('CPU', 'GPU', or 'TPU'). If None, it attempts
-                to preserve the original data's device.
+    This function supports zero-copy transfers from CuPy using DLPack
+    when moving data between CUDA-managed memories.
 
-    Returns:
-        JAX array on the corresponding device.
+    Parameters
+    ----------
+    data : array_like
+        Input data (NumPy array, CuPy array, list, or scalar).
+    device : {"CPU", "GPU", "TPU"}, optional
+        Target JAX device platform. If None, the function attempts to
+        preserve the device of the original data.
 
-    Raises:
-        ImportError: If JAX is not installed.
-        ValueError: If the requested device is not available.
+    Returns
+    -------
+    jax_array : jax.Array
+        A JAX array residing on the specified or inferred device.
+
+    Raises
+    ------
+    ImportError
+        If the `jax` library is not installed.
+    ValueError
+        If the requested `device` platform is not available in the
+        local JAX environment.
     """
     jax, jnp, jax_dlpack = _get_jax()
     if jax is None:
@@ -274,13 +364,20 @@ def to_jax(data: Any, device: Optional[str] = None) -> Any:
 def from_jax(data: Any) -> ArrayType:
     """
     Converts a JAX array to a backend-compatible array (NumPy or CuPy).
-    Standardizes on NumPy for CPU/TPU and CuPy for GPU.
 
-    Args:
-        data: Input JAX array.
+    Standardizes on NumPy for CPU/TPU arrays and CuPy for GPU arrays
+    to maintain compatibility with the rest of the library. Uses zero-copy
+    DLPack transfers for GPU arrays when available.
 
-    Returns:
-        NumPy array (if on CPU or TPU) or CuPy array (if on GPU and CuPy available).
+    Parameters
+    ----------
+    data : jax.Array
+        Input JAX array to convert.
+
+    Returns
+    -------
+    array : array_like
+        A NumPy array (if on CPU/TPU) or a CuPy array (if on GPU).
     """
     # Detect platform
     platform = "cpu"
