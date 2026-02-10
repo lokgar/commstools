@@ -1,7 +1,10 @@
-from commstools.core import Signal, SingleCarrierFrame
+"""Tests for multi-stream (MIMO) Signal and Frame generation support."""
+
+from commstools.core import Preamble, Signal, SingleCarrierFrame
 
 
 def test_signal_generate_mimo(backend_device, xp):
+    """Verify MIMO signal generation via high-level factories."""
     # Test MIMO generation via factories
     sig = Signal.qam(order=4, num_symbols=100, sps=4, symbol_rate=1e6, num_streams=2)
 
@@ -12,12 +15,11 @@ def test_signal_generate_mimo(backend_device, xp):
     assert sig.sps == 4.0
 
     # Check if streams are not identical (random seed should diverge or be handled)
-    # With random_symbols(total_symbols), they should be different segments
     assert not xp.allclose(sig.samples[0], sig.samples[1])
 
 
 def test_frame_mimo_generation(backend_device, xp):
-    # Test Frame MIMO support
+    """Verify basic MIMO frame generation with guard intervals."""
     frame = SingleCarrierFrame(
         payload_len=100,
         symbol_rate=1e6,
@@ -38,7 +40,7 @@ def test_frame_mimo_generation(backend_device, xp):
 
 
 def test_frame_mimo_pilots(backend_device, xp):
-    # Test Frame with Pilots and MIMO
+    """Verify that pilot patterns are correctly applied across all MIMO streams."""
     frame = SingleCarrierFrame(
         payload_len=10,
         symbol_rate=1e6,
@@ -47,7 +49,6 @@ def test_frame_mimo_pilots(backend_device, xp):
         pilot_period=2,
     )
     # len=10 payload. period=2 -> 1 pilot, 1 data.
-    # data_per_period = 1.
     # total len = 10 data -> 10 periods -> 20 symbols.
 
     sig = frame.generate_waveform(sps=1, pulse_shape="none")
@@ -61,11 +62,8 @@ def test_frame_mimo_pilots(backend_device, xp):
 
 
 def test_frame_mimo_preamble_broadcasting(backend_device, xp):
-    # Test 1D preamble broadcasting to 2 streams
-    from commstools.core import Preamble
-
+    """Verify that a 1D preamble is correctly broadcasted across all MIMO streams."""
     # Create preamble with bit-first architecture (BPSK: 10 bits -> 10 symbols)
-    # NOTE: bits must be integer type for array indexing
     preamble_bits = xp.zeros(10, dtype=int)  # All zeros -> all -1 symbols for BPSK
     preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
     frame = SingleCarrierFrame(
@@ -83,7 +81,7 @@ def test_frame_mimo_preamble_broadcasting(backend_device, xp):
 
 
 def test_frame_mimo_waveform(backend_device, xp):
-    # Test generate_waveform with MIMO
+    """Verify MIMO waveform generation with pulse shaping."""
     frame = SingleCarrierFrame(payload_len=10, symbol_rate=1e6, num_streams=2)
 
     sig = frame.generate_waveform(sps=4, pulse_shape="rect")

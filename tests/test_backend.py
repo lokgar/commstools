@@ -1,18 +1,23 @@
-import pytest
+"""Tests for the backend management and device-agnostic dispatch system."""
+
 import numpy as np
+import pytest
+
 from commstools import backend
 
 
 def test_get_array_module():
+    """Verify that get_array_module correctly identifies NumPy for host data."""
     # Test CPU
     arr_cpu = np.array([1, 2, 3])
     assert backend.get_array_module(arr_cpu) == np
 
-    # Test List
+    # Test List (should default to NumPy)
     assert backend.get_array_module([1, 2, 3]) == np
 
 
 def test_to_device(backend_device, xp):
+    """Verify data transfer between CPU and the target device."""
     data = np.array([1, 2, 3])
 
     # Move to target device
@@ -31,6 +36,7 @@ def test_to_device(backend_device, xp):
 
 
 def test_dispatch(backend_device, xp):
+    """Verify the dispatch system returns correct array and signal modules."""
     data = np.array([1, 2, 3])
 
     # Pre-move data to device manually to simulate input from that device
@@ -44,6 +50,7 @@ def test_dispatch(backend_device, xp):
 
 
 def test_cpu_only_toggle():
+    """Verify that forcing CPU mode correctly disables GPU detection."""
     # Ensure clean state
     # Save original state to restore
     original_force = backend._FORCE_CPU
@@ -52,7 +59,6 @@ def test_cpu_only_toggle():
     # Check if cupy is physically available on system
     # We can't easily check this without potentially importing cupy if we haven't already,
     # but backend.is_cupy_available() relies on module level _CUPY_AVAILABLE.
-    # So this test logic depends on environment.
 
     # Force CPU
     backend.use_cpu_only(True)
@@ -67,12 +73,12 @@ def test_cpu_only_toggle():
 
 
 def test_jax_interop(backend_device, xp):
+    """Verify interoperability between core backends and JAX using DLPack."""
     try:
         import jax.numpy as jnp
     except ImportError:
         pytest.skip("JAX not installed")
 
-    # Create data on backend device
     # Create data on backend device
     data = xp.array([1.0, 2.0, 3.0])
 

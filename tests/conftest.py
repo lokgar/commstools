@@ -1,5 +1,12 @@
-import pytest
+"""Configuration and shared fixtures for the commstools test suite.
+
+This module provides the `backend_device` and `xp` fixtures, allowing tests to run
+transparently on both CPU (NumPy) and GPU (CuPy) backends.
+"""
+
 import numpy as np
+import pytest
+
 from commstools import backend
 
 try:
@@ -12,6 +19,7 @@ except ImportError:
 
 
 def pytest_addoption(parser):
+    """Add custom CLI options for device selection."""
     parser.addoption(
         "--device",
         action="store",
@@ -21,16 +29,15 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
+    """Parameterize the backend_device fixture based on the --device option."""
     if "backend_device" in metafunc.fixturenames:
         device_opt = metafunc.config.getoption("--device")
         if device_opt == "all":
             params = ["cpu", "gpu"]
-        elif device_opt == "cpu":
-            params = ["cpu"]
         elif device_opt == "gpu":
             params = ["gpu"]
         else:
-            params = ["cpu"]  # Default fallback
+            params = ["cpu"]
 
         metafunc.parametrize("backend_device", params, indirect=True)
 
@@ -38,9 +45,20 @@ def pytest_generate_tests(metafunc):
 @pytest.fixture
 def backend_device(request):
     """
-    Fixture that returns the backend device name.
+    Fixture that returns the current backend device name.
+
     Skips GPU tests if CuPy is not available or functional.
     Forces CPU mode when device is 'cpu' to ensure isolation.
+
+    Parameters
+    ----------
+    request : _pytest.fixtures.FixtureRequest
+        The request object for the fixture.
+
+    Returns
+    -------
+    str
+        One of {"cpu", "gpu"}.
     """
 
     device = request.param
@@ -49,7 +67,7 @@ def backend_device(request):
         if not _CUPY_AVAILABLE:
             pytest.skip("CuPy not installed, skipping GPU tests")
         try:
-            # Aggressive check for functionality
+            # Aggressive check for functional GPU context
             cp.zeros(1)
             try:
                 cp.random.randn(1)
@@ -71,7 +89,14 @@ def backend_device(request):
 
 @pytest.fixture
 def xp(backend_device):
-    """Returns the array module (numpy or cupy) for the current backend."""
+    """
+    Fixture that returns the array module for the current backend.
+
+    Returns
+    -------
+    module
+        Either `numpy` or `cupy`.
+    """
     if backend_device == "cpu":
         return np
     elif backend_device == "gpu":
