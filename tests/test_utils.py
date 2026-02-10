@@ -88,5 +88,5 @@ def test_validate_array(backend_device, xp):
     # Test error
     import pytest
 
-    with pytest.raises(ValueError, match="Could not convert"):
+    with pytest.raises(ValueError, match="Expected numeric array"):
         utils.validate_array("not an array")

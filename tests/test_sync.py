@@ -1,6 +1,5 @@
 """Tests for synchronization utilities (Barker and Zadoff-Chu sequences, frame detection)."""
 
-import numpy as np
 import pytest
 
 from commstools import sync
@@ -126,6 +125,30 @@ def test_correlate_mimo(backend_device, xp):
     assert peak_1 == 30
 
 
+def test_preamble_auto_generation(backend_device, xp):
+    """Verify automated preamble bit and symbol generation."""
+    # Test Barker-13 auto-generation
+    preamble = Preamble(sequence_type="barker", length=13)
+    assert preamble.symbols is not None
+    assert len(preamble.symbols) == 13
+    assert isinstance(preamble.symbols, xp.ndarray)
+
+    # Test Zadoff-Chu auto-generation
+    preamble_zc = Preamble(sequence_type="zc", length=63, kwargs={"root": 1})
+    assert preamble_zc.symbols is not None
+    assert len(preamble_zc.symbols) == 63
+
+    # Test invalid sequence type: Pydantic will raise ValidationError for Literal mismatch
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Preamble(sequence_type="invalid", length=13)
+
+    # Test missing length for auto-generation: Mandatory field in Pydantic
+    with pytest.raises(ValidationError):
+        Preamble(sequence_type="barker")
+
+
 def test_correlate_normalized(backend_device, xp):
     """Verify normalized correlation output range."""
     # Constant signal and template
@@ -163,17 +186,7 @@ def test_detect_frame_known_position(backend_device, xp):
 
 def test_detect_frame_with_preamble_object(backend_device, xp):
     """Verify frame detection using Preamble objects."""
-    # Create Preamble from Barker bits
-    barker_bits = ((sync.barker_sequence(13) + 1) / 2).astype(int)
-    # Convert to numpy for Preamble if on GPU
-    if hasattr(barker_bits, "get"):
-        barker_bits = barker_bits.get()
-
-    preamble = Preamble(
-        bits=np.array(barker_bits),
-        modulation_scheme="PSK",
-        modulation_order=2,
-    )
+    preamble = Preamble(sequence_type="barker", length=13)
 
     # Create signal with preamble embedded
     signal = xp.zeros(200, dtype=xp.complex64)
@@ -214,15 +227,6 @@ def test_generate_preamble_bits_barker(backend_device, xp):
     assert len(bits) == 13
     # All bits should be 0 or 1
     assert xp.all((bits == 0) | (bits == 1))
-
-
-def test_generate_preamble_bits_random(backend_device, xp):
-    """Verify reproducible generation of random preamble bit sequences."""
-    bits1 = sync.generate_preamble_bits("random", 32, seed=42)
-    bits2 = sync.generate_preamble_bits("random", 32, seed=42)
-
-    assert len(bits1) == 32
-    assert xp.array_equal(bits1, bits2)  # Same seed = same bits
 
 
 def test_generate_preamble_bits_zc(backend_device, xp):

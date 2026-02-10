@@ -64,6 +64,10 @@ class FrameInfo(BaseModel):
     ----------
     preamble_len : int
         Number of symbols in the preamble/training sequence.
+    preamble_type : str, optional
+        The type of sequence (e.g., 'barker', 'zc').
+    preamble_kwargs : dict
+        Parameters used for preamble generation (e.g., 'root' for ZC).
     payload_len : int
         Number of symbols in the data payload.
     pilot_count : int
@@ -72,10 +76,6 @@ class FrameInfo(BaseModel):
         Length of the guard interval (e.g., cyclic prefix) in symbols.
     guard_type : {"zero", "cp"}
         Type of guard interval: "zero" for zero-padding, "cp" for cyclic prefix.
-    preamble_mod_scheme : str, optional
-        Modulation scheme used for the preamble (e.g., 'BPSK').
-    preamble_mod_order : int, optional
-        Order of the preamble modulation (e.g., 2 for BPSK).
 
     Notes
     -----
@@ -92,12 +92,12 @@ class FrameInfo(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     preamble_len: int = 0
+    preamble_type: Optional[str] = None
+    preamble_kwargs: Dict[str, Any] = Field(default_factory=dict)
     payload_len: int = 0
     pilot_count: int = 0
     guard_len: int = 0
     guard_type: Literal["zero", "cp"] = "zero"
-    preamble_mod_scheme: Optional[str] = None
-    preamble_mod_order: Optional[int] = None
 
 
 class Signal(BaseModel):
@@ -177,6 +177,11 @@ class Signal(BaseModel):
 
     # Frame structure info (populated when Signal is generated from Frame)
     frame_info: Optional[FrameInfo] = None
+
+    # Resolved data from processing
+    resolved_symbols: Optional[Any] = Field(default=None, repr=False)
+    resolved_bits: Optional[Any] = Field(default=None, repr=False)
+    resolved_llr: Optional[Any] = Field(default=None, repr=False)
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -427,20 +432,6 @@ class Signal(BaseModel):
         """
         n_samples = self.samples.shape[-1]
         return self.xp.arange(0, n_samples) / self.sampling_rate
-
-    @property
-    def num_bits(self) -> Optional[int]:
-        """
-        Total number of original source bits.
-
-        Returns
-        -------
-        int or None
-            Size of the `source_bits` array if available, otherwise None.
-        """
-        if self.source_bits is not None:
-            return int(self.source_bits.size)
-        return None
 
     @property
     def bits_per_symbol(self) -> Optional[int]:
@@ -1077,6 +1068,7 @@ class Signal(BaseModel):
         num_streams: int = 1,
         seed: Optional[int] = None,
         dtype: Optional[Any] = np.complex64,
+        normalize: bool = False,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1106,6 +1098,8 @@ class Signal(BaseModel):
             Seed for reproducible random generation.
         dtype : data-type, default np.complex64
             Output precision.
+        normalize : bool, default False
+            If True, scales constellation to unit average power.
         **kwargs : Any
             Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
 
@@ -1125,7 +1119,9 @@ class Signal(BaseModel):
         bits = utils.random_bits(total_bits, seed=seed)
 
         # Map bits to symbols
-        symbols_flat = mapping.map_bits(bits, modulation, order, dtype=dtype)
+        symbols_flat = mapping.map_bits(
+            bits, modulation, order, dtype=dtype, normalize=normalize
+        )
 
         if num_streams > 1:
             # Shape: (Channels, Time)
@@ -1171,6 +1167,7 @@ class Signal(BaseModel):
         pulse_shape: Optional[str] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
+        normalize: bool = False,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1201,6 +1198,8 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for reproducible bit and symbol generation.
+        normalize : bool, default False
+            If True, scales constellation to unit average power.
         **kwargs : Any
             Additional parameters passed to the pulse shaping filter.
 
@@ -1232,7 +1231,9 @@ class Signal(BaseModel):
             # Import mapping here to avoid circular imports
             from . import mapping
 
-            symbols_flat = mapping.map_bits(bits, "ask", order, dtype=np.complex64)
+            symbols_flat = mapping.map_bits(
+                bits, "ask", order, dtype=np.complex64, normalize=normalize
+            )
 
             if num_streams > 1:
                 symbols = symbols_flat.reshape(num_streams, num_symbols)
@@ -1291,6 +1292,7 @@ class Signal(BaseModel):
                 pulse_shape=p_shape,
                 num_streams=num_streams,
                 seed=seed,
+                normalize=normalize,
                 **kwargs,
             )
             if not bipolar:
@@ -1311,6 +1313,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
+        normalize: bool = False,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1332,6 +1335,8 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for bit and symbol generation.
+        normalize : bool, default False
+            If True, scales constellation to unit average power.
         **kwargs : Any
             Additional parameters passed to `filtering.shape_pulse`.
 
@@ -1349,6 +1354,7 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
+            normalize=normalize,
             **kwargs,
         )
 
@@ -1362,6 +1368,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
+        normalize: bool = False,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1383,6 +1390,8 @@ class Signal(BaseModel):
             Number of MIMO streams.
         seed : int, optional
             Seed for random generation.
+        normalize : bool, default False
+            If True, scales constellation to unit average power.
         **kwargs : Any
             Additional filter parameters.
 
@@ -1400,6 +1409,7 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
+            normalize=normalize,
             **kwargs,
         )
 
@@ -1437,19 +1447,22 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        ref = reference_symbols
+        ref = (
+            reference_symbols if reference_symbols is not None else self.source_symbols
+        )
         if ref is None:
-            if self.source_symbols is None:
-                raise ValueError(
-                    "No reference available. Either set source_symbols or provide "
-                    "reference_symbols argument."
-                )
-            ref = self.source_symbols
+            raise ValueError(
+                "No reference available. Either set source_symbols or provide "
+                "reference_symbols argument."
+            )
 
-        # Get symbols at symbol rate (downsample if needed)
-        rx_symbols = self._get_symbol_rate_samples()
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
 
-        return metrics.evm(rx_symbols, ref)
+        return metrics.evm(self.resolved_symbols, ref)
 
     def snr(
         self,
@@ -1480,36 +1493,37 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        ref = reference_symbols
+        ref = (
+            reference_symbols if reference_symbols is not None else self.source_symbols
+        )
         if ref is None:
-            if self.source_symbols is None:
-                raise ValueError(
-                    "No reference available. Either set source_symbols or provide "
-                    "reference_symbols argument."
-                )
-            ref = self.source_symbols
-        rx_symbols = self._get_symbol_rate_samples()
-        return metrics.snr(rx_symbols, ref)
+            raise ValueError(
+                "No reference available. Either set source_symbols or provide "
+                "reference_symbols argument."
+            )
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
+        return metrics.snr(self.resolved_symbols, ref)
 
     def ber(
         self,
         reference_bits: Optional[ArrayType] = None,
-        noise_var: Optional[float] = None,
     ) -> float:
         """
         Computes the Bit Error Rate (BER).
 
-        Performs hard-decision demapping on signal samples and compares the
-        recovered bits against the reference bit sequence.
+        Compares `resolved_bits` against the reference bit sequence. Requires
+        that `demap()` (and `resolve_symbols()`) have been called previously.
 
         Parameters
         ----------
         reference_bits : array_like, optional
             The original transmitted bits. If None, defaults to
             `source_bits` stored in metadata.
-        noise_var : float, optional
-            Optional noise variance for soft-decision demapping. If
-            None (default), hard-decision demapping is used.
 
         Returns
         -------
@@ -1519,28 +1533,29 @@ class Signal(BaseModel):
         Raises
         ------
         ValueError
-            If no reference bits are available or if modulation
-            info is missing.
+            If no reference bits are available or if `resolved_bits` is not
+            available.
         """
         from . import metrics
 
-        ref = reference_bits
+        ref = reference_bits if reference_bits is not None else self.source_bits
         if ref is None:
-            if self.source_bits is None:
-                raise ValueError(
-                    "No reference bits available. Either set source_bits or provide "
-                    "reference_bits argument."
-                )
-            ref = self.source_bits
-        # Demap to get recovered bits
-        rx_bits = self.demap(hard=True)
-        return metrics.ber(rx_bits, ref)
+            raise ValueError(
+                "No reference bits available. Either set source_bits or provide "
+                "reference_bits argument."
+            )
+
+        if self.resolved_bits is None:
+            raise ValueError("No resolved bits available. Please call `demap()` first.")
+
+        return metrics.ber(self.resolved_bits, ref)
 
     def demap(
         self,
         hard: bool = True,
         noise_var: Optional[float] = None,
         method: str = "maxlog",
+        normalize: bool = False,
     ) -> ArrayType:
         """
         Demaps signal symbols back into bits using hard or soft decisions.
@@ -1552,10 +1567,12 @@ class Signal(BaseModel):
             If False, performs soft-decision demapping and returns Log-Likelihood
             Ratios (LLRs).
         noise_var : float, optional
-            Estimated noise variance ($\sigma^2$). Required for soft-decision
+            Estimated noise variance ($\\sigma^2$). Required for soft-decision
             LLR calculation.
         method : {"maxlog", "exact"}, default "maxlog"
             The LLR computation method for soft demapping.
+        normalize : bool, default False
+            Whether the constellation was normalized to unit power.
 
         Returns
         -------
@@ -1566,158 +1583,159 @@ class Signal(BaseModel):
         Raises
         ------
         ValueError
-            If modulation metadata is missing or if `noise_var` is not
-            provided for soft demapping.
+            If modulation metadata is missing, if `resolved_symbols` is not
+            available, or if `noise_var` is not provided for soft demapping.
+
+        Notes
+        -----
+        This method populates `self.resolved_bits` or `self.resolved_llr`
+        based on the result.
         """
         from .mapping import demap_symbols, demap_symbols_soft
 
         if self.modulation_scheme is None or self.modulation_order is None:
             raise ValueError("Modulation scheme and order required for demapping.")
 
-        rx_symbols = self._get_symbol_rate_samples()
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
 
         if hard:
-            return demap_symbols(
-                rx_symbols, self.modulation_scheme, self.modulation_order
+            bits = demap_symbols(
+                self.resolved_symbols,
+                self.modulation_scheme,
+                self.modulation_order,
+                normalize=normalize,
             )
+            self.resolved_bits = bits
+            return bits
         else:
             if noise_var is None:
                 raise ValueError("noise_var required for soft demapping.")
-            return demap_symbols_soft(
-                rx_symbols,
+            llr = demap_symbols_soft(
+                self.resolved_symbols,
                 self.modulation_scheme,
                 self.modulation_order,
                 noise_var,
                 method=method,
+                normalize=normalize,
             )
+            self.resolved_llr = llr
 
-    def _get_symbol_rate_samples(self) -> ArrayType:
+            # Populate resolved_bits via hard decisions from LLRs for BER consistency
+            # Mapping: LLR > 0 -> bit 0, LLR < 0 -> bit 1 (standard max-log/exact demapping)
+            xp = get_array_module(llr)
+            self.resolved_bits = (llr < 0).astype(xp.int32)
+
+            return llr
+
+    def resolve_symbols(self, offset: float = 0.0) -> ArrayType:
         """
-        Internal utility to retrieve samples decimated to the symbol rate ($1\text{ sps}$).
+        Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
+        caches them in `self.resolved_symbols`.
+
+        Parameters
+        ----------
+        offset : float, default 0.0
+            Timing offset in samples to apply before decimation. This allows
+            for choosing the optimal sampling point within the symbol period.
 
         Returns
         -------
         array_like
-            Decimated samples.
+            Decimated samples at $1\\text{ sps}$.
         """
         sps = self.sps
-        if sps is None or sps <= 1:
-            # Already at symbol rate
-            return self.samples
+        if sps is None:
+            raise ValueError("Symbol rate or sampling rate missing.")
 
-        # Downsample by taking every sps-th sample
-        sps_int = int(round(sps))
-        if self.samples.ndim == 2:
-            # MIMO: downsample each stream, shape (num_streams, num_symbols)
-            return self.samples[:, ::sps_int]
-        return self.samples[::sps_int]
+        # Apply timing offset if needed
+        # For simplicity, we use indexing. For fractional offset, we would need interpolation.
+        # Here we support integer offset.
+        offset_int = int(round(offset))
+
+        if sps <= 1:
+            # Already at symbol rate
+            res = self.samples
+        else:
+            # Downsample by taking every sps-th sample
+            sps_int = int(round(sps))
+            if self.samples.ndim == 2:
+                # MIMO: downsample each stream, shape (num_streams, num_symbols)
+                res = self.samples[:, offset_int::sps_int]
+            else:
+                res = self.samples[offset_int::sps_int]
+
+        self.resolved_symbols = res
+        return res
 
 
 class Preamble(BaseModel):
     """
     Structured container for frame synchronization sequences (preambles).
 
-    The `Preamble` follows a bit-first architecture: digital bits define
-     the sequence, while symbols are automatically derived via mapping
-    schemes compatible with both CPU and GPU backends.
+    Preambles are automatically generated based on the specified sequence type
+    and length. Manual overrides for bits or symbols are not supported to
+    ensure consistency within the processing pipeline.
 
     Attributes
     ----------
-    bits : array_like
-        Primary bit sequence (0s and 1s).
-    symbols : array_like, optional
-        Derived IQ symbols. If not provided, they are mapped during
-        initialization.
-    modulation_scheme : str, default "PSK"
-        Modulation used to map bits to symbols.
-    modulation_order : int, default 2
-        Modulation order (e.g., 2 for BPSK).
-    sequence_type : str, default "custom"
-        Descriptor for the sequence (e.g., 'barker', 'zc').
+    sequence_type : {"barker", "zc"}, default "barker"
+        The synchronization sequence algorithm.
+    length : int
+        Total length of the preamble in symbols.
     dtype : data-type, default np.complex64
-        Output data type for symbols.
+        Numerical precision for generated IQ symbols.
+    kwargs : dict
+        Additional parameters for sequence generation (e.g., 'root' for ZC).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    bits: Any
-    symbols: Optional[Any] = None
-    modulation_scheme: str = "PSK"
-    modulation_order: int = 2
-    sequence_type: str = "custom"
+    sequence_type: Literal["barker", "zc"] = "barker"
+    length: int
     dtype: Any = np.complex64
+    kwargs: Dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("bits", mode="before")
-    @classmethod
-    def validate_bits(cls, v: Any) -> Any:
-        """
-        Validates the preamble bits and ensures they are in a backend-compatible array.
-
-        Parameters
-        ----------
-        v : array_like
-            Input bits.
-
-        Returns
-        -------
-        array_like
-            Validated bit array.
-        """
-        return utils.validate_array(v, name="preamble_bits")
+    # Internal state managed during post-init
+    _symbols: Any = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """
-        Post-initialization hook to automate bit-to-symbol mapping and device placement.
+        Post-initialization hook to automate symbol generation and device placement.
 
-        This ensures that if only bits are provided, the corresponding IQ symbols
-        are generated using the specified modulation parameters. It also moves
-        data to the GPU if a compatible device is detected.
+        This ensures that standard sequences are generated correctly according
+        to the requested sequence properties.
         """
-        from . import mapping
+        from . import sync
 
-        # Map bits to symbols if not provided
-        if self.symbols is None and self.bits is not None:
-            self.symbols = mapping.map_bits(
-                self.bits,
-                self.modulation_scheme.lower(),
-                self.modulation_order,
-                dtype=self.dtype,
-            )
+        stype = self.sequence_type.lower()
+
+        if stype == "barker":
+            # Barker symbols (-1, +1)
+            self._symbols = sync.barker_sequence(self.length)
+
+        elif stype in ("zc", "zadoff_chu"):
+            # ZC complex symbols
+            root = self.kwargs.get("root", 1)
+            self._symbols = sync.zadoff_chu_sequence(self.length, root=root)
 
         # Move to GPU if available
         if is_cupy_available():
-            if self.bits is not None:
-                self.bits = to_device(self.bits, "gpu")
-            if self.symbols is not None:
-                self.symbols = to_device(self.symbols, "gpu")
+            if self._symbols is not None:
+                self._symbols = to_device(self._symbols, "gpu")
+
+    @property
+    def symbols(self) -> Any:
+        """The IQ symbols of the preamble."""
+        return self._symbols
 
     @property
     def num_symbols(self) -> int:
-        """
-        Total number of symbols in the preamble.
-
-        Returns
-        -------
-        int
-            Count derived from the `symbols` array size.
-        """
-        if self.symbols is None:
-            return 0
-        return int(self.symbols.size)
-
-    @property
-    def num_bits(self) -> int:
-        """
-        Total number of bits in the preamble.
-
-        Returns
-        -------
-        int
-            Count derived from the `bits` array size.
-        """
-        if self.bits is None:
-            return 0
-        return int(self.bits.size)
+        """Total number of symbols in the preamble."""
+        return self.length
 
     def to_waveform(
         self,
@@ -1759,9 +1777,8 @@ class Preamble(BaseModel):
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            modulation_scheme=f"PREAMBLE-{self.modulation_scheme}",
-            modulation_order=self.modulation_order,
-            source_bits=self.bits,
+            modulation_scheme="PREAMBLE",
+            modulation_order=0,
             source_symbols=self.symbols,
             pulse_shape=pulse_shape,
             **kwargs,
@@ -1785,6 +1802,8 @@ class SingleCarrierFrame(BaseModel):
         Modulation for payload data (e.g., 'QAM').
     payload_mod_order : int, default 4
         Modulation order for payload (e.g., 16 for 16-QAM).
+    payload_norm : bool, default False
+        If True, scales payload symbols to unit average power.
     payload_seed : int, default 42
         Seed for reproducible payload data generation.
     preamble : Preamble, optional
@@ -1802,6 +1821,12 @@ class SingleCarrierFrame(BaseModel):
         Modulation for pilots.
     pilot_mod_order : int, default 4
         Modulation order for pilots.
+    pilot_norm : bool, default False
+        If True, scales pilot symbols to unit average power.
+    pilot_gain_db : float, default 0.0
+        Pilot boosting in dB relative to the payload power.
+    preamble_gain_db : float, default 0.0
+        Preamble boosting in dB relative to the payload power.
     guard_type : {"zero", "cp"}, default "zero"
         "zero": Zero-padding at the end of the frame.
         "cp": Cyclic Prefix prepended to the frame.
@@ -1821,6 +1846,7 @@ class SingleCarrierFrame(BaseModel):
     payload_seed: int = 42
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = 4
+    payload_norm: bool = False
 
     preamble: Optional[Preamble] = None
 
@@ -1830,6 +1856,9 @@ class SingleCarrierFrame(BaseModel):
     pilot_seed: int = 1337
     pilot_mod_scheme: str = "PSK"
     pilot_mod_order: int = 4
+    pilot_norm: bool = False
+    pilot_gain_db: float = 0.0
+    preamble_gain_db: float = 0.0
 
     guard_type: Literal["zero", "cp"] = "zero"
     guard_len: int = 0
@@ -1929,7 +1958,11 @@ class SingleCarrierFrame(BaseModel):
         total_symbols = self.payload_len * self.num_streams
         bits = utils.random_bits(total_symbols * k, seed=self.payload_seed)
         symbols = mapping.map_bits(
-            bits, self.payload_mod_scheme, self.payload_mod_order, dtype=self.dtype
+            bits,
+            self.payload_mod_scheme,
+            self.payload_mod_order,
+            dtype=self.dtype,
+            normalize=self.payload_norm,
         )
 
         if self.num_streams > 1:
@@ -1965,12 +1998,20 @@ class SingleCarrierFrame(BaseModel):
         total_pilots = pilot_count * self.num_streams
         bits = utils.random_bits(total_pilots * k, seed=self.pilot_seed)
         symbols = mapping.map_bits(
-            bits, self.pilot_mod_scheme, self.pilot_mod_order, dtype=self.dtype
+            bits,
+            self.pilot_mod_scheme,
+            self.pilot_mod_order,
+            dtype=self.dtype,
+            normalize=self.pilot_norm,
         )
 
         if self.num_streams > 1:
             bits = bits.reshape(self.num_streams, pilot_count * k)
             symbols = symbols.reshape(self.num_streams, pilot_count)
+
+        # Apply pilot boosting/gain (dB to linear)
+        if self.pilot_gain_db != 0.0:
+            symbols = symbols * (10 ** (self.pilot_gain_db / 20))
 
         if is_cupy_available():
             bits = to_device(bits, "gpu")
@@ -2065,7 +2106,7 @@ class SingleCarrierFrame(BaseModel):
 
     def assemble_symbols(self) -> ArrayType:
         """
-        Assembles the full sequence of symbols at symbol rate ($1\text{ sps}$).
+        Assembles the full sequence of symbols.
 
         This method combines the preamble and the interleaved payload/pilots
         (body) into a single contiguous array.
@@ -2086,9 +2127,14 @@ class SingleCarrierFrame(BaseModel):
 
         # Assemble Core (Preamble + Body)
         if self.preamble is not None:
-            preamble_symbols = to_device(
-                self.preamble.symbols, "gpu" if is_cupy_available() else "cpu"
-            )
+            pre_symbols = self.preamble.symbols
+
+            # Apply preamble boosting (dB to linear)
+            # Scaling is relative to payload
+            if self.preamble_gain_db != 0.0:
+                pre_symbols = pre_symbols * (10 ** (self.preamble_gain_db / 20))
+
+            preamble_symbols = pre_symbols
             # Broadcast preamble if needed
             if self.num_streams > 1 and preamble_symbols.ndim == 1:
                 # Need (Channels, Time)
@@ -2098,9 +2144,6 @@ class SingleCarrierFrame(BaseModel):
                 )
 
             # Concatenate along time axis (-1)
-            # If 1D: (L1) + (L2) -> (L1+L2)
-            # If 2D: (C, L1) + (C, L2) -> (C, L1+L2)
-            # axis=-1 typically works for 1D too (last axis)
             return xp.concatenate([preamble_symbols, body], axis=-1)
         else:
             return body
@@ -2180,16 +2223,12 @@ class SingleCarrierFrame(BaseModel):
 
         frame_info = FrameInfo(
             preamble_len=self.preamble.num_symbols if self.preamble else 0,
+            preamble_type=self.preamble.sequence_type if self.preamble else None,
+            preamble_kwargs=self.preamble.kwargs if self.preamble else {},
             payload_len=self.payload_len,
             pilot_count=pilot_count,
             guard_len=self.guard_len,
             guard_type=self.guard_type,
-            preamble_mod_scheme=self.preamble.modulation_scheme
-            if self.preamble
-            else None,
-            preamble_mod_order=self.preamble.modulation_order
-            if self.preamble
-            else None,
         )
 
         return Signal(

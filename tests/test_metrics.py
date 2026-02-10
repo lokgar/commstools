@@ -128,7 +128,8 @@ def test_signal_evm_method(backend_device, xp):
         order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
 
-    # Without noise, EVM should be 0
+    # Must resolve symbols before EVM
+    sig.resolve_symbols()
     evm_pct, evm_db = sig.evm()
     assert evm_pct < 1e-5  # Near-zero EVM for perfect signal
 
@@ -142,7 +143,9 @@ def test_signal_ber_method(backend_device, xp):
         order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
 
-    # Without noise, BER should be 0
+    # Must resolve symbols then demap before BER
+    sig.resolve_symbols()
+    sig.demap()
     ber_val = sig.ber()
     assert ber_val == 0.0  # Perfect signal, no errors
 
@@ -155,6 +158,8 @@ def test_signal_demap_hard(backend_device, xp):
         order=4, num_symbols=50, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
 
+    # Must resolve symbols before demapping
+    sig.resolve_symbols()
     # Demap to bits
     bits = sig.demap(hard=True)
 

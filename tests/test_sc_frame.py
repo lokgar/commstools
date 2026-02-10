@@ -80,19 +80,16 @@ def test_sc_frame_guard_cp(backend_device, xp):
 
 
 def test_sc_frame_preamble(backend_device, xp):
-    """Verify that user-defined preambles are correctly prepended to the frame."""
-    # Create preamble with bit-first architecture
-    # BPSK = 1 bit/symbol, so 50 bits -> 50 symbols
-    preamble_bits = xp.array([0, 1] * 25)  # 50 bits for 50 BPSK symbols
-    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
+    """Verify that auto-generated preambles are correctly prepended to the frame."""
+    # Create Barker-13 preamble
+    preamble = Preamble(sequence_type="barker", length=13)
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, preamble=preamble)
     sig = frame.generate_waveform(sps=1, pulse_shape="none")
-    assert len(sig.samples) == 150  # 50 preamble + 100 payload
-    # Verify preamble symbols match mapped bits
-    assert xp.allclose(sig.samples[:50], preamble.symbols)
+    assert len(sig.samples) == 113  # 13 preamble + 100 payload
+    # Verify preamble symbols match
+    assert xp.allclose(sig.samples[:13], preamble.symbols)
     # Verify FrameInfo
-    assert sig.frame_info.preamble_len == 50
-    assert sig.frame_info.preamble_mod_scheme == "PSK"
+    assert sig.frame_info.preamble_len == 13
 
 
 def test_sc_frame_bit_first(backend_device, xp):
@@ -114,14 +111,13 @@ def test_sc_frame_bit_first(backend_device, xp):
 
 def test_preamble_to_waveform(backend_device, xp):
     """Verify Preamble.to_waveform() stand-alone signal generation."""
-    preamble_bits = xp.array([0, 1] * 10)  # 20 bits -> 20 BPSK symbols
-    preamble = Preamble(bits=preamble_bits, modulation_scheme="PSK", modulation_order=2)
+    preamble = Preamble(sequence_type="barker", length=13)
 
     sig = preamble.to_waveform(sps=4, symbol_rate=1e6, pulse_shape="rrc")
 
-    assert len(sig.samples) == 20 * 4  # 20 symbols * 4 sps
-    assert sig.modulation_scheme == "PREAMBLE-PSK"
-    assert sig.source_bits is not None
+    assert len(sig.samples) == 13 * 4  # 13 symbols * 4 sps
+    assert sig.modulation_scheme == "PREAMBLE"
+    assert sig.source_symbols is not None
 
 
 def test_sc_frame_structure_map(backend_device, xp):
@@ -129,15 +125,13 @@ def test_sc_frame_structure_map(backend_device, xp):
     # Frame with preamble (2), body (10: 4 pilots + 6 payload), guard (5)
     from commstools.core import Preamble
 
-    preamble = Preamble(
-        bits=xp.array([0, 1]), modulation_scheme="PSK", modulation_order=2
-    )
+    preamble = Preamble(sequence_type="barker", length=2)
     frame = SingleCarrierFrame(
         payload_len=6,
         symbol_rate=1e6,
         preamble=preamble,
         pilot_pattern="comb",
-        pilot_period=2,  # 1 pilot every 2nd symbol -> 4 pilots for 6 payload symbols
+        pilot_period=2,  # 1 pilot every 2nd symbol
         guard_type="zero",
         guard_len=5,
     )

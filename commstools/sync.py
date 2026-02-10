@@ -285,8 +285,13 @@ def detect_frame(
 
     Notes
     -----
-    The returned index is compensated for the preamble length and corresponds
-    to the very first sample of the detected preamble.
+    - The returned index is compensated for the preamble length and corresponds
+      to the very first sample of the detected preamble.
+    - **Synchronization Strategy**: For signals with oversampling ($SPS > 1$),
+      correlating with a shaped/oversampled preamble (e.g., generated via
+      `Preamble.to_waveform(...)`) typically yields superior timing precision
+      and SNR compared to correlating with 1 SPS symbols. Ensure the `preamble`
+      argument matches the sampling rate of the input `signal`.
     """
     from .core import Preamble, Signal
 
@@ -368,18 +373,15 @@ def generate_preamble_bits(sequence_type: str, length: int, **kwargs) -> ArrayTy
     """
     Generates standard bit sequences for synchronization preambles.
 
-    This utility provides a consistent interface for creating binary
-    sequences suitable for use with the `Preamble` and `Signal` classes.
-
     Parameters
     ----------
-    sequence_type : {"barker", "zc", "zadoff_chu", "random"}
+    sequence_type : {"barker", "zc", "zadoff_chu"}
         The type of sequence to generate.
     length : int
-        The desired sequence length in bits or symbols.
+        The desired preamble length in symbols.
     **kwargs : Any
         Additional parameters for sequence generation (e.g., `root` for
-        ZC sequences, `seed` for random sequences).
+        ZC sequences).
 
     Returns
     -------
@@ -388,6 +390,7 @@ def generate_preamble_bits(sequence_type: str, length: int, **kwargs) -> ArrayTy
     """
     if sequence_type.lower() == "barker":
         # Barker sequence as bits: +1 -> 1, -1 -> 0
+        # Barker is BPSK (1 bit/symbol)
         seq = barker_sequence(length)
         xp = np if not is_cupy_available() else dispatch(seq)[1]
         bits = ((seq + 1) / 2).astype(xp.int32)
@@ -395,18 +398,11 @@ def generate_preamble_bits(sequence_type: str, length: int, **kwargs) -> ArrayTy
 
     elif sequence_type.lower() in ("zc", "zadoff_chu"):
         root = kwargs.get("root", 1)
-        # Generate ZC and quantize to BPSK bits
+        # Generate ZC and quantize to BPSK bits (informational/rough binary version)
         zc = zadoff_chu_sequence(length, root=root)
         xp = np if not is_cupy_available() else dispatch(zc)[1]
-        # Map: real > 0 -> 1, else 0
         bits = (zc.real > 0).astype(xp.int32)
         return bits
-
-    elif sequence_type.lower() == "random":
-        from .utils import random_bits
-
-        seed = kwargs.get("seed", None)
-        return random_bits(length, seed=seed)
 
     else:
         raise ValueError(f"Unknown sequence type: {sequence_type}")
