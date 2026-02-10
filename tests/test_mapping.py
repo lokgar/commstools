@@ -1,7 +1,10 @@
+"""Tests for symbol mapping and demapping (Hard and Soft decisions)."""
+
 from commstools import mapping
 
 
 def test_qam_mapping(backend_device, xp):
+    """Verify QAM mapping produces the correct number of symbols."""
     # Use xp to create array on device
     bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1])
 
@@ -12,6 +15,7 @@ def test_qam_mapping(backend_device, xp):
 
 
 def test_psk_mapping(backend_device, xp):
+    """Verify PSK mapping produces the correct number of symbols."""
     bits = xp.array([0, 1])
 
     syms = mapping.map_bits(bits, modulation="psk", order=2)
@@ -134,3 +138,85 @@ def test_soft_demap_mimo_shape(backend_device, xp):
     # Expected shape: (2, 4*2) = (2, 8)
     expected_shape = (2, 8)
     assert llrs.shape == expected_shape
+
+
+def test_gray_code_edge_cases():
+    """Verify Gray code generation for boundary bit depths."""
+    import numpy as np
+    import pytest
+
+    # n = 0
+    assert np.array_equal(mapping.gray_code(0), np.array([0]))
+    assert np.array_equal(mapping.gray_to_binary(0), np.array([0]))
+
+    # n = 2
+    # binary: 0, 1, 2, 3
+    # gray: 0, 1, 3, 2
+    # gray_to_binary should be inverse: mapping[0]=0, mapping[1]=1, mapping[3]=2, mapping[2]=3
+    assert np.array_equal(mapping.gray_to_binary(2), np.array([0, 1, 3, 2]))
+
+    # n < 0
+    with pytest.raises(ValueError):
+        mapping.gray_code(-1)
+    with pytest.raises(ValueError):
+        mapping.gray_to_binary(-1)
+
+
+def test_8qam_mapping(backend_device, xp):
+    """Verify 8-QAM (rectangular) mapping and round-trip."""
+    bits = xp.array([0, 0, 0, 1, 1, 1], dtype=xp.int32)
+    syms = mapping.map_bits(bits, modulation="qam", order=8)
+    assert len(syms) == 2
+
+    bits_out = mapping.demap_symbols(syms, modulation="qam", order=8)
+    assert xp.array_equal(bits, bits_out)
+
+
+def test_cross_qam_32_mapping(backend_device, xp):
+    """Verify 32-QAM (Cross) mapping and round-trip."""
+    # 5 bits per symbol. 2 symbols = 10 bits.
+    bits = xp.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0], dtype=xp.int32)
+    syms = mapping.map_bits(bits, modulation="qam", order=32)
+    assert len(syms) == 2
+
+    bits_out = mapping.demap_symbols(syms, modulation="qam", order=32)
+    assert xp.array_equal(bits, bits_out)
+
+
+def test_soft_demap_loop_based(backend_device, xp):
+    """Verify loop-based soft demapping (vectorized=False)."""
+    modulation = "qam"
+    order = 16
+    bits = xp.array([0, 0, 1, 1, 0, 1, 0, 1], dtype=xp.int32)
+    symbols = mapping.map_bits(bits, modulation, order)
+    noise_var = 0.1
+
+    llrs_vec = mapping.demap_symbols_soft(
+        symbols, modulation, order, noise_var, vectorized=True
+    )
+    llrs_loop = mapping.demap_symbols_soft(
+        symbols, modulation, order, noise_var, vectorized=False
+    )
+
+    assert xp.allclose(llrs_vec, llrs_loop)
+
+    # Test exact method
+    llrs_exact = mapping.demap_symbols_soft(
+        symbols, modulation, order, noise_var, method="exact", vectorized=False
+    )
+    # Signs should match
+    assert xp.array_equal(xp.sign(llrs_exact), xp.sign(llrs_vec))
+
+    # Test error for unknown method (vectorized)
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown method"):
+        mapping.demap_symbols_soft(
+            symbols, modulation, order, noise_var, method="unknown", vectorized=True
+        )
+
+    # Test error for unknown method (loop-based)
+    with pytest.raises(ValueError, match="Unknown method"):
+        mapping.demap_symbols_soft(
+            symbols, modulation, order, noise_var, method="unknown", vectorized=False
+        )

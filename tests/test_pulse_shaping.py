@@ -1,8 +1,12 @@
+"""Tests for pulse shaping, matched filtering, and filter tap generation in Signal objects."""
+
 import pytest
+
 from commstools.core import Signal
 
 
 def test_signal_pulse_params(backend_device, xp):
+    """Verify that pulse shaping parameters (e.g., rolloff) are correctly stored and utilized."""
     sig = Signal.pam(
         order=2,
         bipolar=True,
@@ -23,6 +27,7 @@ def test_signal_pulse_params(backend_device, xp):
 
 
 def test_matched_filter_auto_taps(backend_device, xp):
+    """Verify that matched_filter correctly auto-generates and applies the correct taps."""
     sig = Signal.pam(
         order=2,
         bipolar=True,
@@ -39,14 +44,11 @@ def test_matched_filter_auto_taps(backend_device, xp):
     sig.matched_filter()
 
     # Check that samples changed (filtering happened)
-    # It's unlikely that matched filter leaves signal identical
     assert not xp.allclose(sig.samples, sig_before.samples)
-
-    # Check backend compatibility (mocking or ensuring it runs)
-    # The tests run with numpy by default unless configured otherwise
 
 
 def test_rzpam_pulse_params(backend_device, xp):
+    """Verify pulse parameters for Return-to-Zero (RZ) PAM signals."""
     sig = Signal.pam(
         order=2,
         bipolar=True,
@@ -62,10 +64,10 @@ def test_rzpam_pulse_params(backend_device, xp):
 
     taps = sig.shaping_filter_taps()
     assert len(taps) > 0
-    # Check that pulse width is respected (internally smoothrect uses it)
 
 
 def test_rz_rect_taps_length(backend_device, xp):
+    """Verify that RZ rectangular pulse taps have the correct half-symbol length."""
     # RZ rect with sps=4 should have length 2 (sps * 0.5)
     sig = Signal.pam(
         order=2,
@@ -82,6 +84,7 @@ def test_rz_rect_taps_length(backend_device, xp):
 
 
 def test_unknown_pulse_shape(backend_device, xp):
+    """Verify that attempting to generate taps for unsupported shapes raises errors."""
     sig = Signal(samples=[1, 2], sampling_rate=10, symbol_rate=5)
     # No pulse shape
     with pytest.raises(ValueError, match="No pulse shape defined"):
@@ -93,6 +96,7 @@ def test_unknown_pulse_shape(backend_device, xp):
 
 
 def test_rect_pulse_taps(backend_device, xp):
+    """Verify that standard rectangular pulse shaping produces all-ones taps."""
     # Rect pulse should return ones
     sig = Signal.pam(
         order=2,

@@ -160,3 +160,27 @@ def test_signal_demap_hard(backend_device, xp):
 
     # Should match source_bits
     assert xp.array_equal(bits.flatten(), sig.source_bits.flatten())
+
+
+def test_q_factor_modulation_aware(backend_device, xp):
+    """Verify modulation-aware Q-factor calculation using d_min."""
+    # EVM = 10%
+    evm_pct = 10.0
+
+    # 1. PSK-16
+    q_psk = metrics.q_factor(evm_percent=evm_pct, modulation="psk", order=16)
+    # d_min_psk = 2 * sin(pi/16) approx 2 * 0.195 = 0.39
+    # Q = d_min / (2 * 0.1) approx 0.39 / 0.2 = 1.95
+    assert 1.9 < q_psk < 2.0
+
+    # 2. QAM-16 (Square)
+    q_qam = metrics.q_factor(evm_percent=evm_pct, modulation="qam", order=16)
+    # d_min_qam = sqrt(6/15) approx 0.63
+    # Q = 0.63 / 0.2 = 3.15
+    assert 3.1 < q_qam < 3.2
+
+    # 3. Invalid params
+    import pytest
+
+    with pytest.raises(ValueError):
+        metrics.q_factor()

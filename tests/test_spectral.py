@@ -1,9 +1,12 @@
+"""Tests for spectral analysis routines (Welch PSD, Frequency shifting)."""
+
 import pytest
+
 from commstools import spectral
 
 
 def test_welch_psd_real(backend_device, xp):
-    """Test PSD for real-valued signals."""
+    """Verify Welch PSD estimation for real-valued signals, including one-sided/two-sided modes."""
     # Generate a simple sine wave
     fs = 100.0
     t = xp.arange(1000) / fs
@@ -41,7 +44,7 @@ def test_welch_psd_real(backend_device, xp):
 
 
 def test_welch_psd_complex(backend_device, xp):
-    """Test PSD for complex-valued signals."""
+    """Verify Welch PSD estimation for complex-valued signals."""
     # Complex exponential
     fs = 100.0
     t = xp.arange(1000) / fs
@@ -59,13 +62,13 @@ def test_welch_psd_complex(backend_device, xp):
 
     assert xp.abs(peak_freq - freq) < (fs / 256)
 
-    # 2. Try force one-sided (should fail)
+    # 2. Try force one-sided (should fail for complex)
     with pytest.raises(ValueError, match="Cannot compute one-sided PSD"):
         spectral.welch_psd(samples, sampling_rate=fs, return_onesided=True)
 
 
 def test_shift_frequency(backend_device, xp):
-    """Test frequency data manipulation."""
+    """Verify complex frequency shifting and energy preservation."""
     # 1. Exact integer shift
     # fs=100, N=100 -> df=1Hz. Shift by 10Hz.
     fs = 100.0
@@ -78,21 +81,13 @@ def test_shift_frequency(backend_device, xp):
     assert actual == 10.0
 
     # New frequency should be 30 Hz
-    # Check phase progress:
-    # original phase diff per sample: 2*pi*20/100 = 0.4*pi
-    # actual offset phase diff: 2*pi*10/100 = 0.2*pi
-    # expected total phase diff: 0.6*pi
-    # We can check via simple FFT peak
     f_axis = xp.fft.fftfreq(N, 1 / fs)
     peak_idx = xp.argmax(xp.abs(xp.fft.fft(shifted)))
     peak_freq = f_axis[peak_idx]
     assert xp.isclose(peak_freq, 30.0)
 
     # 2. Quantized shift
-    # Shift by 10.5 Hz. Should be quantized to 10 or 11.
-    # df = 1 Hz. 10.5 rounds to 10 or 11 (nearest even? or standard round?)
-    # numpy round to nearest even for .5 cases usually. 10.5 -> 10. 11.5 -> 12.
-    # Let's check return value.
+    # Shift by 10.5 Hz. Should be quantized to integer multiple of df.
     shifted_q, actual_q = spectral.shift_frequency(s, offset=10.5, fs=fs)
     # Check it is integer multiple of df=1
     assert actual_q % 1.0 == 0.0
