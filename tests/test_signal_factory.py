@@ -7,7 +7,7 @@ from commstools.core import Signal
 
 def test_pam_waveform(backend_device, xp):
     """Verify basic PAM signal generation."""
-    sig = Signal.pam(order=2, bipolar=True, num_symbols=10, sps=4, symbol_rate=1e3)
+    sig = Signal.pam(order=2, unipolar=False, num_symbols=10, sps=4, symbol_rate=1e3)
     assert sig.samples.size > 0
     assert isinstance(sig.samples, xp.ndarray)
 
@@ -16,7 +16,7 @@ def test_rzpam_waveform(backend_device, xp):
     """Verify Return-to-Zero (RZ) PAM signal generation."""
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
@@ -30,7 +30,7 @@ def test_rzpam_waveform(backend_device, xp):
     with pytest.raises(ValueError, match="not allowed for RZ PAM"):
         Signal.pam(
             order=2,
-            bipolar=True,
+            unipolar=False,
             num_symbols=10,
             sps=4,
             symbol_rate=1e3,

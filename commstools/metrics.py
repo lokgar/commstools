@@ -12,10 +12,6 @@ snr :
     Performs data-aided SNR estimation.
 ber :
     Computes Bit Error Rate between bit sequences.
-q_factor :
-    Calculates communication quality Q-factor from BER or EVM.
-q_factor_db :
-    Expresses Q-factor in decibels.
 """
 
 from typing import TYPE_CHECKING, Optional, Tuple, Union
@@ -32,15 +28,15 @@ if TYPE_CHECKING:
 def evm(
     rx_symbols: Union[ArrayType, "Signal"],
     tx_symbols: Union[ArrayType, "Signal"],
-    normalize: bool = True,
-) -> Tuple[float, float]:
+) -> Tuple[Union[float, ArrayType], Union[float, ArrayType]]:
     """
     Computes Error Vector Magnitude (EVM) between received and reference symbols.
 
     EVM is a standard measure of signal quality that quantifies the deviation
-    of received symbols from their ideal constellation points. It is
-    calculated as the ratio of the RMS error to the RMS amplitude of the
-    reference signal.
+    of received symbols from their ideal constellation points.
+
+    Calculation is performed per-channel (independent gain normalization) to
+    properly handle MIMO/multichannel signals.
 
     Parameters
     ----------
@@ -48,25 +44,22 @@ def evm(
         Received symbols to evaluate. Shape: (..., N_symbols).
     tx_symbols : array_like or Signal
         Ideal reference (transmitted) symbols. Shape: (..., N_symbols).
-    normalize : bool, default True
-        If True, normalizes the error by the RMS amplitude of the reference
-        signal (standard definition).
 
     Returns
     -------
-    evm_percent : float
-        EVM expressed as a percentage (e.g., 5.0 for 5%).
-    evm_db : float
-        EVM expressed in decibels (dB), calculated as $20 \log_{10}(EVM_{ratio})$.
+    evm_percent : float or ndarray
+        EVM expressed as a percentage. Returns an array if input is multichannel.
+    evm_db : float or ndarray
+        EVM expressed in decibels (dB).
 
     Notes
     -----
-    For MIMO or multichannel signals, the EVM is computed across all spatial
-    and temporal samples to provide a single aggregate metric.
+    For MIMO, metrics are calculated independently for each stream (row).
     """
     from .core import Signal
+    from . import utils
 
-    # Extract samples if Signal objects
+    # Extract samples
     if isinstance(rx_symbols, Signal):
         rx = (
             rx_symbols.source_symbols
@@ -88,44 +81,80 @@ def evm(
     rx, xp, _ = dispatch(rx)
     tx = xp.asarray(tx)
 
-    # Error vector: difference between received and reference
+    # Ensure shape consistency
+    if rx.shape != tx.shape:
+        raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
+
+    # Determine axis for time/symbols (assumed last)
+    axis = -1
+
+    # helper to check normalization
+    def _is_normalized(arr, ax):
+        pwr = xp.mean(xp.abs(arr) ** 2, axis=ax)
+        return xp.allclose(pwr, 1.0, atol=1e-3)
+
+    # Robustness: Check if normalized, if not -> normalize per channel
+    if not _is_normalized(rx, axis):
+        rx = utils.normalize(rx, axis=axis, mode="average_power")
+
+    if not _is_normalized(tx, axis):
+        tx = utils.normalize(tx, axis=axis, mode="average_power")
+
+    # Check for zero power ref
+    # If tx was zeros, normalize might have left it as zeros (safe/utils.py behavior)
+    ref_pwr = xp.mean(xp.abs(tx) ** 2, axis=axis)
+    low_pwr_mask = ref_pwr < 1e-20
+
+    if xp.any(low_pwr_mask):
+        logger.warning("Reference signal power near zero in one or more channels.")
+
+    # Error vector
     error = rx - tx
 
-    # RMS of error vector
-    error_power = xp.mean(xp.abs(error) ** 2)
+    # RMS of error vector (per channel)
+    error_power = xp.mean(xp.abs(error) ** 2, axis=axis)
     error_rms = xp.sqrt(error_power)
 
-    if normalize:
-        # Normalize by RMS of reference signal
-        ref_power = xp.mean(xp.abs(tx) ** 2)
-        ref_rms = xp.sqrt(ref_power)
+    # Ref RMS is 1.0 by definition (per channel)
+    evm_ratio = error_rms
 
-        # Avoid division by zero
-        if float(ref_rms) < 1e-20:
-            logger.warning("Reference signal power near zero, EVM undefined.")
+    # Apply infinity where reference was zero
+    # We must operate on matched types.
+    # If scalar:
+    if evm_ratio.ndim == 0:
+        if low_pwr_mask:
             return float("inf"), float("inf")
+        evm_percent = float(evm_ratio * 100.0)
+        with np.errstate(divide="ignore"):
+            evm_db = (
+                float(20.0 * xp.log10(evm_ratio)) if evm_ratio > 0 else float("-inf")
+            )
+        return evm_percent, evm_db
 
-        evm_ratio = float(error_rms / ref_rms)
-    else:
-        evm_ratio = float(error_rms)
-
+    # If array:
     evm_percent = evm_ratio * 100.0
-    evm_db = 20.0 * np.log10(evm_ratio) if evm_ratio > 0 else float("-inf")
+    with np.errstate(divide="ignore"):
+        evm_db = 20.0 * xp.log10(evm_ratio)
 
-    logger.debug(f"EVM: {evm_percent:.2f}% ({evm_db:.2f} dB)")
+    # Overwrite indices
+    evm_percent[low_pwr_mask] = float("inf")
+    evm_db[low_pwr_mask] = float("inf")
+
     return evm_percent, evm_db
 
 
 def snr(
     rx_symbols: Union[ArrayType, "Signal"],
     tx_symbols: Union[ArrayType, "Signal"],
-) -> float:
+) -> Union[float, ArrayType]:
     """
     Estimates SNR from received symbols using a known reference (Data-Aided).
 
     SNR is computed as the ratio of average signal power to noise (error)
     power:
-    $SNR_{linear} = \frac{P_{signal}}{P_{noise}} = \frac{E[|tx|^2]}{E[|rx - tx|^2]}$
+    $SNR_{linear} \approx \frac{1.0}{E[|rx - tx|^2]}$
+
+    Calculation is performed per-channel (independent gain normalization).
 
     Parameters
     ----------
@@ -136,16 +165,11 @@ def snr(
 
     Returns
     -------
-    float
-        Estimated SNR in dB.
-
-    Notes
-    -----
-    This method requires knowledge of the transmitted data. For non-data-aided
-    (blind) estimation, more complex algorithms (e.g., moments-based M2M4)
-    are required.
+    float or ndarray
+        Estimated SNR in dB. Returns array if input is multichannel.
     """
     from .core import Signal
+    from . import utils
 
     if isinstance(rx_symbols, Signal):
         rx = (
@@ -168,22 +192,57 @@ def snr(
     rx, xp, _ = dispatch(rx)
     tx = xp.asarray(tx)
 
-    # Signal power (reference)
-    signal_power = xp.mean(xp.abs(tx) ** 2)
+    if rx.shape != tx.shape:
+        raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
+
+    axis = -1
+
+    def _is_normalized(arr, ax):
+        pwr = xp.mean(xp.abs(arr) ** 2, axis=ax)
+        return xp.allclose(pwr, 1.0, atol=1e-3)
+
+    # Normalize per channel if needed
+    if not _is_normalized(rx, axis):
+        rx = utils.normalize(rx, axis=axis, mode="average_power")
+
+    if not _is_normalized(tx, axis):
+        tx = utils.normalize(tx, axis=axis, mode="average_power")
+
+    # Check for zero power ref for SNR too
+    ref_pwr = xp.mean(xp.abs(tx) ** 2, axis=axis)
+    low_pwr_mask = ref_pwr < 1e-20
+
+    # Signal power (reference) is 1.0 per channel effectively, BUT
+    # if original ref was zero, SNR is 0 (-inf dB).
+    signal_power = 1.0
 
     # Noise power (error)
     error = rx - tx
-    noise_power = xp.mean(xp.abs(error) ** 2)
+    noise_power = xp.mean(xp.abs(error) ** 2, axis=axis)
 
-    # Avoid division by zero
-    if float(noise_power) < 1e-20:
-        logger.debug("Noise power near zero, SNR very high.")
-        return float("inf")
+    # Calculate SNR
+    # Handle zeros in noise_power
+    with np.errstate(divide="ignore"):
+        snr_linear = signal_power / noise_power
+        snr_db = 10.0 * xp.log10(snr_linear)
 
-    snr_linear = float(signal_power / noise_power)
-    snr_db = 10.0 * np.log10(snr_linear)
+    # Handle zero reference case
+    # If noise is zero, SNR is Inf (perfect signal), even if ref was zero.
+    # If noise is present but ref was zero, SNR is -Inf (0 linear).
+    zero_noise_mask = noise_power < 1e-20
 
-    logger.debug(f"SNR estimate: {snr_db:.2f} dB")
+    if snr_db.ndim == 0:
+        if zero_noise_mask:
+            return float("inf")
+        if low_pwr_mask:
+            return float("-inf")
+        return float(snr_db)
+
+    # Array case: Overwrite with -inf where (low_pwr_mask AND NOT zero_noise_mask)
+    # Note: where zero_noise_mask is True, snr_db is already 'inf' from division
+    mask_to_neg_inf = low_pwr_mask & (~zero_noise_mask)
+    snr_db[mask_to_neg_inf] = float("-inf")
+
     return snr_db
 
 
@@ -233,135 +292,3 @@ def ber(
 
     logger.debug(f"BER: {ber_value:.2e} ({int(errors)}/{total_bits} errors)")
     return ber_value
-
-
-def q_factor(
-    ber_value: Optional[float] = None,
-    evm_percent: Optional[float] = None,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-) -> float:
-    """
-    Computes the Q-factor from BER or EVM.
-
-    The Q-factor is a dimensionless quality metric that represents the
-    normalized distance between constellation levels in terms of standard
-    deviation. It is widely used in optical and high-speed communications.
-
-    Parameters
-    ----------
-    ber_value : float, optional
-        Bit Error Rate (0 to 0.5). If provided, calculates
-        $Q = \sqrt{2} \cdot \text{erfc}^{-1}(2 \cdot BER)$.
-    evm_percent : float, optional
-        EVM in percent. Requires `modulation` and `order` for accurate mapping.
-    modulation : {"psk", "qam", "ask", "pam"}, optional
-        Modulation type used for EVM-based calculation.
-    order : int, optional
-        Modulation order (e.g., 4, 16, 64).
-
-    Returns
-    -------
-    float
-        Linear Q-factor.
-
-    Raises
-    ------
-    ValueError
-        If neither `ber_value` nor `evm_percent` is provided.
-
-    Notes
-    -----
-    - For EVM, $Q = \frac{d_{min}}{2\sigma}$, where $d_{min}$ is the
-      minimum distance between points in a unit-power constellation.
-    - $Q > 6$ typically indicates excellent performance ($BER < 10^{-9}$).
-    """
-    from scipy.special import erfcinv
-
-    if ber_value is not None:
-        if ber_value <= 0:
-            return float("inf")
-        if ber_value >= 0.5:
-            return 0.0
-
-        # Q = sqrt(2) * erfc^-1(2 * BER)
-        q = np.sqrt(2) * erfcinv(2 * ber_value)
-        logger.debug(f"Q-factor from BER: {q:.2f}")
-        return float(q)
-
-    elif evm_percent is not None:
-        if evm_percent <= 0:
-            return float("inf")
-
-        evm_ratio = evm_percent / 100.0
-
-        # Modulation-aware Q-factor: Q = d_min / (2 * EVM * sqrt(Es))
-        # For normalized constellations (Es = 1), Q = d_min / (2 * EVM)
-        if modulation is None or order is None:
-            # Fallback to simple approximation (assumes QPSK-like)
-            q = 1.0 / evm_ratio
-            logger.warning(
-                "Q-factor from EVM without modulation info - using QPSK approximation."
-            )
-        else:
-            mod = modulation.lower()
-            k = int(np.log2(order)) if order > 1 else 1
-
-            # Compute d_min relative to unit average power
-            if mod == "psk":
-                # PSK: d_min = 2 * sin(π/M)
-                d_min = 2 * np.sin(np.pi / order)
-            elif mod in ("qam", "pam", "ask"):
-                # Square QAM: d_min = sqrt(6 / (M - 1)) for unit power
-                # PAM/ASK: d_min = sqrt(12 / (M^2 - 1)) for unit power
-                if mod == "qam" and k % 2 == 0:
-                    # Square QAM
-                    d_min = np.sqrt(6 / (order - 1))
-                else:
-                    # PAM or non-square QAM
-                    d_min = np.sqrt(12 / (order**2 - 1))
-            else:
-                # Unknown modulation - fallback
-                d_min = 2.0 / np.sqrt(order)
-
-            # Q = d_min / (2 * σ), where σ ≈ EVM (for unit power)
-            q = d_min / (2 * evm_ratio)
-            logger.debug(f"Q-factor from EVM ({mod}-{order}): {q:.2f}")
-
-        return float(q)
-
-    else:
-        raise ValueError("Must provide either ber_value or evm_percent.")
-
-
-def q_factor_db(
-    ber_value: Optional[float] = None,
-    evm_percent: Optional[float] = None,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-) -> float:
-    """
-    Computes the Q-factor in decibels ($20 \log_{10}(Q)$).
-
-    Parameters
-    ----------
-    ber_value : float, optional
-        Bit Error Rate.
-    evm_percent : float, optional
-        EVM in percent.
-    modulation : str, optional
-        Modulation identifier.
-    order : int, optional
-        Modulation order.
-
-    Returns
-    -------
-    float
-        Q-factor in dB.
-    """
-    q = q_factor(
-        ber_value=ber_value, evm_percent=evm_percent, modulation=modulation, order=order
-    )
-    if q <= 0:
-        return float("-inf")
-    return 20.0 * np.log10(q)

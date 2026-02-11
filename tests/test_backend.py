@@ -1,9 +1,13 @@
 """Tests for the backend management and device-agnostic dispatch system."""
 
+import warnings
+
 import numpy as np
 import pytest
 
 from commstools import backend
+
+warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental.*")
 
 
 def test_get_array_module():

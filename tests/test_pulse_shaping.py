@@ -9,7 +9,7 @@ def test_signal_pulse_params(backend_device, xp):
     """Verify that pulse shaping parameters (e.g., rolloff) are correctly stored and utilized."""
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
@@ -30,7 +30,7 @@ def test_matched_filter_auto_taps(backend_device, xp):
     """Verify that matched_filter correctly auto-generates and applies the correct taps."""
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=100,
         sps=4,
         symbol_rate=1e3,
@@ -51,7 +51,7 @@ def test_rzpam_pulse_params(backend_device, xp):
     """Verify pulse parameters for Return-to-Zero (RZ) PAM signals."""
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
@@ -71,7 +71,7 @@ def test_rz_rect_taps_length(backend_device, xp):
     # RZ rect with sps=4 should have length 2 (sps * 0.5)
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
@@ -100,7 +100,7 @@ def test_rect_pulse_taps(backend_device, xp):
     # Rect pulse should return ones
     sig = Signal.pam(
         order=2,
-        bipolar=True,
+        unipolar=False,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,

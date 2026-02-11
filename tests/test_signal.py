@@ -17,6 +17,51 @@ def test_signal_initialization(backend_device, xp):
     assert s.symbol_rate == 1.0
 
 
+def test_signal_validation_heuristics(backend_device, xp):
+    """Verify Signal validation for higher dimensions and Time-Last heuristic."""
+    # 1. Dimension > 2
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Only 1D"):
+        Signal(samples=xp.zeros((2, 2, 10)), sampling_rate=1.0, symbol_rate=1.0)
+
+    # 2. Time-Last heuristic (Time, Channels) -> (Channels, Time)
+    # Heuristic: s0 > s1 and s0 > 32
+    data_wrong = xp.zeros((100, 2))
+    s = Signal(samples=data_wrong, sampling_rate=1.0, symbol_rate=1.0)
+    assert s.samples.shape == (2, 100)  # Should be transposed
+
+
+def test_signal_auto_symbols(backend_device, xp):
+    """Verify source_symbols derivation from source_bits in post-init."""
+    import numpy as np
+
+    bits = xp.array([0, 1, 0, 0], dtype=np.int8)
+    # BPSK mapping: 0 -> -1, 1 -> 1
+    s = Signal(
+        samples=xp.ones(10),
+        sampling_rate=1.0,
+        symbol_rate=1.0,
+        source_bits=bits,
+        modulation_scheme="PSK",
+        modulation_order=2,
+    )
+    assert s.source_symbols is not None
+    assert len(s.source_symbols) == 4
+
+    # 262: hyphenated mod
+    s2 = Signal(
+        samples=xp.ones(10),
+        sampling_rate=1.0,
+        symbol_rate=1.0,
+        source_bits=bits,
+        modulation_scheme="MY-PSK",
+        modulation_order=2,
+    )
+    assert s2.source_symbols is not None
+    # Check if derivation handled the "PSK" vs "mapping.map_bits" etc.
+
+
 def test_signal_properties(backend_device, xp):
     """Verify core time-domain and rate properties of the Signal object."""
     # Create data directly on device using xp
@@ -199,3 +244,80 @@ def test_signal_ber_soft_demap(backend_device, xp):
 
     ber_soft = sig.ber()
     assert 0 <= ber_soft <= 1
+
+
+def test_signal_downsample_to_symbols(backend_device, xp):
+    """Verify downsampling Signal to symbols."""
+    data = xp.ones(40, dtype=xp.complex128)
+    s = Signal(samples=data, sampling_rate=4.0, symbol_rate=1.0)
+    s.downsample_to_symbols(offset=0)
+    assert len(s.samples) == 10
+    assert s.sampling_rate == 1.0
+
+
+def test_signal_downsample_warning(backend_device, xp):
+    """Verify warning when downsampling already 1 SPS signal."""
+    data = xp.ones(10, dtype=xp.complex128)
+    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
+    s.downsample_to_symbols()  # Should just warn
+
+
+def test_signal_mimo_fir_coverage(backend_device, xp):
+    """Verify FIR filtering on multichannel signals."""
+    data = xp.ones((2, 100), dtype=xp.complex128)
+    s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
+    # Filter with delay
+    taps = xp.array([1.0, 0.5])
+    s.fir_filter(taps)
+    assert s.samples.shape == (2, 100)
+    # y[1] should be 1.5
+    assert abs(float(s.samples[0, 1].real) - 1.5) < 1e-10
+
+
+def test_signal_gaussian_coverage(backend_device, xp):
+    """Verify Gaussian Signal generation."""
+    # Use PSK with Gaussian pulse shaping
+    s = Signal.psk(
+        order=2,
+        pulse_shape="gaussian",
+        symbol_rate=1e6,
+        num_symbols=100,
+        sps=8,
+        gaussian_bt=0.5,
+    )
+    assert s.pulse_shape == "gaussian"
+    assert s.gaussian_bt == 0.5
+
+
+def test_signal_jax_interop(backend_device, xp):
+    """Verify JAX interoperability."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip("JAX not installed")
+
+    s = Signal(samples=xp.ones(10), sampling_rate=1.0, symbol_rate=1.0)
+
+    # Export to JAX
+    jax_arr = s.export_samples_to_jax()
+    assert isinstance(jax_arr, jax.Array)
+
+    # Update from JAX
+    jax_arr = jax_arr * 2.0
+    s.update_samples_from_jax(jax_arr)
+    assert xp.allclose(s.samples, 2.0)
+
+
+def test_signal_properties_coverage(backend_device, xp):
+    """Access Signal properties to ensure coverage."""
+    s = Signal(samples=xp.zeros(100), sampling_rate=10.0, symbol_rate=2.0)
+
+    # sp property
+    assert s.sp is not None
+
+    # duration property
+    assert s.duration == 10.0
+
+    # backend
+    assert s.backend in ("CPU", "GPU")

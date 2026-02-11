@@ -244,6 +244,7 @@ def detect_frame(
     threshold: float = 0.5,
     return_metric: bool = False,
     search_range: Optional[Tuple[int, int]] = None,
+    debug_plot: bool = False,
 ) -> Union[int, Tuple[int, float]]:
     """
     Detects the start of a frame via preamble correlation.
@@ -295,14 +296,38 @@ def detect_frame(
     """
     from .core import Preamble, Signal
 
-    # Extract arrays
+    # Extract arrays and metadata
+    sps_val = None
     if isinstance(signal, Signal):
         sig_array = signal.samples
+        # Infer parameters for Preamble.to_waveform
+        sps_val = signal.sps
+        symbol_rate = signal.symbol_rate
+        pulse_shape = signal.pulse_shape or "rrc"
+        filter_params = {
+            "filter_span": signal.filter_span,
+            "rrc_rolloff": signal.rrc_rolloff,
+            "rc_rolloff": signal.rc_rolloff,
+            "gaussian_bt": signal.gaussian_bt,
+            "smoothrect_bt": signal.smoothrect_bt,
+        }
     else:
         sig_array = signal
 
     if isinstance(preamble, Preamble):
-        preamble_array = preamble.symbols
+        if sps_val is None:
+            raise ValueError(
+                "Cannot infer waveform parameters from a raw array. "
+                "Provide a Signal object or a preamble waveform array."
+            )
+        # Generate the shaped preamble waveform using inferred parameters
+        pre_sig = preamble.to_waveform(
+            sps=int(round(sps_val)),
+            symbol_rate=symbol_rate,
+            pulse_shape=pulse_shape,
+            **filter_params,
+        )
+        preamble_array = pre_sig.samples
     else:
         preamble_array = preamble
 
@@ -345,6 +370,30 @@ def detect_frame(
         )  # Clamp due to numerical issues
     else:
         normalized_peak = 0.0
+
+    if debug_plot:
+        import matplotlib.pyplot as plt
+
+        # Move to CPU for plotting
+        corr_cpu = to_device(corr_mag, "cpu")
+        plt.figure()
+        plt.plot(corr_cpu, label="Correlation Magnitude")
+
+        # Calculate absolute threshold level for plotting
+        if preamble_energy > 0 and signal_energy > 0:
+            abs_threshold = threshold * xp.sqrt(preamble_energy * signal_energy)
+            plt.axhline(
+                y=float(to_device(abs_threshold, "cpu")),
+                color="g",
+                linestyle=":",
+                label=f"Threshold ({threshold})",
+            )
+
+        plt.title(f"Frame Detection (Peak Metric: {normalized_peak:.3f})")
+        plt.xlabel("Sample Index")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.show()
 
     if normalized_peak < threshold:
         raise ValueError(

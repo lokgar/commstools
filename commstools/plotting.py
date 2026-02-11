@@ -328,6 +328,7 @@ def psd(
 def time_domain(
     samples: Any,
     sampling_rate: float = 1.0,
+    start_symbol: int = 0,
     num_symbols: Optional[int] = None,
     sps: Optional[float] = None,
     ax: Optional[Any] = None,
@@ -347,6 +348,8 @@ def time_domain(
         Input signal samples. Shape: (..., N_samples).
     sampling_rate : float, default 1.0
         Sampling rate in Hz.
+    start_symbol : int, default 0
+        The starting symbol to plot.
     num_symbols : int, optional
         Limit plot to a specific number of symbol periods. Requires `sps`.
     sps : float, optional
@@ -404,6 +407,7 @@ def time_domain(
             time_domain(
                 channel_samples,
                 sampling_rate=sampling_rate,
+                start_symbol=start_symbol,
                 num_symbols=num_symbols,
                 sps=sps,
                 ax=target_ax,
@@ -427,10 +431,15 @@ def time_domain(
     samples = to_device(samples, "cpu")
 
     if num_symbols is not None and sps is not None:
-        limit = int(num_symbols * sps)
-        plot_samples = samples[:limit]
+        limit = int((start_symbol + num_symbols) * sps)
+        if limit > len(samples):
+            limit = len(samples)
+            logger.warning(
+                "Limit exceeds number of symbols. Plotting up to last symbol."
+            )
+        plot_samples = samples[int(start_symbol * sps) : limit]
     else:
-        plot_samples = samples
+        plot_samples = samples[int(start_symbol * sps) :]
 
     time_axis = np.arange(len(plot_samples)) / sampling_rate
 
@@ -968,8 +977,8 @@ def ideal_constellation(
     ax: Optional[Any] = None,
     title: Optional[str] = None,
     size: float = 5,
-    normalize: bool = False,
     show: bool = False,
+    unipolar: Optional[bool] = None,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Plots the ideal constellation diagram for a modulation format.
@@ -989,10 +998,10 @@ def ideal_constellation(
         Plot title.
     size : float, default 5
         Figure size (square).
-    normalize : bool, default False
-        If True, scales the constellation to unit average power.
     show : bool, default False
         If True, calls `plt.show()`.
+    unipolar : bool, default False
+        If True, use unipolar constellation (ASK/PAM).
 
     Returns
     -------
@@ -1011,7 +1020,7 @@ def ideal_constellation(
 
     try:
         # Generate constellation on backend (returns NumPy)
-        const = gray_constellation(modulation, order, normalize=normalize)
+        const = gray_constellation(modulation, order, unipolar=unipolar)
     except ValueError as e:
         logger.error(f"Error generating constellation: {e}")
         return None
@@ -1097,6 +1106,7 @@ def constellation(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     show: bool = False,
+    unipolar: Optional[bool] = None,
     **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
     """
@@ -1128,6 +1138,8 @@ def constellation(
         If True, calls `plt.show()`.
     **kwargs : Any
         Additional theoretical arguments passed to `ax.imshow`.
+    unipolar : bool, default False
+        If True, use unipolar constellation (ASK/PAM).
 
     Returns
     -------
@@ -1255,7 +1267,7 @@ def constellation(
         from .mapping import gray_constellation
 
         try:
-            const = gray_constellation(modulation, order)
+            const = gray_constellation(modulation, order, unipolar=unipolar)
             const = to_device(const, "cpu")
 
             # Scale constellation to match signal amplitude

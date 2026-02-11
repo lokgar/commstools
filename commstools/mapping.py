@@ -104,7 +104,8 @@ def gray_to_binary(n: int) -> np.ndarray:
 def gray_constellation(
     modulation: str,
     order: int,
-    normalize: bool = False,
+    normalize: bool = True,
+    unipolar: bool = False,
 ) -> np.ndarray:
     """
     Generate constellation points with Gray mapping.
@@ -115,24 +116,47 @@ def gray_constellation(
 
     Parameters
     ----------
-    modulation : {"psk", "qam", "ask"}
-        Modulation type.
+    modulation : {"psk", "qam", "ask", "pam"}
+        Modulation type. If string contains 'unipolar', unipolar=True is triggered.
     order : int
         Modulation order (number of symbols). Must be a power of 2.
-    normalize : bool, default False
+    normalize : bool, default True
         If True, scales the constellation to unit average power (E_s = 1).
+    unipolar : bool, default False
+        If True, shifts the constellation to be strictly non-negative (for 'ask'/'pam').
+        If the modulation string contains 'unipol', this is automatically forced to True.
 
     Returns
     -------
     ndarray
-        Array of constellation points (NumPy).
-        Shape: (order,).
+        Array of constellation points (NumPy). Shape: (order,).
         Complex for 'psk' and 'qam', Float for 'ask'.
+
+    Notes
+    -----
+    By default, constellations are normalized to **unit average power (E_s = 1)**.
+    This ensures that when different modulation schemes are mixed (e.g., PSK
+    pilots with QAM payload), they start from a consistent power baseline.
     """
     logger.debug(
         f"Generating Gray-coded constellation: modulation={modulation}, order={order}, normalize={normalize}"
     )
     modulation = modulation.lower()
+    # Force unipolar if the modulation string says so
+    if "unipol" in modulation:
+        unipolar = True
+
+    # Extract core modulation scheme
+    if "psk" in modulation:
+        modulation = "psk"
+    elif "qam" in modulation:
+        modulation = "qam"
+    elif "ask" in modulation or "pam" in modulation:
+        modulation = "ask"
+    else:
+        # Fallback to last part for custom schemes if any
+        if "-" in modulation:
+            modulation = modulation.split("-")[-1]
 
     if order < 2:
         raise ValueError("Order must be at least 2 for modulation")
@@ -140,7 +164,7 @@ def gray_constellation(
     if modulation == "psk":
         result = _gray_psk(order)
     elif modulation == "ask":
-        result = _gray_ask(order)
+        result = _gray_ask(order, unipolar=unipolar)
     elif modulation == "qam":
         k = int(np.log2(order))
         if 2**k != order:
@@ -207,12 +231,12 @@ def _gray_psk(order: int) -> np.ndarray:
     return constellation
 
 
-def _gray_ask(order: int) -> np.ndarray:
+def _gray_ask(order: int, unipolar: bool = False) -> np.ndarray:
     """
     Generates an M-ASK constellation with Gray mapping.
 
-    This function always returns bipolar values centered at zero
-    (e.g., [-3, -1, 1, 3] for 4-ASK).
+    By default, returns bipolar values centered at zero. If unipolar=True,
+    shifts values to start from zero.
 
     Parameters
     ----------
@@ -231,6 +255,9 @@ def _gray_ask(order: int) -> np.ndarray:
     gray = gray_code(k)
     # Points are symmetric: -M+1, -M+3, ..., M-3, M-1
     points = np.linspace(-order + 1, order - 1, order)
+
+    if unipolar:
+        points = points - np.min(points)
 
     constellation = np.zeros(order, dtype=float)
     constellation[gray] = points
@@ -412,24 +439,28 @@ def map_bits(
     modulation: str,
     order: int,
     dtype: Optional[Any] = np.complex64,
-    normalize: bool = False,
+    unipolar: bool = False,
 ) -> ArrayType:
     """
-    Map a sequence of bits to constellation symbols.
+    Maps a bit sequence to complex or real symbols.
+
+    This function follows a bit-first architecture: it takes a flat sequence
+    of bits and packs them into symbols according to the modulation scheme
+    and Gray mapping.
 
     Parameters
     ----------
     bits : array_like
-        Input array of bits (0s and 1s). Shape: (N_bits,).
-    modulation : {"psk", "qam", "ask"}
-        Modulation type.
+        Input binary sequence (0s and 1s).
+    modulation : {"psk", "qam", "ask", "pam"}
+        Modulation scheme.
     order : int
-        Modulation order.
+        Modulation order (number of symbols).
     dtype : data-type, optional
-        Output symbol dtype. Default is `np.complex64`.
+        Target precision for the generated symbols. Default is `np.complex64`.
         For 'ask', automatically maps to corresponding real type (e.g., `float32`).
-    normalize : bool, default False
-        If True, scales the constellation to unit average power (E_s = 1).
+    unipolar : bool, default False
+        Trigger unipolar mapping for ASK/PAM.
 
     Returns
     -------
@@ -439,6 +470,9 @@ def map_bits(
     """
     logger.debug(f"Mapping bits to {modulation.upper()} {order}-level symbols.")
     bits, xp, _ = dispatch(bits)
+
+    if order < 2:
+        raise ValueError("Order must be at least 2 for modulation")
 
     k = int(np.log2(order))
     if 2**k != order:
@@ -458,11 +492,12 @@ def map_bits(
     indices = xp.sum(bits_reshaped * powers, axis=1)
 
     # Get constellation (returns NumPy)
-    constellation = gray_constellation(modulation, order, normalize=normalize)
+    constellation = gray_constellation(modulation, order, unipolar=unipolar)
 
     # Ensure constellation is on the same backend and dtype
     constellation = xp.asarray(constellation)
-    if modulation.lower() == "ask":
+    mod_lower = modulation.lower()
+    if "ask" in mod_lower or "pam" in mod_lower:
         if dtype in (np.complex64, np.complex128):
             real_dtype = np.float32 if dtype == np.complex64 else np.float64
         else:
@@ -476,7 +511,10 @@ def map_bits(
 
 
 def demap_symbols(
-    symbols: ArrayType, modulation: str, order: int, normalize: bool = False
+    symbols: ArrayType,
+    modulation: str,
+    order: int,
+    unipolar: bool = False,
 ) -> ArrayType:
     """
     Maps complex symbols back to a sequence of bits (hard decisions).
@@ -492,8 +530,8 @@ def demap_symbols(
         Modulation type.
     order : int
         Modulation order.
-    normalize : bool, default False
-        Whether the constellation was normalized to unit power.
+    unipolar : bool, default False
+        Trigger unipolar demapping for ASK/PAM.
 
     Returns
     -------
@@ -513,7 +551,7 @@ def demap_symbols(
     symbols_flat = symbols.flatten()
 
     # Get constellation
-    constellation = gray_constellation(modulation, order, normalize=normalize)
+    constellation = gray_constellation(modulation, order, unipolar=unipolar)
     constellation = xp.asarray(constellation)
 
     # 1. Find nearest constellation point (Hard Decision)
@@ -553,7 +591,7 @@ def demap_symbols_soft(
     noise_var: float,
     method: str = "maxlog",
     vectorized: bool = True,
-    normalize: bool = False,
+    unipolar: bool = False,
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision demapping.
@@ -579,8 +617,8 @@ def demap_symbols_soft(
         If True, use high-performance vectorized operations.
         Automatically falls back to loops for extremely large arrays to
         prevent Out-Of-Memory (OOM) errors.
-    normalize : bool, default False
-        Whether the constellation was normalized to unit power.
+    unipolar : bool, default False
+        Trigger unipolar demapping for ASK/PAM.
 
     Returns
     -------
@@ -607,7 +645,7 @@ def demap_symbols_soft(
     num_symbols = symbols_flat.size
 
     # Get constellation points indexed by symbol value
-    constellation = gray_constellation(modulation, order, normalize=normalize)
+    constellation = gray_constellation(modulation, order, unipolar=unipolar)
     constellation = xp.asarray(constellation)
 
     # Build bit mapping table

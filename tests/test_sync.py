@@ -167,6 +167,44 @@ def test_correlate_normalized(backend_device, xp):
     assert 0.9 < peak < 1.1
 
 
+def test_detect_frame_advanced_scenarios(backend_device, xp):
+    """Verify detect_frame with Signal objects, MIMO, and search ranges."""
+    from commstools.core import Signal, Preamble
+
+    # 1. Signal object and Preamble object
+    preamble = Preamble(sequence_type="barker", length=7)
+
+    # Create a signal with this preamble
+    data = xp.zeros(100, dtype=xp.complex64)
+    data[20 : 20 + 7] = preamble.symbols
+    sig = Signal(samples=data, sampling_rate=1e6, symbol_rate=1e6)
+
+    pos = sync.detect_frame(sig, preamble, threshold=0.1)
+    assert 18 <= pos <= 22
+
+    # 2. MIMO Signal (2 channels)
+    mimo_data = xp.zeros((2, 100), dtype=xp.complex64)
+    mimo_data[0, 30:37] = preamble.symbols
+    mimo_data[1, 30:37] = preamble.symbols
+    pos_mimo = sync.detect_frame(mimo_data, preamble.symbols, threshold=0.1)
+    assert 28 <= pos_mimo <= 32
+
+    # 3. Search range
+    pos_range = sync.detect_frame(
+        data, preamble.symbols, threshold=0.1, search_range=(10, 50)
+    )
+    assert 18 <= pos_range <= 22
+
+    # 4. High threshold (above max)
+    with pytest.raises(ValueError, match="No correlation peak above threshold"):
+        sync.detect_frame(data, preamble.symbols, threshold=2.0)
+
+    # 5. Zero energy
+    zero_data = xp.zeros(100)
+    with pytest.raises(ValueError, match="No correlation peak above threshold"):
+        sync.detect_frame(zero_data, preamble.symbols, threshold=0.1)
+
+
 def test_detect_frame_known_position(backend_device, xp):
     """Verify frame detection accuracy for a known preamble position."""
     # Create preamble
@@ -200,8 +238,13 @@ def test_detect_frame_with_preamble_object(backend_device, xp):
     )
     signal[start_pos : start_pos + 13] = preamble_syms
 
+    # Create a Signal object to satisfy Preamble object requirement
+    from commstools.core import Signal
+
+    sig_obj = Signal(samples=signal, sampling_rate=1e6, symbol_rate=1e6)
+
     # Detect using Preamble object
-    detected_pos = sync.detect_frame(signal, preamble, threshold=0.3)
+    detected_pos = sync.detect_frame(sig_obj, preamble, threshold=0.3)
 
     assert abs(detected_pos - start_pos) <= 1
 

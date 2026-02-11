@@ -18,8 +18,8 @@ Preamble :
 SingleCarrierFrame :
     A complex frame container supporting pilot patterns, guard intervals,
     and spatial multiplexing (MIMO).
-FrameInfo :
-    Metadata structure describing the physical bounds of a frame.
+SignalInfo :
+    Metadata structure describing the physical bounds of a signal/frame.
 """
 
 import types
@@ -51,17 +51,18 @@ from .backend import (
 from .logger import logger
 
 
-class FrameInfo(BaseModel):
+class SignalInfo(BaseModel):
     """
-    Metadata describing the framed structure within a `Signal`.
+    Metadata describing the structural components of a `Signal`.
 
-    This class encapsulates timing and structure parameters when a `Signal`
-    is generated from a `SingleCarrierFrame`. It allows downstream processing
-    (like synchronization and equalization) to distinguish between preamble,
-    pilots, and payload segments.
+    This class encapsulates timing and structure parameters for various signal
+    types (frames, preambles, continuous streams). It allows downstream
+    processing to distinguish between segments like preambles, pilots, and payloads.
 
     Attributes
     ----------
+    signal_type : {"single_carrier_frame", "ofdm_frame", "preamble", "generic"}
+        The type of the signal structure.
     preamble_len : int
         Number of symbols in the preamble/training sequence.
     preamble_type : str, optional
@@ -70,8 +71,22 @@ class FrameInfo(BaseModel):
         Parameters used for preamble generation (e.g., 'root' for ZC).
     payload_len : int
         Number of symbols in the data payload.
+    payload_mod_scheme : str, optional
+        Modulation scheme used for the payload (e.g., 'QAM').
+    payload_mod_order : int, optional
+        Modulation order for the payload.
     pilot_count : int
         Total number of pilot/reference symbols embedded in the frame.
+    pilot_pattern : {"none", "block", "comb"}
+        The pattern used for pilot insertion.
+    pilot_period : int
+        The repetition period for pilot insertion.
+    pilot_block_len : int
+        Length of pilot blocks if pattern is "block".
+    pilot_mod_scheme : str, optional
+        Modulation scheme used for pilot symbols (e.g., 'PSK').
+    pilot_mod_order : int, default 0
+        Modulation order for pilot symbols.
     guard_len : int
         Length of the guard interval (e.g., cyclic prefix) in symbols.
     guard_type : {"zero", "cp"}
@@ -79,25 +94,26 @@ class FrameInfo(BaseModel):
 
     Notes
     -----
-    The frame structure typically follows: [Guard] + [Preamble] + [Body],
-    where the [Body] contains both [Payload] and [Pilots] symbols interleaved
-    according to a specific pattern (e.g., block or comb).
-
-    Total Symbols = guard_len + preamble_len + payload_len + pilot_count.
-
-    The [Guard] interval can be either Zero-Padding (appended at the end)
-    or a Cyclic Prefix (prepended at the start).
+    The structure typically refers to: [Guard] + [Preamble] + [Body].
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    preamble_len: int = 0
+    signal_type: Literal[
+        "single_carrier_frame", "ofdm_frame", "preamble", "generic"
+    ] = "generic"
+    preamble_len: Optional[int] = None
     preamble_type: Optional[str] = None
-    preamble_kwargs: Dict[str, Any] = Field(default_factory=dict)
-    payload_len: int = 0
-    pilot_count: int = 0
-    guard_len: int = 0
-    guard_type: Literal["zero", "cp"] = "zero"
+    preamble_kwargs: Optional[Dict[str, Any]] = None
+    payload_len: Optional[int] = None
+    payload_mod_scheme: Optional[str] = None
+    payload_mod_order: Optional[int] = None
+    pilot_count: Optional[int] = None
+    pilot_pattern: Optional[Literal["none", "block", "comb"]] = None
+    pilot_period: Optional[int] = None
+    pilot_block_len: Optional[int] = None
+    pilot_mod_scheme: Optional[str] = None
+    pilot_mod_order: Optional[int] = None
+    guard_len: Optional[int] = None
+    guard_type: Optional[Literal["zero", "cp"]] = None
 
 
 class Signal(BaseModel):
@@ -147,7 +163,7 @@ class Signal(BaseModel):
         Bandwidth-Time (BT) product for Gaussian pulse shaping.
     smoothrect_bt : float
         BT product for SmoothRect shaping filters.
-    frame_info : FrameInfo, optional
+    signal_info : SignalInfo, optional
         Metadata describing the frame structure if this signal is part of a frame.
     """
 
@@ -175,8 +191,8 @@ class Signal(BaseModel):
     gaussian_bt: float = 0.3
     smoothrect_bt: float = 1.0
 
-    # Frame structure info (populated when Signal is generated from Frame)
-    frame_info: Optional[FrameInfo] = None
+    # Signal structure info (populated when Signal is generated from Frame/Preamble)
+    signal_info: Optional[SignalInfo] = None
 
     # Resolved data from processing
     resolved_symbols: Optional[Any] = Field(default=None, repr=False)
@@ -263,6 +279,15 @@ class Signal(BaseModel):
                 self.source_symbols = mapping.map_bits(
                     self.source_bits, mod, self.modulation_order
                 )
+
+        # Ensure source_symbols are normalized to unit average power for consistent metrics
+        # Ensure source_symbols are normalized to unit average power for consistent metrics
+        # For MIMO (multichannel), we normalize per-stream (axis=-1) to ensure each stream
+        # independently adheres to E_s=1, facilitating per-stream metric calculation.
+        if self.source_symbols is not None:
+            self.source_symbols = utils.normalize(
+                self.source_symbols, mode="average_power", axis=-1
+            )
 
         # Default to GPU if available and supported
         if is_cupy_available():
@@ -599,6 +624,7 @@ class Signal(BaseModel):
 
     def plot_symbols(
         self,
+        start_symbol: int = 0,
         num_symbols: int = None,
         ax: Optional[Any] = None,
         title: Optional[str] = "Waveform",
@@ -610,6 +636,8 @@ class Signal(BaseModel):
 
         Parameters
         ----------
+        start_symbol : int, default 0
+            The starting symbol to plot.
         num_symbols : int, optional
             Number of symbols to display. If None, plots the entire signal.
         ax : matplotlib.axes.Axes, optional
@@ -631,6 +659,7 @@ class Signal(BaseModel):
         return plotting.time_domain(
             self.samples,
             sampling_rate=self.sampling_rate,
+            start_symbol=start_symbol,
             num_symbols=num_symbols,
             sps=self.sps,
             ax=ax,
@@ -1068,7 +1097,6 @@ class Signal(BaseModel):
         num_streams: int = 1,
         seed: Optional[int] = None,
         dtype: Optional[Any] = np.complex64,
-        normalize: bool = False,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1098,8 +1126,6 @@ class Signal(BaseModel):
             Seed for reproducible random generation.
         dtype : data-type, default np.complex64
             Output precision.
-        normalize : bool, default False
-            If True, scales constellation to unit average power.
         **kwargs : Any
             Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
 
@@ -1107,6 +1133,15 @@ class Signal(BaseModel):
         -------
         Signal
             A new `Signal` instance.
+
+        Notes
+        -----
+        The generated samples are automatically normalized to **peak amplitude (1.0)**
+        via `filtering.shape_pulse`.
+        However, the underlying bit mapping uses **unit average power (E_s=1)**
+        by default to maintain mathematical consistency. Calling `resolve_symbols()`
+        will restore the symbols to unit average power for consistent metric
+        calculation and demapping.
         """
         from . import filtering, mapping, utils
 
@@ -1119,8 +1154,9 @@ class Signal(BaseModel):
         bits = utils.random_bits(total_bits, seed=seed)
 
         # Map bits to symbols
+        unipolar = kwargs.pop("unipolar", None)
         symbols_flat = mapping.map_bits(
-            bits, modulation, order, dtype=dtype, normalize=normalize
+            bits, modulation, order, dtype=dtype, unipolar=unipolar
         )
 
         if num_streams > 1:
@@ -1163,11 +1199,11 @@ class Signal(BaseModel):
         sps: int,
         symbol_rate: float,
         mode: Literal["rz", "nrz"] = "nrz",
-        bipolar: bool = True,
+        unipolar: bool = False,
         pulse_shape: Optional[str] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        normalize: bool = False,
+        dtype: Optional[Any] = np.complex64,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1189,17 +1225,17 @@ class Signal(BaseModel):
             Symbol rate in symbols per second (Baud).
         mode : {"nrz", "rz"}, default "nrz"
             Signaling mode. RZ uses a 50% duty cycle by default.
-        bipolar : bool, default True
-            If True, uses a symmetric bipolar constellation (e.g., -1, +1).
-            If False, uses a unipolar constellation starting from 0 (e.g., 0, 1).
+        unipolar : bool, default False
+            If True, uses a unipolar constellation starting from 0 (e.g., 0, 1).
+            If False, uses a symmetric bipolar constellation (e.g., -1, +1).
         pulse_shape : str, optional
             Pulse shaping filter type. Default is "rect" for PAM.
         num_streams : int, default 1
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for reproducible bit and symbol generation.
-        normalize : bool, default False
-            If True, scales constellation to unit average power.
+        dtype : data-type, default np.complex64
+            Output precision.
         **kwargs : Any
             Additional parameters passed to the pulse shaping filter.
 
@@ -1207,6 +1243,15 @@ class Signal(BaseModel):
         -------
         Signal
             A `Signal` object containing the generated PAM waveform.
+
+        Notes
+        -----
+        The generated samples are automatically normalized to **peak amplitude (1.0)**
+        via `filtering.shape_pulse`.
+        However, the underlying bit mapping uses **unit average power (E_s=1)**
+        by default to maintain mathematical consistency. Calling `resolve_symbols()`
+        will restore the symbols to unit average power for consistent metric
+        calculation and demapping.
         """
         from . import filtering, utils
 
@@ -1231,8 +1276,9 @@ class Signal(BaseModel):
             # Import mapping here to avoid circular imports
             from . import mapping
 
+            scheme = f"RZ-PAM{'-UNIPOL' if unipolar else '-BIPOL'}"
             symbols_flat = mapping.map_bits(
-                bits, "ask", order, dtype=np.complex64, normalize=normalize
+                bits, scheme, order, dtype=dtype, unipolar=unipolar
             )
 
             if num_streams > 1:
@@ -1240,9 +1286,6 @@ class Signal(BaseModel):
                 bits = bits.reshape(num_streams, num_symbols * k)
             else:
                 symbols = symbols_flat
-
-            if not bipolar:
-                symbols = symbols - np.min(symbols)
 
             # Apply RZ Pulse Shaping
             if p_shape == "rect":
@@ -1274,7 +1317,7 @@ class Signal(BaseModel):
                 samples=samples,
                 sampling_rate=symbol_rate * sps,
                 symbol_rate=symbol_rate,
-                modulation_scheme=f"RZ-PAM{'-BIPOL' if bipolar else '-UNIPOL'}",
+                modulation_scheme=f"RZ-PAM{'-UNIPOL' if unipolar else '-BIPOL'}",
                 modulation_order=order,
                 source_bits=bits,
                 source_symbols=symbols,
@@ -1283,8 +1326,9 @@ class Signal(BaseModel):
             )
         else:  # nrz
             p_shape = pulse_shape or "rect"
+            scheme = f"PAM{'-UNIPOL' if unipolar else '-BIPOL'}"
             sig = cls.generate(
-                modulation="ask",
+                modulation=scheme,
                 order=order,
                 num_symbols=num_symbols,
                 sps=sps,
@@ -1292,15 +1336,9 @@ class Signal(BaseModel):
                 pulse_shape=p_shape,
                 num_streams=num_streams,
                 seed=seed,
-                normalize=normalize,
+                unipolar=unipolar,
                 **kwargs,
             )
-            if not bipolar:
-                xp = sig.xp
-                sig.samples = sig.samples - xp.min(sig.samples)
-                sig.samples = utils.normalize(sig.samples, "max_amplitude")
-
-            sig.modulation_scheme = f"PAM{'-BIPOL' if bipolar else '-UNIPOL'}"
             return sig
 
     @classmethod
@@ -1313,7 +1351,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        normalize: bool = False,
+        dtype: Optional[Any] = np.complex64,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1335,8 +1373,8 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for bit and symbol generation.
-        normalize : bool, default False
-            If True, scales constellation to unit average power.
+        dtype : data-type, default np.complex64
+            Output precision.
         **kwargs : Any
             Additional parameters passed to `filtering.shape_pulse`.
 
@@ -1344,6 +1382,15 @@ class Signal(BaseModel):
         -------
         Signal
             A `Signal` object containing the PSK waveform.
+
+        Notes
+        -----
+        The generated samples are automatically normalized to **peak amplitude (1.0)**
+        via `filtering.shape_pulse`.
+        However, the underlying bit mapping uses **unit average power (E_s=1)**
+        by default to maintain mathematical consistency. Calling `resolve_symbols()`
+        will restore the symbols to unit average power for consistent metric
+        calculation and demapping.
         """
         return cls.generate(
             modulation="psk",
@@ -1354,7 +1401,7 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
-            normalize=normalize,
+            dtype=dtype,
             **kwargs,
         )
 
@@ -1368,7 +1415,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        normalize: bool = False,
+        dtype: Optional[Any] = np.complex64,
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1390,8 +1437,8 @@ class Signal(BaseModel):
             Number of MIMO streams.
         seed : int, optional
             Seed for random generation.
-        normalize : bool, default False
-            If True, scales constellation to unit average power.
+        dtype : data-type, default np.complex64
+            Output precision.
         **kwargs : Any
             Additional filter parameters.
 
@@ -1399,6 +1446,15 @@ class Signal(BaseModel):
         -------
         Signal
             A `Signal` object containing the QAM waveform.
+
+        Notes
+        -----
+        The generated samples are automatically normalized to **peak amplitude (1.0)**
+        via `filtering.shape_pulse`.
+        However, the underlying bit mapping uses **unit average power (E_s=1)**
+        by default to maintain mathematical consistency. Calling `resolve_symbols()`
+        will restore the symbols to unit average power for consistent metric
+        calculation and demapping.
         """
         return cls.generate(
             modulation="qam",
@@ -1409,7 +1465,7 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
-            normalize=normalize,
+            dtype=dtype,
             **kwargs,
         )
 
@@ -1555,7 +1611,7 @@ class Signal(BaseModel):
         hard: bool = True,
         noise_var: Optional[float] = None,
         method: str = "maxlog",
-        normalize: bool = False,
+        **kwargs: Any,
     ) -> ArrayType:
         """
         Demaps signal symbols back into bits using hard or soft decisions.
@@ -1568,11 +1624,10 @@ class Signal(BaseModel):
             Ratios (LLRs).
         noise_var : float, optional
             Estimated noise variance ($\\sigma^2$). Required for soft-decision
-            LLR calculation.
         method : {"maxlog", "exact"}, default "maxlog"
             The LLR computation method for soft demapping.
-        normalize : bool, default False
-            Whether the constellation was normalized to unit power.
+        **kwargs : Any
+            Additional arguments passed to demapping functions (e.g., `unipolar`).
 
         Returns
         -------
@@ -1607,7 +1662,7 @@ class Signal(BaseModel):
                 self.resolved_symbols,
                 self.modulation_scheme,
                 self.modulation_order,
-                normalize=normalize,
+                **kwargs,
             )
             self.resolved_bits = bits
             return bits
@@ -1620,7 +1675,7 @@ class Signal(BaseModel):
                 self.modulation_order,
                 noise_var,
                 method=method,
-                normalize=normalize,
+                **kwargs,
             )
             self.resolved_llr = llr
 
@@ -1646,6 +1701,14 @@ class Signal(BaseModel):
         -------
         array_like
             Decimated samples at $1\\text{ sps}$.
+
+        Notes
+        -----
+        This method automatically normalizes the decimated samples to **unit
+        average power ($E_s=1$)**. This is critical because physical waveforms
+        are often peak-normalized for transmission, which would skew Euclidean
+        distance-based demapping and metrics (like EVM) relative to the ideal
+        reference constellations.
         """
         sps = self.sps
         if sps is None:
@@ -1668,8 +1731,14 @@ class Signal(BaseModel):
             else:
                 res = self.samples[offset_int::sps_int]
 
-        self.resolved_symbols = res
-        return res
+        # Normalize symbols to unit average power (E_s = 1) for consistent
+        # demapping and metric calculation.
+        from . import utils
+
+        # For MIMO, we normalize per-stream (axis=-1). Each resolved stream
+        # is independently scaled to unit power.
+        self.resolved_symbols = utils.normalize(res, "average_power", axis=-1)
+        return self.resolved_symbols
 
 
 class Preamble(BaseModel):
@@ -1696,7 +1765,6 @@ class Preamble(BaseModel):
 
     sequence_type: Literal["barker", "zc"] = "barker"
     length: int
-    dtype: Any = np.complex64
     kwargs: Dict[str, Any] = Field(default_factory=dict)
 
     # Internal state managed during post-init
@@ -1727,6 +1795,16 @@ class Preamble(BaseModel):
             if self._symbols is not None:
                 self._symbols = to_device(self._symbols, "gpu")
 
+        # Ensure consistent internal dtype (complex64)
+        if self._symbols is not None:
+            # Use appropriate backend dtype
+            xp = (
+                cp
+                if is_cupy_available() and isinstance(self._symbols, cp.ndarray)
+                else np
+            )
+            self._symbols = self._symbols.astype(xp.complex64)
+
     @property
     def symbols(self) -> Any:
         """The IQ symbols of the preamble."""
@@ -1742,6 +1820,7 @@ class Preamble(BaseModel):
         sps: int,
         symbol_rate: float,
         pulse_shape: str = "rrc",
+        dtype: Any = np.complex64,
         **kwargs: Any,
     ) -> Signal:
         """
@@ -1761,8 +1840,12 @@ class Preamble(BaseModel):
         Returns
         -------
         Signal
-            A `Signal` object containing the upsampled and shaped
-            preamble samples.
+            A `Signal` object with the shaped preamble.
+
+        Notes
+        -----
+        Like all waveform generation methods in `commstools`, this output is
+        normalized to **peak amplitude (1.0)**.
         """
         from .filtering import shape_pulse
 
@@ -1771,23 +1854,34 @@ class Preamble(BaseModel):
             sps=sps,
             pulse_shape=pulse_shape,
             **kwargs,
+        ).astype(dtype)
+
+        # Create minimal SignalInfo for the Preamble
+        signal_info = SignalInfo(
+            signal_type="preamble",
+            preamble_len=self.length,
+            preamble_type=self.sequence_type,
+            preamble_kwargs=self.kwargs,
+            payload_len=0,
+            pilot_count=0,
         )
 
         return Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            modulation_scheme="PREAMBLE",
-            modulation_order=0,
-            source_symbols=self.symbols,
+            modulation_scheme=None,  # No single modulation for "preamble" frame
+            modulation_order=None,
+            source_symbols=None,  # Avoid redundancy per user request
             pulse_shape=pulse_shape,
+            signal_info=signal_info,
             **kwargs,
         )
 
 
 class SingleCarrierFrame(BaseModel):
     """
-    Represents a structured single-carrier frame with Preamble, Pilots, and Payload.
+    Represents a structured single-carrier frame with Preamble, Pilots, Payload, and Guard Interval.
 
     This class provides a high-level abstraction for constructing frames
     used in digital communication systems ($1/10/100\text{GbE}$, $5\text{G}$, etc.).
@@ -1802,38 +1896,33 @@ class SingleCarrierFrame(BaseModel):
         Modulation for payload data (e.g., 'QAM').
     payload_mod_order : int, default 4
         Modulation order for payload (e.g., 16 for 16-QAM).
-    payload_norm : bool, default False
-        If True, scales payload symbols to unit average power.
     payload_seed : int, default 42
         Seed for reproducible payload data generation.
     preamble : Preamble, optional
         Structured preamble for synchronization.
+    preamble_gain_db : float, default 0.0
+        Preamble boosting in dB relative to the payload power.
     pilot_pattern : {"none", "block", "comb"}, default "none"
+        "none": No pilots.
         "block": A block of symbols at the start of the frame body.
         "comb": Single pilot symbols interleaved every `pilot_period`.
     pilot_period : int, default 0
-        The period of pilot insertion.
+        The period of pilot insertion in symbols.
     pilot_block_len : int, default 0
-        Length of the pilot block (mode="block").
+        Length of the pilot block (mode="block") in symbols.
     pilot_seed : int, default 1337
         Seed for pilot symbol generation.
     pilot_mod_scheme : str, default "PSK"
         Modulation for pilots.
     pilot_mod_order : int, default 4
         Modulation order for pilots.
-    pilot_norm : bool, default False
-        If True, scales pilot symbols to unit average power.
     pilot_gain_db : float, default 0.0
         Pilot boosting in dB relative to the payload power.
-    preamble_gain_db : float, default 0.0
-        Preamble boosting in dB relative to the payload power.
     guard_type : {"zero", "cp"}, default "zero"
         "zero": Zero-padding at the end of the frame.
         "cp": Cyclic Prefix prepended to the frame.
     guard_len : int, default 0
         Length of the guard interval in symbols.
-    symbol_rate : float
-        The symbol rate of the transmission in Hertz.
     num_streams : int, default 1
         Number of independent spatial streams (MIMO).
     dtype : data-type, default np.complex64
@@ -1846,9 +1935,9 @@ class SingleCarrierFrame(BaseModel):
     payload_seed: int = 42
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = 4
-    payload_norm: bool = False
 
     preamble: Optional[Preamble] = None
+    preamble_gain_db: float = 0.0
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = 0
@@ -1856,18 +1945,14 @@ class SingleCarrierFrame(BaseModel):
     pilot_seed: int = 1337
     pilot_mod_scheme: str = "PSK"
     pilot_mod_order: int = 4
-    pilot_norm: bool = False
     pilot_gain_db: float = 0.0
-    preamble_gain_db: float = 0.0
 
     guard_type: Literal["zero", "cp"] = "zero"
     guard_len: int = 0
 
-    symbol_rate: float = Field(..., gt=0)
     num_streams: int = Field(default=1, ge=1)
-    dtype: Any = Field(default=np.complex64)
 
-    # Cached bit-first data (not serialized)
+    # Internal cache
     _payload_bits: Optional[Any] = PrivateAttr(default=None)
     _payload_symbols: Optional[Any] = PrivateAttr(default=None)
     _pilot_bits: Optional[Any] = PrivateAttr(default=None)
@@ -1961,17 +2046,12 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.payload_mod_scheme,
             self.payload_mod_order,
-            dtype=self.dtype,
-            normalize=self.payload_norm,
+            dtype=np.complex64,  # Intermediate generation always complex64
         )
 
         if self.num_streams > 1:
             bits = bits.reshape(self.num_streams, self.payload_len * k)
             symbols = symbols.reshape(self.num_streams, self.payload_len)
-
-        if is_cupy_available():
-            bits = to_device(bits, "gpu")
-            symbols = to_device(symbols, "gpu")
 
         self._payload_bits = bits
         self._payload_symbols = symbols
@@ -2001,21 +2081,12 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.pilot_mod_scheme,
             self.pilot_mod_order,
-            dtype=self.dtype,
-            normalize=self.pilot_norm,
+            dtype=np.complex64,
         )
 
         if self.num_streams > 1:
             bits = bits.reshape(self.num_streams, pilot_count * k)
             symbols = symbols.reshape(self.num_streams, pilot_count)
-
-        # Apply pilot boosting/gain (dB to linear)
-        if self.pilot_gain_db != 0.0:
-            symbols = symbols * (10 ** (self.pilot_gain_db / 20))
-
-        if is_cupy_available():
-            bits = to_device(bits, "gpu")
-            symbols = to_device(symbols, "gpu")
 
         self._pilot_bits = bits
         self._pilot_symbols = symbols
@@ -2080,6 +2151,7 @@ class SingleCarrierFrame(BaseModel):
     def body_symbols(self) -> ArrayType:
         """
         Returns the interleaved payload and pilot symbols.
+        WARNING: Pilot gain is applied if `pilot_gain_db` is not zero.
 
         Returns
         -------
@@ -2088,18 +2160,29 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
+
         if self.num_streams > 1:
             # Shape: (Channels, Time)
-            body = xp.zeros((self.num_streams, body_length), dtype=self.dtype)
+            body = xp.zeros((self.num_streams, body_length), dtype=xp.complex64)
 
             if self.pilot_pattern != "none":
-                body[:, mask] = self.pilot_symbols
+                pilot_symbols = self.pilot_symbols
+                # Apply pilot boosting/gain (dB to linear)
+                if self.pilot_gain_db != 0.0:
+                    pilot_symbols = pilot_symbols * (10 ** (self.pilot_gain_db / 20))
+
+                body[:, mask] = pilot_symbols
 
             body[:, ~mask] = self.payload_symbols
         else:
-            body = xp.zeros(body_length, dtype=self.dtype)
+            body = xp.zeros(body_length, dtype=xp.complex64)
             if self.pilot_pattern != "none":
-                body[mask] = self.pilot_symbols
+                pilot_symbols = self.pilot_symbols
+                # Apply pilot boosting/gain (dB to linear)
+                if self.pilot_gain_db != 0.0:
+                    pilot_symbols = pilot_symbols * (10 ** (self.pilot_gain_db / 20))
+
+                body[mask] = pilot_symbols
             body[~mask] = self.payload_symbols
 
         return body
@@ -2120,7 +2203,7 @@ class SingleCarrierFrame(BaseModel):
         -----
         Guard intervals (Zero-padding or CP) are NOT included in this
         sequence. They are applied during physical waveform generation in
-        `generate_waveform`.
+        `to_waveform`.
         """
         xp = cp if is_cupy_available() else np
         body = self.body_symbols
@@ -2148,8 +2231,13 @@ class SingleCarrierFrame(BaseModel):
         else:
             return body
 
-    def generate_waveform(
-        self, sps: int = 4, pulse_shape: str = "rrc", **kwargs: Any
+    def to_waveform(
+        self,
+        sps: int = 4,
+        symbol_rate: float = 1e6,
+        pulse_shape: str = "rrc",
+        dtype: Any = np.complex64,
+        **kwargs: Any,
     ) -> Signal:
         """
         Generates a shaped, oversampled waveform from the frame description.
@@ -2164,13 +2252,19 @@ class SingleCarrierFrame(BaseModel):
             Samples per symbol (oversampling factor).
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
+        dtype : data-type, default np.complex64
+            Data type for the generated waveform samples.
         **kwargs : Any
             Additional parameters passed to the shaping filter.
 
         Returns
         -------
         Signal
-            A `Signal` object containing the IQ samples and `FrameInfo` metadata.
+            A `Signal` object containing the IQ samples and `SignalInfo` metadata.
+
+        Notes
+        -----
+        The resulting waveform samples are normalized to **peak amplitude (1.0)**.
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
@@ -2183,11 +2277,9 @@ class SingleCarrierFrame(BaseModel):
         if self.guard_len > 0:
             if self.guard_type == "zero":
                 if self.num_streams > 1:
-                    zeros = xp.zeros(
-                        (self.num_streams, self.guard_len), dtype=self.dtype
-                    )
+                    zeros = xp.zeros((self.num_streams, self.guard_len), dtype=dtype)
                 else:
-                    zeros = xp.zeros(self.guard_len, dtype=self.dtype)
+                    zeros = xp.zeros(self.guard_len, dtype=dtype)
 
                 source_symbols = xp.concatenate([source_symbols, zeros], axis=-1)
             elif self.guard_type == "cp":
@@ -2200,47 +2292,53 @@ class SingleCarrierFrame(BaseModel):
             sps=sps,
             pulse_shape=pulse_shape,
             **kwargs,
-        )
+        ).astype(dtype)
 
         # 3. Apply Guard Interval at sample level
         if self.guard_len > 0:
             guard_len_samples = int(self.guard_len * sps)
             if self.guard_type == "zero":
                 if self.num_streams > 1:
-                    zeros = xp.zeros(
-                        (self.num_streams, guard_len_samples), dtype=self.dtype
-                    )
+                    zeros = xp.zeros((self.num_streams, guard_len_samples), dtype=dtype)
                 else:
-                    zeros = xp.zeros(guard_len_samples, dtype=self.dtype)
+                    zeros = xp.zeros(guard_len_samples, dtype=dtype)
                 samples = xp.concatenate([samples, zeros], axis=-1)
             elif self.guard_type == "cp":
                 cp_slice = samples[..., -guard_len_samples:]
                 samples = xp.concatenate([cp_slice, samples], axis=-1)
 
-        # 4. Build FrameInfo metadata
+        # 4. Build SignalInfo metadata
         mask, _ = self._generate_pilot_mask()
         pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
 
-        frame_info = FrameInfo(
+        signal_info = SignalInfo(
+            signal_type="single_carrier_frame",
+            payload_mod_scheme=self.payload_mod_scheme,
+            payload_mod_order=self.payload_mod_order,
             preamble_len=self.preamble.num_symbols if self.preamble else 0,
             preamble_type=self.preamble.sequence_type if self.preamble else None,
             preamble_kwargs=self.preamble.kwargs if self.preamble else {},
             payload_len=self.payload_len,
             pilot_count=pilot_count,
+            pilot_pattern=self.pilot_pattern,
+            pilot_period=self.pilot_period,
+            pilot_block_len=self.pilot_block_len,
+            pilot_mod_scheme=self.pilot_mod_scheme,
+            pilot_mod_order=self.pilot_mod_order,
             guard_len=self.guard_len,
             guard_type=self.guard_type,
         )
 
         return Signal(
             samples=samples,
-            sampling_rate=self.symbol_rate * sps,
-            symbol_rate=self.symbol_rate,
-            modulation_scheme=self.payload_mod_scheme,
-            modulation_order=self.payload_mod_order,
-            source_bits=self.payload_bits,
-            source_symbols=source_symbols,
+            sampling_rate=symbol_rate * sps,
+            symbol_rate=symbol_rate,
+            modulation_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
+            modulation_order=None,  # Moved to SignalInfo
+            source_bits=None,  # Avoid redundancy per user request; access via Frame
+            source_symbols=None,  # Avoid redundancy; access via Frame
             pulse_shape=pulse_shape,
-            frame_info=frame_info,
+            signal_info=signal_info,
             **kwargs,
         )
 

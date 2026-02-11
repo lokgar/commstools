@@ -1,16 +1,17 @@
 """Tests for SingleCarrierFrame structure and waveform generation."""
 
-from commstools.core import Preamble, SingleCarrierFrame
+from commstools.core import SignalInfo, Preamble, SingleCarrierFrame
 
 
 def test_sc_frame_none(backend_device, xp):
     """Verify basic frame generation with no pilots or guard intervals."""
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, pilot_pattern="none")
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 100
     assert sig.symbol_rate == 1e6
-    assert sig.frame_info is not None
-    assert sig.frame_info.payload_len == 100
+    assert sig.symbol_rate == 1e6
+    assert sig.signal_info is not None
+    assert sig.signal_info.payload_len == 100
 
 
 def test_sc_frame_comb(backend_device, xp):
@@ -26,9 +27,9 @@ def test_sc_frame_comb(backend_device, xp):
     assert length == 14
     assert xp.sum(mask) == 4
 
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 14
-    assert sig.frame_info.pilot_count == 4
+    assert sig.signal_info.pilot_count == 4
 
 
 def test_sc_frame_block(backend_device, xp):
@@ -50,7 +51,7 @@ def test_sc_frame_block(backend_device, xp):
     assert length == 20
     assert xp.sum(mask) == 10
 
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 20
 
 
@@ -59,11 +60,11 @@ def test_sc_frame_guard_zero(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="zero", guard_len=20
     )
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 120
     assert xp.all(sig.samples[-20:] == 0)
-    assert sig.frame_info.guard_len == 20
-    assert sig.frame_info.guard_type == "zero"
+    assert sig.signal_info.guard_len == 20
+    assert sig.signal_info.guard_type == "zero"
 
 
 def test_sc_frame_guard_cp(backend_device, xp):
@@ -71,12 +72,12 @@ def test_sc_frame_guard_cp(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="cp", guard_len=20
     )
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 120
     # CP should match the last 20 samples of the *original* body
     # New structure: [CP (20), Body (100)]
     assert xp.allclose(sig.samples[:20], sig.samples[-20:])
-    assert sig.frame_info.guard_type == "cp"
+    assert sig.signal_info.guard_type == "cp"
 
 
 def test_sc_frame_preamble(backend_device, xp):
@@ -84,12 +85,12 @@ def test_sc_frame_preamble(backend_device, xp):
     # Create Barker-13 preamble
     preamble = Preamble(sequence_type="barker", length=13)
     frame = SingleCarrierFrame(payload_len=100, symbol_rate=1e6, preamble=preamble)
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
     assert len(sig.samples) == 113  # 13 preamble + 100 payload
     # Verify preamble symbols match
     assert xp.allclose(sig.samples[:13], preamble.symbols)
-    # Verify FrameInfo
-    assert sig.frame_info.preamble_len == 13
+    # Verify SignalInfo
+    assert sig.signal_info.preamble_len == 13
 
 
 def test_sc_frame_bit_first(backend_device, xp):
@@ -104,9 +105,9 @@ def test_sc_frame_bit_first(backend_device, xp):
     assert bits is not None
     assert bits.size == 200
 
-    # Signal should have source_bits
-    sig = frame.generate_waveform(sps=1, pulse_shape="none")
-    assert sig.source_bits is not None
+    # Signal source_bits should be None for redundancy removal
+    sig = frame.to_waveform(sps=1, pulse_shape="none")
+    assert sig.source_bits is None
 
 
 def test_preamble_to_waveform(backend_device, xp):
@@ -116,8 +117,9 @@ def test_preamble_to_waveform(backend_device, xp):
     sig = preamble.to_waveform(sps=4, symbol_rate=1e6, pulse_shape="rrc")
 
     assert len(sig.samples) == 13 * 4  # 13 symbols * 4 sps
-    assert sig.modulation_scheme == "PREAMBLE"
-    assert sig.source_symbols is not None
+    assert len(sig.samples) == 13 * 4  # 13 symbols * 4 sps
+    assert sig.modulation_scheme is None
+    assert sig.source_symbols is None
 
 
 def test_sc_frame_structure_map(backend_device, xp):
@@ -174,3 +176,9 @@ def test_sc_frame_structure_map_cp(backend_device, xp):
     assert struct["guard"][0]
     assert struct["guard"][4]
     assert not struct["guard"][5]
+
+
+def test_signal_info_minimal(backend_device, xp):
+    """Verify minimal SignalInfo creation."""
+    si = SignalInfo()
+    assert si.preamble_len is None
