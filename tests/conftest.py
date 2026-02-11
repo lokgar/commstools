@@ -4,10 +4,14 @@ This module provides the `backend_device` and `xp` fixtures, allowing tests to r
 transparently on both CPU (NumPy) and GPU (CuPy) backends.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
 from commstools import backend
+
+warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental.*")
 
 try:
     import cupy as cp

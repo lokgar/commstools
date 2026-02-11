@@ -36,9 +36,7 @@ import warnings
 
 __version__ = "0.1.0"
 
-from . import impairments
-from . import metrics
-from . import sync
+from . import impairments, metrics, sync
 from .core import Preamble, Signal, SingleCarrierFrame
 from .logger import set_log_level
 from .plotting import apply_default_theme

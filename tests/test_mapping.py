@@ -1,4 +1,5 @@
-"""Tests for symbol mapping and demapping (Hard and Soft decisions)."""
+import numpy as np
+import pytest
 
 from commstools import mapping
 
@@ -220,3 +221,81 @@ def test_soft_demap_loop_based(backend_device, xp):
         mapping.demap_symbols_soft(
             symbols, modulation, order, noise_var, method="unknown", vectorized=False
         )
+
+
+def test_gray_constellation_advanced(backend_device, xp):
+    """Verify constellation generation edge cases."""
+    # 1. Unipolar forced by string
+    const_unipol = mapping.gray_constellation("pam-unipol", 4)
+    assert np.min(const_unipol) >= 0
+
+    # 2. Custom scheme with hyphen
+    const_custom = mapping.gray_constellation("my-pam", 4)
+    assert len(const_custom) == 4
+
+    # 3. Order error
+    with pytest.raises(ValueError, match="at least 2"):
+        mapping.gray_constellation("psk", 1)
+
+    # 4. QAM non-power-of-2 (already handled by log2 usually but let's check explicitly)
+    # Actually gray_constellation checks if it's power of 2
+    with pytest.raises(ValueError, match="power of 2"):
+        mapping.gray_constellation("qam", 7)
+
+    # 5. Unknown modulation
+    with pytest.raises(ValueError, match="Unsupported modulation type"):
+        mapping.gray_constellation("unknown", 4)
+
+
+def test_map_demap_unipolar(backend_device, xp):
+    """Verify bit mapping and demapping with unipolar ASK/PAM."""
+    bits = xp.array([0, 1, 1, 0])
+    # Map to unipolar
+    syms = mapping.map_bits(bits, "ask", 4, unipolar=True)
+    assert xp.all(syms >= 0)
+
+    # Demap from unipolar
+    bits_rx = mapping.demap_symbols(syms, "ask", 4, unipolar=True)
+    assert xp.array_equal(bits, bits_rx)
+
+    # Soft demap from unipolar
+    llrs = mapping.demap_symbols_soft(syms, "ask", 4, noise_var=0.1, unipolar=True)
+    # Signs should allow recovering bits: LLR > 0 -> 0, LLR < 0 -> 1
+    bits_soft = (llrs < 0).astype(xp.int32)
+    assert xp.array_equal(bits, bits_soft)
+
+
+def test_mapping_more(backend_device, xp):
+    """Verify more mapping edge cases."""
+    # Order error in map_bits
+    with pytest.raises(ValueError, match="at least 2"):
+        mapping.map_bits(xp.array([0, 0]), "psk", 1)
+
+    # Order error in demap_symbols
+    with pytest.raises(ValueError, match="at least 2"):
+        mapping.demap_symbols(xp.array([0]), "psk", 1)
+
+
+def test_mapping_order_errors(backend_device, xp):
+    """Verify order validation for power-of-2 requirements."""
+    # map_bits
+    with pytest.raises(ValueError, match="power of 2"):
+        mapping.map_bits(xp.array([0, 0]), "psk", 3)
+
+    # demap_symbols_soft
+    with pytest.raises(ValueError, match="power of 2"):
+        mapping.demap_symbols_soft(xp.array([0.1]), "psk", 3, noise_var=0.1)
+
+
+def test_demap_symbols_empty_shape(backend_device, xp):
+    """Verify demapping behavior for effectively scalar inputs."""
+    # 0-dim array (scalar)
+    s = xp.array(1.0)
+    # constellation will be [-1, 1] for psk-2
+    # 1.0 is bit 1? No, 1.0 is mapped to bit?
+    # gray_constillation(psk, 2) -> [-1, 1]
+    # index 0 is -1, index 1 is 1.
+    # so 1.0 -> index 1 -> bit 1.
+    bits = mapping.demap_symbols(s, "psk", 2)
+    assert bits.size == 1
+    assert int(bits) == 1

@@ -5,9 +5,11 @@ import numpy as np
 import pytest
 
 from commstools.plotting import (
+    apply_default_theme,
     constellation,
     eye_diagram,
     filter_response,
+    ideal_constellation,
     psd,
     time_domain,
 )
@@ -123,3 +125,116 @@ def test_time_domain_mimo_grid(backend_device, xp):
     assert fig is not None
     assert axes.shape == (2, 2)  # 2x2 grid, not (1, 4)
     plt.close(fig)
+
+
+@pytest.mark.parametrize("plot_func", [psd, time_domain])
+def test_multichannel_plots(backend_device, xp, plot_func):
+    """Verify multichannel plotting for PSD and Time-Domain."""
+    samples = xp.random.randn(2, 256)
+    fig, axes = plot_func(samples, sampling_rate=1.0, show=False)
+    assert fig is not None
+    # For 2 channels, it should return 2 axes
+    assert axes.size == 2
+    plt.close(fig)
+
+
+def test_eye_diagram_multichannel(backend_device, xp):
+    """Verify eye diagram for multichannel complex signals."""
+    samples = xp.random.randn(2, 100) + 1j * xp.random.randn(2, 100)
+    # 2 channels, complex -> 2x2 grid = 4 subplots
+    fig, axes = eye_diagram(samples, sps=4, show=False)
+    assert fig is not None
+    assert axes.shape == (2, 2)
+    plt.close(fig)
+
+
+def test_eye_diagram_axis_error(backend_device, xp):
+    """Verify error when too few axes are provided for multichannel eye diagram."""
+    samples = xp.zeros((2, 100))
+    fig, ax = plt.subplots(1)
+    with pytest.raises(ValueError, match="Not enough axes"):
+        eye_diagram(samples, sps=4, ax=[ax], show=False)
+    plt.close(fig)
+
+    with pytest.raises(ValueError, match="must provide a list of axes"):
+        eye_diagram(samples, sps=4, ax=ax, show=False)
+    plt.close(fig)
+
+
+def test_apply_theme():
+    """Verify applying the visual theme."""
+    apply_default_theme()
+
+
+def test_psd_wavelength(backend_device, xp):
+    """Verify PSD plotting with wavelength axis."""
+    samples = xp.random.randn(256)
+    # Wavelength requires positive frequencies, using real signal gets +/- f
+    fig, ax = psd(
+        samples, sampling_rate=1e15, x_axis="wavelength", domain="OPT", show=False
+    )
+    assert fig is not None
+    assert "Wavelength" in ax.get_xlabel()
+    plt.close(fig)
+
+
+def test_psd_auto_scale(backend_device, xp):
+    """Verify PSD auto-scaling for different frequency ranges."""
+    samples = xp.random.randn(256)
+
+    # THz
+    fig, ax = psd(samples, sampling_rate=2e12, show=False)
+    assert "THz" in ax.get_xlabel()
+    plt.close(fig)
+
+    # MHz
+    fig, ax = psd(samples, sampling_rate=2e6, show=False)
+    assert "MHz" in ax.get_xlabel()
+    plt.close(fig)
+
+
+def test_multichannel_overlay(backend_device, xp):
+    """Verify overlaying multichannel signals on a single axis."""
+    samples = xp.random.randn(2, 256)
+    fig, ax = plt.subplots()
+
+    # PSD overlay
+    psd(samples, sampling_rate=1.0, ax=ax, show=False)
+
+    # Time domain overlay
+    time_domain(samples, sampling_rate=1.0, ax=ax, show=False)
+    plt.close(fig)
+
+
+def test_filter_response_axis_error(backend_device, xp):
+    """Verify behavior when wrong number of axes are provided for filter response."""
+    taps = xp.array([1, 0, 0, 1])
+    fig, ax = plt.subplots(1)
+    # Should warn and create new figure
+    filter_response(taps, ax=ax, show=False)
+
+    # Should accept list of 3 axes
+    fig, axes = plt.subplots(3, 1)
+    filter_response(taps, ax=axes, show=False)
+    plt.close("all")
+
+
+def test_ideal_constellation_basic(backend_device, xp):
+    """Verify ideal constellation plotting."""
+    fig, ax = ideal_constellation("qam", 16, show=False)
+    assert fig is not None
+    plt.close(fig)
+
+    # Error case
+    ret = ideal_constellation("invalid", 4, show=False)
+    assert ret is None
+
+
+def test_constellation_histogram_overlay_error(backend_device, xp):
+    """Verify warning when overlaying ideal on histogram constellation with bad mod."""
+    samples = xp.random.randn(100) + 1j * xp.random.randn(100)
+    # bins > 0 triggers histogram mode
+    constellation(
+        samples, bins=10, overlay_ideal=True, modulation="invalid", order=4, show=False
+    )
+    plt.close("all")

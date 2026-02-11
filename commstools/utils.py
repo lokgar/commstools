@@ -70,7 +70,7 @@ def random_symbols(
     order: int,
     seed: Optional[int] = None,
     dtype: Optional[Any] = np.complex64,
-    normalize: bool = False,
+    unipolar: Optional[bool] = None,
 ) -> ArrayType:
     """
     Generates a sequence of random modulation symbols.
@@ -90,8 +90,8 @@ def random_symbols(
         Random seed for reproducible results.
     dtype : data-type, default np.complex64
         Desired data type of the output symbols.
-    normalize : bool, default False
-        If True, scales symbols to unit average power.
+    unipolar : bool, default False
+        If True, use unipolar constellation (ASK/PAM).
 
     Returns
     -------
@@ -102,7 +102,7 @@ def random_symbols(
 
     k = int(np.log2(order))
     bits = random_bits(num_symbols * k, seed=seed)
-    return mapping.map_bits(bits, modulation, order, dtype=dtype, normalize=normalize)
+    return mapping.map_bits(bits, modulation, order, dtype=dtype, unipolar=unipolar)
 
 
 def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> ArrayType:

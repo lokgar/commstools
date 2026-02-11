@@ -90,3 +90,11 @@ def test_validate_array(backend_device, xp):
 
     with pytest.raises(ValueError, match="Expected numeric array"):
         utils.validate_array("not an array")
+
+    # Test non-numeric array (object/string)
+    with pytest.raises(ValueError, match="Expected numeric array"):
+        utils.validate_array(np.array(["a", "b"]))
+
+    # Test completely non-convertible type (though np.asarray is permissive)
+    # Using something that raises in np.asarray (if possible)
+    # Actually most things get converted to object arrays if possible, which hits 290
