@@ -21,6 +21,8 @@ dispatch :
     Returns the resolved array and signal processing modules for given data.
 to_jax / from_jax :
     Utilities for high-performance JAX interoperability.
+is_cupy_available :
+    Checks if NVIDIA GPU acceleration is functional via CuPy.
 use_cpu_only :
     Explicitly disables GPU discovery.
 """

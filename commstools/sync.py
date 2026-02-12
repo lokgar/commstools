@@ -376,23 +376,46 @@ def detect_frame(
 
         # Move to CPU for plotting
         corr_cpu = to_device(corr_mag, "cpu")
-        plt.figure()
-        plt.plot(corr_cpu, label="Correlation Magnitude")
 
-        # Calculate absolute threshold level for plotting
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3.5))
+
+        # Overall correlation plot
+        ax1.plot(corr_cpu, label="Correlation Magnitude")
         if preamble_energy > 0 and signal_energy > 0:
-            abs_threshold = threshold * xp.sqrt(preamble_energy * signal_energy)
-            plt.axhline(
-                y=float(to_device(abs_threshold, "cpu")),
+            abs_threshold = float(threshold * np.sqrt(preamble_energy * signal_energy))
+            ax1.axhline(
+                y=abs_threshold,
                 color="g",
                 linestyle=":",
-                label=f"Threshold ({threshold})",
+                label=f"Threshold ({abs_threshold})",
             )
+        ax1.set_title("Overall Correlation")
+        ax1.set_xlabel("Sample Index")
+        ax1.set_ylabel("Magnitude")
+        ax1.legend()
 
-        plt.title(f"Frame Detection (Peak Metric: {normalized_peak:.3f})")
-        plt.xlabel("Sample Index")
-        plt.ylabel("Magnitude")
-        plt.legend()
+        # Zoomed peak plot
+        zoom_width = 20
+        start_idx = max(0, peak_idx - zoom_width)
+        end_idx = min(len(corr_cpu), peak_idx + zoom_width)
+
+        ax2.plot(
+            np.arange(start_idx, end_idx),
+            corr_cpu[start_idx:end_idx],
+            label="Peak Area",
+        )
+        ax2.axvline(
+            x=peak_idx, color="r", linestyle="--", label=f"Peak Index ({peak_idx})"
+        )
+        if preamble_energy > 0 and signal_energy > 0:
+            ax2.axhline(y=abs_threshold, color="g", linestyle=":", label="Threshold")
+
+        ax2.set_title(f"Peak Detail (Metric: {normalized_peak:.3f})")
+        ax2.set_xlabel("Sample Index")
+        ax2.set_ylabel("Magnitude")
+        ax2.legend()
+
+        plt.tight_layout()
         plt.show()
 
     if normalized_peak < threshold:

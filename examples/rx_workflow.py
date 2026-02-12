@@ -14,7 +14,7 @@ rx_symbols = matched_filter_and_downsample(frame_samples, sps=4)  # -> sps=1
 
 # === 3. EXTRACT FRAME PARTS ===
 struct = frame.get_structure_map()
-rx_pilots = rx_symbols[struct["pilot"]]
+rx_pilots = rx_symbols[struct["pilots"]]
 rx_payload = rx_symbols[struct["payload"]]
 
 # === 4. CHANNEL ESTIMATION ===

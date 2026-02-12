@@ -274,10 +274,14 @@ class Signal(BaseModel):
                 from . import mapping
 
                 mod = self.modulation_scheme.lower()
+                unipolar = "unipol" in mod
                 if "-" in mod:
-                    mod = mod.split("-")[-1]
+                    if "rz" in mod:
+                        mod = mod.split("-")[1]
+                    else:
+                        mod = mod.split("-")[0]
                 self.source_symbols = mapping.map_bits(
-                    self.source_bits, mod, self.modulation_order
+                    self.source_bits, mod, self.modulation_order, unipolar=unipolar
                 )
 
         # Ensure source_symbols are normalized to unit average power for consistent metrics
@@ -1096,7 +1100,7 @@ class Signal(BaseModel):
         pulse_shape: str = "none",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Optional[Any] = np.complex64,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1124,8 +1128,8 @@ class Signal(BaseModel):
             Number of independent streams (MIMO).
         seed : int, optional
             Seed for reproducible random generation.
-        dtype : data-type, default np.complex64
-            Output precision.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
 
@@ -1203,7 +1207,7 @@ class Signal(BaseModel):
         pulse_shape: Optional[str] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Optional[Any] = np.complex64,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1234,8 +1238,8 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for reproducible bit and symbol generation.
-        dtype : data-type, default np.complex64
-            Output precision.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional parameters passed to the pulse shaping filter.
 
@@ -1310,7 +1314,7 @@ class Signal(BaseModel):
 
             samples = utils.normalize(
                 multirate.polyphase_resample(symbols, int(sps), 1, window=h, axis=-1),
-                "max_amplitude",
+                "peak",
             )
 
             return cls(
@@ -1351,7 +1355,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Optional[Any] = np.complex64,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1373,8 +1377,8 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for bit and symbol generation.
-        dtype : data-type, default np.complex64
-            Output precision.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional parameters passed to `filtering.shape_pulse`.
 
@@ -1415,7 +1419,7 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Optional[Any] = np.complex64,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1437,8 +1441,8 @@ class Signal(BaseModel):
             Number of MIMO streams.
         seed : int, optional
             Seed for random generation.
-        dtype : data-type, default np.complex64
-            Output precision.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional filter parameters.
 
@@ -1755,8 +1759,8 @@ class Preamble(BaseModel):
         The synchronization sequence algorithm.
     length : int
         Total length of the preamble in symbols.
-    dtype : data-type, default np.complex64
-        Numerical precision for generated IQ symbols.
+        For "barker": length must be from the set {2, 3, 4, 5, 7, 11, 13}.
+        For "zc": length must be a prime number.
     kwargs : dict
         Additional parameters for sequence generation (e.g., 'root' for ZC).
     """
@@ -1795,15 +1799,8 @@ class Preamble(BaseModel):
             if self._symbols is not None:
                 self._symbols = to_device(self._symbols, "gpu")
 
-        # Ensure consistent internal dtype (complex64)
-        if self._symbols is not None:
-            # Use appropriate backend dtype
-            xp = (
-                cp
-                if is_cupy_available() and isinstance(self._symbols, cp.ndarray)
-                else np
-            )
-            self._symbols = self._symbols.astype(xp.complex64)
+            # Ensure consistent internal dtype (complex64)
+            self._symbols = self._symbols.astype("complex64")
 
     @property
     def symbols(self) -> Any:
@@ -1820,7 +1817,12 @@ class Preamble(BaseModel):
         sps: int,
         symbol_rate: float,
         pulse_shape: str = "rrc",
-        dtype: Any = np.complex64,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        smoothrect_bt: float = 1.0,
+        gaussian_bt: float = 0.3,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> Signal:
         """
@@ -1834,8 +1836,20 @@ class Preamble(BaseModel):
             Symbol rate in Hz.
         pulse_shape : str, default "rrc"
             The pulse shaping type to apply.
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for RC filter.
+        smoothrect_bt : float, default 1.0
+            Bandwidth-Time product for Smooth Rect filter.
+        gaussian_bt : float, default 0.3
+            Bandwidth-Time product for Gaussian filter.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
-            Additional filter parameters.
+            Additional arguments.
 
         Returns
         -------
@@ -1853,6 +1867,11 @@ class Preamble(BaseModel):
             self.symbols,
             sps=sps,
             pulse_shape=pulse_shape,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            smoothrect_bt=smoothrect_bt,
+            gaussian_bt=gaussian_bt,
             **kwargs,
         ).astype(dtype)
 
@@ -1900,8 +1919,6 @@ class SingleCarrierFrame(BaseModel):
         Seed for reproducible payload data generation.
     preamble : Preamble, optional
         Structured preamble for synchronization.
-    preamble_gain_db : float, default 0.0
-        Preamble boosting in dB relative to the payload power.
     pilot_pattern : {"none", "block", "comb"}, default "none"
         "none": No pilots.
         "block": A block of symbols at the start of the frame body.
@@ -1925,8 +1942,6 @@ class SingleCarrierFrame(BaseModel):
         Length of the guard interval in symbols.
     num_streams : int, default 1
         Number of independent spatial streams (MIMO).
-    dtype : data-type, default np.complex64
-        Data type for generated symbols.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -1937,7 +1952,6 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_order: int = 4
 
     preamble: Optional[Preamble] = None
-    preamble_gain_db: float = 0.0
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = 0
@@ -2046,7 +2060,7 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.payload_mod_scheme,
             self.payload_mod_order,
-            dtype=np.complex64,  # Intermediate generation always complex64
+            dtype="complex64",  # Intermediate generation always complex64
         )
 
         if self.num_streams > 1:
@@ -2081,7 +2095,7 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.pilot_mod_scheme,
             self.pilot_mod_order,
-            dtype=np.complex64,
+            dtype="complex64",
         )
 
         if self.num_streams > 1:
@@ -2151,7 +2165,9 @@ class SingleCarrierFrame(BaseModel):
     def body_symbols(self) -> ArrayType:
         """
         Returns the interleaved payload and pilot symbols.
-        WARNING: Pilot gain is applied if `pilot_gain_db` is not zero.
+
+        WARNING: Pilot gain is applied if `pilot_gain_db` is not zero,
+        so these are not "clean" symbols but scaled relatively.
 
         Returns
         -------
@@ -2163,7 +2179,7 @@ class SingleCarrierFrame(BaseModel):
 
         if self.num_streams > 1:
             # Shape: (Channels, Time)
-            body = xp.zeros((self.num_streams, body_length), dtype=xp.complex64)
+            body = xp.zeros((self.num_streams, body_length), dtype="complex64")
 
             if self.pilot_pattern != "none":
                 pilot_symbols = self.pilot_symbols
@@ -2175,7 +2191,7 @@ class SingleCarrierFrame(BaseModel):
 
             body[:, ~mask] = self.payload_symbols
         else:
-            body = xp.zeros(body_length, dtype=xp.complex64)
+            body = xp.zeros(body_length, dtype="complex64")
             if self.pilot_pattern != "none":
                 pilot_symbols = self.pilot_symbols
                 # Apply pilot boosting/gain (dB to linear)
@@ -2187,56 +2203,17 @@ class SingleCarrierFrame(BaseModel):
 
         return body
 
-    def assemble_symbols(self) -> ArrayType:
-        """
-        Assembles the full sequence of symbols.
-
-        This method combines the preamble and the interleaved payload/pilots
-        (body) into a single contiguous array.
-
-        Returns
-        -------
-        array_like
-            The assembled symbols. Shape: (N_channels, N_symbols) or (N_symbols,).
-
-        Notes
-        -----
-        Guard intervals (Zero-padding or CP) are NOT included in this
-        sequence. They are applied during physical waveform generation in
-        `to_waveform`.
-        """
-        xp = cp if is_cupy_available() else np
-        body = self.body_symbols
-
-        # Assemble Core (Preamble + Body)
-        if self.preamble is not None:
-            pre_symbols = self.preamble.symbols
-
-            # Apply preamble boosting (dB to linear)
-            # Scaling is relative to payload
-            if self.preamble_gain_db != 0.0:
-                pre_symbols = pre_symbols * (10 ** (self.preamble_gain_db / 20))
-
-            preamble_symbols = pre_symbols
-            # Broadcast preamble if needed
-            if self.num_streams > 1 and preamble_symbols.ndim == 1:
-                # Need (Channels, Time)
-                # (L,) -> (1, L) -> (C, L)
-                preamble_symbols = xp.tile(
-                    preamble_symbols[None, :], (self.num_streams, 1)
-                )
-
-            # Concatenate along time axis (-1)
-            return xp.concatenate([preamble_symbols, body], axis=-1)
-        else:
-            return body
-
     def to_waveform(
         self,
         sps: int = 4,
         symbol_rate: float = 1e6,
         pulse_shape: str = "rrc",
-        dtype: Any = np.complex64,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        smoothrect_bt: float = 1.0,
+        gaussian_bt: float = 0.3,
+        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> Signal:
         """
@@ -2252,8 +2229,18 @@ class SingleCarrierFrame(BaseModel):
             Samples per symbol (oversampling factor).
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
-        dtype : data-type, default np.complex64
-            Data type for the generated waveform samples.
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for RC filter.
+        smoothrect_bt : float, default 1.0
+            Bandwidth-Time product for Smooth Rect filter.
+        gaussian_bt : float, default 0.3
+            Bandwidth-Time product for Gaussian filter.
+        dtype : data-type, default "complex64"
+            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional parameters passed to the shaping filter.
 
@@ -2268,31 +2255,58 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
+        from .utils import normalize
 
-        # 1. Assemble Symbols (sps=1)
-        symbols = self.assemble_symbols()
-
-        # Determine logical/source symbols at sps=1 including guards
-        source_symbols = symbols
-        if self.guard_len > 0:
-            if self.guard_type == "zero":
-                if self.num_streams > 1:
-                    zeros = xp.zeros((self.num_streams, self.guard_len), dtype=dtype)
-                else:
-                    zeros = xp.zeros(self.guard_len, dtype=dtype)
-
-                source_symbols = xp.concatenate([source_symbols, zeros], axis=-1)
-            elif self.guard_type == "cp":
-                cp_slice = source_symbols[..., -self.guard_len :]
-                source_symbols = xp.concatenate([cp_slice, source_symbols], axis=-1)
-
-        # 2. Apply pulse shaping
-        samples = shape_pulse(
-            symbols,
+        # 1. Shape Body (Payload + Pilots)
+        body_symbols = self.body_symbols
+        body_samples = shape_pulse(
+            body_symbols,
             sps=sps,
             pulse_shape=pulse_shape,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            smoothrect_bt=smoothrect_bt,
+            gaussian_bt=gaussian_bt,
             **kwargs,
         ).astype(dtype)
+
+        # Normalize Body to Peak 1.0
+        body_samples = normalize(body_samples, mode="peak")
+
+        # 2. Shape Preamble (if present)
+        if self.preamble is not None:
+            # Use Preamble's to_waveform for shaping to reuse logic,
+            # but we only need the samples.
+            # CRITICAL: Must use EXACT same shaping parameters as body.
+            preamble_signal = self.preamble.to_waveform(
+                sps=sps,
+                symbol_rate=symbol_rate,
+                pulse_shape=pulse_shape,
+                filter_span=filter_span,
+                rrc_rolloff=rrc_rolloff,
+                rc_rolloff=rc_rolloff,
+                smoothrect_bt=smoothrect_bt,
+                gaussian_bt=gaussian_bt,
+                dtype=dtype,
+                **kwargs,
+            )
+            preamble_samples = preamble_signal.samples
+
+            # Normalize Preamble to Peak 1.0
+            preamble_samples = normalize(preamble_samples, mode="peak")
+
+            # Handle MIMO broadcasting for preamble if needed
+            if self.num_streams > 1 and preamble_samples.ndim == 1:
+                # (L,) -> (1, L) -> (C, L)
+                preamble_samples = xp.tile(
+                    preamble_samples[None, :], (self.num_streams, 1)
+                )
+
+            # Concatenate Preamble + Body
+            samples = xp.concatenate([preamble_samples, body_samples], axis=-1)
+        else:
+            samples = body_samples
 
         # 3. Apply Guard Interval at sample level
         if self.guard_len > 0:
@@ -2343,7 +2357,10 @@ class SingleCarrierFrame(BaseModel):
         )
 
     def get_structure_map(
-        self, unit: Literal["symbols", "samples"] = "symbols", sps: int = 1
+        self,
+        unit: Literal["symbols", "samples"] = "symbols",
+        sps: int = 1,
+        include_preamble: bool = False,
     ) -> Dict[str, ArrayType]:
         """
         Generates boolean masks identifying the segments of the frame.
@@ -2354,51 +2371,86 @@ class SingleCarrierFrame(BaseModel):
             The scale of the returned masks.
         sps : int, default 1
             Samples per symbol (required if unit="samples").
+        include_preamble : bool, default False
+            If True, returns masks for the full frame including preamble and
+            guard intervals. If False, returns masks only for the segments
+            after the preamble (and after CP removal if guard_type='cp').
 
         Returns
         -------
         dict
             Dictionary containing boolean masks for:
-            - 'preamble'
-            - 'pilot'
+            - 'preamble' (only if include_preamble=True)
+            - 'pilots'
             - 'payload'
-            - 'guard'
+            - 'guard' (only if include_preamble=True OR guard_type='zero')
         """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
         preamble_len = self.preamble.num_symbols if self.preamble is not None else 0
 
-        total_len = preamble_len + body_length + self.guard_len
+        if include_preamble:
+            total_len = preamble_len + body_length + self.guard_len
 
-        preamble_bool = xp.zeros(total_len, dtype=bool)
-        pilot_bool = xp.zeros(total_len, dtype=bool)
-        payload_bool = xp.zeros(total_len, dtype=bool)
-        guard_bool = xp.zeros(total_len, dtype=bool)
+            preamble_bool = xp.zeros(total_len, dtype=bool)
+            pilot_bool = xp.zeros(total_len, dtype=bool)
+            payload_bool = xp.zeros(total_len, dtype=bool)
+            guard_bool = xp.zeros(total_len, dtype=bool)
 
-        if self.guard_type == "cp":
-            g_slice = slice(0, self.guard_len)
-            p_slice = slice(self.guard_len, self.guard_len + preamble_len)
-            b_slice = slice(self.guard_len + preamble_len, total_len)
+            if self.guard_type == "cp":
+                g_slice = slice(0, self.guard_len)
+                p_slice = slice(self.guard_len, self.guard_len + preamble_len)
+                b_slice = slice(self.guard_len + preamble_len, total_len)
+            else:
+                p_slice = slice(0, preamble_len)
+                b_slice = slice(preamble_len, preamble_len + body_length)
+                g_slice = slice(preamble_len + body_length, total_len)
+
+            if preamble_len > 0:
+                preamble_bool[p_slice] = True
+
+            pilot_bool[b_slice] = mask
+            payload_bool[b_slice] = ~mask
+
+            if self.guard_len > 0:
+                guard_bool[g_slice] = True
+
+            res = {
+                "preamble": preamble_bool,
+                "pilots": pilot_bool,
+                "payload": payload_bool,
+                "guard": guard_bool,
+            }
         else:
-            p_slice = slice(0, preamble_len)
-            b_slice = slice(preamble_len, preamble_len + body_length)
-            g_slice = slice(preamble_len + body_length, total_len)
+            # Preamble removed.
+            # If CP, guard is at the start and is typically removed with preamble.
+            # If ZERO, guard is at the end and remains part of the signal.
+            if self.guard_type == "cp":
+                total_len = body_length
+                pilot_bool = mask
+                payload_bool = ~mask
+                res = {
+                    "pilots": pilot_bool,
+                    "payload": payload_bool,
+                }
+            else:
+                total_len = body_length + self.guard_len
+                pilot_bool = xp.zeros(total_len, dtype=bool)
+                payload_bool = xp.zeros(total_len, dtype=bool)
+                guard_bool = xp.zeros(total_len, dtype=bool)
 
-        if preamble_len > 0:
-            preamble_bool[p_slice] = True
+                b_slice = slice(0, body_length)
+                g_slice = slice(body_length, total_len)
 
-        pilot_bool[b_slice] = mask
-        payload_bool[b_slice] = ~mask
+                pilot_bool[b_slice] = mask
+                payload_bool[b_slice] = ~mask
+                guard_bool[g_slice] = True
 
-        if self.guard_len > 0:
-            guard_bool[g_slice] = True
-
-        res = {
-            "preamble": preamble_bool,
-            "pilot": pilot_bool,
-            "payload": payload_bool,
-            "guard": guard_bool,
-        }
+                res = {
+                    "pilots": pilot_bool,
+                    "payload": payload_bool,
+                    "guard": guard_bool,
+                }
 
         if unit == "samples":
             for k in res:

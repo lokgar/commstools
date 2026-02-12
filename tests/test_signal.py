@@ -55,7 +55,7 @@ def test_signal_auto_symbols(backend_device, xp):
         sampling_rate=1.0,
         symbol_rate=1.0,
         source_bits=bits,
-        modulation_scheme="MY-PSK",
+        modulation_scheme="PSK-MY",
         modulation_order=2,
     )
     assert s2.source_symbols is not None
@@ -293,7 +293,6 @@ def test_signal_jax_interop(backend_device, xp):
     """Verify JAX interoperability."""
     try:
         import jax
-        import jax.numpy as jnp
     except ImportError:
         pytest.skip("JAX not installed")
 
@@ -321,3 +320,57 @@ def test_signal_properties_coverage(backend_device, xp):
 
     # backend
     assert s.backend in ("CPU", "GPU")
+
+
+def test_signal_validate_samples_transposition(backend_device, xp):
+    """Cover the transposition warning heuristic in Signal."""
+    # Create (Time, Channels) where Time >> Channels and Time > 32
+    # e.g. (100, 2)
+    data = xp.zeros((100, 2))
+
+    # Signal expects (Channels, Time) usually, but logic detects (Time, Channels)
+    # and transposes it, logging a warning.
+    # We verify the shape is flipped to (2, 100).
+    sig = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
+
+    assert sig.samples.shape == (2, 100)
+
+    assert sig.bits_per_symbol is None
+
+
+def test_signal_wrappers(backend_device, xp):
+    """
+    Test the wrapper methods on Signal to ensure they call the underlying modules.
+    We just check they run without error.
+    """
+
+    sig = Signal(
+        samples=xp.zeros(100, dtype="complex64"), sampling_rate=100.0, symbol_rate=10.0
+    )
+
+    # Print info
+    sig.print_info()
+
+    # Properties
+    assert sig.duration == 1.0
+    assert sig.num_streams == 1
+
+    # wrappers
+    # Use small nperseg to match signal length
+    f, p = sig.welch_psd(nperseg=32)
+    assert len(f) > 0
+
+    # Clean up any existing figures from previous tests
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+    # Plotting wrappers (just call them, assume plotting logic tested elsewhere)
+    # We pass show=False to avoid blocking
+    sig.plot_psd(show=False, nperseg=32)
+    sig.plot_symbols(num_symbols=10, show=False)
+    sig.plot_eye(show=False)
+    sig.plot_constellation(show=False)
+
+    # Clean up figures to avoid RuntimeWarning
+    plt.close("all")

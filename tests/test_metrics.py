@@ -189,3 +189,75 @@ def test_metrics_signal_objects(backend_device, xp):
 
     # Test SNR
     metrics.snr(rx, tx)
+
+
+def test_evm_shape_mismatch(backend_device, xp):
+    """Verify error on shape mismatch in evm."""
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        metrics.evm(xp.zeros(10), xp.zeros(11))
+
+
+def test_snr_shape_mismatch(backend_device, xp):
+    """Verify error on shape mismatch in snr."""
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        metrics.snr(xp.zeros(10), xp.zeros(11))
+
+
+def test_evm_signal_extraction(backend_device, xp):
+    """Verify evm correctly extracts data from Signal objects."""
+    from commstools.core import Signal
+
+    s1 = Signal(samples=xp.ones(10), sampling_rate=1, symbol_rate=1)
+    s2 = Signal(samples=xp.ones(10), sampling_rate=1, symbol_rate=1)
+
+    # Symbols match, EVM should be 0
+    ep, edb = metrics.evm(s1, s2)
+    assert ep == 0
+    assert edb == float("-inf")
+
+
+def test_evm_array_handling(backend_device, xp):
+    """Verify evm multichannel array handling (lines 135-143)."""
+    # 2 channels, one with error, one perfect
+    rx = xp.array([[1.0, 1.0], [1.0, 0.8]])
+    tx = xp.array([[1.0, 1.0], [1.1, 1.1]])  # Ch 1 is [1.0, 1.0] after norm
+
+    ep, edb = metrics.evm(rx, tx)
+    assert ep.shape == (2,)
+    assert ep[0] == 0
+    assert ep[1] > 0
+
+    # Test low power mask for array
+    tx_zero = xp.zeros((2, 2))
+    ep, edb = metrics.evm(rx, tx_zero)
+    assert xp.all(ep == float("inf"))
+    assert xp.all(edb == float("inf"))
+
+
+def test_snr_scalar_low_power(backend_device, xp):
+    """Verify snr returns -inf for scalar zero reference (line 238)."""
+    rx = xp.ones(10)
+    tx = xp.zeros(10)
+    # Ref power is 0, noise is 1.0. SNR should be -inf dB.
+    assert metrics.snr(rx, tx) == float("-inf")
+
+
+def test_snr_array_low_power(backend_device, xp):
+    """Verify snr array handling for zero reference (lines 243-246)."""
+    rx = xp.ones((2, 10))
+    tx = xp.zeros((2, 10))
+    # Both channels have 0 signal ref
+    res = metrics.snr(rx, tx)
+    assert xp.all(res == float("-inf"))
+
+    # Mixed case
+    tx_mixed = xp.array([xp.ones(10), xp.zeros(10)])
+    res = metrics.snr(rx, tx_mixed)
+    assert res[0] == float("inf")  # Perfect match for Ch 0
+    assert res[1] == float("-inf")  # 0 Signal for Ch 1
+
+
+def test_ber_length_mismatch(backend_device, xp):
+    """Verify error on bit length mismatch."""
+    with pytest.raises(ValueError, match="Bit sequence lengths must match"):
+        metrics.ber(xp.array([1, 0]), xp.array([1, 0, 1]))
