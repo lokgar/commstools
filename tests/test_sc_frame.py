@@ -139,7 +139,7 @@ def test_sc_frame_structure_map(backend_device, xp):
     )
 
     # 1. Symbol-level check
-    struct = frame.get_structure_map(unit="symbols")
+    struct = frame.get_structure_map(unit="symbols", include_preamble=True)
     # Total length: 2 (preamble) + 10 (body: alternating P, D, P, D, P, D, P, 0, 0, 0?)
     # Wait, pilot mask for payload_len=6, period=2:
     # _generate_pilot_mask: data_per_period=1. num_periods=6.
@@ -154,13 +154,13 @@ def test_sc_frame_structure_map(backend_device, xp):
 
     assert len(struct["preamble"]) == total_len
     assert xp.sum(struct["preamble"]) == 2
-    assert xp.sum(struct["pilot"]) > 0
+    assert xp.sum(struct["pilots"]) > 0
     assert xp.sum(struct["payload"]) == 6
     assert xp.sum(struct["guard"]) == 5
 
     # 2. Sample-level check
     sps = 4
-    struct_s = frame.get_structure_map(unit="samples", sps=sps)
+    struct_s = frame.get_structure_map(unit="samples", sps=sps, include_preamble=True)
     assert len(struct_s["preamble"]) == total_len * sps
     assert xp.sum(struct_s["preamble"]) == 2 * sps
 
@@ -171,7 +171,7 @@ def test_sc_frame_structure_map_cp(backend_device, xp):
     frame = SingleCarrierFrame(
         payload_len=10, symbol_rate=1e6, guard_type="cp", guard_len=5
     )
-    struct = frame.get_structure_map(unit="symbols")
+    struct = frame.get_structure_map(unit="symbols", include_preamble=True)
     # CP is at the beginning
     assert struct["guard"][0]
     assert struct["guard"][4]
@@ -182,3 +182,54 @@ def test_signal_info_minimal(backend_device, xp):
     """Verify minimal SignalInfo creation."""
     si = SignalInfo()
     assert si.preamble_len is None
+
+
+def test_independent_preamble_normalization(backend_device, xp):
+    """
+    Verify that preamble and body are independently normalized to peak 1.0
+    after pulse shaping.
+
+    This ensures that a high-PAPR body doesn't suppress the preamble, or vice versa.
+    """
+    # 1. Create a Preamble
+    # Barker-13 has relatively low PAPR
+    preamble = Preamble(sequence_type="barker", length=13)
+
+    # 2. Create a Body with High Difference in Energy
+    # We use a single pilot in a field of zeros to create a high peak-to-average scenario
+    # or simply random data.
+    # Actually, to demonstrate the issue, we want ensures that even if body has
+    # different scaling inherent in its symbols, the output body waveform peaks at 1.0.
+    # And preamble waveform peaks at 1.0.
+
+    frame = SingleCarrierFrame(
+        payload_len=100, symbol_rate=1e6, preamble=preamble, pilot_pattern="none"
+    )
+
+    # 3. Generate Waveform
+    sps = 4
+    sig = frame.to_waveform(sps=sps, pulse_shape="rrc", rrc_rolloff=0.5)
+
+    # 4. Extract Sections
+    # Preamble is 13 symbols
+    preamble_len_samples = 13 * sps
+    preamble_section = sig.samples[:preamble_len_samples]
+    body_section = sig.samples[preamble_len_samples:]
+
+    # 5. Measure Peaks
+    # We accept a small tolerance due to float precision / shape artifacts at edges
+    peak_preamble = xp.max(xp.abs(preamble_section))
+    peak_body = xp.max(xp.abs(body_section))
+
+    print(f"Preamble Peak: {peak_preamble}")
+    print(f"Body Peak: {peak_body}")
+
+    assert xp.isclose(peak_preamble, 1.0, atol=1e-2), (
+        f"Preamble peak {peak_preamble} != 1.0"
+    )
+    assert xp.isclose(peak_body, 1.0, atol=1e-2), f"Body peak {peak_body} != 1.0"
+
+    # Also verifying that they are not just 1.0 because the whole signal is 1.0
+    # (which `normalize(..., "peak")` at end of old to_waveform would do).
+    # In the OLD implementation, if body was huge, preamble would be tiny.
+    # Here both should be ~1.0.

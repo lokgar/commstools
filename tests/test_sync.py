@@ -1,5 +1,7 @@
 """Tests for synchronization utilities (Barker and Zadoff-Chu sequences, frame detection)."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from commstools import sync
@@ -169,7 +171,7 @@ def test_correlate_normalized(backend_device, xp):
 
 def test_detect_frame_advanced_scenarios(backend_device, xp):
     """Verify detect_frame with Signal objects, MIMO, and search ranges."""
-    from commstools.core import Signal, Preamble
+    from commstools.core import Preamble, Signal
 
     # 1. Signal object and Preamble object
     preamble = Preamble(sequence_type="barker", length=7)
@@ -279,7 +281,7 @@ def test_generate_preamble_bits_zc(backend_device, xp):
     assert xp.all((bits == 0) | (bits == 1))
 
 
-def test_generate_preamble_bits_unknown():
+def test_generate_preamble_bits_unknown(backend_device, xp):
     """Verify that unknown sequence types raise ValueError."""
     with pytest.raises(ValueError, match="Unknown sequence type"):
         sync.generate_preamble_bits("unknown", 10)
@@ -303,3 +305,75 @@ def test_detect_preamble_autocorr(backend_device, xp):
         lag = sync.detect_preamble_autocorr(data, period=4, threshold=0.5)
         # Should detect start around 30
         assert 28 <= lag <= 32
+
+
+def test_detect_frame_debug_plot(backend_device, xp):
+    """Trigger the debug plot code path in detect_frame (lines 375-419)."""
+    # Create a signal with a preamble
+    preamble = xp.random.randn(10) + 1j * xp.random.randn(10)
+    sig = xp.concatenate([xp.zeros(20), preamble, xp.zeros(20)])
+
+    with patch("matplotlib.pyplot.show"):
+        # Mock subplots to return dummy fig/axes
+        mock_ax = MagicMock()
+        mock_fig = MagicMock()
+        with patch(
+            "matplotlib.pyplot.subplots", return_value=(mock_fig, [mock_ax, mock_ax])
+        ):
+            sync.detect_frame(sig, preamble, debug_plot=True)
+
+
+def test_detect_frame_zero_energy(backend_device, xp):
+    """Test detect_frame with zero energy signal."""
+    preamble = xp.ones(10)
+    sig = xp.zeros(50)
+    with pytest.raises(ValueError, match="No correlation peak above threshold"):
+        sync.detect_frame(sig, preamble, threshold=0.5)
+
+
+def test_generate_preamble_bits_invalid(backend_device, xp):
+    """Verify error for unknown preamble type."""
+    with pytest.raises(ValueError, match="Unknown sequence type"):
+        sync.generate_preamble_bits("magic", 10)
+
+
+def test_detect_frame_return_metric(backend_device, xp):
+    """Verify return_metric flag behavior."""
+    preamble = xp.ones(4)
+    sig = xp.concatenate([xp.zeros(4), preamble, xp.zeros(4)])
+
+    res = sync.detect_frame(sig, preamble, return_metric=True, threshold=0.1)
+    assert isinstance(res, tuple)
+    assert len(res) == 2
+    assert isinstance(res[0], int)
+    assert isinstance(res[1], float)
+
+
+def test_detect_frame_search_range(backend_device, xp):
+    """Verify detect_frame with search_range."""
+    preamble = xp.random.randn(10) + 1j * xp.random.randn(10)
+    sig = xp.concatenate([xp.zeros(50), preamble, xp.zeros(50)])
+
+    # Search only in 40-70 range
+    res = sync.detect_frame(sig, preamble, search_range=(40, 70), threshold=0.5)
+    assert res == 50
+
+
+def test_detect_frame_infer_error(backend_device, xp):
+    """Verify error when Preamble object used with raw array signal."""
+    pre = Preamble(bits=[1, 0, 1], length=3)
+    sig = xp.zeros(20)
+    with pytest.raises(ValueError, match="Cannot infer waveform parameters"):
+        sync.detect_frame(sig, pre)
+
+
+def test_sequences_gpu(backend_device, xp):
+    """Cover the to_device branch in sequence generators on GPU."""
+    if backend_device != "gpu":
+        pytest.skip("Test targets GPU branch")
+
+    barker = sync.barker_sequence(13)
+    assert isinstance(barker, xp.ndarray)
+
+    zc = sync.zadoff_chu_sequence(13, root=1)
+    assert isinstance(zc, xp.ndarray)

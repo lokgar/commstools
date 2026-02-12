@@ -1,10 +1,14 @@
 """Tests for signal visualization and plotting tools."""
 
+from unittest.mock import MagicMock, patch
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
 from commstools.plotting import (
+    _create_subplot_grid,
+    _plot_eye_traces,
     apply_default_theme,
     constellation,
     eye_diagram,
@@ -238,3 +242,112 @@ def test_constellation_histogram_overlay_error(backend_device, xp):
         samples, bins=10, overlay_ideal=True, modulation="invalid", order=4, show=False
     )
     plt.close("all")
+
+
+@patch("matplotlib.font_manager.findfont")
+def test_apply_theme_fallback(mock_find):
+    """Trigger the font fallback in apply_default_theme."""
+    mock_find.side_effect = ValueError("Font not found")
+    apply_default_theme()
+
+
+def test_subplot_grid(backend_device, xp):
+    """Verify subplot grid calculation."""
+    assert _create_subplot_grid(1) == (1, 1)
+    assert _create_subplot_grid(2) == (1, 2)
+    assert _create_subplot_grid(3) == (2, 2)
+    assert _create_subplot_grid(5) == (3, 2)
+
+
+def test_psd_axis_overlay_warning(caplog, backend_device, xp):
+    """Verify warning when single axis is provided for multichannel PSD."""
+    sig = xp.ones((2, 256))
+    fig, ax = plt.subplots()
+    with patch("matplotlib.pyplot.show"):
+        psd(sig, ax=ax)
+    assert "Multiple channels detected but single axis provided" in caplog.text
+
+
+def test_psd_wavelength_warning(caplog, backend_device, xp):
+    """Verify wavelength warning."""
+    sig = xp.ones(256)
+    with patch("matplotlib.pyplot.show"):
+        psd(sig, x_axis="wavelength", domain="RF")
+    assert "Wavelength plotting is typically used for optical signals" in caplog.text
+
+
+def test_psd_auto_scale_small(backend_device, xp):
+    """Test auto-scaling for small frequencies (Hz)."""
+    sig = xp.ones(256)
+    fig, ax = psd(sig, sampling_rate=1.0)
+    assert "Hz" in ax.get_xlabel()
+
+
+def test_time_domain_limits(caplog, backend_device, xp):
+    """Verify symbol limit warnings in time_domain."""
+    sig = xp.ones(100)
+    # request 200 symbols when only 100 samples available (sps=1)
+    with patch("matplotlib.pyplot.show"):
+        time_domain(sig, num_symbols=200, sps=1.0)
+    assert "Limit exceeds number of symbols" in caplog.text
+
+
+def test_time_domain_auto_scale(backend_device, xp):
+    """Verify time axis auto-scaling."""
+    sig = xp.ones(100)
+
+    # ns
+    _, ax = time_domain(sig, sampling_rate=1e10)
+    assert "ns" in ax.get_xlabel()
+
+    # ps
+    _, ax = time_domain(sig, sampling_rate=1e13)
+    assert "ps" in ax.get_xlabel()
+
+    # us
+    _, ax = time_domain(sig, sampling_rate=1e7)
+    assert "µs" in ax.get_xlabel()
+
+    # ms
+    _, ax = time_domain(sig, sampling_rate=1e4)
+    assert "ms" in ax.get_xlabel()
+
+
+def test_eye_diagram_sps_error(backend_device, xp):
+    """Verify error for non-integer sps."""
+    with pytest.raises(ValueError, match="sps must be an integer"):
+        eye_diagram(xp.ones(10), sps=2.5)
+
+
+def test_eye_diagram_trace_len_error(backend_device, xp):
+    """Verify error when signal too short for eye trace."""
+    with pytest.raises(
+        ValueError, match="Signal is shorter than the required trace length"
+    ):
+        _plot_eye_traces(
+            xp.ones(5), sps=10, num_symbols=2, ax=MagicMock(), type="line", title=None
+        )
+
+
+def test_eye_diagram_invalid_type(backend_device, xp):
+    """Verify error for unknown eye type."""
+    with pytest.raises(ValueError, match="Unknown type"):
+        _plot_eye_traces(
+            xp.ones(100), sps=4, num_symbols=2, ax=MagicMock(), type="magic", title=None
+        )
+
+
+def test_filter_response_no_sps(backend_device, xp):
+    """Test filter_response without sps."""
+    filter_response(xp.ones(10))
+
+
+def test_constellation_histogram_overlay_warning(caplog, backend_device, xp):
+    """Verify warning when overlaying ideal on histogram."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    # Constellation with bins > 0 triggers histogram
+    # If modulation is None, it should warn
+    constellation(xp.ones(10) + 1j, bins=10, overlay_ideal=True, modulation=None)
+    assert "Modulation and order must be provided" in caplog.text

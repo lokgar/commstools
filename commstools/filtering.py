@@ -543,7 +543,7 @@ def shape_pulse(
 
     if pulse_shape == "none":
         logger.info("Pulse shaping disabled, expanding symbols by sps")
-        return normalize(expand(symbols, int(sps), axis=-1), "max_amplitude")
+        return normalize(expand(symbols, int(sps), axis=-1), "peak")
 
     elif pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
@@ -573,7 +573,7 @@ def shape_pulse(
 
     res = polyphase_resample(symbols, int(sps), 1, window=h, axis=-1)
 
-    return normalize(res, "max_amplitude")
+    return normalize(res, "peak")
 
 
 def matched_filter(
@@ -628,6 +628,6 @@ def matched_filter(
     output = fir_filter(samples, matched_taps, axis=axis)
 
     if normalize_output:
-        output = normalize(output, mode="max_amplitude")
+        output = normalize(output, mode="peak")
 
     return output

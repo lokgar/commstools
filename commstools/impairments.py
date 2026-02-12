@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 def add_awgn(
     signal: Union[ArrayType, "Signal"],
     esn0_db: float,
-    sps: float = 1.0,
+    sps: float = None,
 ) -> Union[ArrayType, "Signal"]:
     """
     Adds Additive White Gaussian Noise (AWGN) to a signal based on $E_s/N_0$.
@@ -68,6 +68,8 @@ def add_awgn(
         samples = signal.samples
         sps = signal.sps  # Use actual sps from Signal
     else:
+        if sps is None:
+            raise ValueError("sps must be provided for array_like input.")
         samples = signal
 
     samples, xp, _ = dispatch(samples)

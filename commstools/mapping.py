@@ -5,6 +5,8 @@ This module provides high-performance routines for the transition between
 digital bits and physical IQ symbols. It supports standardized mapping
 strategies (Gray coding) and advanced demapping algorithms (Soft-decision LLR).
 
+Note: The codes and constellations are generated using numpy.
+
 Functions
 ---------
 gray_code :
@@ -21,7 +23,7 @@ demap_symbols_soft :
     Computes Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -47,7 +49,7 @@ def gray_code(n: int) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Array of integers representing the Gray code sequence.
         Shape: (2^n,).
 
@@ -63,6 +65,7 @@ def gray_code(n: int) -> np.ndarray:
 
     # Vectorized implementation: s ^ (s >> 1)
     i = np.arange(1 << n, dtype=int)
+
     return i ^ (i >> 1)
 
 
@@ -83,7 +86,7 @@ def gray_to_binary(n: int) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Array where `result[s]` provides the natural binary integer
         representing the bit pattern for symbol `s`. Shape: (2^n,).
     """
@@ -97,6 +100,7 @@ def gray_to_binary(n: int) -> np.ndarray:
     gray = gray_code(n)
     inverse = np.zeros(1 << n, dtype=int)
     inverse[gray] = np.arange(1 << n)
+
     return inverse
 
 
@@ -128,7 +132,7 @@ def gray_constellation(
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Array of constellation points (NumPy). Shape: (order,).
         Complex for 'psk' and 'qam', Float for 'ask'.
 
@@ -203,7 +207,7 @@ def _gray_psk(order: int) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Complex array of PSK constellation points.
     """
     # Bits per symbol
@@ -228,6 +232,7 @@ def _gray_psk(order: int) -> np.ndarray:
 
     constellation = np.zeros(order, dtype=complex)
     constellation[gray] = points
+
     return constellation
 
 
@@ -245,7 +250,7 @@ def _gray_ask(order: int, unipolar: bool = False) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Real-valued array of ASK constellation points.
     """
     k = int(np.log2(order))
@@ -261,6 +266,7 @@ def _gray_ask(order: int, unipolar: bool = False) -> np.ndarray:
 
     constellation = np.zeros(order, dtype=float)
     constellation[gray] = points
+
     return constellation
 
 
@@ -278,7 +284,7 @@ def _gray_qam_square(order: int) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Complex array of square QAM constellation points.
     """
     # M = 2^(2k). I bits = k, Q bits = k.
@@ -300,7 +306,9 @@ def _gray_qam_square(order: int) -> np.ndarray:
     i_vals = pam[idx_i]
     q_vals = pam[idx_q]
 
-    return i_vals + 1j * q_vals
+    constellation = i_vals + 1j * q_vals
+
+    return constellation
 
 
 def _gray_qam_8_rect() -> np.ndarray:
@@ -309,7 +317,7 @@ def _gray_qam_8_rect() -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Complex array of 8-QAM constellation points.
     """
 
@@ -356,7 +364,7 @@ def _gray_qam_cross(order: int) -> np.ndarray:
 
     Returns
     -------
-    ndarray
+    np.ndarray
         Complex array of cross QAM constellation points.
     """
     # M = 2^(2k+1).
@@ -431,14 +439,16 @@ def _gray_qam_cross(order: int) -> np.ndarray:
     final_i_vals = (-width + 1 + 2 * geo_i_final).astype(float)
     final_q_vals = (-height + 1 + 2 * geo_q_final).astype(float)
 
-    return final_i_vals + 1j * final_q_vals
+    constellation = final_i_vals + 1j * final_q_vals
+
+    return constellation
 
 
 def map_bits(
     bits: ArrayType,
     modulation: str,
     order: int,
-    dtype: Optional[Any] = np.complex64,
+    dtype: Any = "complex64",
     unipolar: bool = False,
 ) -> ArrayType:
     """
@@ -457,8 +467,8 @@ def map_bits(
     order : int
         Modulation order (number of symbols).
     dtype : data-type, optional
-        Target precision for the generated symbols. Default is `np.complex64`.
-        For 'ask', automatically maps to corresponding real type (e.g., `float32`).
+        Target precision for the generated symbols. Default is "complex64".
+        For 'ask', automatically maps to corresponding real type (e.g., "float32").
     unipolar : bool, default False
         Trigger unipolar mapping for ASK/PAM.
 
@@ -496,15 +506,20 @@ def map_bits(
 
     # Ensure constellation is on the same backend and dtype
     constellation = xp.asarray(constellation)
+
+    # Resolve target dtype
+    resolved_dtype = xp.dtype(dtype)
     mod_lower = modulation.lower()
+
     if "ask" in mod_lower or "pam" in mod_lower:
-        if dtype in (np.complex64, np.complex128):
-            real_dtype = np.float32 if dtype == np.complex64 else np.float64
+        # If input was complex, we coerce to real-equivalent of that complexity
+        if resolved_dtype.kind == "c":
+            real_dtype = xp.float32 if resolved_dtype == xp.complex64 else xp.float64
         else:
-            real_dtype = dtype if dtype is not None else np.float32
+            real_dtype = resolved_dtype
         constellation = constellation.astype(real_dtype)
     else:
-        constellation = constellation.astype(dtype)
+        constellation = constellation.astype(resolved_dtype)
 
     # Map indices to points
     return constellation[indices]

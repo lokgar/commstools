@@ -313,7 +313,8 @@ def psd(
     if ylim is not None:
         ax.set_ylim(ylim)
 
-    ax.plot(x_values, 10 * np.log10(Pxx), **kwargs)
+    # Add epsilon to avoid log(0) warnings
+    ax.plot(x_values, 10 * np.log10(Pxx + 1e-20), **kwargs)
     ax.set_xlabel(xlabel)
     ax.set_ylabel("PSD [dB/Hz]")
     if title is not None:
@@ -430,16 +431,18 @@ def time_domain(
 
     samples = to_device(samples, "cpu")
 
+    start_idx = int(start_symbol * sps) if sps is not None else int(start_symbol)
+
     if num_symbols is not None and sps is not None:
-        limit = int((start_symbol + num_symbols) * sps)
+        limit = start_idx + int(num_symbols * sps)
         if limit > len(samples):
             limit = len(samples)
             logger.warning(
                 "Limit exceeds number of symbols. Plotting up to last symbol."
             )
-        plot_samples = samples[int(start_symbol * sps) : limit]
+        plot_samples = samples[start_idx:limit]
     else:
-        plot_samples = samples[int(start_symbol * sps) :]
+        plot_samples = samples[start_idx:]
 
     time_axis = np.arange(len(plot_samples)) / sampling_rate
 
@@ -529,7 +532,7 @@ def _plot_eye_traces(
     # Normalize to max amplitude 1.0
     from .utils import normalize
 
-    samples = normalize(samples, mode="max_amplitude")
+    samples = normalize(samples, mode="peak")
 
     # We want to include the endpoint to avoid a gap at the end of the plot
     # So we need one extra sample per trace
@@ -1228,6 +1231,8 @@ def constellation(
     signal_rms = utils.rms(i_data + 1j * q_data)
     # Use ~3x RMS as limit (covers most constellation points + noise spread)
     limit = signal_rms * 2.0
+    if limit == 0:
+        limit = 1.0  # Default view range for zero signal
 
     h, xedges, yedges = np.histogram2d(
         i_data, q_data, bins=bins, range=[[-limit, limit], [-limit, limit]]
@@ -1263,32 +1268,37 @@ def constellation(
     ax.imshow(h, **imshow_kwargs)
 
     # Overlay ideal constellation if requested
-    if overlay_ideal and modulation is not None and order is not None:
-        from .mapping import gray_constellation
-
-        try:
-            const = gray_constellation(modulation, order, unipolar=unipolar)
-            const = to_device(const, "cpu")
-
-            # Scale constellation to match signal amplitude
-            # Use RMS-based scaling (robust to noise outliers)
-            const_rms = utils.rms(const)
-            if const_rms > 0:
-                scale_factor = signal_rms / const_rms
-                const = const * scale_factor
-
-            ax.scatter(
-                const.real,
-                const.imag,
-                c="white",
-                s=50,
-                edgecolors="black",
-                linewidths=1,
-                zorder=10,
-                marker="o",
+    if overlay_ideal:
+        if modulation is None or order is None:
+            logger.warning(
+                "Modulation and order must be provided to overlay ideal constellation."
             )
-        except ValueError as e:
-            logger.warning(f"Could not overlay ideal constellation: {e}")
+        else:
+            from .mapping import gray_constellation
+
+            try:
+                const = gray_constellation(modulation, order, unipolar=unipolar)
+                const = to_device(const, "cpu")
+
+                # Scale constellation to match signal amplitude
+                # Use RMS-based scaling (robust to noise outliers)
+                const_rms = utils.rms(const)
+                if const_rms > 0:
+                    scale_factor = signal_rms / const_rms
+                    const = const * scale_factor
+
+                ax.scatter(
+                    const.real,
+                    const.imag,
+                    c="white",
+                    s=50,
+                    edgecolors="black",
+                    linewidths=1,
+                    zorder=10,
+                    marker="o",
+                )
+            except ValueError as e:
+                logger.warning(f"Could not overlay ideal constellation: {e}")
 
     # Add center lines
     ax.axhline(0, color="white", linewidth=0.5, alpha=0.5, zorder=5)

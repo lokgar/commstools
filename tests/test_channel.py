@@ -9,7 +9,7 @@ def test_awgn(backend_device, xp):
 
     snr_db = 10.0
 
-    noisy = impairments.add_awgn(data, snr_db)
+    noisy = impairments.add_awgn(data, snr_db, sps=1)
 
     assert isinstance(noisy, xp.ndarray)
     assert noisy.shape == data.shape
@@ -43,7 +43,7 @@ def test_awgn_signal_object(backend_device, xp):
 def test_awgn_real_data(backend_device, xp):
     """Verify add_awgn with real-valued data."""
     data = xp.ones(1000, dtype=xp.float32)
-    noisy = impairments.add_awgn(data, esn0_db=10)
+    noisy = impairments.add_awgn(data, esn0_db=10, sps=1)
 
     assert xp.isrealobj(noisy)
     assert not xp.allclose(noisy, data)
@@ -53,6 +53,6 @@ def test_awgn_low_snr(backend_device, xp):
     """Verify add_awgn with extremely low SNR values."""
     data = xp.ones(100, dtype=complex)
     # This should trigger the esn0_linear <= 1e-20 branch
-    noisy = impairments.add_awgn(data, esn0_db=-300)
+    noisy = impairments.add_awgn(data, esn0_db=-300, sps=1)
     measured_power = xp.mean(xp.abs(noisy) ** 2)
     assert float(measured_power) > 1e15

@@ -112,3 +112,74 @@ def test_jax_interop(backend_device, xp):
 
     # Reset configuration to avoid polluting other tests if fixture doesn't handle it
     backend.use_cpu_only(False)
+
+
+def test_use_cpu_only(xp):
+    """Test use_cpu_only forces CPU backend."""
+    from commstools import backend
+
+    # Save original state
+    original_force = backend._FORCE_CPU
+
+    try:
+        backend.use_cpu_only(True)
+        assert backend.is_cupy_available() is False
+        assert backend.get_array_module(np.array([1])) == np
+
+        # Should raise ImportError if we try to force GPU
+        with pytest.raises(ImportError):
+            backend.to_device(np.array([1]), "gpu")
+
+    finally:
+        # Restore state
+        backend.use_cpu_only(original_force)
+
+
+def test_to_device_errors(xp):
+    """Test error paths in to_device."""
+    from commstools import backend
+
+    with pytest.raises(ValueError, match="Unknown device"):
+        backend.to_device(np.array([1]), "tpu")
+
+
+def test_dispatch_list(xp):
+    """Test dispatch with list input."""
+    # Should convert list to array
+    from commstools import backend, multirate
+
+    data, x, s = backend.dispatch([1, 2, 3])
+    assert isinstance(data, x.ndarray)
+    assert x in (np, getattr(multirate, "cp", None))  # generic check
+
+
+def test_jax_conversions(backend_device, xp):
+    """Test JAX conversion utilities with real JAX if available."""
+    try:
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip("JAX not installed")
+
+    from commstools import backend, Signal
+
+    # 1. Numpy -> JAX
+    arr_np = np.array([1, 2, 3])
+    arr_jax = backend.to_jax(arr_np)
+    assert isinstance(arr_jax, jnp.ndarray)
+
+    # 2. JAX -> Numpy
+    arr_back = backend.from_jax(arr_jax)
+    assert isinstance(arr_back, np.ndarray)
+    assert np.allclose(arr_back, arr_np)
+
+    # 3. Signal methods
+    sig = Signal(samples=arr_np, sampling_rate=1.0, symbol_rate=1.0)
+    jax_sig = sig.export_samples_to_jax()
+    assert isinstance(jax_sig, jnp.ndarray)
+
+    sig.update_samples_from_jax(jax_sig)
+    assert isinstance(sig.samples, xp.ndarray)
+    if backend_device == "cpu":
+        assert np.allclose(sig.samples, arr_np)
+    else:
+        assert xp.allclose(sig.samples, xp.asarray(arr_np))
