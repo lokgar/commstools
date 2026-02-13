@@ -33,7 +33,7 @@ import numpy as np
 
 from .backend import dispatch, to_device
 from .logger import logger
-from . import utils
+from . import helpers
 
 
 def apply_default_theme() -> None:
@@ -530,7 +530,7 @@ def _plot_eye_traces(
     samples, xp, sp = dispatch(samples)
 
     # Normalize to max amplitude 1.0
-    from .utils import normalize
+    from .helpers import normalize
 
     samples = normalize(samples, mode="peak")
 
@@ -602,7 +602,7 @@ def _plot_eye_traces(
             # Interpolate along the last axis (time)
             # interp1d expects (x, x_p, f_p, axis), result is interpolated samples
             # f_p is traces
-            from .utils import interp1d
+            from .helpers import interp1d
 
             traces = interp1d(x_new, x_old, traces, axis=1)
             trace_len = target_width
@@ -1228,7 +1228,7 @@ def constellation(
     # Compute 2D histogram
     # Determine range based on RMS (robust to noise outliers)
     # Using np.sqrt(np.mean(|I|² + |Q|²)) is equivalent to rms(complex_signal)
-    signal_rms = utils.rms(i_data + 1j * q_data)
+    signal_rms = helpers.rms(i_data + 1j * q_data)
     # Use ~3x RMS as limit (covers most constellation points + noise spread)
     limit = signal_rms * 2.0
     if limit == 0:
@@ -1282,7 +1282,7 @@ def constellation(
 
                 # Scale constellation to match signal amplitude
                 # Use RMS-based scaling (robust to noise outliers)
-                const_rms = utils.rms(const)
+                const_rms = helpers.rms(const)
                 if const_rms > 0:
                     scale_factor = signal_rms / const_rms
                     const = const * scale_factor

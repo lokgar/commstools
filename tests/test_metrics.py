@@ -4,7 +4,7 @@ import pytest
 
 from commstools import metrics
 from commstools.impairments import add_awgn
-from commstools.utils import random_symbols
+from commstools.helpers import random_symbols
 
 
 def test_evm_perfect_signal(backend_device, xp):

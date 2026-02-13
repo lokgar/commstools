@@ -34,7 +34,7 @@ import scipy
 from .backend import ArrayType, dispatch
 from .logger import logger
 from .multirate import expand
-from .utils import normalize
+from .helpers import normalize
 
 # ============================================================================
 # FILTER DESIGN - TAP GENERATORS

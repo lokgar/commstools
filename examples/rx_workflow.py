@@ -3,7 +3,7 @@ rx_samples = ...  # e.g., (N_samples,) or (N_streams, N_samples)
 
 # === 1. FRAME SYNCHRONIZATION ===
 # Correlate with known preamble to find frame start
-preamble_waveform = frame.preamble.to_waveform(sps=4, symbol_rate=1e6)
+preamble_waveform = frame.preamble.to_signal(sps=4, symbol_rate=1e6)
 correlation = np.correlate(rx_samples, preamble_waveform.samples, mode="valid")
 frame_start = np.argmax(np.abs(correlation))
 

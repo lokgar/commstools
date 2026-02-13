@@ -182,20 +182,21 @@ def test_detect_frame_advanced_scenarios(backend_device, xp):
     sig = Signal(samples=data, sampling_rate=1e6, symbol_rate=1e6)
 
     pos = sync.detect_frame(sig, preamble, threshold=0.1)
-    assert 18 <= pos <= 22
+    assert 18 <= pos[0] <= 22
 
     # 2. MIMO Signal (2 channels)
     mimo_data = xp.zeros((2, 100), dtype=xp.complex64)
     mimo_data[0, 30:37] = preamble.symbols
     mimo_data[1, 30:37] = preamble.symbols
     pos_mimo = sync.detect_frame(mimo_data, preamble.symbols, threshold=0.1)
-    assert 28 <= pos_mimo <= 32
+    assert 28 <= pos_mimo[0] <= 32
+    assert len(pos_mimo) == 2
 
     # 3. Search range
     pos_range = sync.detect_frame(
         data, preamble.symbols, threshold=0.1, search_range=(10, 50)
     )
-    assert 18 <= pos_range <= 22
+    assert 18 <= pos_range[0] <= 22
 
     # 4. High threshold (above max)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
@@ -221,7 +222,7 @@ def test_detect_frame_known_position(backend_device, xp):
     detected_pos = sync.detect_frame(signal, preamble_symbols, threshold=0.3)
 
     # Should be within 1 sample of true position
-    assert abs(detected_pos - start_pos) <= 1
+    assert abs(detected_pos[0] - start_pos) <= 1
 
 
 def test_detect_frame_with_preamble_object(backend_device, xp):
@@ -248,7 +249,7 @@ def test_detect_frame_with_preamble_object(backend_device, xp):
     # Detect using Preamble object
     detected_pos = sync.detect_frame(sig_obj, preamble, threshold=0.3)
 
-    assert abs(detected_pos - start_pos) <= 1
+    assert abs(detected_pos[0] - start_pos) <= 1
 
 
 def test_detect_frame_returns_metric(backend_device, xp):
@@ -260,31 +261,9 @@ def test_detect_frame_returns_metric(backend_device, xp):
 
     pos, metric = sync.detect_frame(signal, preamble, threshold=0.1, return_metric=True)
 
-    assert isinstance(pos, int)
-    assert isinstance(metric, float)
-    assert 0 <= metric <= 1
-
-
-def test_generate_preamble_bits_barker(backend_device, xp):
-    """Verify generation of Barker preamble bit sequences."""
-    bits = sync.generate_preamble_bits("barker", 13)
-
-    assert len(bits) == 13
-    # All bits should be 0 or 1
-    assert xp.all((bits == 0) | (bits == 1))
-
-
-def test_generate_preamble_bits_zc(backend_device, xp):
-    """Verify generation of Zadoff-Chu preamble bit sequences."""
-    bits = sync.generate_preamble_bits("zc", length=13, root=1)
-    assert len(bits) == 13
-    assert xp.all((bits == 0) | (bits == 1))
-
-
-def test_generate_preamble_bits_unknown(backend_device, xp):
-    """Verify that unknown sequence types raise ValueError."""
-    with pytest.raises(ValueError, match="Unknown sequence type"):
-        sync.generate_preamble_bits("unknown", 10)
+    assert len(pos) == 1
+    assert len(metric) == 1
+    assert 0 <= float(metric[0]) <= 1
 
 
 def test_detect_preamble_autocorr(backend_device, xp):
@@ -318,7 +297,7 @@ def test_detect_frame_debug_plot(backend_device, xp):
         mock_ax = MagicMock()
         mock_fig = MagicMock()
         with patch(
-            "matplotlib.pyplot.subplots", return_value=(mock_fig, [mock_ax, mock_ax])
+            "matplotlib.pyplot.subplots", return_value=(mock_fig, [[mock_ax, mock_ax]])
         ):
             sync.detect_frame(sig, preamble, debug_plot=True)
 
@@ -331,12 +310,6 @@ def test_detect_frame_zero_energy(backend_device, xp):
         sync.detect_frame(sig, preamble, threshold=0.5)
 
 
-def test_generate_preamble_bits_invalid(backend_device, xp):
-    """Verify error for unknown preamble type."""
-    with pytest.raises(ValueError, match="Unknown sequence type"):
-        sync.generate_preamble_bits("magic", 10)
-
-
 def test_detect_frame_return_metric(backend_device, xp):
     """Verify return_metric flag behavior."""
     preamble = xp.ones(4)
@@ -345,8 +318,8 @@ def test_detect_frame_return_metric(backend_device, xp):
     res = sync.detect_frame(sig, preamble, return_metric=True, threshold=0.1)
     assert isinstance(res, tuple)
     assert len(res) == 2
-    assert isinstance(res[0], int)
-    assert isinstance(res[1], float)
+    assert len(res[0]) == 1
+    assert len(res[1]) == 1
 
 
 def test_detect_frame_search_range(backend_device, xp):
@@ -356,14 +329,14 @@ def test_detect_frame_search_range(backend_device, xp):
 
     # Search only in 40-70 range
     res = sync.detect_frame(sig, preamble, search_range=(40, 70), threshold=0.5)
-    assert res == 50
+    assert res[0] == 50
 
 
 def test_detect_frame_infer_error(backend_device, xp):
     """Verify error when Preamble object used with raw array signal."""
     pre = Preamble(bits=[1, 0, 1], length=3)
     sig = xp.zeros(20)
-    with pytest.raises(ValueError, match="Cannot infer waveform parameters"):
+    with pytest.raises(ValueError, match="SPS required for Preamble object."):
         sync.detect_frame(sig, pre)
 
 

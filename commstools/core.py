@@ -37,7 +37,7 @@ except ImportError:
     _CUPY_AVAILABLE = False
 
 
-from . import utils
+from . import helpers
 from .backend import (
     ArrayType,
     dispatch,
@@ -63,10 +63,12 @@ class SignalInfo(BaseModel):
     ----------
     signal_type : {"single_carrier_frame", "ofdm_frame", "preamble", "generic"}
         The type of the signal structure.
-    preamble_len : int
+    preamble_seq_len : int
         Number of symbols in the preamble/training sequence.
-    preamble_type : str, optional
+    preamble_type : Literal["barker", "zc"], optional
         The type of sequence (e.g., 'barker', 'zc').
+    preamble_mode : Literal["same", "time_orthogonal"], optional
+        The mode of preamble transmission (e.g., 'same', 'time_orthogonal').
     preamble_kwargs : dict
         Parameters used for preamble generation (e.g., 'root' for ZC).
     payload_len : int
@@ -87,10 +89,14 @@ class SignalInfo(BaseModel):
         Modulation scheme used for pilot symbols (e.g., 'PSK').
     pilot_mod_order : int, default 0
         Modulation order for pilot symbols.
+    pilot_gain_db : float, default 0.0
+        Gain of pilot symbols in dB.
     guard_len : int
         Length of the guard interval (e.g., cyclic prefix) in symbols.
     guard_type : {"zero", "cp"}
         Type of guard interval: "zero" for zero-padding, "cp" for cyclic prefix.
+    num_streams : int, default 1
+        Number of streams for MIMO.
 
     Notes
     -----
@@ -100,20 +106,28 @@ class SignalInfo(BaseModel):
     signal_type: Literal[
         "single_carrier_frame", "ofdm_frame", "preamble", "generic"
     ] = "generic"
-    preamble_len: Optional[int] = None
-    preamble_type: Optional[str] = None
+
+    preamble_seq_len: Optional[int] = Field(default=None, ge=0)
+    preamble_type: Optional[Literal["barker", "zc"]] = None
+    preamble_mode: Optional[Literal["same", "time_orthogonal"]] = None
     preamble_kwargs: Optional[Dict[str, Any]] = None
-    payload_len: Optional[int] = None
+
+    payload_len: Optional[int] = Field(default=None, ge=0)
     payload_mod_scheme: Optional[str] = None
-    payload_mod_order: Optional[int] = None
-    pilot_count: Optional[int] = None
+    payload_mod_order: Optional[int] = Field(default=None, ge=2)
+
+    pilot_count: Optional[int] = Field(default=None, ge=0)
     pilot_pattern: Optional[Literal["none", "block", "comb"]] = None
-    pilot_period: Optional[int] = None
-    pilot_block_len: Optional[int] = None
+    pilot_period: Optional[int] = Field(default=None, ge=0)
+    pilot_block_len: Optional[int] = Field(default=None, ge=0)
     pilot_mod_scheme: Optional[str] = None
-    pilot_mod_order: Optional[int] = None
-    guard_len: Optional[int] = None
+    pilot_mod_order: Optional[int] = Field(default=None, ge=2)
+    pilot_gain_db: Optional[float] = None
+
+    guard_len: Optional[int] = Field(default=None, ge=0)
     guard_type: Optional[Literal["zero", "cp"]] = None
+
+    num_streams: Optional[int] = Field(default=None, ge=1)
 
 
 class Signal(BaseModel):
@@ -185,11 +199,11 @@ class Signal(BaseModel):
     digital_frequency_offset: float = Field(default=0)
 
     # Pulse shaping parameters
-    filter_span: int = 10
-    rrc_rolloff: float = 0.35
-    rc_rolloff: float = 0.35
-    gaussian_bt: float = 0.3
-    smoothrect_bt: float = 1.0
+    filter_span: int = Field(default=10, ge=1)
+    rrc_rolloff: float = Field(default=0.35, ge=0, le=1)
+    rc_rolloff: float = Field(default=0.35, ge=0, le=1)
+    gaussian_bt: float = Field(default=0.3, gt=0)
+    smoothrect_bt: float = Field(default=1.0, gt=0)
 
     # Signal structure info (populated when Signal is generated from Frame/Preamble)
     signal_info: Optional[SignalInfo] = None
@@ -230,7 +244,7 @@ class Signal(BaseModel):
         or simply (N_samples,) for 1D signals. This aligns with C-contiguous
         memory layout which is generally more performant for time-axis operations.
         """
-        arr = utils.validate_array(v, name="samples")
+        arr = helpers.validate_array(v, name="samples")
 
         # Check shape conventions
         # We enforce Time-Last convention: (Channels, Time) or (Time,) for 1D.
@@ -289,7 +303,7 @@ class Signal(BaseModel):
         # For MIMO (multichannel), we normalize per-stream (axis=-1) to ensure each stream
         # independently adheres to E_s=1, facilitating per-stream metric calculation.
         if self.source_symbols is not None:
-            self.source_symbols = utils.normalize(
+            self.source_symbols = helpers.normalize(
                 self.source_symbols, mode="average_power", axis=-1
             )
 
@@ -602,18 +616,18 @@ class Signal(BaseModel):
                 self.physical_domain,
                 self.modulation_scheme,
                 str(self.modulation_order) if self.modulation_order else "None",
-                utils.format_si(self.symbol_rate, "Baud"),
-                utils.format_si(
+                helpers.format_si(self.symbol_rate, "Baud"),
+                helpers.format_si(
                     self.symbol_rate * np.log2(self.modulation_order), "bps"
                 )
                 if self.modulation_order
                 else "None",
-                utils.format_si(self.sampling_rate, "Hz"),
+                helpers.format_si(self.sampling_rate, "Hz"),
                 f"{self.sps:.2f}",
                 self.pulse_shape.upper() if self.pulse_shape else "None",
-                utils.format_si(self.duration, "s"),
-                utils.format_si(self.center_frequency, "Hz"),
-                utils.format_si(self.digital_frequency_offset, "Hz"),
+                helpers.format_si(self.duration, "s"),
+                helpers.format_si(self.center_frequency, "Hz"),
+                helpers.format_si(self.digital_frequency_offset, "Hz"),
                 self.backend.upper(),
                 "SISO" if self.num_streams == 1 else f"MIMO ({self.num_streams}x)",
                 str(self.samples.shape),
@@ -725,6 +739,7 @@ class Signal(BaseModel):
             **kwargs,
         )
 
+    # TODO: add option to plot samples or received symbols with overlay of source symbols
     def plot_constellation(
         self,
         bins: int = 100,
@@ -1147,7 +1162,7 @@ class Signal(BaseModel):
         will restore the symbols to unit average power for consistent metric
         calculation and demapping.
         """
-        from . import filtering, mapping, utils
+        from . import filtering, mapping
 
         # Bit-first architecture: generate bits → map to symbols
         k = int(np.log2(order))  # bits per symbol
@@ -1155,7 +1170,7 @@ class Signal(BaseModel):
         total_bits = total_symbols * k
 
         # Generate source bits
-        bits = utils.random_bits(total_bits, seed=seed)
+        bits = helpers.random_bits(total_bits, seed=seed)
 
         # Map bits to symbols
         unipolar = kwargs.pop("unipolar", None)
@@ -1257,7 +1272,7 @@ class Signal(BaseModel):
         will restore the symbols to unit average power for consistent metric
         calculation and demapping.
         """
-        from . import filtering, utils
+        from . import filtering
 
         if mode == "rz":
             if sps % 2 != 0:
@@ -1275,7 +1290,7 @@ class Signal(BaseModel):
             # Bit-first architecture: generate bits → map to symbols
             total_symbols = num_symbols * num_streams
             k = int(np.log2(order))  # bits per symbol
-            bits = utils.random_bits(total_symbols * k, seed=seed)
+            bits = helpers.random_bits(total_symbols * k, seed=seed)
 
             # Import mapping here to avoid circular imports
             from . import mapping
@@ -1312,7 +1327,7 @@ class Signal(BaseModel):
             # RZ hardcoded to 0.5 pulse width
             from . import multirate
 
-            samples = utils.normalize(
+            samples = helpers.normalize(
                 multirate.polyphase_resample(symbols, int(sps), 1, window=h, axis=-1),
                 "peak",
             )
@@ -1690,14 +1705,16 @@ class Signal(BaseModel):
 
             return llr
 
-    def resolve_symbols(self, offset: float = 0.0) -> ArrayType:
+    def resolve_symbols(self, offset: int = 0) -> ArrayType:
         """
         Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
         caches them in `self.resolved_symbols`.
 
+        WARNING: Only integer offsets are supported. For fractional we would need interpolation.
+
         Parameters
         ----------
-        offset : float, default 0.0
+        offset : int, default 0
             Timing offset in samples to apply before decimation. This allows
             for choosing the optimal sampling point within the symbol period.
 
@@ -1721,27 +1738,28 @@ class Signal(BaseModel):
         # Apply timing offset if needed
         # For simplicity, we use indexing. For fractional offset, we would need interpolation.
         # Here we support integer offset.
-        offset_int = int(round(offset))
 
-        if sps <= 1:
+        if sps < 1:
+            raise ValueError("Symbol rate must be >= 1.")
+
+        if sps % 1 != 0:
+            raise ValueError("Symbol rate must be an integer.")
+
+        if sps == 1:
             # Already at symbol rate
             res = self.samples
         else:
-            # Downsample by taking every sps-th sample
-            sps_int = int(round(sps))
-            if self.samples.ndim == 2:
-                # MIMO: downsample each stream, shape (num_streams, num_symbols)
-                res = self.samples[:, offset_int::sps_int]
-            else:
-                res = self.samples[offset_int::sps_int]
+            from . import multirate
+
+            res = multirate.downsample_to_symbols(
+                self.samples, sps=int(sps), offset=int(offset), axis=-1
+            )
 
         # Normalize symbols to unit average power (E_s = 1) for consistent
         # demapping and metric calculation.
-        from . import utils
-
         # For MIMO, we normalize per-stream (axis=-1). Each resolved stream
         # is independently scaled to unit power.
-        self.resolved_symbols = utils.normalize(res, "average_power", axis=-1)
+        self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
         return self.resolved_symbols
 
 
@@ -1812,7 +1830,7 @@ class Preamble(BaseModel):
         """Total number of symbols in the preamble."""
         return self.length
 
-    def to_waveform(
+    def to_signal(
         self,
         sps: int,
         symbol_rate: float,
@@ -1878,7 +1896,7 @@ class Preamble(BaseModel):
         # Create minimal SignalInfo for the Preamble
         signal_info = SignalInfo(
             signal_type="preamble",
-            preamble_len=self.length,
+            preamble_seq_len=self.length,
             preamble_type=self.sequence_type,
             preamble_kwargs=self.kwargs,
             payload_len=0,
@@ -1946,23 +1964,24 @@ class SingleCarrierFrame(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    payload_len: int = 1000
+    payload_len: int = Field(default=1000, gt=0)
     payload_seed: int = 42
     payload_mod_scheme: str = "PSK"
-    payload_mod_order: int = 4
+    payload_mod_order: int = Field(default=4, ge=1)
 
     preamble: Optional[Preamble] = None
+    preamble_mode: Literal["same", "time_orthogonal"] = "same"
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
-    pilot_period: int = 0
-    pilot_block_len: int = 0
+    pilot_period: int = Field(default=0, ge=0)
+    pilot_block_len: int = Field(default=0, ge=0)
     pilot_seed: int = 1337
     pilot_mod_scheme: str = "PSK"
-    pilot_mod_order: int = 4
+    pilot_mod_order: int = Field(default=4, ge=1)
     pilot_gain_db: float = 0.0
 
     guard_type: Literal["zero", "cp"] = "zero"
-    guard_len: int = 0
+    guard_len: int = Field(default=0, ge=0)
 
     num_streams: int = Field(default=1, ge=1)
 
@@ -2055,7 +2074,7 @@ class SingleCarrierFrame(BaseModel):
 
         k = int(np.log2(self.payload_mod_order))
         total_symbols = self.payload_len * self.num_streams
-        bits = utils.random_bits(total_symbols * k, seed=self.payload_seed)
+        bits = helpers.random_bits(total_symbols * k, seed=self.payload_seed)
         symbols = mapping.map_bits(
             bits,
             self.payload_mod_scheme,
@@ -2090,7 +2109,7 @@ class SingleCarrierFrame(BaseModel):
 
         k = int(np.log2(self.pilot_mod_order))
         total_pilots = pilot_count * self.num_streams
-        bits = utils.random_bits(total_pilots * k, seed=self.pilot_seed)
+        bits = helpers.random_bits(total_pilots * k, seed=self.pilot_seed)
         symbols = mapping.map_bits(
             bits,
             self.pilot_mod_scheme,
@@ -2203,7 +2222,7 @@ class SingleCarrierFrame(BaseModel):
 
         return body
 
-    def to_waveform(
+    def to_signal(
         self,
         sps: int = 4,
         symbol_rate: float = 1e6,
@@ -2255,7 +2274,6 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
-        from .utils import normalize
 
         # 1. Shape Body (Payload + Pilots)
         body_symbols = self.body_symbols
@@ -2272,14 +2290,14 @@ class SingleCarrierFrame(BaseModel):
         ).astype(dtype)
 
         # Normalize Body to Peak 1.0
-        body_samples = normalize(body_samples, mode="peak")
+        body_samples = helpers.normalize(body_samples, mode="peak")
 
         # 2. Shape Preamble (if present)
         if self.preamble is not None:
-            # Use Preamble's to_waveform for shaping to reuse logic,
+            # Use Preamble's to_signal for shaping to reuse logic,
             # but we only need the samples.
             # CRITICAL: Must use EXACT same shaping parameters as body.
-            preamble_signal = self.preamble.to_waveform(
+            preamble_signal = self.preamble.to_signal(
                 sps=sps,
                 symbol_rate=symbol_rate,
                 pulse_shape=pulse_shape,
@@ -2294,14 +2312,12 @@ class SingleCarrierFrame(BaseModel):
             preamble_samples = preamble_signal.samples
 
             # Normalize Preamble to Peak 1.0
-            preamble_samples = normalize(preamble_samples, mode="peak")
+            preamble_samples = helpers.normalize(preamble_samples, mode="peak")
 
-            # Handle MIMO broadcasting for preamble if needed
-            if self.num_streams > 1 and preamble_samples.ndim == 1:
-                # (L,) -> (1, L) -> (C, L)
-                preamble_samples = xp.tile(
-                    preamble_samples[None, :], (self.num_streams, 1)
-                )
+            # Handle MIMO preamble structure
+            preamble_samples = helpers.expand_preamble_mimo(
+                preamble_samples, self.num_streams, self.preamble_mode
+            )
 
             # Concatenate Preamble + Body
             samples = xp.concatenate([preamble_samples, body_samples], axis=-1)
@@ -2325,12 +2341,18 @@ class SingleCarrierFrame(BaseModel):
         mask, _ = self._generate_pilot_mask()
         pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
 
+        if self.preamble:
+            preamble_base_len = self.preamble.num_symbols
+        else:
+            preamble_base_len = None
+
         signal_info = SignalInfo(
             signal_type="single_carrier_frame",
             payload_mod_scheme=self.payload_mod_scheme,
             payload_mod_order=self.payload_mod_order,
-            preamble_len=self.preamble.num_symbols if self.preamble else 0,
+            preamble_seq_len=preamble_base_len,
             preamble_type=self.preamble.sequence_type if self.preamble else None,
+            preamble_mode=self.preamble_mode if self.preamble else None,
             preamble_kwargs=self.preamble.kwargs if self.preamble else {},
             payload_len=self.payload_len,
             pilot_count=pilot_count,
@@ -2339,8 +2361,10 @@ class SingleCarrierFrame(BaseModel):
             pilot_block_len=self.pilot_block_len,
             pilot_mod_scheme=self.pilot_mod_scheme,
             pilot_mod_order=self.pilot_mod_order,
+            pilot_gain_db=self.pilot_gain_db,
             guard_len=self.guard_len,
             guard_type=self.guard_type,
+            num_streams=self.num_streams,
         )
 
         return Signal(
@@ -2387,7 +2411,12 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
-        preamble_len = self.preamble.num_symbols if self.preamble is not None else 0
+
+        preamble_len = 0
+        if self.preamble is not None:
+            preamble_len = self.preamble.num_symbols
+            if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
+                preamble_len *= self.num_streams
 
         if include_preamble:
             total_len = preamble_len + body_length + self.guard_len

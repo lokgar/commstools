@@ -36,6 +36,8 @@ def polyphase_resample(
     window: Optional[ArrayType] = None,
 ) -> ArrayType:
     """
+    TEMPORARY FIX, `resample_poly` WILL BE FIXED IN THE NEXT RELEASE OF CUPY.
+
     Rational resampling using polyphase filtering.
 
     This method changes the sampling rate of a signal by a rational factor
@@ -140,7 +142,7 @@ def downsample_to_symbols(
     samples : array_like
         Input matched-filtered signal. Shape: (..., N_samples).
     sps : int
-        Samples per symbol (decimation factor).
+        Input samples per symbol (decimation factor).
     offset : int, default 0
         Sampling phase offset in samples [0, sps-1]. Adjust this to
         sample at the peak of the impulse response (center of the eye).
