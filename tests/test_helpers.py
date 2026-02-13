@@ -1,9 +1,9 @@
-"""Tests for general utility routines (normalization, interpolation)."""
+"""Tests for helpers routines (normalization, interpolation)."""
 
 import numpy as np
 import pytest
 
-from commstools import utils
+from commstools import helpers
 
 
 class Unconvertible:
@@ -17,10 +17,10 @@ def test_normalize(backend_device, xp):
     """Verify max-amplitude and average-power normalization modes."""
     data = xp.array([1.0, 2.0, 0.5])
 
-    norm = utils.normalize(data, mode="peak")
+    norm = helpers.normalize(data, mode="peak")
     assert xp.isclose(xp.max(xp.abs(norm)), 1.0)
 
-    norm_power = utils.normalize(data, mode="average_power")
+    norm_power = helpers.normalize(data, mode="average_power")
     # Mean power should be 1
     mean_pwr = xp.mean(xp.abs(norm_power) ** 2)
 
@@ -37,7 +37,7 @@ def test_interp1d(backend_device, xp):
     # Query points
     x = xp.array([0.5, 1.5, 2.5])
 
-    result = utils.interp1d(x, x_p, f_p)
+    result = helpers.interp1d(x, x_p, f_p)
 
     expected = 2.0 * x
     assert xp.allclose(result, expected)
@@ -45,7 +45,7 @@ def test_interp1d(backend_device, xp):
     # Test extrapolation (linear based on nearest segment)
     x_out = xp.array([-0.5, 3.5])
 
-    result_out = utils.interp1d(x_out, x_p, f_p)
+    result_out = helpers.interp1d(x_out, x_p, f_p)
 
     # For -0.5: clamped to first segment indices
     # Correct calculation: x0=0.0, x1=1.0, y0=0.0, y1=2.0 -> y = 2x -> -1.0
@@ -59,7 +59,7 @@ def test_interp1d(backend_device, xp):
 def test_normalize_unity_gain(backend_device, xp):
     """Verify unity-gain normalization (sum of elements = 1)."""
     data = xp.array([1.0, 2.0, 3.0, 4.0])
-    norm = utils.normalize(data, mode="unity_gain")
+    norm = helpers.normalize(data, mode="unity_gain")
     assert xp.isclose(xp.sum(norm), 1.0)
 
 
@@ -69,39 +69,39 @@ def test_normalize_errors(backend_device, xp):
 
     data = xp.array([1, 2, 3])
     with pytest.raises(ValueError, match="Unknown normalization mode"):
-        utils.normalize(data, mode="invalid")
+        helpers.normalize(data, mode="invalid")
 
 
 def test_format_si(backend_device, xp):
     """Verify SI-prefix formatting for various magnitudes."""
-    assert utils.format_si(None) == "None"
-    assert utils.format_si(0) == "0.00 Hz"
-    assert "1.00 MHz" in utils.format_si(1e6, "Hz")
-    assert "500.00 mV" in utils.format_si(0.5, "V")
+    assert helpers.format_si(None) == "None"
+    assert helpers.format_si(0) == "0.00 Hz"
+    assert "1.00 MHz" in helpers.format_si(1e6, "Hz")
+    assert "500.00 mV" in helpers.format_si(0.5, "V")
 
 
 def test_validate_array(backend_device, xp):
     """Verify array validation and coercion logic."""
     # Test None
-    assert utils.validate_array(None) is None
+    assert helpers.validate_array(None) is None
 
     # Test conversion
-    arr = utils.validate_array([1, 2, 3])
+    arr = helpers.validate_array([1, 2, 3])
     assert isinstance(arr, (xp.ndarray, np.ndarray))
 
     # Test complex_only
-    arr_c = utils.validate_array(xp.array([1, 2], dtype=float), complex_only=True)
+    arr_c = helpers.validate_array(xp.array([1, 2], dtype=float), complex_only=True)
     assert xp.iscomplexobj(arr_c)
 
     # Test error
     import pytest
 
     with pytest.raises(ValueError, match="Expected numeric array"):
-        utils.validate_array("not an array")
+        helpers.validate_array("not an array")
 
     # Test non-numeric array (object/string)
     with pytest.raises(ValueError, match="Expected numeric array"):
-        utils.validate_array(np.array(["a", "b"]))
+        helpers.validate_array(np.array(["a", "b"]))
 
     # Test completely non-convertible type (though np.asarray is permissive)
     # Using something that raises in np.asarray (if possible)
@@ -112,25 +112,25 @@ def test_validate_array_errors(backend_device, xp):
     """Verify validation errors for unsupported types."""
     # Non-convertible type
     with pytest.raises(ValueError, match="Expected numeric array"):
-        utils.validate_array(np.array(["a", "b"]), name="array")
+        helpers.validate_array(np.array(["a", "b"]), name="array")
 
     # Non-numeric dtype
     with pytest.raises(ValueError, match="Expected numeric array"):
-        utils.validate_array(np.array(["a", "b"]), name="array")
+        helpers.validate_array(np.array(["a", "b"]), name="array")
 
 
 def test_format_si_edge_cases(backend_device, xp):
     """Verify SI formatting for None and 0."""
-    assert utils.format_si(None) == "None"
-    assert utils.format_si(0) == "0.00 Hz"
-    assert "Hz" in utils.format_si(100)
+    assert helpers.format_si(None) == "None"
+    assert helpers.format_si(0) == "0.00 Hz"
+    assert "Hz" in helpers.format_si(100)
 
 
 def test_normalize_zeros(backend_device, xp):
     """Verify normalization of all-zero arrays."""
     x = xp.zeros(10)
     # Norm factor is 0, should returned zeros instead of NaN
-    out = utils.normalize(x, mode="unit_energy")
+    out = helpers.normalize(x, mode="unit_energy")
     assert xp.all(out == 0)
     assert out.shape == (10,)
 
@@ -138,28 +138,28 @@ def test_normalize_zeros(backend_device, xp):
 def test_normalize_invalid_mode(backend_device, xp):
     """Verify error for unknown normalization mode."""
     with pytest.raises(ValueError, match="Unknown normalization mode"):
-        utils.normalize(xp.ones(5), mode="invalid")
+        helpers.normalize(xp.ones(5), mode="invalid")
 
 
 def test_rms_axis(backend_device, xp):
     """Verify RMS calculation across specific axis."""
     x = xp.array([[1.0, 1.0], [2.0, 2.0]])
     # Overall RMS: sqrt((1+1+4+4)/4) = sqrt(2.5)
-    assert xp.allclose(utils.rms(x), xp.sqrt(2.5))
+    assert xp.allclose(helpers.rms(x), xp.sqrt(2.5))
     # Per-row RMS: [1, 2]
-    assert xp.allclose(utils.rms(x, axis=1), [1.0, 2.0])
+    assert xp.allclose(helpers.rms(x, axis=1), [1.0, 2.0])
 
 
 def test_random_symbols_unipolar(backend_device, xp):
     """Test unipolar flag in random_symbols."""
-    syms = utils.random_symbols(10, "ask", 4, unipolar=True)
+    syms = helpers.random_symbols(10, "ask", 4, unipolar=True)
     assert xp.all(syms >= 0)
 
 
 def test_validate_array_complex_only(backend_device, xp):
     """Verify complex_only flag in validate_array."""
     arr = xp.array([1, 2, 3], dtype=float)
-    out = utils.validate_array(arr, complex_only=True)
+    out = helpers.validate_array(arr, complex_only=True)
     assert xp.iscomplexobj(out)
     assert xp.all(out.real == arr)
     assert xp.all(out.imag == 0)
@@ -170,7 +170,7 @@ def test_random_bits_gpu(backend_device, xp):
     if backend_device != "gpu":
         pytest.skip("Test targets GPU branch")
 
-    bits = utils.random_bits(100)
+    bits = helpers.random_bits(100)
     assert isinstance(bits, xp.ndarray)
     assert len(bits) == 100
 
@@ -181,4 +181,4 @@ def test_validate_array_exception(backend_device, xp):
     obj = Unconvertible()
 
     with pytest.raises(ValueError, match="Could not convert"):
-        utils.validate_array(obj)
+        helpers.validate_array(obj)

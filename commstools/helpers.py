@@ -366,3 +366,73 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     result = xp.swapaxes(result, axis, -1)
 
     return result
+
+
+def expand_preamble_mimo(
+    base_waveform: ArrayType, num_streams: int, mode: str = "same"
+) -> ArrayType:
+    """
+    Expands a base preamble waveform into a MIMO preamble structure.
+
+    Parameters
+    ----------
+    base_waveform : ArrayType
+        Base preamble samples, shape (L,) or (1, L).
+    num_streams : int
+        Number of transmit streams.
+    mode : str
+        MIMO mode: "same" (broadcast) or "time_orthogonal".
+
+    Returns
+    -------
+    ArrayType
+        Expanded preamble, shape (C, L_mimo).
+    """
+    if num_streams <= 1:
+        return base_waveform
+
+    xp = get_array_module(base_waveform)
+
+    # Ensure (1, L)
+    if base_waveform.ndim == 1:
+        base_waveform = base_waveform[None, :]
+
+    if mode == "same":
+        # Broadcast: (C, L)
+        return xp.tile(base_waveform, (num_streams, 1))
+
+    elif mode == "time_orthogonal":
+        # Time-Orthogonal: (C, L * C)
+        # [ P 0 0 ]
+        # [ 0 P 0 ]
+        # [ 0 0 P ]
+        L = base_waveform.shape[-1]
+        dtype = base_waveform.dtype
+
+        # Flattened view strategy to avoid loop
+        # We want to place `base_waveform` at offsets 0, L+1*row_stride, 2L+2*row_stride...
+        # But for time-orthogonal:
+        # p[0, 0:L]
+        # p[1, L:2L]
+        # ...
+
+        # Create empty array
+        total_len = L * num_streams
+        p_mimo = xp.zeros((num_streams, total_len), dtype=dtype)
+
+        # We can simulate this by reshaping to (num_streams, num_streams, L)
+        # and filling the diagonal blocks (i, i, :)
+
+        p_view = p_mimo.reshape(num_streams, num_streams, L)
+
+        # Optimized approach using strided write:
+        # p_view[i, i, :] = base_waveform
+        # Advanced indexing:
+        indices = xp.arange(num_streams)
+        p_view[indices, indices, :] = base_waveform[0]
+
+        return p_mimo
+
+    else:
+        # Fallback to broadcast (or raise error? "same" is safe default)
+        return xp.tile(base_waveform, (num_streams, 1))

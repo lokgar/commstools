@@ -57,7 +57,7 @@ def evm(
     For MIMO, metrics are calculated independently for each stream (row).
     """
     from .core import Signal
-    from . import utils
+    from . import helpers
 
     # Extract samples
     if isinstance(rx_symbols, Signal):
@@ -95,13 +95,13 @@ def evm(
 
     # Robustness: Check if normalized, if not -> normalize per channel
     if not _is_normalized(rx, axis):
-        rx = utils.normalize(rx, axis=axis, mode="average_power")
+        rx = helpers.normalize(rx, axis=axis, mode="average_power")
 
     if not _is_normalized(tx, axis):
-        tx = utils.normalize(tx, axis=axis, mode="average_power")
+        tx = helpers.normalize(tx, axis=axis, mode="average_power")
 
     # Check for zero power ref
-    # If tx was zeros, normalize might have left it as zeros (safe/utils.py behavior)
+    # If tx was zeros, normalize might have left it as zeros (safe/helpers.py behavior)
     ref_pwr = xp.mean(xp.abs(tx) ** 2, axis=axis)
     low_pwr_mask = ref_pwr < 1e-20
 
@@ -169,7 +169,7 @@ def snr(
         Estimated SNR in dB. Returns array if input is multichannel.
     """
     from .core import Signal
-    from . import utils
+    from . import helpers
 
     if isinstance(rx_symbols, Signal):
         rx = (
@@ -203,10 +203,10 @@ def snr(
 
     # Normalize per channel if needed
     if not _is_normalized(rx, axis):
-        rx = utils.normalize(rx, axis=axis, mode="average_power")
+        rx = helpers.normalize(rx, axis=axis, mode="average_power")
 
     if not _is_normalized(tx, axis):
-        tx = utils.normalize(tx, axis=axis, mode="average_power")
+        tx = helpers.normalize(tx, axis=axis, mode="average_power")
 
     # Check for zero power ref for SNR too
     ref_pwr = xp.mean(xp.abs(tx) ** 2, axis=axis)
@@ -246,6 +246,7 @@ def snr(
     return snr_db
 
 
+# TODO: check precision for ber
 def ber(
     bits_rx: ArrayType,
     bits_tx: ArrayType,

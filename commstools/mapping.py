@@ -189,9 +189,9 @@ def gray_constellation(
             # PSK is already on unit circle (E_s = 1)
             pass
         else:
-            from . import utils
+            from . import helpers
 
-            result = utils.normalize(result, mode="average_power")
+            result = helpers.normalize(result, mode="average_power")
 
     return result
 

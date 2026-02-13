@@ -32,7 +32,7 @@ def test_frame_mimo_generation(backend_device, xp):
         guard_len=10,
     )
 
-    sig = frame.to_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_signal(sps=1, pulse_shape="none")
     # Length: 100 payload + 10 guard = 110 symbols
     assert sig.samples.shape == (2, 110)
     assert sig.num_streams == 2
@@ -54,7 +54,7 @@ def test_frame_mimo_pilots(backend_device, xp):
     # len=10 payload. period=2 -> 1 pilot, 1 data.
     # total len = 10 data -> 10 periods -> 20 symbols.
 
-    sig = frame.to_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_signal(sps=1, pulse_shape="none")
     assert sig.samples.shape == (2, 20)
 
     # Check mask and body
@@ -72,7 +72,7 @@ def test_frame_mimo_preamble_broadcasting(backend_device, xp):
         payload_len=20, symbol_rate=1e6, num_streams=2, preamble=preamble
     )
 
-    sig = frame.to_waveform(sps=1, pulse_shape="none")
+    sig = frame.to_signal(sps=1, pulse_shape="none")
     # Total: 13 preamble + 20 payload = 33
     assert sig.samples.shape == (2, 33)
 
@@ -86,7 +86,7 @@ def test_frame_mimo_waveform(backend_device, xp):
     """Verify MIMO waveform generation with pulse shaping."""
     frame = SingleCarrierFrame(payload_len=10, symbol_rate=1e6, num_streams=2)
 
-    sig = frame.to_waveform(sps=4, pulse_shape="rect")
+    sig = frame.to_signal(sps=4, pulse_shape="rect")
     # 10 symbols * 4 sps = 40 samples
     assert sig.samples.shape == (2, 40)
     assert sig.sps == 4.0

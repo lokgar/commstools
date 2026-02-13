@@ -15,20 +15,15 @@ correlate :
     Multi-backend cross-correlation for sequence detection.
 detect_frame :
     Identifies frame start position via preamble correlation.
-generate_preamble_bits :
-    Factory for standard synchronization bit sequences.
 """
 
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 
 from .backend import ArrayType, dispatch, is_cupy_available, to_device
+from .core import Preamble, Signal, SignalInfo
 from .logger import logger
-
-if TYPE_CHECKING:
-    from .core import Preamble, Signal
-
 
 # Standard Barker codes
 _BARKER_SEQUENCES = {
@@ -240,43 +235,56 @@ def _correlate_1d(
 
 def detect_frame(
     signal: Union[ArrayType, "Signal"],
-    preamble: Union[ArrayType, "Preamble"],
+    preamble: Optional[Union[ArrayType, "Preamble"]] = None,
     threshold: float = 0.5,
+    info: Optional["SignalInfo"] = None,
+    sps: Optional[int] = None,
+    pulse_shape: Optional[str] = None,
+    filter_params: Optional[dict] = None,
     return_metric: bool = False,
     search_range: Optional[Tuple[int, int]] = None,
     debug_plot: bool = False,
-) -> Union[int, Tuple[int, float]]:
+) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
     """
     Detects the start of a frame via preamble correlation.
 
     This function performs a sliding cross-correlation between the received
-    signal and a known reference preamble. The frame start is identified
-    as the index of the maximum correlation peak that exceeds the specified
-    relative threshold.
+    signal and the expected preamble. It supports SISO and MIMO configurations,
+    handling different preamble modes (e.g., 'same', 'time_orthogonal') automatically
+    if `SignalInfo` is provided.
 
     Parameters
     ----------
     signal : array_like or Signal
-        Received signal samples. For multidimensional (MIMO) signals,
-        the first channel is used for detection.
-    preamble : array_like or Preamble
-        The known preamble symbols (reference sequence).
+        Received signal samples.
+    preamble : array_like or Preamble, optional
+        The known preamble symbols (reference sequence). If None, it will be
+        inferred from `signal.signal_info` or `info` argument.
     threshold : float, default 0.5
-        Detection threshold normalized between 0 and 1. A peak is only
-        considered valid if the normalized correlation coefficient exceeds
-        this value.
+        Detection threshold normalized between 0 and 1.
+    info : SignalInfo, optional
+        Metadata describing the frame structure. If provided, it overrides
+        any info attached to `signal`.
+    sps : int, optional
+        Samples per symbol. Inferred from `signal` if not provided.
+    pulse_shape : str, optional
+        Pulse shaping filter. Inferred from `signal` if not provided.
+    filter_params : dict, optional
+        Additional filter parameters (beta, span, etc.). Inferred if None.
     return_metric : bool, default False
         If True, returns both the detected index and the peak metric.
     search_range : tuple of int, optional
-        A `(start, end)` sample range to restrict the detection search.
-        Useful for gated receivers or known frame intervals.
+        A `(start, end)` sample range to restrict detection.
+        Defaults to the full signal length.
+    debug_plot : bool, default False
+        If True, plots the correlation magnitude for debugging.
 
     Returns
     -------
-    frame_start : int
-        The sample index where the preamble begins.
-    peak_metric : float, optional
-        The normalized correlation coefficient at the detected peak.
+    frame_starts : ArrayType
+        The sample indices where the frame begins for each channel. Shape: (N_channels,).
+    peak_metrics : ArrayType, optional
+        The normalized correlation coefficients for each channel. Shape: (N_channels,).
         Only returned if `return_metric=True`.
 
     Raises
@@ -290,191 +298,244 @@ def detect_frame(
       to the very first sample of the detected preamble.
     - **Synchronization Strategy**: For signals with oversampling ($SPS > 1$),
       correlating with a shaped/oversampled preamble (e.g., generated via
-      `Preamble.to_waveform(...)`) typically yields superior timing precision
+      `Preamble.to_signal(...)`) typically yields superior timing precision
       and SNR compared to correlating with 1 SPS symbols. Ensure the `preamble`
       argument matches the sampling rate of the input `signal`.
     """
-    from .core import Preamble, Signal
+    from .helpers import expand_preamble_mimo
 
-    # Extract arrays and metadata
-    sps_val = None
+    # 1. Resolve Inputs & Metadata
+    sig_array = None
+
     if isinstance(signal, Signal):
         sig_array = signal.samples
-        # Infer parameters for Preamble.to_waveform
-        sps_val = signal.sps
-        symbol_rate = signal.symbol_rate
-        pulse_shape = signal.pulse_shape or "rrc"
-        filter_params = {
-            "filter_span": signal.filter_span,
-            "rrc_rolloff": signal.rrc_rolloff,
-            "rc_rolloff": signal.rc_rolloff,
-            "gaussian_bt": signal.gaussian_bt,
-            "smoothrect_bt": signal.smoothrect_bt,
-        }
+        if info is None:
+            info = signal.signal_info
+        if sps is None:
+            sps = int(round(signal.sps))
+        if pulse_shape is None:
+            pulse_shape = signal.pulse_shape or "rrc"
+        if filter_params is None:
+            filter_params = {
+                "filter_span": signal.filter_span,
+                "rrc_rolloff": signal.rrc_rolloff,
+                "rc_rolloff": signal.rc_rolloff,
+                "gaussian_bt": signal.gaussian_bt,
+                "smoothrect_bt": signal.smoothrect_bt,
+            }
     else:
         sig_array = signal
 
-    if isinstance(preamble, Preamble):
-        if sps_val is None:
-            raise ValueError(
-                "Cannot infer waveform parameters from a raw array. "
-                "Provide a Signal object or a preamble waveform array."
-            )
-        # Generate the shaped preamble waveform using inferred parameters
-        pre_sig = preamble.to_waveform(
-            sps=int(round(sps_val)),
-            symbol_rate=symbol_rate,
-            pulse_shape=pulse_shape,
-            **filter_params,
-        )
-        preamble_array = pre_sig.samples
-    else:
-        preamble_array = preamble
+    if filter_params is None:
+        filter_params = {}
 
     sig_array, xp, _ = dispatch(sig_array)
-    preamble_array = xp.asarray(preamble_array)
 
-    # Handle MIMO: use first channel for detection (preamble usually same on all)
-    if sig_array.ndim == 2:
-        sig_1d = sig_array[0]
+    # 2. Reconstruct/Get Preamble Waveform
+    # We prioritize reconstructing from 'info' to get correct MIMO structure
+    preamble_waveform = None
+
+    # Check if we can reconstruct from Info
+    if info is not None and info.preamble_type is not None:
+        # Reconstruct Preamble Object
+        p_obj = Preamble(
+            sequence_type=info.preamble_type,
+            length=info.preamble_seq_len,
+            **info.preamble_kwargs or {},
+        )
+
+        # Generate Base Waveform
+        # Must strictly use SPS/Filter from signal to match
+        if sps is None:
+            raise ValueError("SPS must be provided or inferred from Signal.")
+
+        p_sig = p_obj.to_signal(
+            sps=sps,
+            symbol_rate=1.0,  # dummy, affects only sampling_rate metadata
+            pulse_shape=pulse_shape or "rrc",
+            **filter_params,
+        )
+        base_waveform = p_sig.samples
+
+        # Apply MIMO Structure (Same logic as SingleCarrierFrame.to_signal)
+        # This ensures we correlate against exactly what was transmitted
+        num_streams = info.num_streams
+        mode = info.preamble_mode or "same"
+
+        preamble_waveform = expand_preamble_mimo(base_waveform, num_streams, mode)
+
+    # Fallback to manual preamble argument
+    elif preamble is not None:
+        if isinstance(preamble, Preamble):
+            if sps is None:
+                raise ValueError("SPS required for Preamble object.")
+            p_sig = preamble.to_signal(
+                sps=sps, symbol_rate=1.0, pulse_shape=pulse_shape, **filter_params
+            )
+            preamble_waveform = p_sig.samples
+        else:
+            preamble_waveform = xp.asarray(preamble)
     else:
-        sig_1d = sig_array
+        raise ValueError("Either 'info' or 'preamble' must be provided.")
+
+    # 3. Correlation Strategy
+    # Signal: (C, N) or (N,)
+    # Preamble: (C, L) or (L,) or (1, L)
+
+    # Ensure dimensions match for broadcast/multichannel correlation
+    if sig_array.ndim == 1:
+        sig_array = sig_array[None, :]  # Treat as 1 channel
+
+    if preamble_waveform.ndim == 1:
+        preamble_waveform = preamble_waveform[None, :]  # Treat as 1 template
+
+    # If signal has C channels, we expect preamble to be compatible.
+    # Case 1: Signal (C, N), Preamble (C, L) -> Correlate row-by-row, sum magnitudes.
+    # Case 2: Signal (C, N), Preamble (1, L) -> Broadcast preamble to all?
+    #         If mode="same", Preamble is (C, L) already.
+
+    # We will compute correlation for each channel pair (k, k)
+    # This assumes checking for "preamble on this channel".
+
+    num_sig_ch = sig_array.shape[0]
 
     # Apply search range
     offset = 0
     if search_range is not None:
         start, end = search_range
-        sig_1d = sig_1d[start:end]
+        sig_processing = sig_array[:, start:end]
         offset = start
+    else:
+        sig_processing = sig_array
 
-    # Correlate with preamble (use complex conjugate for matched filter)
-    corr = correlate(sig_1d, preamble_array, mode="same", normalize=False)
+    # --- Vectorized Correlation (FFT) ---
+    # We want independent correlation for each channel.
+    # Signal: (C, N). Preamble: (1, L) or (C, L).
+    # Broadcasting handles (1, L) -> (C, L).
 
-    # Take absolute value for magnitude
+    N = sig_processing.shape[-1]
+    L = preamble_waveform.shape[-1]
+    n_fft = 1 << (N + L - 1).bit_length()
+
+    # Calculate FFTs
+    SIG = xp.fft.fft(sig_processing, n_fft, axis=-1)
+    PRE = xp.fft.fft(preamble_waveform, n_fft, axis=-1)
+
+    # Multiply in frequency domain (Correlation = Convolution with time-reversed conjugate)
+    # FFT correlation gives circular convolution.
+    # Result[k] corresponds to lag k.
+    CORR_F = SIG * xp.conj(PRE)
+    corr_raw = xp.fft.ifft(CORR_F, axis=-1)
+
+    # Truncate to relevant lags (0 to N-L)
+    # Positive lags [0, N] correspond to valid start positions where P fits in S.
+    corr = corr_raw[..., :N]
+
+    # Magnitude
     corr_mag = xp.abs(corr)
 
-    # Find peak
-    peak_idx = int(xp.argmax(corr_mag))
-    peak_val = float(corr_mag[peak_idx])
+    # --- Per-Channel Analysis ---
+    # Find peak index per channel
+    peak_indices = xp.argmax(corr_mag, axis=-1)  # Shape (C,)
 
-    # Compute normalized metric: peak / (preamble_energy * signal_energy)
-    # This gives a value in [0, 1] for matched signals
-    preamble_energy = float(xp.sum(xp.abs(preamble_array) ** 2))
-    signal_energy = float(xp.mean(xp.abs(sig_1d) ** 2)) * len(preamble_array)
+    # --- Per-Channel Normalization ---
+    # Calculate Energy per channel
+    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C,) or broadcasted
+    if e_p.ndim < 1 or e_p.shape[0] != num_sig_ch:  # Handle scalar broadcast
+        e_p = xp.broadcast_to(e_p, (num_sig_ch,))
 
-    if preamble_energy > 0 and signal_energy > 0:
-        # Normalized correlation coefficient
-        normalized_peak = peak_val / xp.sqrt(preamble_energy * signal_energy)
-        normalized_peak = float(
-            min(normalized_peak, 1.0)
-        )  # Clamp due to numerical issues
-    else:
-        normalized_peak = 0.0
+    e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
+
+    norm_factors = xp.sqrt(e_p * e_s)
+    norm_factors = xp.maximum(norm_factors, 1e-12)
+
+    # Calculate per-channel metrics
+    peak_vals = xp.max(corr_mag, axis=-1)  # (C,)
+    metrics = peak_vals / norm_factors
+    metrics = xp.clip(metrics, 0.0, 1.0)
+
+    # --- Threshold Check ---
+    max_metric = float(xp.max(metrics))
+    if max_metric < threshold:
+        raise ValueError(
+            f"No correlation peak above threshold {threshold} (max: {max_metric:.3f})"
+        )
+
+    # --- Skew Check (Robust) ---
+    if num_sig_ch > 1:
+        # Check skew among valid channels
+        valid_mask = metrics > (threshold * 0.8)
+
+        if xp.sum(valid_mask) > 1:
+            valid_peaks = peak_indices[valid_mask]
+            spread = int(xp.max(valid_peaks) - xp.min(valid_peaks))
+
+            if spread > 0:
+                logger.warning(
+                    f"Skew detected among valid channels! "
+                    f"Valid Peaks: {valid_peaks.tolist()}. Spread: {spread} samples."
+                )
+            else:
+                logger.debug(f"Channels aligned (spread {spread}).")
+
+    # Frame Start Calculation (Per-Channel)
+    frame_starts = peak_indices + offset
+    frame_starts = xp.maximum(0, frame_starts)
 
     if debug_plot:
         import matplotlib.pyplot as plt
 
-        # Move to CPU for plotting
-        corr_cpu = to_device(corr_mag, "cpu")
+        # Layout: N rows for channels (No Combined)
+        n_rows = num_sig_ch
+        fig, axes = plt.subplots(n_rows, 2, figsize=(10, 3.5 * n_rows), squeeze=False)
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3.5))
+        # Plot Per-Channel
+        for i in range(num_sig_ch):
+            ax1 = axes[i][0]
+            ax2 = axes[i][1]
 
-        # Overall correlation plot
-        ax1.plot(corr_cpu, label="Correlation Magnitude")
-        if preamble_energy > 0 and signal_energy > 0:
-            abs_threshold = float(threshold * np.sqrt(preamble_energy * signal_energy))
-            ax1.axhline(
-                y=abs_threshold,
-                color="g",
-                linestyle=":",
-                label=f"Threshold ({abs_threshold})",
-            )
-        ax1.set_title("Overall Correlation")
-        ax1.set_xlabel("Sample Index")
-        ax1.set_ylabel("Magnitude")
-        ax1.legend()
+            c_ch = to_device(corr_mag[i], "cpu")
+            pk_idx = int(peak_indices[i])
+            pk_val = float(c_ch[pk_idx])
+            metric_val = float(metrics[i])
 
-        # Zoomed peak plot
-        zoom_width = 20
-        start_idx = max(0, peak_idx - zoom_width)
-        end_idx = min(len(corr_cpu), peak_idx + zoom_width)
+            norm_val_i = float(norm_factors[i])
+            abs_thresh = threshold * norm_val_i
 
-        ax2.plot(
-            np.arange(start_idx, end_idx),
-            corr_cpu[start_idx:end_idx],
-            label="Peak Area",
-        )
-        ax2.axvline(
-            x=peak_idx, color="r", linestyle="--", label=f"Peak Index ({peak_idx})"
-        )
-        if preamble_energy > 0 and signal_energy > 0:
-            ax2.axhline(y=abs_threshold, color="g", linestyle=":", label="Threshold")
+            # Ax1: Overall
+            ax1.plot(c_ch, label=f"Ch {i} (Metric: {metric_val:.2f})")
+            ax1.axhline(pk_val, color="r", linestyle="--", alpha=0.3, label="Max")
+            if abs_thresh > 0:
+                ax1.axhline(
+                    y=abs_thresh,
+                    color="g",
+                    linestyle=":",
+                    label=f"Thresh ({abs_thresh:.1f})",
+                )
+            ax1.set_title(f"Channel {i} - Overall")
+            ax1.legend(loc="upper right", fontsize="small")
+            ax1.grid(True, alpha=0.3)
 
-        ax2.set_title(f"Peak Detail (Metric: {normalized_peak:.3f})")
-        ax2.set_xlabel("Sample Index")
-        ax2.set_ylabel("Magnitude")
-        ax2.legend()
+            # Ax2: Zoom
+            zoom_w = 40
+            s_z = max(0, pk_idx - zoom_w)
+            e_z = min(len(c_ch), pk_idx + zoom_w)
+
+            ax2.plot(np.arange(s_z, e_z), c_ch[s_z:e_z], label="Peak Area")
+            ax2.axvline(pk_idx, color="r", linestyle="--", label=f"Pk {pk_idx}")
+            if abs_thresh > 0:
+                ax2.axhline(y=abs_thresh, color="g", linestyle=":", label="Thresh")
+            ax2.set_title(f"Channel {i} - Detail")
+            ax2.legend(loc="upper right", fontsize="small")
+            ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.show()
 
-    if normalized_peak < threshold:
-        raise ValueError(
-            f"No correlation peak above threshold {threshold} "
-            f"(max: {normalized_peak:.3f})"
-        )
-
-    # Adjust for preamble length and offset
-    # In "same" mode, peak is at center when preamble aligned
-    preamble_len = len(preamble_array)
-    frame_start = peak_idx - preamble_len // 2 + offset
-
-    # Clamp to valid range
-    frame_start = max(0, frame_start)
-
     logger.debug(
-        f"Frame detected at sample {frame_start} (metric: {normalized_peak:.3f})"
+        f"Frame detected. Starts: {frame_starts.tolist()}, Metrics: {metrics.tolist()}"
     )
 
     if return_metric:
-        return frame_start, normalized_peak
-    return frame_start
-
-
-def generate_preamble_bits(sequence_type: str, length: int, **kwargs) -> ArrayType:
-    """
-    Generates standard bit sequences for synchronization preambles.
-
-    Parameters
-    ----------
-    sequence_type : {"barker", "zc", "zadoff_chu"}
-        The type of sequence to generate.
-    length : int
-        The desired preamble length in symbols.
-    **kwargs : Any
-        Additional parameters for sequence generation (e.g., `root` for
-        ZC sequences).
-
-    Returns
-    -------
-    array_like
-        An array of bits (0s and 1s).
-    """
-    if sequence_type.lower() == "barker":
-        # Barker sequence as bits: +1 -> 1, -1 -> 0
-        # Barker is BPSK (1 bit/symbol)
-        seq = barker_sequence(length)
-        xp = np if not is_cupy_available() else dispatch(seq)[1]
-        bits = ((seq + 1) / 2).astype(xp.int32)
-        return bits
-
-    elif sequence_type.lower() in ("zc", "zadoff_chu"):
-        root = kwargs.get("root", 1)
-        # Generate ZC and quantize to BPSK bits (informational/rough binary version)
-        zc = zadoff_chu_sequence(length, root=root)
-        xp = np if not is_cupy_available() else dispatch(zc)[1]
-        bits = (zc.real > 0).astype(xp.int32)
-        return bits
-
-    else:
-        raise ValueError(f"Unknown sequence type: {sequence_type}")
+        return frame_starts, metrics
+    return frame_starts
