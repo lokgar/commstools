@@ -17,13 +17,11 @@ gray_constellation :
     Primary interface for generating Gray-coded constellation arrays.
 map_bits :
     Maps bit sequences to complex/float symbols.
-demap_symbols :
+demap_symbols_hard :
     Performs hard-decision demapping from symbols to bits.
 demap_symbols_soft :
     Computes Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 """
-
-from typing import Any
 
 import numpy as np
 
@@ -448,7 +446,6 @@ def map_bits(
     bits: ArrayType,
     modulation: str,
     order: int,
-    dtype: Any = "complex64",
     unipolar: bool = False,
 ) -> ArrayType:
     """
@@ -458,6 +455,8 @@ def map_bits(
     of bits and packs them into symbols according to the modulation scheme
     and Gray mapping.
 
+    Output dtype is ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
+
     Parameters
     ----------
     bits : array_like
@@ -466,9 +465,6 @@ def map_bits(
         Modulation scheme.
     order : int
         Modulation order (number of symbols).
-    dtype : data-type, optional
-        Target precision for the generated symbols. Default is "complex64".
-        For 'ask', automatically maps to corresponding real type (e.g., "float32").
     unipolar : bool, default False
         Trigger unipolar mapping for ASK/PAM.
 
@@ -507,25 +503,19 @@ def map_bits(
     # Ensure constellation is on the same backend and dtype
     constellation = xp.asarray(constellation)
 
-    # Resolve target dtype
-    resolved_dtype = xp.dtype(dtype)
+    # ASK/PAM constellations are real-valued; PSK/QAM are complex.
     mod_lower = modulation.lower()
 
     if "ask" in mod_lower or "pam" in mod_lower:
-        # If input was complex, we coerce to real-equivalent of that complexity
-        if resolved_dtype.kind == "c":
-            real_dtype = xp.float32 if resolved_dtype == xp.complex64 else xp.float64
-        else:
-            real_dtype = resolved_dtype
-        constellation = constellation.astype(real_dtype)
+        constellation = constellation.astype(xp.float32)
     else:
-        constellation = constellation.astype(resolved_dtype)
+        constellation = constellation.astype(xp.complex64)
 
     # Map indices to points
     return constellation[indices]
 
 
-def demap_symbols(
+def demap_symbols_hard(
     symbols: ArrayType,
     modulation: str,
     order: int,
@@ -580,8 +570,8 @@ def demap_symbols(
     k = int(np.log2(order))
     # Extract bits from indices: (N, k)
     # We use bit shifting: (index >> shift) & 1
-    shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
-    bits = (indices[:, xp.newaxis] >> shifts) & 1
+    shifts = xp.arange(k - 1, -1, -1, dtype="int32")
+    bits = ((indices[:, xp.newaxis] >> shifts) & 1).astype(xp.int8)
 
     # 3. Reshape to restore original structure
     # bits is currently (Total_Symbols, k)
@@ -667,10 +657,10 @@ def demap_symbols_soft(
     # Constellation points in 'constellation' array are already indexed by their bit value
     # (Natural Binary Indexing).
     # So the bits for constellation[s] are simply the bits of integer s.
-    s_indices = xp.arange(order, dtype=xp.int32)
-    shifts = xp.arange(k - 1, -1, -1, dtype=xp.int32)
+    s_indices = xp.arange(order, dtype="int32")
+    shifts = xp.arange(k - 1, -1, -1, dtype="int32")
     bits_table = ((s_indices[:, xp.newaxis] >> shifts) & 1).astype(
-        xp.int32
+        "int32"
     )  # Shape: (M, k)
 
     # Avoid division by zero in noise variance

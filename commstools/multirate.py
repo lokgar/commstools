@@ -17,7 +17,7 @@ decimate :
     Reduces sampling rate with anti-aliasing filtering.
 expand :
     Inserts zeros between samples (zero-stuffing).
-downsample_to_symbols :
+decimate_to_symbol_rate :
     Optimized symbol extraction after matched filtering.
 """
 
@@ -123,7 +123,9 @@ def polyphase_resample(
         return sp.signal.resample_poly(samples, up, down, axis=axis)
 
 
-def downsample_to_symbols(
+# TODO: implement proper decimation design with fractional interpolation, gardner, etc.
+# so proper timing correction first
+def decimate_to_symbol_rate(
     samples: ArrayType,
     sps: int,
     offset: int = 0,
@@ -275,7 +277,7 @@ def decimate(
     Do NOT use this function for symbol extraction after a matched filter.
     Matched filters already perform optimal noise suppression and
     anti-aliasing; adding an extra decimation filter will degrade the
-    signal. Use `downsample_to_symbols` instead.
+    signal. Use `decimate_to_symbol_rate` instead.
     """
     logger.debug(f"Decimating by factor {factor} (method: {method}).")
     samples, _, sp = dispatch(samples)

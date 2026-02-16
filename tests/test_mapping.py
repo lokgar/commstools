@@ -26,14 +26,14 @@ def test_psk_mapping(backend_device, xp):
 
 
 def test_demap_dimensions_mimo(backend_device, xp):
-    """Test that demap_symbols preserves multidimensional structure."""
+    """Test that demap_symbols_hard preserves multidimensional structure."""
     modulation = "qam"
     order = 4
 
     # Creates input shape (2 streams, 4 symbols)
     # Total symbols = 8
     # Total bits = 16
-    bits_in = xp.zeros(16, dtype=xp.int32)
+    bits_in = xp.zeros(16, dtype="int32")
     bits_in[::2] = 1
 
     # Map to symbols (flat) first
@@ -43,7 +43,7 @@ def test_demap_dimensions_mimo(backend_device, xp):
     symbols_mimo = symbols_flat.reshape(2, 4)
 
     # Demap
-    bits_out = mapping.demap_symbols(symbols_mimo, modulation, order)
+    bits_out = mapping.demap_symbols_hard(symbols_mimo, modulation, order)
 
     # Verify strict shape compliance
     # We expect (2, 4 * 2) = (2, 8)
@@ -59,7 +59,7 @@ def test_soft_demap_sign_correctness(backend_device, xp):
     order = 16
 
     # Generate known bits and map to symbols
-    bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=xp.int32)
+    bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
     # Very low noise variance (high SNR) for near-perfect decisions
@@ -70,7 +70,7 @@ def test_soft_demap_sign_correctness(backend_device, xp):
     )
 
     # Hard decision from LLR: bit = 0 if LLR > 0, else 1
-    hard_from_llr = (llrs < 0).astype(xp.int32)
+    hard_from_llr = (llrs < 0).astype("int32")
 
     # Should match original bits
     assert xp.array_equal(hard_from_llr, bits), "LLR signs don't match original bits"
@@ -82,7 +82,7 @@ def test_soft_demap_roundtrip(backend_device, xp):
     order = 8
 
     # Generate random symbols
-    bits = xp.array([0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0], dtype=xp.int32)
+    bits = xp.array([0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
     # Soft demap with very low noise
@@ -90,10 +90,10 @@ def test_soft_demap_roundtrip(backend_device, xp):
     llrs = mapping.demap_symbols_soft(symbols, modulation, order, noise_var)
 
     # Hard decision from LLR
-    hard_from_llr = (llrs < 0).astype(xp.int32)
+    hard_from_llr = (llrs < 0).astype("int32")
 
     # Direct hard demapping
-    hard_direct = mapping.demap_symbols(symbols, modulation, order)
+    hard_direct = mapping.demap_symbols_hard(symbols, modulation, order)
 
     assert xp.array_equal(hard_from_llr, hard_direct)
 
@@ -103,7 +103,7 @@ def test_soft_demap_exact_vs_maxlog(backend_device, xp):
     modulation = "qam"
     order = 4
 
-    bits = xp.array([0, 0, 0, 1, 1, 0, 1, 1], dtype=xp.int32)
+    bits = xp.array([0, 0, 0, 1, 1, 0, 1, 1], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
     noise_var = 0.01  # Moderate SNR
@@ -130,7 +130,7 @@ def test_soft_demap_mimo_shape(backend_device, xp):
     order = 4
 
     # 2 streams, 4 symbols each
-    bits = xp.zeros(16, dtype=xp.int32)
+    bits = xp.zeros(16, dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order).reshape(2, 4)
 
     noise_var = 0.1
@@ -163,22 +163,22 @@ def test_gray_code_edge_cases(backend_device, xp):
 
 def test_8qam_mapping(backend_device, xp):
     """Verify 8-QAM (rectangular) mapping and round-trip."""
-    bits = xp.array([0, 0, 0, 1, 1, 1], dtype=xp.int32)
+    bits = xp.array([0, 0, 0, 1, 1, 1], dtype="int32")
     syms = mapping.map_bits(bits, modulation="qam", order=8)
     assert len(syms) == 2
 
-    bits_out = mapping.demap_symbols(syms, modulation="qam", order=8)
+    bits_out = mapping.demap_symbols_hard(syms, modulation="qam", order=8)
     assert xp.array_equal(bits, bits_out)
 
 
 def test_cross_qam_32_mapping(backend_device, xp):
     """Verify 32-QAM (Cross) mapping and round-trip."""
     # 5 bits per symbol. 2 symbols = 10 bits.
-    bits = xp.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0], dtype=xp.int32)
+    bits = xp.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0], dtype="int32")
     syms = mapping.map_bits(bits, modulation="qam", order=32)
     assert len(syms) == 2
 
-    bits_out = mapping.demap_symbols(syms, modulation="qam", order=32)
+    bits_out = mapping.demap_symbols_hard(syms, modulation="qam", order=32)
     assert xp.array_equal(bits, bits_out)
 
 
@@ -186,7 +186,7 @@ def test_soft_demap_loop_based(backend_device, xp):
     """Verify loop-based soft demapping (vectorized=False)."""
     modulation = "qam"
     order = 16
-    bits = xp.array([0, 0, 1, 1, 0, 1, 0, 1], dtype=xp.int32)
+    bits = xp.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
     noise_var = 0.1
 
@@ -253,13 +253,13 @@ def test_map_demap_unipolar(backend_device, xp):
     assert xp.all(syms >= 0)
 
     # Demap from unipolar
-    bits_rx = mapping.demap_symbols(syms, "ask", 4, unipolar=True)
+    bits_rx = mapping.demap_symbols_hard(syms, "ask", 4, unipolar=True)
     assert xp.array_equal(bits, bits_rx)
 
     # Soft demap from unipolar
     llrs = mapping.demap_symbols_soft(syms, "ask", 4, noise_var=0.1, unipolar=True)
     # Signs should allow recovering bits: LLR > 0 -> 0, LLR < 0 -> 1
-    bits_soft = (llrs < 0).astype(xp.int32)
+    bits_soft = (llrs < 0).astype("int32")
     assert xp.array_equal(bits, bits_soft)
 
 
@@ -269,9 +269,9 @@ def test_mapping_more(backend_device, xp):
     with pytest.raises(ValueError, match="at least 2"):
         mapping.map_bits(xp.array([0, 0]), "psk", 1)
 
-    # Order error in demap_symbols
+    # Order error in demap_symbols_hard
     with pytest.raises(ValueError, match="at least 2"):
-        mapping.demap_symbols(xp.array([0]), "psk", 1)
+        mapping.demap_symbols_hard(xp.array([0]), "psk", 1)
 
 
 def test_mapping_order_errors(backend_device, xp):
@@ -294,7 +294,7 @@ def test_demap_symbols_empty_shape(backend_device, xp):
     # gray_constillation(psk, 2) -> [-1, 1]
     # index 0 is -1, index 1 is 1.
     # so 1.0 -> index 1 -> bit 1.
-    bits = mapping.demap_symbols(s, "psk", 2)
+    bits = mapping.demap_symbols_hard(s, "psk", 2)
     assert bits.size == 1
     assert int(bits.item()) == 1
 
@@ -369,19 +369,29 @@ def test_map_bits_divisibility(backend_device, xp):
         mapping.map_bits(bits, "qam", 16)  # bits_per_symbol = 4
 
 
-def test_map_bits_dtype_coercion(backend_device, xp):
-    """Verify dtype coercion in map_bits for ASK/PAM."""
+def test_map_bits_fixed_dtypes(backend_device, xp):
+    """Verify map_bits returns complex64 for PSK/QAM and float32 for ASK/PAM."""
     bits = xp.array([0, 1, 0, 1])
-    # Case: complex dtype requested for ASK
-    out = mapping.map_bits(bits, "ask", 4, dtype="complex128")
-    assert out.dtype == xp.float64  # c128 -> f64
 
-    out = mapping.map_bits(bits, "ask", 4, dtype="complex64")
-    assert out.dtype == xp.float32  # c64 -> f32
+    out_ask = mapping.map_bits(bits, "ask", 4)
+    assert out_ask.dtype == "float32"
 
-    # Case: real dtype requested for ASK
-    out = mapping.map_bits(bits, "ask", 4, dtype="float32")
-    assert out.dtype == xp.float32
+    out_pam = mapping.map_bits(bits, "pam", 4)
+    assert out_pam.dtype == "float32"
+
+    out_qam = mapping.map_bits(bits, "qam", 4)
+    assert out_qam.dtype == "complex64"
+
+    out_psk = mapping.map_bits(bits, "psk", 4)
+    assert out_psk.dtype == "complex64"
+
+
+def test_demap_symbols_returns_int8(backend_device, xp):
+    """Verify demap_symbols_hard returns int8 bits matching source_bits dtype."""
+    bits = xp.array([0, 1, 0, 1], dtype="int8")
+    symbols = mapping.map_bits(bits, "qam", 4)
+    demapped = mapping.demap_symbols_hard(symbols, "qam", 4)
+    assert demapped.dtype == "int8"
 
 
 def test_soft_demap_invalid_order(backend_device, xp):

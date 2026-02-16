@@ -78,10 +78,10 @@ def test_zadoff_chu_errors(backend_device, xp):
 def test_correlate_delta(backend_device, xp):
     """Verify correct peak location for delta-like correlation."""
     # Delta-like signal
-    signal = xp.zeros(100, dtype=xp.float32)
+    signal = xp.zeros(100, dtype="float32")
     signal[50] = 1.0
 
-    template = xp.array([1.0], dtype=xp.float32)
+    template = xp.array([1.0], dtype="float32")
 
     corr = sync.correlate(signal, template, mode="same")
 
@@ -93,10 +93,10 @@ def test_correlate_delta(backend_device, xp):
 def test_correlate_shift_detection(backend_device, xp):
     """Verify that correlation correctly identifies the shift of a template."""
     # Template
-    template = xp.array([1.0, 1.0, 1.0, -1.0, -1.0], dtype=xp.float32)
+    template = xp.array([1.0, 1.0, 1.0, -1.0, -1.0], dtype="float32")
 
     # Signal with template at different position
-    signal = xp.zeros(50, dtype=xp.float32)
+    signal = xp.zeros(50, dtype="float32")
     signal[20:25] = template
 
     corr = sync.correlate(signal, template, mode="same")
@@ -109,11 +109,11 @@ def test_correlate_shift_detection(backend_device, xp):
 def test_correlate_mimo(backend_device, xp):
     """Verify correlation behavior for multi-stream (MIMO) signals."""
     # 2 channels
-    signal = xp.zeros((2, 50), dtype=xp.float32)
+    signal = xp.zeros((2, 50), dtype="float32")
     signal[0, 20] = 1.0
     signal[1, 30] = 1.0
 
-    template = xp.array([1.0], dtype=xp.float32)
+    template = xp.array([1.0], dtype="float32")
 
     corr = sync.correlate(signal, template, mode="same")
 
@@ -154,8 +154,8 @@ def test_preamble_auto_generation(backend_device, xp):
 def test_correlate_normalized(backend_device, xp):
     """Verify normalized correlation output range."""
     # Constant signal and template
-    signal = xp.ones(100, dtype=xp.float32)
-    template = xp.ones(10, dtype=xp.float32)
+    signal = xp.ones(100, dtype="float32")
+    template = xp.ones(10, dtype="float32")
 
     # Normalize=True should give something roughly <= 1 if signals match structure
     corr = sync.correlate(signal, template, mode="same", normalize=True)
@@ -177,7 +177,7 @@ def test_detect_frame_advanced_scenarios(backend_device, xp):
     preamble = Preamble(sequence_type="barker", length=7)
 
     # Create a signal with this preamble
-    data = xp.zeros(100, dtype=xp.complex64)
+    data = xp.zeros(100, dtype="complex64")
     data[20 : 20 + 7] = preamble.symbols
     sig = Signal(samples=data, sampling_rate=1e6, symbol_rate=1e6)
 
@@ -185,7 +185,7 @@ def test_detect_frame_advanced_scenarios(backend_device, xp):
     assert 18 <= pos[0] <= 22
 
     # 2. MIMO Signal (2 channels)
-    mimo_data = xp.zeros((2, 100), dtype=xp.complex64)
+    mimo_data = xp.zeros((2, 100), dtype="complex64")
     mimo_data[0, 30:37] = preamble.symbols
     mimo_data[1, 30:37] = preamble.symbols
     pos_mimo = sync.detect_frame(mimo_data, preamble.symbols, threshold=0.1)
@@ -214,7 +214,7 @@ def test_detect_frame_known_position(backend_device, xp):
     preamble_symbols = sync.barker_sequence(13)
 
     # Embed in longer signal at known position
-    signal = xp.zeros(200, dtype=xp.complex64)
+    signal = xp.zeros(200, dtype="complex64")
     start_pos = 50
     signal[start_pos : start_pos + 13] = preamble_symbols
 
@@ -230,7 +230,7 @@ def test_detect_frame_with_preamble_object(backend_device, xp):
     preamble = Preamble(sequence_type="barker", length=13)
 
     # Create signal with preamble embedded
-    signal = xp.zeros(200, dtype=xp.complex64)
+    signal = xp.zeros(200, dtype="complex64")
     start_pos = 75
 
     # Embed preamble symbols
@@ -256,7 +256,7 @@ def test_detect_frame_returns_metric(backend_device, xp):
     """Verify that detect_frame returns both the index and the peak metric when requested."""
     preamble = sync.barker_sequence(7)
 
-    signal = xp.zeros(100, dtype=xp.complex64)
+    signal = xp.zeros(100, dtype="complex64")
     signal[30:37] = preamble
 
     pos, metric = sync.detect_frame(signal, preamble, threshold=0.1, return_metric=True)

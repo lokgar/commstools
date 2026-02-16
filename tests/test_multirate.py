@@ -69,26 +69,26 @@ def test_resample_errors(backend_device, xp):
         multirate.resample(data)
 
 
-def test_downsample_to_symbols(backend_device, xp):
+def test_decimate_to_symbol_rate(backend_device, xp):
     """Verify downsampling (picking) symbols from an upsampled stream."""
     sps = 4
     # 4 symbols, each repeated sps times
-    data = xp.array([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4], dtype=xp.float32)
+    data = xp.array([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4], dtype="float32")
 
     # Sample at center of first symbol (offset 2)
-    syms = multirate.downsample_to_symbols(data, sps=sps, offset=0)
+    syms = multirate.decimate_to_symbol_rate(data, sps=sps, offset=0)
     assert xp.array_equal(syms, xp.array([1, 2, 3, 4]))
 
     # MIMO case
     data_mimo = xp.stack([data, data * 10])
-    syms_mimo = multirate.downsample_to_symbols(data_mimo, sps=sps, axis=-1)
+    syms_mimo = multirate.decimate_to_symbol_rate(data_mimo, sps=sps, axis=-1)
     assert syms_mimo.shape == (2, 4)
     assert xp.array_equal(syms_mimo[1], xp.array([10, 20, 30, 40]))
 
 
 def test_expand(backend_device, xp):
     """Verify up-sampling by zero-stuffing correctly inserts zeros."""
-    data = xp.array([1, 2, 3], dtype=xp.float32)
+    data = xp.array([1, 2, 3], dtype="float32")
     factor = 3
     expanded = multirate.expand(data, factor)
 

@@ -1291,7 +1291,7 @@ def constellation(
                     const.real,
                     const.imag,
                     c="white",
-                    s=50,
+                    s=10,
                     edgecolors="black",
                     linewidths=1,
                     zorder=10,

@@ -542,7 +542,7 @@ def shape_pulse(
     symbols, xp, sp = dispatch(symbols)
 
     if pulse_shape == "none":
-        logger.info("Pulse shaping disabled, expanding symbols by sps")
+        logger.debug("Pulse shaping disabled, expanding symbols by sps")
         return normalize(expand(symbols, int(sps), axis=-1), "peak")
 
     elif pulse_shape == "rect":
