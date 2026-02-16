@@ -213,6 +213,10 @@ class Signal(BaseModel):
     resolved_bits: Optional[Any] = Field(default=None, repr=False)
     resolved_llr: Optional[Any] = Field(default=None, repr=False)
 
+    # =========================================================================
+    # Validators and Post-Initialization Hooks
+    # =========================================================================
+
     @field_validator("samples", mode="before")
     @classmethod
     def validate_samples(cls, v: Any) -> Any:
@@ -311,84 +315,78 @@ class Signal(BaseModel):
         if is_cupy_available():
             self.to("gpu")
 
-    @property
-    def xp(self) -> types.ModuleType:
-        """
-        Access the active array backend (NumPy or CuPy).
+    # =========================================================================
+    # Utilities
+    # =========================================================================
 
-        This property allows for backend-agnostic code by returning the
-        appropriate module based on where the samples currently reside.
-
-        Returns
-        -------
-        module
-            `numpy` if data is on CPU, `cupy` if on GPU.
+    def print_info(self) -> None:
         """
-        return get_array_module(self.samples)
+        Prints a formatted summary of the signal's physical and digital properties.
 
-    @property
-    def sp(self) -> types.ModuleType:
+        In Jupyter/IPython environments, this renders as an HTML table. In standard
+        shells, it outputs a clean logarithmic log message.
         """
-        Access the signal processing module (`scipy` or `cupyx.scipy`).
+        import pandas as pd
+        from IPython import get_ipython
+        from IPython.display import display
 
-        Returns
-        -------
-        module
-            Appropriate signal processing library for the current backend.
-        """
-        return get_scipy_module(self.xp)
+        data = {
+            "Property": [
+                "Spectral Domain",
+                "Physical Domain",
+                "Modulation Scheme",
+                "Modulation Order",
+                "Symbol Rate",
+                "Bit Rate",
+                "Sampling Rate",
+                "Samples Per Symbol",
+                "Pulse Shape",
+                "Duration",
+                "Center Frequency",
+                "Digital Freq. Offset",
+                "Backend",
+                "Configuration",
+                "Samples Shape",
+            ],
+            "Value": [
+                self.spectral_domain,
+                self.physical_domain,
+                self.modulation_scheme,
+                str(self.modulation_order) if self.modulation_order else "None",
+                helpers.format_si(self.symbol_rate, "Baud"),
+                helpers.format_si(
+                    self.symbol_rate * np.log2(self.modulation_order), "bps"
+                )
+                if self.modulation_order
+                else "None",
+                helpers.format_si(self.sampling_rate, "Hz"),
+                f"{self.sps:.2f}",
+                self.pulse_shape.upper() if self.pulse_shape else "None",
+                helpers.format_si(self.duration, "s"),
+                helpers.format_si(self.center_frequency, "Hz"),
+                helpers.format_si(self.digital_frequency_offset, "Hz"),
+                self.backend.upper(),
+                "SISO" if self.num_streams == 1 else f"MIMO ({self.num_streams}x)",
+                str(self.samples.shape),
+            ],
+        }
+        df = pd.DataFrame(data)
 
-    @property
-    def backend(self) -> str:
-        """
-        Returns the current computational backend name.
+        if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
+            display(df)
+        else:
+            logger.info("\n" + str(df))
 
-        Returns
-        -------
-        {"CPU", "GPU"}
-            A string indicating the device location of samples.
+    def copy(self) -> "Signal":
         """
-        return "GPU" if self.xp == cp else "CPU"
-
-    @property
-    def num_streams(self) -> int:
-        """
-        Returns the number of spatial or polarization streams.
-
-        Returns
-        -------
-        int
-            1 for SISO signals, N for MIMO/Dual-Pol signals.
-        """
-        if self.samples.ndim == 1:
-            return 1
-        return self.samples.shape[0]
-
-    @property
-    def duration(self) -> float:
-        """
-        Returns the total duration of the signal.
-
-        Returns
-        -------
-        float
-            Duration in seconds.
-        """
-        if self.samples.ndim == 1:
-            return self.samples.shape[0] / self.sampling_rate
-        return self.samples.shape[-1] / self.sampling_rate
-
-    @property
-    def sps(self) -> float:
-        """
-        Samples per symbol.
+        Creates a deep copy of the `Signal` instance.
 
         Returns
         -------
-        float
-            Ratio of sampling rate to symbol rate.
+        Signal
+            A new signal object with identical data and metadata.
         """
-        return self.sampling_rate / self.symbol_rate
+        return self.model_copy(deep=True)
 
     def to(self, device: str) -> "Signal":
         """
@@ -476,20 +474,6 @@ class Signal(BaseModel):
         n_samples = self.samples.shape[-1]
         return self.xp.arange(0, n_samples) / self.sampling_rate
 
-    @property
-    def bits_per_symbol(self) -> Optional[int]:
-        """
-        Bits per symbol for the active modulation scheme.
-
-        Returns
-        -------
-        int or None
-            Calculated as $\log_2(\text{modulation\_order})$.
-        """
-        if self.modulation_order:
-            return int(np.log2(self.modulation_order))
-        return None
-
     def welch_psd(
         self,
         nperseg: int = 256,
@@ -526,6 +510,107 @@ class Signal(BaseModel):
             average=average,
             axis=-1,  # Explicitly specify time axis
         )
+
+    # =========================================================================
+    # Properties
+    # =========================================================================
+
+    @property
+    def xp(self) -> types.ModuleType:
+        """
+        Access the active array backend (NumPy or CuPy).
+
+        This property allows for backend-agnostic code by returning the
+        appropriate module based on where the samples currently reside.
+
+        Returns
+        -------
+        module
+            `numpy` if data is on CPU, `cupy` if on GPU.
+        """
+        return get_array_module(self.samples)
+
+    @property
+    def sp(self) -> types.ModuleType:
+        """
+        Access the signal processing module (`scipy` or `cupyx.scipy`).
+
+        Returns
+        -------
+        module
+            Appropriate signal processing library for the current backend.
+        """
+        return get_scipy_module(self.xp)
+
+    @property
+    def backend(self) -> str:
+        """
+        Returns the current computational backend name.
+
+        Returns
+        -------
+        {"CPU", "GPU"}
+            A string indicating the device location of samples.
+        """
+        return "GPU" if self.xp == cp else "CPU"
+
+    @property
+    def num_streams(self) -> int:
+        """
+        Returns the number of spatial or polarization streams.
+
+        Returns
+        -------
+        int
+            1 for SISO signals, N for MIMO/Dual-Pol signals.
+        """
+        if self.samples.ndim == 1:
+            return 1
+        return self.samples.shape[0]
+
+    @property
+    def duration(self) -> float:
+        """
+        Returns the total duration of the signal.
+
+        Returns
+        -------
+        float
+            Duration in seconds.
+        """
+        if self.samples.ndim == 1:
+            return self.samples.shape[0] / self.sampling_rate
+        return self.samples.shape[-1] / self.sampling_rate
+
+    @property
+    def sps(self) -> float:
+        """
+        Samples per symbol.
+
+        Returns
+        -------
+        float
+            Ratio of sampling rate to symbol rate.
+        """
+        return self.sampling_rate / self.symbol_rate
+
+    @property
+    def bits_per_symbol(self) -> Optional[int]:
+        """
+        Bits per symbol for the active modulation scheme.
+
+        Returns
+        -------
+        int or None
+            Calculated as $\log_2(\text{modulation\_order})$.
+        """
+        if self.modulation_order:
+            return int(np.log2(self.modulation_order))
+        return None
+
+    # =========================================================================
+    # Plotting and Visualization
+    # =========================================================================
 
     def plot_psd(
         self,
@@ -581,64 +666,6 @@ class Signal(BaseModel):
             show=show,
             **kwargs,
         )
-
-    def print_info(self) -> None:
-        """
-        Prints a formatted summary of the signal's physical and digital properties.
-
-        In Jupyter/IPython environments, this renders as an HTML table. In standard
-        shells, it outputs a clean logarithmic log message.
-        """
-        import pandas as pd
-        from IPython import get_ipython
-        from IPython.display import display
-
-        data = {
-            "Property": [
-                "Spectral Domain",
-                "Physical Domain",
-                "Modulation Scheme",
-                "Modulation Order",
-                "Symbol Rate",
-                "Bit Rate",
-                "Sampling Rate",
-                "Samples Per Symbol",
-                "Pulse Shape",
-                "Duration",
-                "Center Frequency",
-                "Digital Freq. Offset",
-                "Backend",
-                "Configuration",
-                "Samples Shape",
-            ],
-            "Value": [
-                self.spectral_domain,
-                self.physical_domain,
-                self.modulation_scheme,
-                str(self.modulation_order) if self.modulation_order else "None",
-                helpers.format_si(self.symbol_rate, "Baud"),
-                helpers.format_si(
-                    self.symbol_rate * np.log2(self.modulation_order), "bps"
-                )
-                if self.modulation_order
-                else "None",
-                helpers.format_si(self.sampling_rate, "Hz"),
-                f"{self.sps:.2f}",
-                self.pulse_shape.upper() if self.pulse_shape else "None",
-                helpers.format_si(self.duration, "s"),
-                helpers.format_si(self.center_frequency, "Hz"),
-                helpers.format_si(self.digital_frequency_offset, "Hz"),
-                self.backend.upper(),
-                "SISO" if self.num_streams == 1 else f"MIMO ({self.num_streams}x)",
-                str(self.samples.shape),
-            ],
-        }
-        df = pd.DataFrame(data)
-
-        if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
-            display(df)
-        else:
-            logger.info("\n" + str(df))
 
     def plot_symbols(
         self,
@@ -739,12 +766,13 @@ class Signal(BaseModel):
             **kwargs,
         )
 
-    # TODO: add option to plot samples or received symbols with overlay of source symbols
     def plot_constellation(
         self,
+        data: Literal["samples", "resolved"] = "samples",
         bins: int = 100,
         cmap: str = "inferno",
         overlay_ideal: bool = False,
+        overlay_source: bool = False,
         ax: Optional[Any] = None,
         title: Optional[str] = "Constellation",
         vmin: Optional[float] = None,
@@ -761,13 +789,20 @@ class Signal(BaseModel):
 
         Parameters
         ----------
+        data : {"samples", "resolved"}, default "samples"
+            Which data to plot as the density field:
+            - ``"samples"``: Raw oversampled IQ samples.
+            - ``"resolved"``: Symbols at 1 sps from ``resolved_symbols``
+              (call ``resolve_symbols()`` first).
         bins : int, default 100
             Number of bins per axis for the 2D density histogram.
         cmap : str, default "inferno"
             Matplotlib colormap for the density visualization.
         overlay_ideal : bool, default False
-            If True, overlays the ideal constellation points (crosses)
-            on the plot.
+            If True, overlays the ideal constellation points on the plot.
+        overlay_source : bool, default False
+            If True, overlays ``source_symbols`` as white scatter markers
+            on top of the density plot.
         ax : matplotlib.axes.Axes, optional
             Pre-existing axis for plotting.
         title : str, default "Constellation"
@@ -786,8 +821,17 @@ class Signal(BaseModel):
         """
         from . import plotting
 
-        return plotting.constellation(
-            self.samples,
+        if data == "resolved":
+            if self.resolved_symbols is None:
+                raise ValueError(
+                    "No resolved_symbols available. Call resolve_symbols() first."
+                )
+            plot_data = self.resolved_symbols
+        else:
+            plot_data = self.samples
+
+        result = plotting.constellation(
+            plot_data,
             bins=bins,
             cmap=cmap,
             ax=ax,
@@ -799,9 +843,45 @@ class Signal(BaseModel):
             title=title,
             vmin=vmin,
             vmax=vmax,
-            show=show,
+            show=False,
             **kwargs,
         )
+
+        if overlay_source and self.source_symbols is not None and result is not None:
+            fig, axes = result
+            src = self.source_symbols
+            src = to_device(src, "cpu")
+
+            def _scatter_source(ax, symbols):
+                ax.scatter(
+                    symbols.real,
+                    symbols.imag,
+                    c="cyan",
+                    edgecolors="black",
+                    s=10,
+                    linewidths=1,
+                    zorder=10,
+                    marker="o",
+                )
+
+            if src.ndim > 1:
+                ax_list = list(np.asarray(axes).flat)
+                for ch in range(min(src.shape[0], len(ax_list))):
+                    _scatter_source(ax_list[ch], src[ch])
+            else:
+                # SISO: axes is a single Axes object
+                _scatter_source(axes, src)
+
+        if show:
+            import matplotlib.pyplot as plt
+
+            plt.show()
+            return None
+        return result
+
+    # =========================================================================
+    # Signal Processing Methods
+    # =========================================================================
 
     def upsample(self, factor: int) -> "Signal":
         """
@@ -850,7 +930,7 @@ class Signal(BaseModel):
         -----
         This method applies an anti-aliasing filter before downsampling. If
         the signal has already been matched-filtered, you should likely use
-        `downsample_to_symbols` instead to avoid double-filtering.
+        `decimate_to_symbol_rate` instead to avoid double-filtering.
         """
         from . import multirate
 
@@ -858,6 +938,43 @@ class Signal(BaseModel):
             self.samples, factor, filter_type=filter_type, axis=-1, **kwargs
         )
         self.sampling_rate = self.sampling_rate / factor
+        return self
+
+    def decimate_to_symbol_rate(self, offset: int = 0) -> "Signal":
+        """
+        Extracts symbols from an oversampled signal via direct slicing.
+
+        This method is the canonical way to recover symbols at $1 \text{ sps}$
+        after matched filtering. It does not apply any additional filtering,
+        ensuring that the matched filter remains the optimal receiver.
+
+        Parameters
+        ----------
+        offset : int, default 0
+            The sampling phase offset in samples. Adjust this to sample
+            at the peak of the impulse response or the maximum eye opening.
+
+        Returns
+        -------
+        Signal
+            self (modified in-place, sampling rate updated to symbol rate).
+
+        Notes
+        -----
+        Use `resample` or `decimate` for general rate changes where
+        anti-aliasing is required. Use this method ONLY when the signal
+        is already filtered and aligned.
+        """
+        from . import multirate
+
+        sps = int(self.sps)
+        if sps <= 1:
+            logger.info("Signal already at 1 sps, no downsampling needed.")
+            return self
+        self.samples = multirate.decimate_to_symbol_rate(
+            self.samples, sps=sps, offset=offset, axis=-1
+        )
+        self.sampling_rate = self.symbol_rate
         return self
 
     def resample(
@@ -895,7 +1012,7 @@ class Signal(BaseModel):
             Do NOT use this method on a signal that has already been
             matched-filtered if the goal is to extract symbols at $1\text{ sps}$.
             The polyphase filter's transition band will distort the
-            optimally filtered pulse shape. Use `downsample_to_symbols` instead.
+            optimally filtered pulse shape. Use `decimate_to_symbol_rate` instead.
         """
         from . import multirate
 
@@ -912,43 +1029,6 @@ class Signal(BaseModel):
         elif up is not None and down is not None:
             self.sampling_rate = self.sampling_rate * up / down
 
-        return self
-
-    def downsample_to_symbols(self, offset: int = 0) -> "Signal":
-        """
-        Extracts symbols from an oversampled signal via direct slicing.
-
-        This method is the canonical way to recover symbols at $1 \text{ sps}$
-        after matched filtering. It does not apply any additional filtering,
-        ensuring that the matched filter remains the optimal receiver.
-
-        Parameters
-        ----------
-        offset : int, default 0
-            The sampling phase offset in samples. Adjust this to sample
-            at the peak of the impulse response or the maximum eye opening.
-
-        Returns
-        -------
-        Signal
-            self (modified in-place, sampling rate updated to symbol rate).
-
-        Notes
-        -----
-        Use `resample` or `decimate` for general rate changes where
-        anti-aliasing is required. Use this method ONLY when the signal
-        is already filtered and aligned.
-        """
-        from . import multirate
-
-        sps = int(self.sps)
-        if sps <= 1:
-            logger.warning("Signal already at 1 sps, no downsampling needed.")
-            return self
-        self.samples = multirate.downsample_to_symbols(
-            self.samples, sps=sps, offset=offset, axis=-1
-        )
-        self.sampling_rate = self.symbol_rate
         return self
 
     def shift_frequency(self, offset: float) -> "Signal":
@@ -1012,7 +1092,7 @@ class Signal(BaseModel):
         """
         if not self.pulse_shape or self.pulse_shape == "none":
             raise ValueError("No pulse shape defined for this signal.")
-        logger.debug(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
+        logger.info(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
         from . import filtering
 
         # Determine pulse width based on modulation if RZ
@@ -1093,16 +1173,9 @@ class Signal(BaseModel):
         )
         return self
 
-    def copy(self) -> "Signal":
-        """
-        Creates a deep copy of the `Signal` instance.
-
-        Returns
-        -------
-        Signal
-            A new signal object with identical data and metadata.
-        """
-        return self.model_copy(deep=True)
+    # =========================================================================
+    # Generation Factory Methods
+    # =========================================================================
 
     @classmethod
     def generate(
@@ -1115,7 +1188,6 @@ class Signal(BaseModel):
         pulse_shape: str = "none",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1143,8 +1215,6 @@ class Signal(BaseModel):
             Number of independent streams (MIMO).
         seed : int, optional
             Seed for reproducible random generation.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
 
@@ -1155,6 +1225,7 @@ class Signal(BaseModel):
 
         Notes
         -----
+        Symbols are ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
         The generated samples are automatically normalized to **peak amplitude (1.0)**
         via `filtering.shape_pulse`.
         However, the underlying bit mapping uses **unit average power (E_s=1)**
@@ -1174,9 +1245,7 @@ class Signal(BaseModel):
 
         # Map bits to symbols
         unipolar = kwargs.pop("unipolar", None)
-        symbols_flat = mapping.map_bits(
-            bits, modulation, order, dtype=dtype, unipolar=unipolar
-        )
+        symbols_flat = mapping.map_bits(bits, modulation, order, unipolar=unipolar)
 
         if num_streams > 1:
             # Shape: (Channels, Time)
@@ -1222,7 +1291,6 @@ class Signal(BaseModel):
         pulse_shape: Optional[str] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1253,8 +1321,6 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for reproducible bit and symbol generation.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional parameters passed to the pulse shaping filter.
 
@@ -1296,9 +1362,7 @@ class Signal(BaseModel):
             from . import mapping
 
             scheme = f"RZ-PAM{'-UNIPOL' if unipolar else '-BIPOL'}"
-            symbols_flat = mapping.map_bits(
-                bits, scheme, order, dtype=dtype, unipolar=unipolar
-            )
+            symbols_flat = mapping.map_bits(bits, scheme, order, unipolar=unipolar)
 
             if num_streams > 1:
                 symbols = symbols_flat.reshape(num_streams, num_symbols)
@@ -1370,7 +1434,6 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1392,8 +1455,6 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for bit and symbol generation.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional parameters passed to `filtering.shape_pulse`.
 
@@ -1420,7 +1481,6 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
-            dtype=dtype,
             **kwargs,
         )
 
@@ -1434,7 +1494,6 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> "Signal":
         """
@@ -1456,8 +1515,6 @@ class Signal(BaseModel):
             Number of MIMO streams.
         seed : int, optional
             Seed for random generation.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional filter parameters.
 
@@ -1484,12 +1541,158 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
-            dtype=dtype,
             **kwargs,
         )
 
     # =========================================================================
-    # Metrics Methods - Signal-centric interface for quality assessment
+    # Resolving and Demapping Methods
+    # =========================================================================
+    
+    def resolve_symbols(self, offset: int = 0) -> ArrayType:
+        """
+        Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
+        caches them in `self.resolved_symbols`.
+
+        WARNING: Only integer offsets are supported. For fractional we would
+        need interpolation.
+
+        Parameters
+        ----------
+        offset : int, default 0
+            Timing offset in samples to apply before decimation. This allows
+            for choosing the optimal sampling point within the symbol period.
+
+        Returns
+        -------
+        array_like
+            Decimated samples at $1\\text{ sps}$.
+
+        Notes
+        -----
+        This method automatically normalizes the decimated samples to **unit
+        average power ($E_s=1$)**. This is critical because physical waveforms
+        are often peak-normalized for transmission, which would skew Euclidean
+        distance-based demapping and metrics (like EVM) relative to the ideal
+        reference constellations.
+        """
+        sps = self.sps
+        if sps is None:
+            raise ValueError("Symbol rate or sampling rate missing.")
+
+        # Apply timing offset if needed
+        # For simplicity, we use indexing. For fractional offset,
+        # we would need interpolation.
+        # Here we support integer offset.
+
+        if sps < 1:
+            raise ValueError("Symbol rate must be >= 1.")
+
+        if sps % 1 != 0:
+            raise ValueError("Symbol rate must be an integer.")
+
+        if sps == 1:
+            logger.info("Signal already at 1 sps, no downsampling needed.")
+            res = self.samples
+        else:
+            from . import multirate
+
+            logger.info(
+                f"SpS is not 1. Decimating to symbol rate with sps={sps} and offset={offset}."
+            )
+            res = multirate.decimate_to_symbol_rate(
+                self.samples, sps=int(sps), offset=int(offset), axis=-1
+            )
+
+        # Normalize symbols to unit average power (E_s = 1) for consistent
+        # demapping and metric calculation.
+        # For MIMO, we normalize per-stream (axis=-1). Each resolved stream
+        # is independently scaled to unit power.
+        self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
+        return self.resolved_symbols
+
+    def demap_symbols(
+        self,
+        hard: bool = True,
+        noise_var: Optional[float] = None,
+        method: str = "maxlog",
+        **kwargs: Any,
+    ) -> ArrayType:
+        """
+        Demaps signal symbols back into bits using hard or soft decisions.
+
+        Parameters
+        ----------
+        hard : bool, default True
+            If True, performs hard-decision demapping and returns binary bits (0/1).
+            If False, performs soft-decision demapping and returns Log-Likelihood
+            Ratios (LLRs).
+        noise_var : float, optional
+            Estimated noise variance ($\\sigma^2$). Required for soft-decision
+        method : {"maxlog", "exact"}, default "maxlog"
+            The LLR computation method for soft demapping.
+        **kwargs : Any
+            Additional arguments passed to demapping functions (e.g., `unipolar`).
+
+        Returns
+        -------
+        ndarray
+            If `hard=True`: Array of recovered bits.
+            If `hard=False`: Array of LLRs.
+
+        Raises
+        ------
+        ValueError
+            If modulation metadata is missing, if `resolved_symbols` is not
+            available, or if `noise_var` is not provided for soft demapping.
+
+        Notes
+        -----
+        This method populates `self.resolved_bits` or `self.resolved_llr`
+        based on the result.
+        """
+        from .mapping import demap_symbols_hard, demap_symbols_soft
+
+        if self.modulation_scheme is None or self.modulation_order is None:
+            raise ValueError("Modulation scheme and order required for demapping.")
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
+
+        if hard:
+            bits = demap_symbols_hard(
+                self.resolved_symbols,
+                self.modulation_scheme,
+                self.modulation_order,
+                **kwargs,
+            )
+            self.resolved_bits = bits
+            return bits
+        else:
+            if noise_var is None:
+                raise ValueError("noise_var required for soft demapping.")
+            llr = demap_symbols_soft(
+                self.resolved_symbols,
+                self.modulation_scheme,
+                self.modulation_order,
+                noise_var,
+                method=method,
+                **kwargs,
+            )
+            self.resolved_llr = llr
+
+            # TODO: Need to reconsider this logic for metrics
+            # Populate resolved_bits via hard decisions from LLRs for BER consistency
+            # Mapping: LLR > 0 -> bit 0, LLR < 0 -> bit 1 (standard max-log/exact demapping)
+            xp = get_array_module(llr)
+            self.resolved_bits = (llr < 0).astype(xp.int8)
+
+            return llr
+
+    # =========================================================================
+    # Metrics Methods
     # =========================================================================
 
     def evm(
@@ -1587,12 +1790,14 @@ class Signal(BaseModel):
     def ber(
         self,
         reference_bits: Optional[ArrayType] = None,
-    ) -> float:
+    ) -> Union[float, ArrayType]:
         """
         Computes the Bit Error Rate (BER).
 
         Compares `resolved_bits` against the reference bit sequence. Requires
-        that `demap()` (and `resolve_symbols()`) have been called previously.
+        that `demap_symbols()` (and `resolve_symbols()`) have been called previously.
+
+        For MIMO signals, BER is computed independently per stream.
 
         Parameters
         ----------
@@ -1602,8 +1807,8 @@ class Signal(BaseModel):
 
         Returns
         -------
-        float
-            Bit Error Rate as a ratio in the range [0, 1].
+        float or ndarray
+            BER as a ratio in [0, 1]. Scalar for SISO, array for MIMO.
 
         Raises
         ------
@@ -1621,146 +1826,11 @@ class Signal(BaseModel):
             )
 
         if self.resolved_bits is None:
-            raise ValueError("No resolved bits available. Please call `demap()` first.")
+            raise ValueError(
+                "No resolved bits available. Please call `demap_symbols()` first."
+            )
 
         return metrics.ber(self.resolved_bits, ref)
-
-    def demap(
-        self,
-        hard: bool = True,
-        noise_var: Optional[float] = None,
-        method: str = "maxlog",
-        **kwargs: Any,
-    ) -> ArrayType:
-        """
-        Demaps signal symbols back into bits using hard or soft decisions.
-
-        Parameters
-        ----------
-        hard : bool, default True
-            If True, performs hard-decision demapping and returns binary bits (0/1).
-            If False, performs soft-decision demapping and returns Log-Likelihood
-            Ratios (LLRs).
-        noise_var : float, optional
-            Estimated noise variance ($\\sigma^2$). Required for soft-decision
-        method : {"maxlog", "exact"}, default "maxlog"
-            The LLR computation method for soft demapping.
-        **kwargs : Any
-            Additional arguments passed to demapping functions (e.g., `unipolar`).
-
-        Returns
-        -------
-        ndarray
-            If `hard=True`: Array of recovered bits (dtype=int32).
-            If `hard=False`: Array of LLRs (dtype=float32).
-
-        Raises
-        ------
-        ValueError
-            If modulation metadata is missing, if `resolved_symbols` is not
-            available, or if `noise_var` is not provided for soft demapping.
-
-        Notes
-        -----
-        This method populates `self.resolved_bits` or `self.resolved_llr`
-        based on the result.
-        """
-        from .mapping import demap_symbols, demap_symbols_soft
-
-        if self.modulation_scheme is None or self.modulation_order is None:
-            raise ValueError("Modulation scheme and order required for demapping.")
-
-        if self.resolved_symbols is None:
-            raise ValueError(
-                "No resolved symbols available. Please call `resolve_symbols()` "
-                "first to decimate the signal to symbol rate."
-            )
-
-        if hard:
-            bits = demap_symbols(
-                self.resolved_symbols,
-                self.modulation_scheme,
-                self.modulation_order,
-                **kwargs,
-            )
-            self.resolved_bits = bits
-            return bits
-        else:
-            if noise_var is None:
-                raise ValueError("noise_var required for soft demapping.")
-            llr = demap_symbols_soft(
-                self.resolved_symbols,
-                self.modulation_scheme,
-                self.modulation_order,
-                noise_var,
-                method=method,
-                **kwargs,
-            )
-            self.resolved_llr = llr
-
-            # Populate resolved_bits via hard decisions from LLRs for BER consistency
-            # Mapping: LLR > 0 -> bit 0, LLR < 0 -> bit 1 (standard max-log/exact demapping)
-            xp = get_array_module(llr)
-            self.resolved_bits = (llr < 0).astype(xp.int32)
-
-            return llr
-
-    def resolve_symbols(self, offset: int = 0) -> ArrayType:
-        """
-        Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
-        caches them in `self.resolved_symbols`.
-
-        WARNING: Only integer offsets are supported. For fractional we would need interpolation.
-
-        Parameters
-        ----------
-        offset : int, default 0
-            Timing offset in samples to apply before decimation. This allows
-            for choosing the optimal sampling point within the symbol period.
-
-        Returns
-        -------
-        array_like
-            Decimated samples at $1\\text{ sps}$.
-
-        Notes
-        -----
-        This method automatically normalizes the decimated samples to **unit
-        average power ($E_s=1$)**. This is critical because physical waveforms
-        are often peak-normalized for transmission, which would skew Euclidean
-        distance-based demapping and metrics (like EVM) relative to the ideal
-        reference constellations.
-        """
-        sps = self.sps
-        if sps is None:
-            raise ValueError("Symbol rate or sampling rate missing.")
-
-        # Apply timing offset if needed
-        # For simplicity, we use indexing. For fractional offset, we would need interpolation.
-        # Here we support integer offset.
-
-        if sps < 1:
-            raise ValueError("Symbol rate must be >= 1.")
-
-        if sps % 1 != 0:
-            raise ValueError("Symbol rate must be an integer.")
-
-        if sps == 1:
-            # Already at symbol rate
-            res = self.samples
-        else:
-            from . import multirate
-
-            res = multirate.downsample_to_symbols(
-                self.samples, sps=int(sps), offset=int(offset), axis=-1
-            )
-
-        # Normalize symbols to unit average power (E_s = 1) for consistent
-        # demapping and metric calculation.
-        # For MIMO, we normalize per-stream (axis=-1). Each resolved stream
-        # is independently scaled to unit power.
-        self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
-        return self.resolved_symbols
 
 
 class Preamble(BaseModel):
@@ -1792,6 +1862,10 @@ class Preamble(BaseModel):
     # Internal state managed during post-init
     _symbols: Any = PrivateAttr(default=None)
 
+    # =========================================================================
+    # Validators and Post-Initialization Hooks
+    # =========================================================================
+
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook to automate symbol generation and device placement.
@@ -1820,6 +1894,10 @@ class Preamble(BaseModel):
             # Ensure consistent internal dtype (complex64)
             self._symbols = self._symbols.astype("complex64")
 
+    # =========================================================================
+    # Properties
+    # =========================================================================
+
     @property
     def symbols(self) -> Any:
         """The IQ symbols of the preamble."""
@@ -1829,6 +1907,10 @@ class Preamble(BaseModel):
     def num_symbols(self) -> int:
         """Total number of symbols in the preamble."""
         return self.length
+
+    # =========================================================================
+    # Signal Generation
+    # =========================================================================
 
     def to_signal(
         self,
@@ -1840,7 +1922,6 @@ class Preamble(BaseModel):
         rc_rolloff: float = 0.35,
         smoothrect_bt: float = 1.0,
         gaussian_bt: float = 0.3,
-        dtype: Any = "complex64",
         **kwargs: Any,
     ) -> Signal:
         """
@@ -1864,8 +1945,6 @@ class Preamble(BaseModel):
             Bandwidth-Time product for Smooth Rect filter.
         gaussian_bt : float, default 0.3
             Bandwidth-Time product for Gaussian filter.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
         **kwargs : Any
             Additional arguments.
 
@@ -1891,7 +1970,7 @@ class Preamble(BaseModel):
             smoothrect_bt=smoothrect_bt,
             gaussian_bt=gaussian_bt,
             **kwargs,
-        ).astype(dtype)
+        )
 
         # Create minimal SignalInfo for the Preamble
         signal_info = SignalInfo(
@@ -1937,6 +2016,7 @@ class SingleCarrierFrame(BaseModel):
         Seed for reproducible payload data generation.
     preamble : Preamble, optional
         Structured preamble for synchronization.
+    preamble_mode : {"same", "time_orthogonal"}, default "same"
     pilot_pattern : {"none", "block", "comb"}, default "none"
         "none": No pilots.
         "block": A block of symbols at the start of the frame body.
@@ -1991,6 +2071,10 @@ class SingleCarrierFrame(BaseModel):
     _pilot_bits: Optional[Any] = PrivateAttr(default=None)
     _pilot_symbols: Optional[Any] = PrivateAttr(default=None)
 
+    # =========================================================================
+    # Validators and Post-Initialization Hooks
+    # =========================================================================
+
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook.
@@ -1999,6 +2083,10 @@ class SingleCarrierFrame(BaseModel):
         own device placement and initialization.
         """
         pass
+
+    # =========================================================================
+    # Mask Generation and Internal Data Preparation Methods
+    # =========================================================================
 
     def _generate_pilot_mask(self) -> Tuple[ArrayType, int]:
         """
@@ -2079,7 +2167,6 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.payload_mod_scheme,
             self.payload_mod_order,
-            dtype="complex64",  # Intermediate generation always complex64
         )
 
         if self.num_streams > 1:
@@ -2114,7 +2201,6 @@ class SingleCarrierFrame(BaseModel):
             bits,
             self.pilot_mod_scheme,
             self.pilot_mod_order,
-            dtype="complex64",
         )
 
         if self.num_streams > 1:
@@ -2123,6 +2209,10 @@ class SingleCarrierFrame(BaseModel):
 
         self._pilot_bits = bits
         self._pilot_symbols = symbols
+
+    # =========================================================================
+    # Properties for Accessing Payload and Pilot Data
+    # =========================================================================
 
     @property
     def payload_bits(self) -> ArrayType:
@@ -2222,169 +2312,15 @@ class SingleCarrierFrame(BaseModel):
 
         return body
 
-    def to_signal(
-        self,
-        sps: int = 4,
-        symbol_rate: float = 1e6,
-        pulse_shape: str = "rrc",
-        filter_span: int = 10,
-        rrc_rolloff: float = 0.35,
-        rc_rolloff: float = 0.35,
-        smoothrect_bt: float = 1.0,
-        gaussian_bt: float = 0.3,
-        dtype: Any = "complex64",
-        **kwargs: Any,
-    ) -> Signal:
-        """
-        Generates a shaped, oversampled waveform from the frame description.
-
-        This is the primary method for moving from a logical frame to
-        physical IQ samples. It handles upsampling, pulse shaping,
-        guard interval insertion, and metadata population.
-
-        Parameters
-        ----------
-        sps : int, default 4
-            Samples per symbol (oversampling factor).
-        pulse_shape : str, default "rrc"
-            Pulse shaping filter type.
-        filter_span : int, default 10
-            Filter span in symbols.
-        rrc_rolloff : float, default 0.35
-            Roll-off factor for RRC filter.
-        rc_rolloff : float, default 0.35
-            Roll-off factor for RC filter.
-        smoothrect_bt : float, default 1.0
-            Bandwidth-Time product for Smooth Rect filter.
-        gaussian_bt : float, default 0.3
-            Bandwidth-Time product for Gaussian filter.
-        dtype : data-type, default "complex64"
-            Numerical precision for generated waveform samples.
-        **kwargs : Any
-            Additional parameters passed to the shaping filter.
-
-        Returns
-        -------
-        Signal
-            A `Signal` object containing the IQ samples and `SignalInfo` metadata.
-
-        Notes
-        -----
-        The resulting waveform samples are normalized to **peak amplitude (1.0)**.
-        """
-        xp = cp if is_cupy_available() else np
-        from .filtering import shape_pulse
-
-        # 1. Shape Body (Payload + Pilots)
-        body_symbols = self.body_symbols
-        body_samples = shape_pulse(
-            body_symbols,
-            sps=sps,
-            pulse_shape=pulse_shape,
-            filter_span=filter_span,
-            rrc_rolloff=rrc_rolloff,
-            rc_rolloff=rc_rolloff,
-            smoothrect_bt=smoothrect_bt,
-            gaussian_bt=gaussian_bt,
-            **kwargs,
-        ).astype(dtype)
-
-        # Normalize Body to Peak 1.0
-        body_samples = helpers.normalize(body_samples, mode="peak")
-
-        # 2. Shape Preamble (if present)
-        if self.preamble is not None:
-            # Use Preamble's to_signal for shaping to reuse logic,
-            # but we only need the samples.
-            # CRITICAL: Must use EXACT same shaping parameters as body.
-            preamble_signal = self.preamble.to_signal(
-                sps=sps,
-                symbol_rate=symbol_rate,
-                pulse_shape=pulse_shape,
-                filter_span=filter_span,
-                rrc_rolloff=rrc_rolloff,
-                rc_rolloff=rc_rolloff,
-                smoothrect_bt=smoothrect_bt,
-                gaussian_bt=gaussian_bt,
-                dtype=dtype,
-                **kwargs,
-            )
-            preamble_samples = preamble_signal.samples
-
-            # Normalize Preamble to Peak 1.0
-            preamble_samples = helpers.normalize(preamble_samples, mode="peak")
-
-            # Handle MIMO preamble structure
-            preamble_samples = helpers.expand_preamble_mimo(
-                preamble_samples, self.num_streams, self.preamble_mode
-            )
-
-            # Concatenate Preamble + Body
-            samples = xp.concatenate([preamble_samples, body_samples], axis=-1)
-        else:
-            samples = body_samples
-
-        # 3. Apply Guard Interval at sample level
-        if self.guard_len > 0:
-            guard_len_samples = int(self.guard_len * sps)
-            if self.guard_type == "zero":
-                if self.num_streams > 1:
-                    zeros = xp.zeros((self.num_streams, guard_len_samples), dtype=dtype)
-                else:
-                    zeros = xp.zeros(guard_len_samples, dtype=dtype)
-                samples = xp.concatenate([samples, zeros], axis=-1)
-            elif self.guard_type == "cp":
-                cp_slice = samples[..., -guard_len_samples:]
-                samples = xp.concatenate([cp_slice, samples], axis=-1)
-
-        # 4. Build SignalInfo metadata
-        mask, _ = self._generate_pilot_mask()
-        pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
-
-        if self.preamble:
-            preamble_base_len = self.preamble.num_symbols
-        else:
-            preamble_base_len = None
-
-        signal_info = SignalInfo(
-            signal_type="single_carrier_frame",
-            payload_mod_scheme=self.payload_mod_scheme,
-            payload_mod_order=self.payload_mod_order,
-            preamble_seq_len=preamble_base_len,
-            preamble_type=self.preamble.sequence_type if self.preamble else None,
-            preamble_mode=self.preamble_mode if self.preamble else None,
-            preamble_kwargs=self.preamble.kwargs if self.preamble else {},
-            payload_len=self.payload_len,
-            pilot_count=pilot_count,
-            pilot_pattern=self.pilot_pattern,
-            pilot_period=self.pilot_period,
-            pilot_block_len=self.pilot_block_len,
-            pilot_mod_scheme=self.pilot_mod_scheme,
-            pilot_mod_order=self.pilot_mod_order,
-            pilot_gain_db=self.pilot_gain_db,
-            guard_len=self.guard_len,
-            guard_type=self.guard_type,
-            num_streams=self.num_streams,
-        )
-
-        return Signal(
-            samples=samples,
-            sampling_rate=symbol_rate * sps,
-            symbol_rate=symbol_rate,
-            modulation_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
-            modulation_order=None,  # Moved to SignalInfo
-            source_bits=None,  # Avoid redundancy per user request; access via Frame
-            source_symbols=None,  # Avoid redundancy; access via Frame
-            pulse_shape=pulse_shape,
-            signal_info=signal_info,
-            **kwargs,
-        )
+    # =========================================================================
+    # Frame Structure Mapping
+    # =========================================================================
 
     def get_structure_map(
         self,
         unit: Literal["symbols", "samples"] = "symbols",
         sps: int = 1,
-        include_preamble: bool = False,
+        include_preamble: bool = True,
     ) -> Dict[str, ArrayType]:
         """
         Generates boolean masks identifying the segments of the frame.
@@ -2395,7 +2331,7 @@ class SingleCarrierFrame(BaseModel):
             The scale of the returned masks.
         sps : int, default 1
             Samples per symbol (required if unit="samples").
-        include_preamble : bool, default False
+        include_preamble : bool, default True
             If True, returns masks for the full frame including preamble and
             guard intervals. If False, returns masks only for the segments
             after the preamble (and after CP removal if guard_type='cp').
@@ -2486,3 +2422,163 @@ class SingleCarrierFrame(BaseModel):
                 res[k] = xp.repeat(res[k], int(sps))
 
         return res
+
+    # =========================================================================
+    # Signal Generation
+    # =========================================================================
+
+    def to_signal(
+        self,
+        sps: int = 4,
+        symbol_rate: float = 1e6,
+        pulse_shape: str = "rrc",
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        smoothrect_bt: float = 1.0,
+        gaussian_bt: float = 0.3,
+        **kwargs: Any,
+    ) -> Signal:
+        """
+        Generates a shaped, oversampled waveform from the frame description.
+
+        This is the primary method for moving from a logical frame to
+        physical IQ samples. It handles upsampling, pulse shaping,
+        guard interval insertion, and metadata population.
+
+        Parameters
+        ----------
+        sps : int, default 4
+            Samples per symbol (oversampling factor).
+        pulse_shape : str, default "rrc"
+            Pulse shaping filter type.
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for RC filter.
+        smoothrect_bt : float, default 1.0
+            Bandwidth-Time product for Smooth Rect filter.
+        gaussian_bt : float, default 0.3
+            Bandwidth-Time product for Gaussian filter.
+        **kwargs : Any
+            Additional parameters passed to the shaping filter.
+
+        Returns
+        -------
+        Signal
+            A `Signal` object containing the IQ samples and `SignalInfo` metadata.
+
+        Notes
+        -----
+        The resulting waveform samples are normalized to **peak amplitude (1.0)**.
+        """
+        xp = cp if is_cupy_available() else np
+        from .filtering import shape_pulse
+
+        # 1. Shape Body (Payload + Pilots)
+        body_symbols = self.body_symbols
+        body_samples = shape_pulse(
+            body_symbols,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            smoothrect_bt=smoothrect_bt,
+            gaussian_bt=gaussian_bt,
+            **kwargs,
+        )
+
+        # Normalize Body to Peak 1.0
+        body_samples = helpers.normalize(body_samples, mode="peak")
+
+        # 2. Shape Preamble (if present)
+        if self.preamble is not None:
+            # Use Preamble's to_signal for shaping to reuse logic,
+            # but we only need the samples.
+            # CRITICAL: Must use EXACT same shaping parameters as body.
+            preamble_signal = self.preamble.to_signal(
+                sps=sps,
+                symbol_rate=symbol_rate,
+                pulse_shape=pulse_shape,
+                filter_span=filter_span,
+                rrc_rolloff=rrc_rolloff,
+                rc_rolloff=rc_rolloff,
+                smoothrect_bt=smoothrect_bt,
+                gaussian_bt=gaussian_bt,
+                **kwargs,
+            )
+            preamble_samples = preamble_signal.samples
+
+            # Normalize Preamble to Peak 1.0
+            preamble_samples = helpers.normalize(preamble_samples, mode="peak")
+
+            # Handle MIMO preamble structure
+            preamble_samples = helpers.expand_preamble_mimo(
+                preamble_samples, self.num_streams, self.preamble_mode
+            )
+
+            # Concatenate Preamble + Body
+            samples = xp.concatenate([preamble_samples, body_samples], axis=-1)
+        else:
+            samples = body_samples
+
+        # 3. Apply Guard Interval at sample level
+        if self.guard_len > 0:
+            guard_len_samples = int(self.guard_len * sps)
+            if self.guard_type == "zero":
+                if self.num_streams > 1:
+                    zeros = xp.zeros(
+                        (self.num_streams, guard_len_samples), dtype="complex64"
+                    )
+                else:
+                    zeros = xp.zeros(guard_len_samples, dtype="complex64")
+                samples = xp.concatenate([samples, zeros], axis=-1)
+            elif self.guard_type == "cp":
+                cp_slice = samples[..., -guard_len_samples:]
+                samples = xp.concatenate([cp_slice, samples], axis=-1)
+
+        # 4. Build SignalInfo metadata
+        mask, _ = self._generate_pilot_mask()
+        pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
+
+        if self.preamble:
+            preamble_base_len = self.preamble.num_symbols
+        else:
+            preamble_base_len = None
+
+        signal_info = SignalInfo(
+            signal_type="single_carrier_frame",
+            payload_mod_scheme=self.payload_mod_scheme,
+            payload_mod_order=self.payload_mod_order,
+            preamble_seq_len=preamble_base_len,
+            preamble_type=self.preamble.sequence_type if self.preamble else None,
+            preamble_mode=self.preamble_mode if self.preamble else None,
+            preamble_kwargs=self.preamble.kwargs if self.preamble else {},
+            payload_len=self.payload_len,
+            pilot_count=pilot_count,
+            pilot_pattern=self.pilot_pattern,
+            pilot_period=self.pilot_period,
+            pilot_block_len=self.pilot_block_len,
+            pilot_mod_scheme=self.pilot_mod_scheme,
+            pilot_mod_order=self.pilot_mod_order,
+            pilot_gain_db=self.pilot_gain_db,
+            guard_len=self.guard_len,
+            guard_type=self.guard_type,
+            num_streams=self.num_streams,
+        )
+
+        return Signal(
+            samples=samples,
+            sampling_rate=symbol_rate * sps,
+            symbol_rate=symbol_rate,
+            modulation_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
+            modulation_order=None,  # Moved to SignalInfo
+            source_bits=None,  # Avoid redundancy per user request; access via Frame
+            source_symbols=None,  # Avoid redundancy; access via Frame
+            pulse_shape=pulse_shape,
+            signal_info=signal_info,
+            **kwargs,
+        )

@@ -14,7 +14,7 @@ ber :
     Computes Bit Error Rate between bit sequences.
 """
 
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Tuple, Union
 
 import numpy as np
 
@@ -56,8 +56,8 @@ def evm(
     -----
     For MIMO, metrics are calculated independently for each stream (row).
     """
-    from .core import Signal
     from . import helpers
+    from .core import Signal
 
     # Extract samples
     if isinstance(rx_symbols, Signal):
@@ -129,6 +129,7 @@ def evm(
             evm_db = (
                 float(20.0 * xp.log10(evm_ratio)) if evm_ratio > 0 else float("-inf")
             )
+        logger.info(f"EVM: {evm_percent:.2f}% ({evm_db:.2f} dB)")
         return evm_percent, evm_db
 
     # If array:
@@ -139,6 +140,11 @@ def evm(
     # Overwrite indices
     evm_percent[low_pwr_mask] = float("inf")
     evm_db[low_pwr_mask] = float("inf")
+
+    for ch in range(evm_percent.shape[0]):
+        logger.info(
+            f"EVM Ch{ch}: {float(evm_percent[ch]):.2f}% ({float(evm_db[ch]):.2f} dB)"
+        )
 
     return evm_percent, evm_db
 
@@ -168,8 +174,8 @@ def snr(
     float or ndarray
         Estimated SNR in dB. Returns array if input is multichannel.
     """
-    from .core import Signal
     from . import helpers
+    from .core import Signal
 
     if isinstance(rx_symbols, Signal):
         rx = (
@@ -236,23 +242,30 @@ def snr(
             return float("inf")
         if low_pwr_mask:
             return float("-inf")
-        return float(snr_db)
+        snr_val = float(snr_db)
+        logger.info(f"SNR: {snr_val:.2f} dB")
+        return snr_val
 
     # Array case: Overwrite with -inf where (low_pwr_mask AND NOT zero_noise_mask)
     # Note: where zero_noise_mask is True, snr_db is already 'inf' from division
     mask_to_neg_inf = low_pwr_mask & (~zero_noise_mask)
     snr_db[mask_to_neg_inf] = float("-inf")
 
+    for ch in range(snr_db.shape[0]):
+        logger.info(f"SNR Ch{ch}: {float(snr_db[ch]):.2f} dB")
+
     return snr_db
 
 
-# TODO: check precision for ber
 def ber(
     bits_rx: ArrayType,
     bits_tx: ArrayType,
-) -> float:
+) -> Union[float, ArrayType]:
     """
     Computes the Bit Error Rate (BER) between two bit sequences.
+
+    Calculation is performed per-channel (along ``axis=-1``) to properly
+    handle MIMO/multichannel signals.
 
     Parameters
     ----------
@@ -263,8 +276,8 @@ def ber(
 
     Returns
     -------
-    float
-        BER as a ratio in the range [0, 1]. Calculated as `errors / total_bits`.
+    float or ndarray
+        BER as a ratio in [0, 1]. Scalar for 1D input, array for multichannel.
 
     Notes
     -----
@@ -274,22 +287,25 @@ def ber(
     bits_rx, xp, _ = dispatch(bits_rx)
     bits_tx = xp.asarray(bits_tx)
 
-    # Flatten for comparison
-    rx_flat = bits_rx.flatten()
-    tx_flat = bits_tx.flatten()
+    if bits_rx.shape != bits_tx.shape:
+        raise ValueError(f"Shape mismatch: rx {bits_rx.shape} != tx {bits_tx.shape}")
 
-    if rx_flat.size != tx_flat.size:
-        raise ValueError(
-            f"Bit sequence lengths must match: rx={rx_flat.size}, tx={tx_flat.size}"
-        )
-
-    total_bits = rx_flat.size
-    if total_bits == 0:
+    if bits_rx.size == 0:
         return 0.0
 
-    # Count errors (XOR gives 1 where bits differ)
-    errors = xp.sum(rx_flat != tx_flat)
-    ber_value = float(errors) / float(total_bits)
+    # Per-stream error count along time axis
+    errors = xp.sum(bits_rx != bits_tx, axis=-1)
+    total = bits_rx.shape[-1]
+    ber_values = errors / total
 
-    logger.debug(f"BER: {ber_value:.2e} ({int(errors)}/{total_bits} errors)")
-    return ber_value
+    if ber_values.ndim == 0:
+        ber_value = float(ber_values)
+        logger.info(f"BER: {ber_value:.2e} ({int(errors)}/{total} errors)")
+        return ber_value
+
+    for ch in range(ber_values.shape[0]):
+        logger.info(
+            f"BER Ch{ch}: {float(ber_values[ch]):.2e} "
+            f"({int(errors[ch])}/{total} errors)"
+        )
+    return ber_values

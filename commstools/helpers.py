@@ -56,7 +56,7 @@ def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
     """
     logger.debug(f"Generating {length} random bits (seed={seed}).")
     rng = np.random.default_rng(seed)
-    bits = rng.integers(0, 2, size=length, dtype=np.int8)
+    bits = rng.integers(0, 2, size=length, dtype="int8")
 
     if is_cupy_available():
         bits = to_device(bits, "gpu")
@@ -69,7 +69,6 @@ def random_symbols(
     modulation: str,
     order: int,
     seed: Optional[int] = None,
-    dtype: Any = "complex64",
     unipolar: Optional[bool] = None,
 ) -> ArrayType:
     """
@@ -88,21 +87,20 @@ def random_symbols(
         Modulation order (e.g., 4, 16, 64).
     seed : int, optional
         Random seed for reproducible results.
-    dtype : data-type, default "complex64"
-        Desired data type of the output symbols.
     unipolar : bool, default False
         If True, use unipolar constellation (ASK/PAM).
 
     Returns
     -------
     array_like
-        Array of complex symbols on the active device (CPU or GPU).
+        Array of symbols on the active device (CPU or GPU).
+        Dtype is ``complex64`` for PSK/QAM, ``float32`` for ASK/PAM.
     """
     from . import mapping
 
     k = int(np.log2(order))
     bits = random_bits(num_symbols * k, seed=seed)
-    return mapping.map_bits(bits, modulation, order, dtype=dtype, unipolar=unipolar)
+    return mapping.map_bits(bits, modulation, order, unipolar=unipolar)
 
 
 def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> ArrayType:

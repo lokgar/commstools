@@ -36,7 +36,7 @@ def test_signal_auto_symbols(backend_device, xp):
     """Verify source_symbols derivation from source_bits in post-init."""
     import numpy as np
 
-    bits = xp.array([0, 1, 0, 0], dtype=np.int8)
+    bits = xp.array([0, 1, 0, 0], dtype="int8")
     # BPSK mapping: 0 -> -1, 1 -> 1
     s = Signal(
         samples=xp.ones(10),
@@ -153,7 +153,7 @@ def test_signal_shift_frequency(backend_device, xp):
     """Verify frequency shifting logic and resulting spectral peak positioning."""
     fs = 100.0
     # Simple DC signal (freq 0)
-    data = xp.ones(100, dtype=xp.complex128)
+    data = xp.ones(100, dtype="complex128")
     s = Signal(samples=data, sampling_rate=fs, symbol_rate=10.0)
 
     # Offset by 20 Hz
@@ -196,9 +196,9 @@ def test_signal_resolution_and_demap(backend_device, xp):
     assert sig.resolved_symbols is None
     assert sig.resolved_bits is None
 
-    # Calling demap before resolve_symbols should raise ValueError
+    # Calling demap_symbols before resolve_symbols should raise ValueError
     with pytest.raises(ValueError, match="No resolved symbols available"):
-        sig.demap()
+        sig.demap_symbols()
 
     # Resolve symbols with offset
     sig.resolve_symbols(offset=0)
@@ -207,7 +207,7 @@ def test_signal_resolution_and_demap(backend_device, xp):
     assert isinstance(sig.resolved_symbols, xp.ndarray)
 
     # Demap
-    bits = sig.demap(hard=True)
+    bits = sig.demap_symbols(hard=True)
     assert sig.resolved_bits is not None
     assert len(sig.resolved_bits) == num_symbols
     assert xp.array_equal(bits, sig.resolved_bits)
@@ -222,13 +222,13 @@ def test_signal_resolution_and_demap(backend_device, xp):
     # Test BER with manual reference bits
     ref_bits = sig.source_bits
     if ref_bits is not None:
-        # ber() requires resolved_bits (populated by demap above)
+        # ber() requires resolved_bits (populated by demap_symbols above)
         ber = sig.ber(reference_bits=ref_bits)
         assert 0 <= ber <= 1
 
     # Test that BER raises if resolved_bits is missing
     sig.resolved_bits = None
-    with pytest.raises(ValueError, match="Please call `demap\(\)` first"):
+    with pytest.raises(ValueError, match="Please call `demap_symbols\(\)` first"):
         sig.ber(reference_bits=ref_bits)
 
 
@@ -238,7 +238,7 @@ def test_signal_ber_soft_demap(backend_device, xp):
     sig.resolve_symbols()
 
     # Perform soft demapping
-    sig.demap(hard=False, noise_var=0.1)
+    sig.demap_symbols(hard=False, noise_var=0.1)
     assert sig.resolved_llr is not None
     assert sig.resolved_bits is not None  # Populated from LLRs
 
@@ -246,25 +246,25 @@ def test_signal_ber_soft_demap(backend_device, xp):
     assert 0 <= ber_soft <= 1
 
 
-def test_signal_downsample_to_symbols(backend_device, xp):
+def test_signal_decimate_to_symbol_rate(backend_device, xp):
     """Verify downsampling Signal to symbols."""
-    data = xp.ones(40, dtype=xp.complex128)
+    data = xp.ones(40, dtype="complex128")
     s = Signal(samples=data, sampling_rate=4.0, symbol_rate=1.0)
-    s.downsample_to_symbols(offset=0)
+    s.decimate_to_symbol_rate(offset=0)
     assert len(s.samples) == 10
     assert s.sampling_rate == 1.0
 
 
 def test_signal_downsample_warning(backend_device, xp):
     """Verify warning when downsampling already 1 SPS signal."""
-    data = xp.ones(10, dtype=xp.complex128)
+    data = xp.ones(10, dtype="complex128")
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
-    s.downsample_to_symbols()  # Should just warn
+    s.decimate_to_symbol_rate()  # Should just warn
 
 
 def test_signal_mimo_fir_coverage(backend_device, xp):
     """Verify FIR filtering on multichannel signals."""
-    data = xp.ones((2, 100), dtype=xp.complex128)
+    data = xp.ones((2, 100), dtype="complex128")
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
     # Filter with delay
     taps = xp.array([1.0, 0.5])

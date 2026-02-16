@@ -42,7 +42,7 @@ def test_awgn_signal_object(backend_device, xp):
 
 def test_awgn_real_data(backend_device, xp):
     """Verify add_awgn with real-valued data."""
-    data = xp.ones(1000, dtype=xp.float32)
+    data = xp.ones(1000, dtype="float32")
     noisy = impairments.add_awgn(data, esn0_db=10, sps=1)
 
     assert xp.isrealobj(noisy)

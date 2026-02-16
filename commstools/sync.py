@@ -70,7 +70,7 @@ def barker_sequence(length: int) -> ArrayType:
         valid = sorted(_BARKER_SEQUENCES.keys())
         raise ValueError(f"No Barker sequence of length {length}. Valid: {valid}")
 
-    seq = np.array(_BARKER_SEQUENCES[length], dtype=np.float32)
+    seq = np.array(_BARKER_SEQUENCES[length], dtype="float32")
 
     if is_cupy_available():
         seq = to_device(seq, "gpu")
@@ -476,7 +476,7 @@ def detect_frame(
                     f"Valid Peaks: {valid_peaks.tolist()}. Spread: {spread} samples."
                 )
             else:
-                logger.debug(f"Channels aligned (spread {spread}).")
+                logger.info(f"Channels aligned (spread {spread}).")
 
     # Frame Start Calculation (Per-Channel)
     frame_starts = peak_indices + offset
@@ -532,7 +532,7 @@ def detect_frame(
         plt.tight_layout()
         plt.show()
 
-    logger.debug(
+    logger.info(
         f"Frame detected. Starts: {frame_starts.tolist()}, Metrics: {metrics.tolist()}"
     )
 

@@ -111,15 +111,15 @@ def test_signal_ber_method(backend_device, xp):
         order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
 
-    # Must resolve symbols then demap before BER
+    # Must resolve symbols then demap symbols before BER
     sig.resolve_symbols()
-    sig.demap()
+    sig.demap_symbols()
     ber_val = sig.ber()
     assert ber_val == 0.0  # Perfect signal, no errors
 
 
 def test_signal_demap_hard(backend_device, xp):
-    """Test Signal.demap() hard decision."""
+    """Test Signal.demap_symbols() hard decision."""
     from commstools.core import Signal
 
     sig = Signal.qam(
@@ -129,7 +129,7 @@ def test_signal_demap_hard(backend_device, xp):
     # Must resolve symbols before demapping
     sig.resolve_symbols()
     # Demap to bits
-    bits = sig.demap(hard=True)
+    bits = sig.demap_symbols(hard=True)
 
     # Should match source_bits
     assert xp.array_equal(bits.flatten(), sig.source_bits.flatten())
@@ -159,7 +159,7 @@ def test_metrics_more(backend_device, xp):
     assert snr_val == float("inf")
 
     # 3. BER mismatch
-    with pytest.raises(ValueError, match="Bit sequence lengths must match"):
+    with pytest.raises(ValueError, match="Shape mismatch"):
         metrics.ber(xp.array([0, 1]), xp.array([0]))
 
 
@@ -259,5 +259,5 @@ def test_snr_array_low_power(backend_device, xp):
 
 def test_ber_length_mismatch(backend_device, xp):
     """Verify error on bit length mismatch."""
-    with pytest.raises(ValueError, match="Bit sequence lengths must match"):
+    with pytest.raises(ValueError, match="Shape mismatch"):
         metrics.ber(xp.array([1, 0]), xp.array([1, 0, 1]))
