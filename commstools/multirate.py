@@ -9,16 +9,16 @@ Functions
 ---------
 polyphase_resample :
     Performs rational rate conversion via polyphase filtering.
-resample :
-    High-level interface for arbitrary rate changes.
+decimate_to_symbol_rate :
+    Optimized symbol extraction after matched filtering.
+expand :
+    Inserts zeros between samples (zero-stuffing).
 upsample :
     Increases sampling rate by an integer factor with anti-imaging.
 decimate :
     Reduces sampling rate with anti-aliasing filtering.
-expand :
-    Inserts zeros between samples (zero-stuffing).
-decimate_to_symbol_rate :
-    Optimized symbol extraction after matched filtering.
+resample :
+    High-level interface for arbitrary rate changes.
 """
 
 from fractions import Fraction
@@ -123,8 +123,6 @@ def polyphase_resample(
         return sp.signal.resample_poly(samples, up, down, axis=axis)
 
 
-# TODO: implement proper decimation design with fractional interpolation, gardner, etc.
-# so proper timing correction first
 def decimate_to_symbol_rate(
     samples: ArrayType,
     sps: int,
