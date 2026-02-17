@@ -261,3 +261,20 @@ def test_ber_length_mismatch(backend_device, xp):
     """Verify error on bit length mismatch."""
     with pytest.raises(ValueError, match="Shape mismatch"):
         metrics.ber(xp.array([1, 0]), xp.array([1, 0, 1]))
+
+
+def test_ber_multichannel(backend_device, xp):
+    """Verify multi-channel BER logging path (lines 306-311)."""
+    # 2 channels, each with 10 bits
+    tx = xp.array([[0, 1, 0, 1, 1, 0, 0, 1, 0, 1],
+                    [1, 0, 1, 0, 0, 1, 1, 0, 1, 0]])
+    # Channel 0: 1 error at position 0, Channel 1: 2 errors at positions 0,1
+    rx = xp.array([[1, 1, 0, 1, 1, 0, 0, 1, 0, 1],
+                    [0, 1, 1, 0, 0, 1, 1, 0, 1, 0]])
+
+    ber_values = metrics.ber(rx, tx)
+
+    # Should return array of shape (2,)
+    assert ber_values.shape == (2,)
+    assert float(ber_values[0]) == pytest.approx(1 / 10)
+    assert float(ber_values[1]) == pytest.approx(2 / 10)

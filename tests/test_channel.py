@@ -56,3 +56,12 @@ def test_awgn_low_snr(backend_device, xp):
     noisy = impairments.add_awgn(data, esn0_db=-300, sps=1)
     measured_power = xp.mean(xp.abs(noisy) ** 2)
     assert float(measured_power) > 1e15
+
+
+def test_awgn_array_without_sps(backend_device, xp):
+    """Verify add_awgn raises when array input missing sps (line 72)."""
+    import pytest
+
+    data = xp.ones(100, dtype=complex)
+    with pytest.raises(ValueError, match="sps must be provided"):
+        impairments.add_awgn(data, esn0_db=10)

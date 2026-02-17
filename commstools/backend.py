@@ -392,7 +392,9 @@ def from_jax(data: Any) -> ArrayType:
     except Exception:
         pass
 
-    if platform == "cuda" and is_cupy_available():
+    is_gpu = platform in ("cuda", "gpu")
+
+    if is_gpu and is_cupy_available():
         # Try zero-copy via DLPack to CuPy
         try:
             return cp.from_dlpack(data)
@@ -401,10 +403,30 @@ def from_jax(data: Any) -> ArrayType:
                 f"DLPack transfer from JAX to CuPy failed: {e}. Falling back to NumPy conversion."
             )
 
-    if platform == "cuda" and not is_cupy_available():
+    if is_gpu and not is_cupy_available():
         logger.warning(
             "JAX array is on GPU, but CuPy is not available. Falling back to NumPy (CPU)."
         )
 
     # Convert to numpy (will copy from GPU/TPU if needed)
     return np.asarray(data)
+
+
+def is_jax_array(data: Any) -> bool:
+    """
+    Checks if the given data is a JAX array without eagerly importing JAX.
+
+    Parameters
+    ----------
+    data : any
+        The object to check.
+
+    Returns
+    -------
+    bool
+        True if `data` is a `jax.Array` instance.
+    """
+    jax, _, _ = _get_jax()
+    if jax is None:
+        return False
+    return isinstance(data, jax.Array)
