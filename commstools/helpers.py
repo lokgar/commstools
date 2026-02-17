@@ -11,6 +11,8 @@ random_bits :
     Generates reproducible random binary sequences.
 random_symbols :
     Generates random modulation symbols.
+rms :
+    Computes the Root-Mean-Square (RMS) value of an array.
 normalize :
     Applies various normalization strategies (unit energy, max amplitude, etc.).
 format_si :
@@ -19,6 +21,10 @@ validate_array :
     Ensures input data is coerced into a supported backend array type.
 interp1d :
     High-performance linear interpolation for NumPy and CuPy backends.
+cross_correlate_fft :
+    Vectorized FFT-based cross-correlation for 1D and multichannel signals.
+expand_preamble_mimo :
+    Expands a single preamble waveform to a MIMO preamble for N_tx antennas.
 """
 
 from typing import Any, Optional
@@ -364,6 +370,87 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     result = xp.swapaxes(result, axis, -1)
 
     return result
+
+
+def cross_correlate_fft(
+    signal: ArrayType,
+    template: ArrayType,
+    mode: str = "full",
+) -> ArrayType:
+    """
+    Vectorized FFT-based cross-correlation.
+
+    Computes the cross-correlation of ``signal`` with ``template`` using
+    the frequency-domain multiplication approach. Handles 1D and 2D
+    (multichannel) inputs natively via ``axis=-1`` broadcasting — no
+    Python loops over channels.
+
+    Parameters
+    ----------
+    signal : array_like
+        Input signal. Shape: ``(N,)`` or ``(C, N)``.
+    template : array_like
+        Reference sequence. Shape: ``(L,)`` or ``(C, L)``.
+        If ``(1, L)`` and signal is ``(C, N)``, the template is
+        broadcast across all channels.
+    mode : {"full", "same", "valid"}, default "full"
+        Output size:
+        - ``"full"``: length ``N + L - 1``.
+        - ``"same"``: length ``N`` (centered).
+        - ``"valid"``: length ``max(N, L) - min(N, L) + 1``.
+
+    Returns
+    -------
+    array_like
+        Complex cross-correlation with shape matching the input
+        dimensionality and the selected ``mode``.
+    """
+    signal, xp, _ = dispatch(signal)
+    template = xp.asarray(template)
+
+    was_1d = signal.ndim == 1
+    if was_1d:
+        signal = signal[None, :]
+    if template.ndim == 1:
+        template = template[None, :]
+
+    N = signal.shape[-1]
+    L = template.shape[-1]
+    full_len = N + L - 1
+
+    # Power-of-2 FFT length for efficiency
+    n_fft = (
+        1 << full_len.bit_length()
+        if isinstance(full_len, int)
+        else 1 << int(full_len).bit_length()
+    )
+
+    # FFT-based correlation: R[k] = IFFT(FFT(signal) * conj(FFT(template)))
+    # Circular correlation places positive lags at 0..N-1 and negative lags
+    # wrap to n_fft-(L-1)..n_fft-1.  Rearrange to match scipy layout:
+    # lags [-(L-1), ..., -1, 0, 1, ..., N-1]  (total = N + L - 1).
+    SIG = xp.fft.fft(signal, n_fft, axis=-1)
+    TPL = xp.fft.fft(template, n_fft, axis=-1)
+    corr_circ = xp.fft.ifft(SIG * xp.conj(TPL), axis=-1)
+
+    # Gather negative lags (indices n_fft-(L-1) .. n_fft-1) then positive (0 .. N-1)
+    neg_lags = corr_circ[..., -(L - 1) :]  # length L-1
+    pos_lags = corr_circ[..., :N]  # length N
+    corr = xp.concatenate([neg_lags, pos_lags], axis=-1)  # length N+L-1
+
+    # Apply mode trimming
+    if mode == "same":
+        start = (L - 1) // 2
+        corr = corr[..., start : start + N]
+    elif mode == "valid":
+        valid_len = max(N, L) - min(N, L) + 1
+        start = min(N, L) - 1
+        corr = corr[..., start : start + valid_len]
+    # mode == "full": no trimming needed
+
+    if was_1d:
+        return corr[0]
+    return corr
 
 
 def expand_preamble_mimo(
