@@ -1,9 +1,10 @@
 """
-Synchronization and frame detection utilities.
+Synchronization and timing estimation utilities.
 
 This module provides routines for time and frequency synchronization,
 including the generation of optimal synchronization sequences (Barker,
-Zadoff-Chu) and robust frame detection algorithms using cross-correlation.
+Zadoff-Chu), robust timing estimation via cross-correlation,
+and fine timing estimation and correction.
 
 Functions
 ---------
@@ -11,10 +12,16 @@ barker_sequence :
     Generates Barker codes with optimal auto-correlation.
 zadoff_chu_sequence :
     Generates Constant Amplitude Zero Auto-Correlation (CAZAC) sequences.
-correlate :
-    Multi-backend cross-correlation for sequence detection.
-detect_frame :
-    Identifies frame start position via preamble correlation.
+estimate_fractional_delay :
+    Estimates sub-sample timing offset via parabolic interpolation.
+fft_fractional_delay :
+    Applies fractional sample delay using FFT-based frequency-domain method
+    (ideal for bandlimited signals, perfect power preservation).
+estimate_timing :
+    Estimates coarse (integer) and fractional timing offsets via
+    preamble correlation and parabolic interpolation.
+correct_timing :
+    Combined coarse (integer) and fine (fractional) timing correction.
 """
 
 from typing import Optional, Tuple, Union
@@ -80,7 +87,7 @@ def barker_sequence(length: int) -> ArrayType:
 
 
 def zadoff_chu_sequence(length: int, root: int = 1) -> ArrayType:
-    """
+    r"""
     Generates a Zadoff-Chu (ZC) synchronization sequence.
 
     ZC sequences are Complex-valued, Constant Amplitude Zero
@@ -137,103 +144,273 @@ def zadoff_chu_sequence(length: int, root: int = 1) -> ArrayType:
     return seq
 
 
-def correlate(
-    signal: ArrayType,
-    template: ArrayType,
-    mode: str = "full",
-    normalize: bool = False,
+def estimate_fractional_delay(
+    correlation: ArrayType,
+    peak_indices: ArrayType,
+    dft_upsample: int = 1,
+    method: str = "log-parabolic",
 ) -> ArrayType:
     """
-    Cross-correlates a signal with a template sequence.
+    Estimates sub-sample timing offset via parabolic interpolation.
 
-    Uses FFT-based correlation for optimal performance on both CPU and GPU.
-    This is essential for detecting synchronization sequences (preambles)
-    in received data.
+    Given a correlation array and the integer peak positions, fits a
+    parabola (or Gaussian) through the three points around each peak to
+    estimate the fractional offset with sub-sample precision.
+
+    When the input is **complex**, the peak is phase-rotated to the real
+    axis before fitting. This preserves the true peak shape (unlike
+    fitting to ``|R|``) and improves accuracy by 2–5× for typical
+    matched-filter outputs.
+
+    If ``dft_upsample > 1``, performs a "Zoom FFT" (DFT zero-padding)
+    around the peak to interpolate the correlation function onto a finer
+    grid before fitting. This significantly reduces bias error.
 
     Parameters
     ----------
-    signal : array_like
-        Input signal samples. Shape: (N_samples,) or (N_channels, N_samples).
-    template : array_like
-        The reference sequence to correlate against. Shape: (N_template,).
-    mode : {"full", "same", "valid"}, default "full"
-        The output size mode of the correlation.
-    normalize : bool, default False
-        If True, the output is normalized by the template energy.
+    correlation : array_like
+        Correlation values — complex or real magnitude.
+        Shape: ``(N,)`` or ``(C, N)``.
+    peak_indices : array_like
+        Integer peak positions. Shape: scalar or ``(C,)``.
+    dft_upsample : int, default 1
+        Upsampling factor for DFT-based interpolation.
+        Values > 1 perform zero-padded FFT interpolation on a window
+        around the peak (typically 33 samples).
+    method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
+        Fitting method:
+        - 'parabolic': Standard parabolic fit. Good for general peaks.
+        - 'log-parabolic': Fits a parabola to log(y), equivalent to a
+          Gaussian fit. Often more accurate for bandlimited pulses.
 
     Returns
     -------
     array_like
-        Correlation metric. Shape depends on `mode` and `signal` dimensions.
+        Fractional offset per channel, in [-0.5, 0.5). Shape: ``(C,)`` or scalar.
     """
-    signal, xp, sp = dispatch(signal)
-    template = xp.asarray(template)
+    correlation, xp, _ = dispatch(correlation)
+    peak_indices = xp.asarray(peak_indices)
+    scalar_input = peak_indices.ndim == 0
 
-    # Handle MIMO: correlate each channel independently
-    if signal.ndim == 2:
-        # Apply along time axis (axis=-1)
-        results = []
-        for ch in range(signal.shape[0]):
-            corr = _correlate_1d(signal[ch], template, mode, normalize, xp, sp)
-            results.append(corr)
-        return xp.stack(results, axis=0)
+    if correlation.ndim == 1:
+        correlation = correlation[None, :]  # (1, N)
+    if peak_indices.ndim == 0:
+        peak_indices = peak_indices[None]  # (1,)
 
-    return _correlate_1d(signal, template, mode, normalize, xp, sp)
+    N = correlation.shape[-1]
+    C = correlation.shape[0]
+    ch_idx = xp.arange(C)
+
+    k = peak_indices.astype(int)
+    mu = xp.zeros(C, dtype=correlation.real.dtype)
+
+    def _calculate_mu(r_m1, r_0, r_p1, xp, method):
+        if xp.iscomplexobj(r_0):
+            phase = xp.exp(-1j * xp.angle(r_0))
+            alpha = (r_m1 * phase).real
+            beta = (r_0 * phase).real
+            gamma = (r_p1 * phase).real
+        else:
+            alpha = r_m1
+            beta = r_0
+            gamma = r_p1
+
+        if method == "log-parabolic":
+            eps = 1e-12
+            alpha = xp.maximum(alpha, eps)
+            beta = xp.maximum(beta, eps)
+            gamma = xp.maximum(gamma, eps)
+            alpha, beta, gamma = xp.log(alpha), xp.log(beta), xp.log(gamma)
+
+        denom = 2.0 * (alpha - 2.0 * beta + gamma)
+        safe_denom = xp.where(xp.abs(denom) > 1e-12, denom, xp.ones_like(denom))
+        mu_val = (alpha - gamma) / safe_denom
+
+        # Mask invalid fits
+        valid = xp.abs(denom) > 1e-12
+        mu_val = xp.where(valid, mu_val, xp.zeros_like(mu_val))
+        return xp.clip(mu_val, -0.5, 0.5)
+
+    # -------------------------------------------------------------------------
+    # Path A: DFT Upsampling
+    # -------------------------------------------------------------------------
+    if dft_upsample > 1:
+        W = 33
+        half_W = W // 2
+        interior_mask = (k >= half_W) & (k < N - half_W)
+
+        if xp.any(interior_mask):
+            valid_indices = xp.where(interior_mask)[0]
+            k_valid = k[interior_mask]
+
+            offsets = xp.arange(-half_W, half_W + 1)
+            gather_idx = k_valid[:, None] + offsets[None, :]
+            windows = correlation[valid_indices[:, None], gather_idx]
+
+            specs = xp.fft.fft(windows, axis=-1)
+            pos_limit = (W + 1) // 2
+            neg_len = W - pos_limit
+            target_len = W * dft_upsample
+            padded_specs = xp.zeros((len(valid_indices), target_len), dtype=specs.dtype)
+            padded_specs[:, :pos_limit] = specs[:, :pos_limit]
+            padded_specs[:, -neg_len:] = specs[:, pos_limit:]
+
+            upsampled = xp.fft.ifft(padded_specs, axis=-1) * dft_upsample
+            up_mag = xp.abs(upsampled)
+            k_up = xp.argmax(up_mag, axis=-1)
+            k_up_safe = xp.clip(k_up, 1, target_len - 2)
+
+            row_idx = xp.arange(len(valid_indices))
+            r_m1 = upsampled[row_idx, k_up_safe - 1]
+            r_0 = upsampled[row_idx, k_up_safe]
+            r_p1 = upsampled[row_idx, k_up_safe + 1]
+
+            mu_up = _calculate_mu(r_m1, r_0, r_p1, xp, method)
+
+            # Position relative to window start: k_up + mu_up
+            # Center of window is at index (half_W * dft_upsample)?
+            # No, standard ZoomFFT mapping.
+            # Time axis of upsampled is 0 to W*M-1.
+            # Original sample k corresponds to center of window.
+            # Window covers [k - half_W, k + half_W].
+            # Index 0 of upsampled corresponds to k - half_W.
+            # So offset from k is: -half_W + (k_up + mu_up) / M.
+            offset_samples = -half_W + (k_up_safe + mu_up) / dft_upsample
+            mu[interior_mask] = offset_samples
+
+    # -------------------------------------------------------------------------
+    # Path B: Standard (Fallback or Primary)
+    # -------------------------------------------------------------------------
+    if dft_upsample == 1 or xp.any(mu == 0):
+        # We compute this for channels NOT handled by DFT path (or all if M=1)
+        # For simplicity, finding mask of channels needing calculation
+        if dft_upsample > 1:
+            # interior_mask was defined above
+            calc_mask = ~interior_mask
+        else:
+            calc_mask = xp.ones(C, dtype=bool)
+
+        if xp.any(calc_mask):
+            # We calculate for ALL safe indices, then blend.
+
+            interior_all = (k >= 1) & (k < N - 1)
+            k_all_safe = xp.clip(k, 1, N - 2)
+
+            r_m1 = correlation[ch_idx, k_all_safe - 1]
+            r_0 = correlation[ch_idx, k_all_safe]
+            r_p1 = correlation[ch_idx, k_all_safe + 1]
+
+            mu_std = _calculate_mu(r_m1, r_0, r_p1, xp, method)
+            mu_std = xp.where(interior_all, mu_std, xp.zeros_like(mu_std))
+
+            if dft_upsample == 1:
+                mu = mu_std
+            else:
+                # Merge: favor DFT result if it was computed (non-zero? no, check mask)
+                # Re-calculate interior_mask from Path A logic to be sure
+                W = 33
+                half_W = W // 2
+                interior_mask = (k >= half_W) & (k < N - half_W)
+                mu = xp.where(interior_mask, mu, mu_std)
+
+    if scalar_input:
+        return mu[0]
+    return mu
 
 
-def _correlate_1d(
+
+
+def fft_fractional_delay(
     signal: ArrayType,
-    template: ArrayType,
-    mode: str,
-    normalize: bool,
-    xp,
-    sp,
+    delay: Union[float, ArrayType],
 ) -> ArrayType:
     """
-    Internal helper for 1D cross-correlation.
+    Applies fractional sample delay using FFT-based frequency-domain method.
+
+    This is the mathematically ideal method for bandlimited signals. It
+    applies the delay as a phase shift in the frequency domain, which is
+    equivalent to ideal sinc interpolation in the time domain. Unlike
+    polynomial interpolators (e.g., Farrow), this method perfectly preserves
+    signal power and has no bandwidth limitations.
 
     Parameters
     ----------
     signal : array_like
-        The input sequence.
-    template : array_like
-        The reference sequence.
-    mode : {"full", "same", "valid"}
-        Correlation output mode.
-    normalize : bool
-        Whether to apply energy-based normalization.
-    xp : module
-        Active array backend (NumPy/CuPy).
-    sp : module
-        Active signal processing backend (SciPy/CuPyX).
+        Input signal. Shape: (N,) or (C, N).
+    delay : float or array_like
+        Fractional delay in samples. Positive = delay (shift right).
+        Scalar applies the same delay to all channels.
+        Array of shape (C,) applies per-channel delays.
 
     Returns
     -------
     array_like
-        The correlation metric.
+        Delayed signal with the same shape as input.
+
+    Notes
+    -----
+    The delay is applied in the frequency domain as:
+
+    .. math::
+        Y(f) = X(f) \\cdot e^{-j 2\\pi f \\cdot \\text{delay} / N}
+
+    This is equivalent to ideal sinc interpolation and is the optimal
+    fractional delay method for bandlimited signals.
+
+    Advantages over polynomial interpolators (Farrow):
+    - Perfect power preservation (0 dB loss)
+    - No bandwidth limitations
+    - Numerically stable
+    - Ideal for communications signals
+
+    References
+    ----------
+    T. I. Laakso et al., "Splitting the unit delay," IEEE Signal
+    Processing Magazine, 1996.
     """
-    # Use scipy's correlate which handles mode correctly
-    # For matched filtering, we want correlation (not convolution)
-    # scipy.correlate computes: sum_k(signal[n+k] * conj(template[k]))
+    signal, xp, _ = dispatch(signal)
+    was_1d = signal.ndim == 1
+    if was_1d:
+        signal = signal[None, :]  # (1, N)
 
-    corr = sp.signal.correlate(signal, template, mode=mode)
+    C, N = signal.shape
 
-    if normalize:
-        # Normalize by template energy
-        template_energy = xp.sum(xp.abs(template) ** 2)
-        if template_energy > 0:
-            corr = corr / xp.sqrt(template_energy)
+    # Convert delay to array
+    if isinstance(delay, (int, float)):
+        delay_arr = xp.full(C, delay, dtype=signal.real.dtype)
+    else:
+        delay_arr = xp.asarray(delay, dtype=signal.real.dtype)
+        if delay_arr.ndim == 0:
+            delay_arr = delay_arr[None]
 
-            # Also normalize by signal energy in each window (for true normalized correlation)
-            # This is expensive, so we use a simpler approximation
-            signal_energy = xp.sum(xp.abs(signal) ** 2)
-            if signal_energy > 0:
-                corr = corr / xp.sqrt(signal_energy / len(signal) * len(template))
+    # FFT
+    spec = xp.fft.fft(signal, axis=-1)
 
-    return corr
+    # Frequency axis: normalized frequencies in cycles/sample
+    freqs = xp.fft.fftfreq(N, d=1.0)
+
+    # Phase shift: exp(-j * 2 * pi * f * delay)
+    # Positive delay -> phase ramp that shifts signal to the right
+    phase_shift = xp.exp(-2j * xp.pi * freqs[None, :] * delay_arr[:, None])
+
+    # Apply phase shift
+    spec_delayed = spec * phase_shift
+
+    # IFFT
+    result = xp.fft.ifft(spec_delayed, axis=-1)
+
+    # For real-valued input, ensure output is real
+    if not xp.iscomplexobj(signal):
+        result = result.real
+
+    if was_1d:
+        return result[0]
+    return result
 
 
-def detect_frame(
+
+
+def estimate_timing(
     signal: Union[ArrayType, "Signal"],
     preamble: Optional[Union[ArrayType, "Preamble"]] = None,
     threshold: float = 0.5,
@@ -241,17 +418,21 @@ def detect_frame(
     sps: Optional[int] = None,
     pulse_shape: Optional[str] = None,
     filter_params: Optional[dict] = None,
-    return_metric: bool = False,
     search_range: Optional[Tuple[int, int]] = None,
+    dft_upsample: int = 1,
+    fractional_method: str = "log-parabolic",
     debug_plot: bool = False,
-) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
+) -> Tuple[ArrayType, ArrayType]:
     """
-    Detects the start of a frame via preamble correlation.
+    Estimates coarse and fractional timing offsets via preamble correlation.
 
-    This function performs a sliding cross-correlation between the received
-    signal and the expected preamble. It supports SISO and MIMO configurations,
-    handling different preamble modes (e.g., 'same', 'time_orthogonal') automatically
-    if `SignalInfo` is provided.
+    Performs a sliding cross-correlation between the received signal and
+    the expected preamble to determine the coarse (integer sample) timing
+    offset. Additionally estimates the fractional (sub-sample) timing
+    offset using parabolic interpolation on the correlation peak.
+    Supports SISO and MIMO configurations, handling different preamble
+    modes (e.g., 'same', 'time_orthogonal') automatically if
+    ``SignalInfo`` is provided.
 
     Parameters
     ----------
@@ -259,33 +440,37 @@ def detect_frame(
         Received signal samples.
     preamble : array_like or Preamble, optional
         The known preamble symbols (reference sequence). If None, it will be
-        inferred from `signal.signal_info` or `info` argument.
+        inferred from ``signal.signal_info`` or ``info`` argument.
     threshold : float, default 0.5
         Detection threshold normalized between 0 and 1.
     info : SignalInfo, optional
         Metadata describing the frame structure. If provided, it overrides
-        any info attached to `signal`.
+        any info attached to ``signal``.
     sps : int, optional
-        Samples per symbol. Inferred from `signal` if not provided.
+        Samples per symbol. Inferred from ``signal`` if not provided.
     pulse_shape : str, optional
-        Pulse shaping filter. Inferred from `signal` if not provided.
+        Pulse shaping filter. Inferred from ``signal`` if not provided.
     filter_params : dict, optional
         Additional filter parameters (beta, span, etc.). Inferred if None.
-    return_metric : bool, default False
-        If True, returns both the detected index and the peak metric.
     search_range : tuple of int, optional
-        A `(start, end)` sample range to restrict detection.
+        A ``(start, end)`` sample range to restrict detection.
         Defaults to the full signal length.
+    dft_upsample : int, default 1
+        Factor for DFT-based upsampling of correlation peak.
+        Use > 1 for high-precision fractional delay estimation.
+    fractional_method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
+        Fitting method for fractional delay estimation.
     debug_plot : bool, default False
         If True, plots the correlation magnitude for debugging.
 
     Returns
     -------
-    frame_starts : ArrayType
-        The sample indices where the frame begins for each channel. Shape: (N_channels,).
-    peak_metrics : ArrayType, optional
-        The normalized correlation coefficients for each channel. Shape: (N_channels,).
-        Only returned if `return_metric=True`.
+    coarse_offsets : ArrayType
+        Integer sample offsets where the frame begins, per channel.
+        Shape: ``(N_channels,)``.
+    fractional_offsets : ArrayType
+        Sub-sample timing offsets in [-0.5, 0.5) per channel.
+        Shape: ``(N_channels,)``.
 
     Raises
     ------
@@ -294,15 +479,15 @@ def detect_frame(
 
     Notes
     -----
-    - The returned index is compensated for the preamble length and corresponds
-      to the very first sample of the detected preamble.
-    - **Synchronization Strategy**: For signals with oversampling ($SPS > 1$),
+    - The returned coarse offset corresponds to the very first sample of
+      the detected preamble.
+    - **Synchronization Strategy**: For signals with oversampling (SPS > 1),
       correlating with a shaped/oversampled preamble (e.g., generated via
-      `Preamble.to_signal(...)`) typically yields superior timing precision
-      and SNR compared to correlating with 1 SPS symbols. Ensure the `preamble`
-      argument matches the sampling rate of the input `signal`.
+      ``Preamble.to_signal(...)``) typically yields superior timing precision
+      and SNR compared to correlating with 1 SPS symbols. Ensure the
+      ``preamble`` argument matches the sampling rate of the input ``signal``.
     """
-    from .helpers import expand_preamble_mimo
+    from .helpers import cross_correlate_fft, expand_preamble_mimo
 
     # 1. Resolve Inputs & Metadata
     sig_array = None
@@ -408,37 +593,23 @@ def detect_frame(
     else:
         sig_processing = sig_array
 
-    # --- Vectorized Correlation (FFT) ---
-    # We want independent correlation for each channel.
-    # Signal: (C, N). Preamble: (1, L) or (C, L).
-    # Broadcasting handles (1, L) -> (C, L).
-
-    N = sig_processing.shape[-1]
+    # === Vectorized Correlation (FFT) via shared helper ===
     L = preamble_waveform.shape[-1]
-    n_fft = 1 << (N + L - 1).bit_length()
 
-    # Calculate FFTs
-    SIG = xp.fft.fft(sig_processing, n_fft, axis=-1)
-    PRE = xp.fft.fft(preamble_waveform, n_fft, axis=-1)
+    corr = cross_correlate_fft(sig_processing, preamble_waveform, mode="full")
 
-    # Multiply in frequency domain (Correlation = Convolution with time-reversed conjugate)
-    # FFT correlation gives circular convolution.
-    # Result[k] corresponds to lag k.
-    CORR_F = SIG * xp.conj(PRE)
-    corr_raw = xp.fft.ifft(CORR_F, axis=-1)
-
-    # Truncate to relevant lags (0 to N-L)
-    # Positive lags [0, N] correspond to valid start positions where P fits in S.
-    corr = corr_raw[..., :N]
+    # Extract positive lags only (valid start positions).
+    # In full mode (scipy convention), lag 0 is at index L-1.
+    corr = corr[..., L - 1 :]  # length = sig_processing.shape[-1]
 
     # Magnitude
     corr_mag = xp.abs(corr)
 
-    # --- Per-Channel Analysis ---
+    # === Per-Channel Analysis ===
     # Find peak index per channel
     peak_indices = xp.argmax(corr_mag, axis=-1)  # Shape (C,)
 
-    # --- Per-Channel Normalization ---
+    # === Per-Channel Normalization ===
     # Calculate Energy per channel
     e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C,) or broadcasted
     if e_p.ndim < 1 or e_p.shape[0] != num_sig_ch:  # Handle scalar broadcast
@@ -454,14 +625,14 @@ def detect_frame(
     metrics = peak_vals / norm_factors
     metrics = xp.clip(metrics, 0.0, 1.0)
 
-    # --- Threshold Check ---
+    # === Threshold Check ===
     max_metric = float(xp.max(metrics))
     if max_metric < threshold:
         raise ValueError(
             f"No correlation peak above threshold {threshold} (max: {max_metric:.3f})"
         )
 
-    # --- Skew Check (Robust) ---
+    # === Skew Check (Robust) ===
     if num_sig_ch > 1:
         # Check skew among valid channels
         valid_mask = metrics > (threshold * 0.8)
@@ -479,8 +650,8 @@ def detect_frame(
                 logger.info(f"Channels aligned (spread {spread}).")
 
     # Frame Start Calculation (Per-Channel)
-    frame_starts = peak_indices + offset
-    frame_starts = xp.maximum(0, frame_starts)
+    coarse_offsets = peak_indices + offset
+    coarse_offsets = xp.maximum(0, coarse_offsets)
 
     if debug_plot:
         import matplotlib.pyplot as plt
@@ -532,10 +703,85 @@ def detect_frame(
         plt.tight_layout()
         plt.show()
 
-    logger.info(
-        f"Frame detected. Starts: {frame_starts.tolist()}, Metrics: {metrics.tolist()}"
+    # === Fine Timing (Parabolic Interpolation) ===
+    fractional_offsets = estimate_fractional_delay(
+        corr, peak_indices, dft_upsample=dft_upsample, method=fractional_method
     )
 
-    if return_metric:
-        return frame_starts, metrics
-    return frame_starts
+    logger.info(
+        f"Timing estimated. Coarse: {coarse_offsets.tolist()}, "
+        f"Fractional: {fractional_offsets.tolist()}, "
+        f"Metrics: {metrics.tolist()}"
+    )
+
+    return coarse_offsets, fractional_offsets
+
+
+def correct_timing(
+    signal: ArrayType,
+    coarse_offset: Union[int, ArrayType],
+    fractional_offset: Union[float, ArrayType] = 0.0,
+) -> ArrayType:
+    """
+    Combined coarse and fine timing correction.
+
+    Applies an integer sample shift followed by fractional sample
+    interpolation using FFT-based frequency-domain delay.
+
+    Parameters
+    ----------
+    signal : array_like
+        Input signal. Shape: (N,) or (C, N).
+    coarse_offset : int or array_like
+        Integer sample offset(s) to correct. Positive values shift
+        the signal left (i.e., remove leading samples).
+        Scalar or shape (C,) for per-channel offsets.
+    fractional_offset : float or array_like, default 0.0
+        Fractional sample delay(s) in [-0.5, 0.5) to correct via
+        FFT-based interpolation. Scalar or shape (C,).
+
+    Returns
+    -------
+    array_like
+        Timing-corrected signal with the same shape as input.
+
+    Notes
+    -----
+    The fractional correction uses FFT-based frequency-domain delay, which
+    is mathematically ideal for bandlimited signals and perfectly preserves
+    signal power (unlike polynomial interpolators).
+    """
+    signal, xp, _ = dispatch(signal)
+    was_1d = signal.ndim == 1
+    if was_1d:
+        signal = signal[None, :]
+
+    num_ch = signal.shape[0]
+    N = signal.shape[-1]
+
+    # === Coarse correction (integer shift) ===
+    coarse_offset = xp.asarray(coarse_offset)
+    if coarse_offset.ndim == 0:
+        # Scalar: same shift for all channels
+        signal = xp.roll(signal, -int(coarse_offset), axis=-1)
+    else:
+        # Per-channel shift via vectorized index gathering
+        shifts = xp.asarray([-int(coarse_offset[ch]) for ch in range(num_ch)])
+        col_idx = (xp.arange(N)[None, :] - shifts[:, None]) % N  # (C, N)
+        row_idx = xp.arange(num_ch)[:, None]  # (C, 1)
+        signal = signal[row_idx, col_idx]
+
+    # === Fine correction (fractional via FFT) ===
+    # Correction removes the delay: negate the fractional offset
+    if isinstance(fractional_offset, (int, float)):
+        apply_frac = abs(fractional_offset) > 1e-9
+    else:
+        fractional_offset = xp.asarray(fractional_offset)
+        apply_frac = bool(xp.any(xp.abs(fractional_offset) > 1e-9))
+
+    if apply_frac:
+        signal = fft_fractional_delay(signal, -fractional_offset)
+
+    if was_1d:
+        return signal[0]
+    return signal

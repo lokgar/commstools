@@ -1,14 +1,14 @@
 """Tests for SingleCarrierFrame.get_structure_map options."""
 
 import numpy as np
-import pytest
+
 from commstools.core import Preamble, SingleCarrierFrame
 
 
 def test_structure_map_default_no_preamble_no_guard():
     """Verify default behavior: no preamble, no guard (if none)."""
     frame = SingleCarrierFrame(payload_len=100)
-    struct = frame.get_structure_map()
+    struct = frame.get_structure_map(include_preamble=False)
 
     assert "preamble" not in struct
     assert "guard" in struct
@@ -32,7 +32,7 @@ def test_structure_map_include_preamble():
 def test_structure_map_no_preamble_with_zero_guard():
     """Verify default behavior with zero guard (guard should be present)."""
     frame = SingleCarrierFrame(payload_len=100, guard_type="zero", guard_len=20)
-    struct = frame.get_structure_map()  # include_preamble=False by default
+    struct = frame.get_structure_map(include_preamble=False)
 
     assert "preamble" not in struct
     assert "guard" in struct
@@ -44,7 +44,7 @@ def test_structure_map_no_preamble_with_zero_guard():
 def test_structure_map_no_preamble_with_cp_guard():
     """Verify default behavior with CP guard (preamble and CP removed)."""
     frame = SingleCarrierFrame(payload_len=100, guard_type="cp", guard_len=20)
-    struct = frame.get_structure_map()  # include_preamble=False by default
+    struct = frame.get_structure_map(include_preamble=False)
 
     assert "preamble" not in struct
     assert "guard" not in struct  # CP is removed with preamble
