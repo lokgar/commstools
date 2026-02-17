@@ -374,3 +374,133 @@ def test_signal_wrappers(backend_device, xp):
 
     # Clean up figures to avoid RuntimeWarning
     plt.close("all")
+
+
+def test_signal_duration_mimo(backend_device, xp):
+    """Verify duration property for MIMO (2D) signal (line 583)."""
+    data = xp.zeros((2, 200))
+    s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0)
+    assert s.duration == 2.0  # 200 / 100
+
+
+def test_signal_bits_per_symbol_set(backend_device, xp):
+    """Verify bits_per_symbol property when modulation_order is set (line 608)."""
+    s = Signal(
+        samples=xp.zeros(10), sampling_rate=1.0, symbol_rate=1.0, modulation_order=16
+    )
+    assert s.bits_per_symbol == 4
+
+    s2 = Signal(
+        samples=xp.zeros(10), sampling_rate=1.0, symbol_rate=1.0, modulation_order=64
+    )
+    assert s2.bits_per_symbol == 6
+
+
+def test_rzpam_odd_sps(backend_device, xp):
+    """Verify RZ-PAM raises error for odd SPS (line 1344-1345)."""
+    with pytest.raises(ValueError, match="sps.*must be even"):
+        Signal.pam(
+            order=2, num_symbols=10, sps=3, symbol_rate=1e3, mode="rz",
+        )
+
+
+def test_rzpam_multi_stream(backend_device, xp):
+    """Verify RZ-PAM multi-stream reshape (lines 1367-1369)."""
+    sig = Signal.pam(
+        order=2, num_symbols=10, sps=4, symbol_rate=1e3, mode="rz",
+        num_streams=2, pulse_shape="rect",
+    )
+    # Should have 2 channels
+    assert sig.samples.ndim == 2
+    assert sig.samples.shape[0] == 2
+    assert sig.source_bits is not None
+    assert sig.source_symbols is not None
+
+
+def test_resolve_symbols_sps_errors(backend_device, xp):
+    """Verify resolve_symbols error paths (lines 1579-1591)."""
+    # SPS < 1 (symbol_rate > sampling_rate)
+    s = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=2.0)
+    with pytest.raises(ValueError, match="Symbol rate must be >= 1"):
+        s.resolve_symbols()
+
+    # Non-integer SPS
+    s2 = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=3.0, symbol_rate=2.0)
+    with pytest.raises(ValueError, match="Symbol rate must be an integer"):
+        s2.resolve_symbols()
+
+
+def test_demap_without_modulation(backend_device, xp):
+    """Verify demap_symbols raises error without modulation metadata (line 1656)."""
+    s = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0)
+    s.resolved_symbols = xp.ones(10, dtype="complex64")
+    with pytest.raises(ValueError, match="Modulation scheme and order required"):
+        s.demap_symbols()
+
+
+def test_demap_soft_without_noise_var(backend_device, xp):
+    """Verify soft demap raises without noise_var (line 1675)."""
+    sig = Signal.qam(order=4, num_symbols=50, sps=1, symbol_rate=1e6)
+    sig.resolve_symbols()
+    with pytest.raises(ValueError, match="noise_var required for soft demapping"):
+        sig.demap_symbols(hard=False)
+
+
+def test_evm_no_reference(backend_device, xp):
+    """Verify evm raises when no reference is available (lines 1731-1735)."""
+    s = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0)
+    s.resolved_symbols = xp.ones(10, dtype="complex64")
+    with pytest.raises(ValueError, match="No reference available"):
+        s.evm()
+
+
+def test_evm_no_resolved(backend_device, xp):
+    """Verify evm raises when no resolved_symbols (lines 1737-1741)."""
+    s = Signal(
+        samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0,
+        source_symbols=xp.ones(10, dtype="complex64"),
+    )
+    with pytest.raises(ValueError, match="No resolved symbols available"):
+        s.evm()
+
+
+def test_snr_no_reference(backend_device, xp):
+    """Verify snr raises when no reference is available (lines 1777-1781)."""
+    s = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0)
+    s.resolved_symbols = xp.ones(10, dtype="complex64")
+    with pytest.raises(ValueError, match="No reference available"):
+        s.snr()
+
+
+def test_snr_no_resolved(backend_device, xp):
+    """Verify snr raises when no resolved_symbols (lines 1783-1787)."""
+    s = Signal(
+        samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0,
+        source_symbols=xp.ones(10, dtype="complex64"),
+    )
+    with pytest.raises(ValueError, match="No resolved symbols available"):
+        s.snr()
+
+
+def test_ber_no_reference(backend_device, xp):
+    """Verify ber raises when no reference bits available (line 1823)."""
+    s = Signal(samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0)
+    s.resolved_bits = xp.array([0, 1, 0, 1])
+    with pytest.raises(ValueError, match="No reference bits available"):
+        s.ber()
+
+
+def test_signal_rz_modscheme_split(backend_device, xp):
+    """Verify RZ modulation scheme is correctly parsed in __init__ (line 298)."""
+    bits = xp.array([0, 1], dtype="int8")
+    s = Signal(
+        samples=xp.ones(10),
+        sampling_rate=1.0,
+        symbol_rate=1.0,
+        source_bits=bits,
+        modulation_scheme="RZ-PAM",
+        modulation_order=2,
+    )
+    # source_symbols should be derived from bits using "PAM" mapping
+    assert s.source_symbols is not None
+    assert len(s.source_symbols) == 2

@@ -182,42 +182,28 @@ def test_cross_qam_32_mapping(backend_device, xp):
     assert xp.array_equal(bits, bits_out)
 
 
-def test_soft_demap_loop_based(backend_device, xp):
-    """Verify loop-based soft demapping (vectorized=False)."""
+def test_soft_demap_methods_agree(backend_device, xp):
+    """Verify maxlog and exact methods agree on sign for 16-QAM."""
     modulation = "qam"
     order = 16
     bits = xp.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
     noise_var = 0.1
 
-    llrs_vec = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, vectorized=True
+    llrs_maxlog = mapping.demap_symbols_soft(
+        symbols, modulation, order, noise_var, method="maxlog"
     )
-    llrs_loop = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, vectorized=False
-    )
-
-    assert xp.allclose(llrs_vec, llrs_loop)
-
-    # Test exact method
     llrs_exact = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="exact", vectorized=False
+        symbols, modulation, order, noise_var, method="exact"
     )
+
     # Signs should match
-    assert xp.array_equal(xp.sign(llrs_exact), xp.sign(llrs_vec))
+    assert xp.array_equal(xp.sign(llrs_exact), xp.sign(llrs_maxlog))
 
-    # Test error for unknown method (vectorized)
-    import pytest
-
+    # Test error for unknown method
     with pytest.raises(ValueError, match="Unknown method"):
         mapping.demap_symbols_soft(
-            symbols, modulation, order, noise_var, method="unknown", vectorized=True
-        )
-
-    # Test error for unknown method (loop-based)
-    with pytest.raises(ValueError, match="Unknown method"):
-        mapping.demap_symbols_soft(
-            symbols, modulation, order, noise_var, method="unknown", vectorized=False
+            symbols, modulation, order, noise_var, method="unknown"
         )
 
 
@@ -405,8 +391,75 @@ def test_soft_demap_invalid_method(backend_device, xp):
     with pytest.raises(ValueError, match="Unknown method"):
         mapping.demap_symbols_soft(xp.ones(1), "qam", 4, 0.1, method="magic")
 
-    # Force loop-based to test error there too
-    with pytest.raises(ValueError, match="Unknown method"):
-        mapping.demap_symbols_soft(
-            xp.ones(1), "qam", 4, 0.1, method="magic", vectorized=False
+
+# === JAX-specific soft demapping tests ===
+
+
+def test_soft_demap_jax_roundtrip():
+    """JAX array input should return JAX array output."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    bits_np = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols_np = mapping.map_bits(bits_np, "qam", 16)
+    symbols_jax = jnp.asarray(symbols_np)
+
+    llrs = mapping.demap_symbols_soft(symbols_jax, "qam", 16, 0.1, method="maxlog")
+
+    # Output should be a JAX array
+    assert isinstance(llrs, jax.Array)
+    # Hard decision from LLR should match original bits
+    hard = (np.asarray(llrs) < 0).astype("int32")
+    assert np.array_equal(hard, bits_np)
+
+
+def test_soft_demap_jax_exact_roundtrip():
+    """JAX exact method should produce correct LLRs."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    bits_np = np.array([0, 1, 0, 1, 1, 0, 1, 0], dtype="int32")
+    symbols_np = mapping.map_bits(bits_np, "qam", 16)
+    symbols_jax = jnp.asarray(symbols_np)
+
+    llrs = mapping.demap_symbols_soft(symbols_jax, "qam", 16, 0.01, method="exact")
+
+    assert isinstance(llrs, jax.Array)
+    hard = (np.asarray(llrs) < 0).astype("int32")
+    assert np.array_equal(hard, bits_np)
+
+
+def test_soft_demap_jax_gradient():
+    """jax.grad through LLRs w.r.t. input symbols should produce finite gradients."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    symbols_jax = jnp.array([0.7 + 0.7j, -0.7 - 0.7j], dtype=jnp.complex64)
+
+    def loss_fn(syms):
+        llrs = mapping.demap_symbols_soft(syms, "qam", 4, 0.1, method="maxlog")
+        return jnp.sum(llrs**2)
+
+    grad = jax.grad(loss_fn)(symbols_jax)
+
+    assert grad.shape == symbols_jax.shape
+    assert jnp.all(jnp.isfinite(grad))
+    assert not jnp.all(grad == 0)
+
+
+def test_soft_demap_jax_vs_numpy():
+    """JAX and NumPy inputs should produce numerically close LLRs."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    bits = np.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols_np = mapping.map_bits(bits, "psk", 8)
+
+    for method in ("maxlog", "exact"):
+        llrs_np = mapping.demap_symbols_soft(symbols_np, "psk", 8, 0.05, method=method)
+        llrs_jax = mapping.demap_symbols_soft(
+            jnp.asarray(symbols_np), "psk", 8, 0.05, method=method
+        )
+        np.testing.assert_allclose(
+            np.asarray(llrs_np), np.asarray(llrs_jax), atol=1e-5
         )

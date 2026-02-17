@@ -601,3 +601,164 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
     # Upsampling should improve accuracy significantly for bandlimited pulse
     assert err_sinc_8x < err_sinc_1x
     assert err_sinc_8x < 0.01
+
+
+# ============================================================================
+# Coverage Tests for Uncovered Lines
+# ============================================================================
+
+
+def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
+    """Verify fft_fractional_delay with 0-d array delay (line 384)."""
+    import numpy as np
+
+    f = 0.02
+    N = 100
+    n = np.arange(N, dtype="float64")
+    signal = xp.asarray(np.exp(2j * np.pi * f * n).astype("complex64"))
+
+    # Pass delay as 0-d ndarray (not int/float)
+    delay = xp.asarray(0.3)
+    out = sync.fft_fractional_delay(signal, delay)
+    assert out.shape == (N,)
+
+    truth = np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64")
+    out_np = out if backend_device == "cpu" else out.get()
+    assert np.allclose(out_np, truth, atol=1e-5)
+
+
+def test_estimate_timing_no_preamble_error(backend_device, xp):
+    """Verify estimate_timing raises when neither info nor preamble given (line 564)."""
+    sig = xp.zeros(100, dtype="complex64")
+    with pytest.raises(ValueError, match="Either 'info' or 'preamble' must be provided"):
+        sync.estimate_timing(sig)
+
+
+def test_estimate_timing_with_info(backend_device, xp):
+    """Verify estimate_timing with SignalInfo reconstruction (lines 526-550)."""
+    from commstools.core import SignalInfo
+
+    # Create a signal with a Barker-7 preamble embedded at sample 40
+    barker = sync.barker_sequence(7)
+
+    # Create shaped preamble at sps=1 for simplicity
+    sig = xp.zeros(200, dtype="complex64")
+    sig[40:47] = barker
+
+    info = SignalInfo(
+        signal_type="single_carrier_frame",
+        preamble_type="barker",
+        preamble_seq_len=7,
+        preamble_mode="same",
+        num_streams=1,
+    )
+
+    coarse, frac = sync.estimate_timing(
+        sig, info=info, sps=1, pulse_shape="none", threshold=0.3
+    )
+    assert abs(int(coarse[0]) - 40) <= 1
+
+
+def test_estimate_timing_skew_detection(backend_device, xp):
+    """Verify skew warning among MIMO channels (line 645)."""
+    import logging
+
+    # 2-channel signal with preambles at slightly different positions
+    barker = sync.barker_sequence(7)
+    sig = xp.zeros((2, 200), dtype="complex64")
+    sig[0, 40:47] = barker
+    sig[1, 42:49] = barker  # 2-sample offset -> skew
+
+    # Capture log output to verify skew warning is emitted
+    with patch("commstools.sync.logger") as mock_logger:
+        coarse, frac = sync.estimate_timing(sig, barker, threshold=0.1)
+        # Check that warning was called with skew message
+        mock_logger.warning.assert_called()
+        call_args = mock_logger.warning.call_args[0][0]
+        assert "Skew detected" in call_args
+
+    # Both channels should be detected
+    assert len(coarse) == 2
+    # Positions differ
+    assert abs(int(coarse[0]) - 40) <= 1
+    assert abs(int(coarse[1]) - 42) <= 1
+
+
+def test_correct_timing_per_channel(backend_device, xp):
+    """Verify per-channel coarse timing correction (lines 769-772)."""
+    import numpy as np
+
+    # 2-channel signal with peaks at different positions
+    sig = xp.zeros((2, 50), dtype="complex64")
+    sig[0, 10] = 1.0
+    sig[1, 20] = 1.0
+
+    # Per-channel shifts
+    offsets = xp.array([10, 20])
+    corrected = sync.correct_timing(sig, coarse_offset=offsets)
+
+    # Both peaks should be at index 0 after correction
+    assert corrected.shape == (2, 50)
+    assert int(xp.argmax(xp.abs(corrected[0]))) == 0
+    assert int(xp.argmax(xp.abs(corrected[1]))) == 0
+
+
+def test_correct_timing_fractional_array(backend_device, xp):
+    """Verify fractional offset as array + MIMO return (lines 779-780, 787)."""
+    import numpy as np
+
+    f = 0.02
+    N = 200
+    n = np.arange(N, dtype="float64")
+
+    # 2-channel signal, each with a different fractional delay
+    sig = xp.zeros((2, N), dtype="complex64")
+    sig[0] = xp.asarray(np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64"))
+    sig[1] = xp.asarray(np.exp(2j * np.pi * f * (n + 0.2)).astype("complex64"))
+
+    # Correct with array of fractional offsets
+    fractional = xp.array([0.3, -0.2])
+    corrected = sync.correct_timing(sig, coarse_offset=0, fractional_offset=fractional)
+
+    # Should return 2D (not squeezed)
+    assert corrected.ndim == 2
+    assert corrected.shape == (2, N)
+
+    # Both channels should now be close to the undelayed signal
+    truth = np.exp(2j * np.pi * f * n).astype("complex64")
+    corrected_np = corrected if backend_device == "cpu" else corrected.get()
+    assert np.allclose(corrected_np[0], truth, atol=1e-4)
+    assert np.allclose(corrected_np[1], truth, atol=1e-4)
+
+
+def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
+    """Verify DFT upsample with edge peak falls back to standard (lines 289, 311-314)."""
+    import numpy as np
+
+    N = 100
+    true_mu = 0.25
+    n = np.arange(N, dtype="float32")
+
+    # Peak at edge (index 2, within half_W=16 of boundary)
+    corr = np.exp(-0.5 * ((n - 2.0 - true_mu) / 2.0) ** 2).astype("float32")
+    corr = xp.asarray(corr)
+    peak_idx = xp.asarray(2)
+
+    # With DFT upsample > 1, but peak near edge → should use standard fallback
+    mu = sync.estimate_fractional_delay(corr, peak_idx, dft_upsample=8)
+    # Should still produce a reasonable result via standard path
+    assert abs(float(mu)) < 0.5
+
+
+def test_estimate_timing_info_without_sps(backend_device, xp):
+    """Verify estimate_timing raises when info provided but sps missing (line 535)."""
+    from commstools.core import SignalInfo
+
+    sig = xp.zeros(100, dtype="complex64")
+    info = SignalInfo(
+        preamble_type="barker",
+        preamble_seq_len=7,
+        num_streams=1,
+    )
+    with pytest.raises(ValueError, match="SPS must be provided"):
+        sync.estimate_timing(sig, info=info)

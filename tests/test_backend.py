@@ -183,3 +183,46 @@ def test_jax_conversions(backend_device, xp):
         assert np.allclose(sig.samples, arr_np)
     else:
         assert xp.allclose(sig.samples, xp.asarray(arr_np))
+
+
+def test_to_device_list_input(xp):
+    """Verify to_device handles plain list input (line 251)."""
+    result = backend.to_device([1, 2, 3], "cpu")
+    assert isinstance(result, np.ndarray)
+    assert np.array_equal(result, [1, 2, 3])
+
+
+def test_to_jax_list_and_scalar(xp):
+    """Verify to_jax handles list and scalar inputs (line 363)."""
+    try:
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip("JAX not installed")
+
+    # List input → general case (jnp.asarray)
+    result = backend.to_jax([1.0, 2.0, 3.0])
+    assert isinstance(result, jnp.ndarray)
+    assert np.allclose(np.asarray(result), [1.0, 2.0, 3.0])
+
+    # Scalar input
+    result_scalar = backend.to_jax(42.0)
+    assert isinstance(result_scalar, jnp.ndarray)
+    assert float(result_scalar) == 42.0
+
+
+def test_to_jax_explicit_device(xp):
+    """Verify to_jax with explicit device placement (line 340/352)."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip("JAX not installed")
+
+    # CPU device should always be available
+    result = backend.to_jax(np.array([1.0, 2.0]), device="cpu")
+    assert isinstance(result, jnp.ndarray)
+    assert result.device.platform == "cpu"
+
+    # Invalid device should raise
+    with pytest.raises(ValueError, match="not available"):
+        backend.to_jax(np.array([1.0]), device="tpu")

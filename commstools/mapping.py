@@ -27,8 +27,63 @@ import numpy as np
 
 from functools import lru_cache
 
-from .backend import ArrayType, dispatch
+from .backend import ArrayType, dispatch, is_jax_array, to_jax, from_jax, _get_jax
 from .logger import logger
+
+
+# Lazy cache for JIT-compiled soft demapping kernels
+_JITTED_SOFT_DEMAP = {}
+
+
+def _get_jitted_soft_demap():
+    """
+    Returns JIT-compiled maxlog and exact LLR computation functions.
+
+    Functions are defined and compiled lazily on first call to avoid
+    importing JAX at module load time.
+    """
+    if not _JITTED_SOFT_DEMAP:
+        jax, jnp, _ = _get_jax()
+        if jax is None:
+            raise ImportError(
+                "JAX is required for soft demapping. Install with: pip install jax"
+            )
+
+        @jax.jit
+        def maxlog(symbols, constellation, bits_table_t, sigma_sq):
+            """Max-log LLR: symbols (N,), constellation (M,), bits_table_t (k, M)."""
+            distances_sq = (
+                jnp.abs(symbols[:, None] - constellation[None, :]) ** 2
+            )  # (N, M)
+
+            def bit_llr(bit_row):  # (M,)
+                d0 = jnp.where(bit_row == 0, distances_sq, jnp.inf)  # (N, M)
+                d1 = jnp.where(bit_row == 1, distances_sq, jnp.inf)  # (N, M)
+                return (jnp.min(d1, axis=1) - jnp.min(d0, axis=1)) / sigma_sq  # (N,)
+
+            return jax.vmap(bit_llr)(bits_table_t).T  # (k, N) -> (N, k)
+
+        @jax.jit
+        def exact(symbols, constellation, bits_table_t, sigma_sq):
+            """Exact LLR via log-sum-exp: symbols (N,), constellation (M,), bits_table_t (k, M)."""
+            neg_exp = (
+                -jnp.abs(symbols[:, None] - constellation[None, :]) ** 2 / sigma_sq
+            )  # (N, M)
+
+            def bit_llr(bit_row):  # (M,)
+                e0 = jnp.where(bit_row == 0, neg_exp, -jnp.inf)  # (N, M)
+                e1 = jnp.where(bit_row == 1, neg_exp, -jnp.inf)  # (N, M)
+                return (
+                    jax.scipy.special.logsumexp(e0, axis=1)
+                    - jax.scipy.special.logsumexp(e1, axis=1)
+                )  # (N,)
+
+            return jax.vmap(bit_llr)(bits_table_t).T  # (k, N) -> (N, k)
+
+        _JITTED_SOFT_DEMAP["maxlog"] = maxlog
+        _JITTED_SOFT_DEMAP["exact"] = exact
+
+    return _JITTED_SOFT_DEMAP["maxlog"], _JITTED_SOFT_DEMAP["exact"]
 
 
 @lru_cache(maxsize=128)
@@ -595,15 +650,21 @@ def demap_symbols_soft(
     order: int,
     noise_var: float,
     method: str = "maxlog",
-    vectorized: bool = True,
     unipolar: bool = False,
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision demapping.
 
     LLRs represent the reliability of each bit. Positive values favor bit 0,
-    while negative values favor bit 1 (assuming $0 \rightarrow +1$ and
-    $1 \rightarrow -1$ mapping convention). The magnitude indicates confidence.
+    while negative values favor bit 1 (assuming $0 \\rightarrow +1$ and
+    $1 \\rightarrow -1$ mapping convention). The magnitude indicates confidence.
+
+    Internally uses JAX for JIT-compiled computation with ``jax.vmap`` over
+    bit positions. Accepts NumPy, CuPy, or JAX arrays — converts at
+    boundaries and returns the same backend as the input.
+
+    Differentiable: when called with JAX arrays, ``jax.grad`` through LLRs
+    w.r.t. input symbols is supported.
 
     Parameters
     ----------
@@ -614,14 +675,10 @@ def demap_symbols_soft(
     order : int
         Modulation order.
     noise_var : float
-        Noise variance per complex dimension ($\sigma^2$).
-        For AWGN with unit-power symbols: $\sigma^2 = 0.5 \cdot 10^{-E_s/N_0 / 10}$.
+        Noise variance per complex dimension ($\\sigma^2$).
+        For AWGN with unit-power symbols: $\\sigma^2 = 0.5 \\cdot 10^{-E_s/N_0 / 10}$.
     method : {"maxlog", "exact"}, default "maxlog"
         Computation algorithm. "maxlog" is much faster; "exact" uses log-sum-exp.
-    vectorized : bool, default True
-        If True, use high-performance vectorized operations.
-        Automatically falls back to loops for extremely large arrays to
-        prevent Out-Of-Memory (OOM) errors.
     unipolar : bool, default False
         Trigger unipolar demapping for ASK/PAM.
 
@@ -629,161 +686,87 @@ def demap_symbols_soft(
     -------
     array_like
         LLR values. Shape: (..., N_symbols * log2(order)).
+        Backend matches the input (NumPy, CuPy, or JAX).
 
     Notes
     -----
     The Max-Log approximation simplifies the exact LLR:
-    $LLR \approx \frac{1}{\sigma^2} (\min_{s \in S_1} |r-s|^2 - \min_{s \in S_0} |r-s|^2)$
+
+    $LLR \\approx \\frac{1}{\\sigma^2} (\\min_{s \\in S_1} |r-s|^2 - \\min_{s \\in S_0} |r-s|^2)$
     """
     logger.debug(
         f"Soft demapping {modulation.upper()} {order}-level (method={method})."
     )
-    symbols, xp, _ = dispatch(symbols)
 
     k = int(np.log2(order))
     if 2**k != order:
         raise ValueError(f"Order must be a power of 2, got {order}")
+    if method not in ("maxlog", "exact"):
+        raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
 
-    # Capture original shape for output reshaping
-    original_shape = symbols.shape
-    symbols_flat = symbols.flatten()
-    num_symbols = symbols_flat.size
+    # Detect original backend for output conversion
+    jax_input = is_jax_array(symbols)
 
-    # Get constellation points indexed by symbol value
-    constellation = gray_constellation(modulation, order, unipolar=unipolar)
-    constellation = xp.asarray(constellation)
-
-    # Build bit mapping table
-    # Constellation points in 'constellation' array are already indexed by their bit value
-    # (Natural Binary Indexing).
-    # So the bits for constellation[s] are simply the bits of integer s.
-    s_indices = xp.arange(order, dtype="int32")
-    shifts = xp.arange(k - 1, -1, -1, dtype="int32")
-    bits_table = ((s_indices[:, xp.newaxis] >> shifts) & 1).astype(
-        "int32"
-    )  # Shape: (M, k)
-
-    # Avoid division by zero in noise variance
-    sigma_sq = max(noise_var, 1e-20)
-
-    # Memory estimate for fully vectorized: (N, M, k) tensor
-    # Each element is float32 (4 bytes), threshold at ~500MB
-    tensor_elements = num_symbols * order * k
-    memory_threshold = 128 * 1024 * 1024  # 128M elements ~ 512MB for float32
-
-    use_vectorized = vectorized and (tensor_elements < memory_threshold)
-
-    if use_vectorized:
-        # === FULLY VECTORIZED IMPLEMENTATION ===
-        # Compute squared distances: |r - s|² for all symbols
-        # symbols_flat: (N,), constellation: (M,)
-        # distances_sq: (N, M)
-        distances_sq = (
-            xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :]) ** 2
-        )
-
-        # Transpose bits_table for broadcasting: (M, k) -> (k, M)
-        bits_table_t = bits_table.T  # (k, M)
-
-        # Create masks for all bits simultaneously
-        # mask_0[b, m] = True if bit b of symbol m is 0
-        mask_0 = bits_table_t == 0  # (k, M)
-        mask_1 = bits_table_t == 1  # (k, M)
-
-        if method == "maxlog":
-            # Expand distances for all bits: (N, M) -> (N, 1, M) -> broadcast with (k, M)
-            # Result: (N, k, M) via broadcasting
-            dist_expanded = distances_sq[:, xp.newaxis, :]  # (N, 1, M)
-
-            # Apply masks: where mask is False, set to inf
-            # Broadcasting: (N, 1, M) * (k, M) -> (N, k, M)
-            dist_0 = xp.where(mask_0, dist_expanded, xp.inf)  # (N, k, M)
-            dist_1 = xp.where(mask_1, dist_expanded, xp.inf)  # (N, k, M)
-
-            # Minimum over constellation points
-            min_dist_0 = xp.min(dist_0, axis=2)  # (N, k)
-            min_dist_1 = xp.min(dist_1, axis=2)  # (N, k)
-
-            # LLR = (1/σ²) * (min_d1 - min_d0)
-            llrs = (min_dist_1 - min_dist_0) / sigma_sq  # (N, k)
-
-        elif method == "exact":
-            # Exact LLR using log-sum-exp
-            neg_exp = -distances_sq / sigma_sq  # (N, M)
-            neg_exp_expanded = neg_exp[:, xp.newaxis, :]  # (N, 1, M)
-
-            # Apply masks
-            neg_exp_0 = xp.where(mask_0, neg_exp_expanded, -xp.inf)  # (N, k, M)
-            neg_exp_1 = xp.where(mask_1, neg_exp_expanded, -xp.inf)  # (N, k, M)
-
-            # Log-sum-exp with numerical stability
-            max_0 = xp.max(neg_exp_0, axis=2, keepdims=True)
-            max_1 = xp.max(neg_exp_1, axis=2, keepdims=True)
-
-            max_0 = xp.where(xp.isinf(max_0), 0.0, max_0)
-            max_1 = xp.where(xp.isinf(max_1), 0.0, max_1)
-
-            log_sum_0 = max_0.squeeze(axis=2) + xp.log(
-                xp.sum(xp.exp(neg_exp_0 - max_0), axis=2)
-            )
-            log_sum_1 = max_1.squeeze(axis=2) + xp.log(
-                xp.sum(xp.exp(neg_exp_1 - max_1), axis=2)
-            )
-
-            llrs = log_sum_0 - log_sum_1  # (N, k)
-        else:
-            raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
-
+    # Capture shape before conversion
+    if hasattr(symbols, "shape"):
+        original_shape = symbols.shape
     else:
-        # === LOOP-BASED IMPLEMENTATION (for large arrays) ===
-        logger.debug(
-            f"Using loop-based soft demapping (tensor size {tensor_elements} exceeds threshold)."
+        original_shape = np.asarray(symbols).shape
+
+    # Convert to JAX
+    jax, jnp, _ = _get_jax()
+    if jax is None:
+        raise ImportError(
+            "JAX is required for soft demapping. Install with: pip install jax"
         )
 
-        # Compute squared distances: (N, M)
-        distances_sq = (
-            xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :]) ** 2
+    jax_symbols = symbols if jax_input else to_jax(symbols)
+    jax_symbols_flat = jax_symbols.flatten()
+
+    # Build constellation and bit table as JAX arrays
+    constellation_np = gray_constellation(modulation, order, unipolar=unipolar)
+    mod_lower = modulation.lower()
+    if "ask" in mod_lower or "pam" in mod_lower:
+        constellation_np = constellation_np.astype(np.float32)
+    else:
+        constellation_np = constellation_np.astype(np.complex64)
+
+    s_indices = np.arange(order, dtype=np.int32)
+    shifts = np.arange(k - 1, -1, -1, dtype=np.int32)
+    bits_table_t = ((s_indices[:, None] >> shifts) & 1).astype(np.int32).T  # (k, M)
+
+    sigma_sq_val = max(noise_var, 1e-20)
+
+    if jax_input:
+        # JAX input (may be a tracer from jax.grad) — no concrete .device.
+        # Let JAX handle device placement via jnp.asarray.
+        constellation_jax = jnp.asarray(constellation_np)
+        bits_table_t_jax = jnp.asarray(bits_table_t)
+        sigma_sq = jnp.asarray(sigma_sq_val, dtype=jnp.float32)
+    else:
+        # NumPy/CuPy converted via to_jax() — match device explicitly.
+        device = jax_symbols_flat.device
+        constellation_jax = jax.device_put(jnp.asarray(constellation_np), device)
+        bits_table_t_jax = jax.device_put(jnp.asarray(bits_table_t), device)
+        sigma_sq = jax.device_put(
+            jnp.asarray(sigma_sq_val, dtype=jnp.float32), device
         )
 
-        llrs = xp.zeros((num_symbols, k), dtype=symbols_flat.real.dtype)
+    # Compute LLRs via JIT-compiled kernels
+    maxlog_fn, exact_fn = _get_jitted_soft_demap()
+    if method == "maxlog":
+        llrs = maxlog_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
+    else:
+        llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
 
-        for bit_idx in range(k):
-            mask_0 = bits_table[:, bit_idx] == 0
-            mask_1 = bits_table[:, bit_idx] == 1
-
-            if method == "maxlog":
-                dist_0 = xp.where(mask_0, distances_sq, xp.inf)
-                dist_1 = xp.where(mask_1, distances_sq, xp.inf)
-                min_dist_0 = xp.min(dist_0, axis=1)
-                min_dist_1 = xp.min(dist_1, axis=1)
-                llrs[:, bit_idx] = (min_dist_1 - min_dist_0) / sigma_sq
-
-            elif method == "exact":
-                neg_exp = -distances_sq / sigma_sq
-                neg_exp_0 = xp.where(mask_0, neg_exp, -xp.inf)
-                neg_exp_1 = xp.where(mask_1, neg_exp, -xp.inf)
-
-                max_0 = xp.max(neg_exp_0, axis=1, keepdims=True)
-                max_1 = xp.max(neg_exp_1, axis=1, keepdims=True)
-                max_0 = xp.where(xp.isinf(max_0), 0.0, max_0)
-                max_1 = xp.where(xp.isinf(max_1), 0.0, max_1)
-
-                log_sum_0 = max_0.squeeze() + xp.log(
-                    xp.sum(xp.exp(neg_exp_0 - max_0), axis=1)
-                )
-                log_sum_1 = max_1.squeeze() + xp.log(
-                    xp.sum(xp.exp(neg_exp_1 - max_1), axis=1)
-                )
-                llrs[:, bit_idx] = log_sum_0 - log_sum_1
-            else:
-                raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
-
-    # Reshape LLRs to match input symbol structure
+    # Reshape to match input structure
     flat_llrs = llrs.flatten()
-
     if len(original_shape) > 1:
         new_shape = list(original_shape)
         new_shape[-1] = new_shape[-1] * k
-        return flat_llrs.reshape(new_shape)
-    else:
+        flat_llrs = flat_llrs.reshape(new_shape)
+
+    # Convert back to original backend
+    if jax_input:
         return flat_llrs
+    return from_jax(flat_llrs)

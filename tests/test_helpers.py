@@ -182,3 +182,50 @@ def test_validate_array_exception(backend_device, xp):
 
     with pytest.raises(ValueError, match="Could not convert"):
         helpers.validate_array(obj)
+
+
+def test_expand_preamble_mimo_time_orthogonal(backend_device, xp):
+    """Verify time_orthogonal MIMO preamble expansion (lines 489-523)."""
+    from commstools.helpers import expand_preamble_mimo
+
+    base = xp.array([1.0 + 0j, -1.0 + 0j, 1.0 + 0j])
+    result = expand_preamble_mimo(base, num_streams=3, mode="time_orthogonal")
+
+    # Shape: (3, 9) = (num_streams, L * num_streams)
+    assert result.shape == (3, 9)
+
+    # Verify block-diagonal structure
+    # Channel 0: [base, 0, 0]
+    assert xp.allclose(result[0, :3], base)
+    assert xp.allclose(result[0, 3:], 0)
+
+    # Channel 1: [0, base, 0]
+    assert xp.allclose(result[1, :3], 0)
+    assert xp.allclose(result[1, 3:6], base)
+    assert xp.allclose(result[1, 6:], 0)
+
+    # Channel 2: [0, 0, base]
+    assert xp.allclose(result[2, :6], 0)
+    assert xp.allclose(result[2, 6:], base)
+
+
+def test_expand_preamble_mimo_single_stream(backend_device, xp):
+    """Verify expand_preamble_mimo returns unchanged for 1 stream."""
+    from commstools.helpers import expand_preamble_mimo
+
+    base = xp.array([1.0, -1.0])
+    result = expand_preamble_mimo(base, num_streams=1, mode="same")
+    assert xp.array_equal(result, base)
+
+
+def test_expand_preamble_mimo_unknown_mode(backend_device, xp):
+    """Verify expand_preamble_mimo falls back to broadcast for unknown mode (line 521-523)."""
+    from commstools.helpers import expand_preamble_mimo
+
+    base = xp.array([1.0, -1.0])
+    result = expand_preamble_mimo(base, num_streams=2, mode="unknown_mode")
+
+    # Falls back to tile (same as "same")
+    assert result.shape == (2, 2)
+    assert xp.allclose(result[0], base)
+    assert xp.allclose(result[1], base)
