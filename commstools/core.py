@@ -229,7 +229,9 @@ class Signal(BaseModel):
     # Resolved data from processing
     resolved_symbols: Optional[Any] = Field(default=None, repr=False)
     resolved_bits: Optional[Any] = Field(default=None, repr=False)
-    resolved_llr: Optional[Any] = Field(default=None, repr=False)
+
+    # Private: cached equalizer result for post-hoc inspection
+    _equalizer_result: Any = PrivateAttr(default=None)
 
     # =========================================================================
     # Validators and Post-Initialization Hooks
@@ -888,6 +890,51 @@ class Signal(BaseModel):
             return None
         return result
 
+    def plot_equalizer(
+        self,
+        smoothing: int = 50,
+        ax=None,
+        title: Optional[str] = "Equalizer Diagnostics",
+        show: bool = False,
+    ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plots equalizer diagnostics: convergence curve and tap weights.
+
+        Requires ``equalize()`` to have been called first.
+
+        Parameters
+        ----------
+        smoothing : int, default 50
+            Moving-average window for the MSE convergence curve.
+        ax : list of 2 Axes, optional
+            Pre-existing axes ``[ax_convergence, ax_taps]``.
+        title : str, optional
+            Suptitle for the figure.
+        show : bool, default False
+            If True, calls ``plt.show()`` and returns None.
+
+        Returns
+        -------
+        (fig, axes) or None
+            Figure and axes array when ``show=False``, None otherwise.
+
+        Raises
+        ------
+        ValueError
+            If ``equalize()`` has not been called on this signal.
+        """
+        if self._equalizer_result is None:
+            raise ValueError("No equalizer result available. Call equalize() first.")
+        from . import plotting
+
+        return plotting.equalizer_result(
+            self._equalizer_result,
+            smoothing=smoothing,
+            ax=ax,
+            title=title,
+            show=show,
+        )
+
     # =========================================================================
     # Signal Processing Methods
     # =========================================================================
@@ -1178,6 +1225,84 @@ class Signal(BaseModel):
             normalize_output=normalize_output,
             axis=-1,
         )
+        return self
+
+    def equalize(
+        self,
+        method: str = "lms",
+        training_symbols: Optional[Any] = None,
+        **kwargs,
+    ) -> "Signal":
+        """
+        Applies adaptive or block equalization to the signal samples.
+
+        Signal metadata is used automatically:
+
+        - ``sps`` is read from the signal (``sampling_rate / symbol_rate``).
+          Adaptive equalizers require 2 SPS (T/2-spaced input).
+        - ``reference_constellation`` is built from ``mod_scheme`` /
+          ``mod_order`` for LMS and RLS (DD slicing).
+        - ``modulation`` / ``order`` are passed to CMA for R2 computation.
+
+        Parameters
+        ----------
+        method : {"lms", "rls", "cma", "zf"}, default "lms"
+            Equalization algorithm.
+        training_symbols : array_like, optional
+            Known symbols for data-aided equalization (at symbol rate, 1 SPS).
+        **kwargs
+            Algorithm-specific parameters forwarded to the equalizer
+            function (e.g., ``num_taps``, ``step_size``, ``normalize``,
+            ``forgetting_factor``, ``store_weights``).
+
+        Returns
+        -------
+        Signal
+            self (modified in-place). Equalizer result is accessible via
+            ``signal._equalizer_result``.
+
+        Raises
+        ------
+        ValueError
+            If the signal is not at 2 SPS for adaptive methods.
+        """
+        from . import equalizers
+        from .mapping import gray_constellation
+
+        sps = int(self.sps) if self.sps else 2
+
+        if method != "zf" and sps != 2:
+            raise ValueError(
+                f"Signal is at {sps} SPS. Adaptive equalizers require 2 SPS "
+                f"(T/2-spaced input) — resample first."
+            )
+
+        constellation = None
+        if self.mod_scheme and self.mod_order:
+            constellation = gray_constellation(self.mod_scheme, self.mod_order)
+
+        if method == "lms":
+            kwargs.setdefault("reference_constellation", constellation)
+            result = equalizers.lms(self.samples, training_symbols, sps=sps, **kwargs)
+        elif method == "rls":
+            kwargs.setdefault("reference_constellation", constellation)
+            result = equalizers.rls(self.samples, training_symbols, sps=sps, **kwargs)
+        elif method == "cma":
+            kwargs.setdefault("modulation", self.mod_scheme)
+            kwargs.setdefault("order", self.mod_order)
+            result = equalizers.cma(self.samples, sps=sps, **kwargs)
+        elif method == "zf":
+            channel_estimate = kwargs.pop("channel_estimate")
+            noise_variance = kwargs.pop("noise_variance", 0.0)
+            self.samples = equalizers.zf_equalizer(
+                self.samples, channel_estimate, noise_variance
+            )
+            return self
+        else:
+            raise ValueError(f"Unknown equalization method: {method}")
+
+        self.samples = result.y_hat
+        self._equalizer_result = result
         return self
 
     # =========================================================================
@@ -1570,47 +1695,32 @@ class Signal(BaseModel):
         self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
         return self.resolved_symbols
 
-    def demap_symbols(
+    def demap_symbols_hard(
         self,
-        hard: bool = True,
-        noise_var: Optional[float] = None,
-        method: str = "maxlog",
         **kwargs: Any,
     ) -> ArrayType:
         """
-        Demaps signal symbols back into bits using hard or soft decisions.
+        Maps resolved symbols to bits via minimum Euclidean distance (hard decision).
 
         Parameters
         ----------
-        hard : bool, default True
-            If True, performs hard-decision demapping and returns binary bits (0/1).
-            If False, performs soft-decision demapping and returns Log-Likelihood
-            Ratios (LLRs).
-        noise_var : float, optional
-            Estimated noise variance ($\\sigma^2$). Required for soft-decision
-        method : {"maxlog", "exact"}, default "maxlog"
-            The LLR computation method for soft demapping.
         **kwargs : Any
-            Additional arguments passed to demapping functions (e.g., `unipolar`).
+            Additional arguments passed to `mapping.demap_symbols_hard`
+            (e.g., ``unipolar``).
 
         Returns
         -------
         ndarray
-            If `hard=True`: Array of recovered bits.
-            If `hard=False`: Array of LLRs.
+            Array of recovered bits (int8). Shape: (..., N_symbols * log2(order)).
+            Result is also stored in ``self.resolved_bits``.
 
         Raises
         ------
         ValueError
-            If modulation metadata is missing, if `resolved_symbols` is not
-            available, or if `noise_var` is not provided for soft demapping.
-
-        Notes
-        -----
-        This method populates `self.resolved_bits` or `self.resolved_llr`
-        based on the result.
+            If modulation metadata is missing or ``resolve_symbols()`` has not
+            been called yet.
         """
-        from .mapping import demap_symbols_hard, demap_symbols_soft
+        from .mapping import demap_symbols_hard
 
         if self.mod_scheme is None or self.mod_order is None:
             raise ValueError("Modulation scheme and order required for demapping.")
@@ -1621,37 +1731,15 @@ class Signal(BaseModel):
                 "first to decimate the signal to symbol rate."
             )
 
-        if hard:
-            bits = demap_symbols_hard(
-                symbols=self.resolved_symbols,
-                modulation=self.mod_scheme,
-                order=self.mod_order,
-                unipolar=self.mod_unipolar,
-                **kwargs,
-            )
-            self.resolved_bits = bits
-            return bits
-        else:
-            if noise_var is None:
-                raise ValueError("noise_var required for soft demapping.")
-            llr = demap_symbols_soft(
-                symbols=self.resolved_symbols,
-                modulation=self.mod_scheme,
-                order=self.mod_order,
-                unipolar=self.mod_unipolar,
-                noise_var=noise_var,
-                method=method,
-                **kwargs,
-            )
-            self.resolved_llr = llr
-
-            # TODO: Need to reconsider this logic for metrics
-            # Populate resolved_bits via hard decisions from LLRs for BER consistency
-            # Mapping: LLR > 0 -> bit 0, LLR < 0 -> bit 1 (standard max-log/exact demapping)
-            xp = get_array_module(llr)
-            self.resolved_bits = (llr < 0).astype(xp.int8)
-
-            return llr
+        bits = demap_symbols_hard(
+            symbols=self.resolved_symbols,
+            modulation=self.mod_scheme,
+            order=self.mod_order,
+            unipolar=self.mod_unipolar,
+            **kwargs,
+        )
+        self.resolved_bits = bits
+        return bits
 
     # =========================================================================
     # Metrics Methods
@@ -1757,7 +1845,7 @@ class Signal(BaseModel):
         Computes the Bit Error Rate (BER).
 
         Compares `resolved_bits` against the reference bit sequence. Requires
-        that `demap_symbols()` (and `resolve_symbols()`) have been called previously.
+        that `demap_symbols_hard()` (and `resolve_symbols()`) have been called previously.
 
         For MIMO signals, BER is computed independently per stream.
 
@@ -1789,7 +1877,7 @@ class Signal(BaseModel):
 
         if self.resolved_bits is None:
             raise ValueError(
-                "No resolved bits available. Please call `demap_symbols()` first."
+                "No resolved bits available. Please call `demap_symbols_hard()` first."
             )
 
         return metrics.ber(self.resolved_bits, ref)

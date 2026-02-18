@@ -19,7 +19,7 @@ map_bits :
     Maps bit sequences to complex/float symbols.
 demap_symbols_hard :
     Performs hard-decision demapping from symbols to bits.
-demap_symbols_soft :
+compute_llr :
     Computes Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 """
 
@@ -27,7 +27,7 @@ import numpy as np
 
 from functools import lru_cache
 
-from .backend import ArrayType, dispatch, is_jax_array, to_jax, from_jax, _get_jax
+from .backend import ArrayType, dispatch, is_jax_array, to_jax, _get_jax
 from .logger import logger
 
 
@@ -636,7 +636,7 @@ def demap_symbols_hard(
         return flat_bits
 
 
-def demap_symbols_soft(
+def compute_llr(
     symbols: ArrayType,
     modulation: str,
     order: int,
@@ -645,49 +645,67 @@ def demap_symbols_soft(
     unipolar: bool = False,
 ) -> ArrayType:
     """
-    Compute Log-Likelihood Ratios (LLRs) for soft-decision demapping.
+    Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 
-    LLRs represent the reliability of each bit. Positive values favor bit 0,
-    while negative values favor bit 1 (assuming $0 \\rightarrow +1$ and
-    $1 \\rightarrow -1$ mapping convention). The magnitude indicates confidence.
+    LLRs quantify bit reliability at the output of a soft-input channel.
+    Positive values favor bit 0, negative values favor bit 1. The magnitude
+    reflects confidence (higher → more reliable).
 
-    Internally uses JAX for JIT-compiled computation with ``jax.vmap`` over
-    bit positions. Accepts NumPy, CuPy, or JAX arrays — converts at
-    boundaries and returns the same backend as the input.
+    Implemented as a JAX JIT-compiled kernel with ``jax.vmap`` over bit
+    positions. Input arrays (NumPy, CuPy, or JAX) are converted to JAX
+    internally. **Always returns a JAX array** regardless of input backend.
 
-    Differentiable: when called with JAX arrays, ``jax.grad`` through LLRs
-    w.r.t. input symbols is supported.
+    Fully differentiable: ``jax.grad`` through LLRs w.r.t. input symbols is
+    supported, enabling end-to-end gradient flow through the demapping step
+    into upstream channel estimation or shaping models.
 
     Parameters
     ----------
     symbols : array_like
-        Received noisy symbols. Shape: (..., N_symbols).
+        Received noisy symbols. Shape: (..., N_symbols). NumPy, CuPy, or JAX.
     modulation : {"psk", "qam", "ask"}
         Modulation type.
     order : int
         Modulation order.
     noise_var : float
-        Noise variance per complex dimension ($\\sigma^2$).
-        For AWGN with unit-power symbols: $\\sigma^2 = 0.5 \\cdot 10^{-E_s/N_0 / 10}$.
+        Total complex noise variance ($\\sigma^2$) of the CN(0, $\\sigma^2$)
+        AWGN model. For unit-power symbols at $E_s/N_0$ (dB):
+        $\\sigma^2 = 10^{-E_s/N_0 / 10}$.
     method : {"maxlog", "exact"}, default "maxlog"
-        Computation algorithm. "maxlog" is much faster; "exact" uses log-sum-exp.
+        LLR computation algorithm. ``"maxlog"`` is faster (single min per
+        bit); ``"exact"`` uses log-sum-exp for a tighter result.
     unipolar : bool, default False
-        Trigger unipolar demapping for ASK/PAM.
+        Use unipolar constellation for ASK/PAM.
 
     Returns
     -------
-    array_like
+    jax.Array
         LLR values. Shape: (..., N_symbols * log2(order)).
-        Backend matches the input (NumPy, CuPy, or JAX).
+        Always a JAX array — call ``np.asarray(llr)`` if a NumPy array is
+        needed for a non-JAX consumer.
+
+    Warnings
+    --------
+    This function **always returns a JAX array**, even when the input is
+    NumPy or CuPy. This is intentional: LLRs are the natural input to
+    soft-decision decoders (LDPC, turbo, neural) which benefit from JAX's
+    JIT compilation and autograd. Converting back to NumPy would discard
+    that capability.
 
     Notes
     -----
-    The Max-Log approximation simplifies the exact LLR:
+    Max-Log approximation:
 
-    $LLR \\approx \\frac{1}{\\sigma^2} (\\min_{s \\in S_1} |r-s|^2 - \\min_{s \\in S_0} |r-s|^2)$
+    $LLR_k \\approx \\frac{1}{\\sigma^2}
+    \\left(\\min_{s \\in S_1^k} |r-s|^2 - \\min_{s \\in S_0^k} |r-s|^2\\right)$
+
+    Exact LLR:
+
+    $LLR_k = \\log \\sum_{s \\in S_0^k} e^{-|r-s|^2/\\sigma^2}
+    - \\log \\sum_{s \\in S_1^k} e^{-|r-s|^2/\\sigma^2}$
     """
     logger.debug(
-        f"Soft demapping {modulation.upper()} {order}-level (method={method})."
+        f"Computing LLRs for {modulation.upper()} {order}-level (method={method})."
     )
 
     k = int(np.log2(order))
@@ -696,51 +714,81 @@ def demap_symbols_soft(
     if method not in ("maxlog", "exact"):
         raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
 
-    # Detect original backend for output conversion
-    jax_input = is_jax_array(symbols)
-
-    # Capture shape before conversion
-    if hasattr(symbols, "shape"):
-        original_shape = symbols.shape
-    else:
-        original_shape = np.asarray(symbols).shape
-
-    # Convert to JAX
+    # Convert to JAX if not already
     jax, jnp, _ = _get_jax()
     if jax is None:
         raise ImportError(
-            "JAX is required for soft demapping. Install with: pip install jax"
+            "JAX is required for LLR computation. Install with: pip install jax"
         )
 
-    jax_symbols = symbols if jax_input else to_jax(symbols)
-    jax_symbols_flat = jax_symbols.flatten()
+    # JAX path
+    if is_jax_array(symbols):
+        if hasattr(symbols, "shape"):
+            original_shape = symbols.shape
+        else:
+            # Fallback for JAX tracers or odd objects
+            original_shape = jnp.shape(symbols)
 
-    # Build constellation and bit table as JAX arrays
-    constellation_np = gray_constellation(modulation, order, unipolar=unipolar)
-    mod_lower = modulation.lower()
-    if "ask" in mod_lower or "pam" in mod_lower:
-        constellation_np = constellation_np.astype(np.float32)
+        jax_symbols_flat = symbols.flatten()
+        # Explicitly cast constellation to complex64/float32 to match typical symbol precision
+        const = gray_constellation(modulation, order, unipolar=unipolar)
+        if jnp.iscomplexobj(jax_symbols_flat):
+            const = const.astype(np.complex64)
+        else:
+            const = const.astype(np.float32)
+        constellation_jax = jnp.asarray(const)
+
+        bits_table_t_jax = jnp.asarray(
+            (
+                (
+                    np.arange(order, dtype=np.int32)[:, None]
+                    >> np.arange(k - 1, -1, -1, dtype=np.int32)
+                )
+                & 1
+            )
+            .astype(np.int32)
+            .T
+        )
+        sigma_sq = jnp.asarray(max(noise_var, 1e-20), dtype=jnp.float32)
+
+    # NumPy/CuPy path
     else:
-        constellation_np = constellation_np.astype(np.complex64)
+        # Use dispatch to ensure we have a proper array module (xp) and array input
+        symbols, xp, _ = dispatch(symbols)
+        original_shape = symbols.shape
 
-    s_indices = np.arange(order, dtype=np.int32)
-    shifts = np.arange(k - 1, -1, -1, dtype=np.int32)
-    bits_table_t = ((s_indices[:, None] >> shifts) & 1).astype(np.int32).T  # (k, M)
-
-    sigma_sq_val = max(noise_var, 1e-20)
-
-    if jax_input:
-        # JAX input (may be a tracer from jax.grad) — no concrete .device.
-        # Let JAX handle device placement via jnp.asarray.
-        constellation_jax = jnp.asarray(constellation_np)
-        bits_table_t_jax = jnp.asarray(bits_table_t)
-        sigma_sq = jnp.asarray(sigma_sq_val, dtype=jnp.float32)
-    else:
-        # NumPy/CuPy converted via to_jax() — match device explicitly.
+        is_complex = symbols.dtype.kind == "c"
+        jax_symbols_flat = to_jax(
+            symbols, dtype=np.complex64 if is_complex else np.float32
+        ).flatten()
         device = jax_symbols_flat.device
-        constellation_jax = jax.device_put(jnp.asarray(constellation_np), device)
-        bits_table_t_jax = jax.device_put(jnp.asarray(bits_table_t), device)
-        sigma_sq = jax.device_put(jnp.asarray(sigma_sq_val, dtype=jnp.float32), device)
+
+        # Generate constellation on CPU (NumPy) then move to JAX device.
+        # Generating on CPU is typically faster for small constants than launching GPU kernels.
+        const = gray_constellation(modulation, order, unipolar=unipolar)
+        if is_complex:
+            const = const.astype(np.complex64)
+        else:
+            const = const.astype(np.float32)
+
+        # Use device_put for efficiency
+        constellation_jax = jax.device_put(jnp.asarray(const), device)
+
+        bits_table_np = (
+            (
+                (
+                    np.arange(order, dtype=np.int32)[:, None]
+                    >> np.arange(k - 1, -1, -1, dtype=np.int32)
+                )
+                & 1
+            )
+            .astype(np.int32)
+            .T
+        )
+        bits_table_t_jax = jax.device_put(jnp.asarray(bits_table_np), device)
+        sigma_sq = jax.device_put(
+            jnp.asarray(max(noise_var, 1e-20), dtype=jnp.float32), device
+        )
 
     # Compute LLRs via JIT-compiled kernels
     maxlog_fn, exact_fn = _get_jitted_soft_demap()
@@ -751,14 +799,11 @@ def demap_symbols_soft(
     else:
         llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
 
-    # Reshape to match input structure
+    # Reshape to match input structure and return as JAX array
     flat_llrs = llrs.flatten()
     if len(original_shape) > 1:
         new_shape = list(original_shape)
         new_shape[-1] = new_shape[-1] * k
         flat_llrs = flat_llrs.reshape(new_shape)
 
-    # Convert back to original backend
-    if jax_input:
-        return flat_llrs
-    return from_jax(flat_llrs)
+    return flat_llrs

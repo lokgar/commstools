@@ -113,13 +113,13 @@ def test_signal_ber_method(backend_device, xp):
 
     # Must resolve symbols then demap symbols before BER
     sig.resolve_symbols()
-    sig.demap_symbols()
+    sig.demap_symbols_hard()
     ber_val = sig.ber()
     assert ber_val == 0.0  # Perfect signal, no errors
 
 
 def test_signal_demap_hard(backend_device, xp):
-    """Test Signal.demap_symbols() hard decision."""
+    """Test Signal.demap_symbols_hard() hard decision."""
     from commstools.core import Signal
 
     sig = Signal.qam(
@@ -129,7 +129,7 @@ def test_signal_demap_hard(backend_device, xp):
     # Must resolve symbols before demapping
     sig.resolve_symbols()
     # Demap to bits
-    bits = sig.demap_symbols(hard=True)
+    bits = sig.demap_symbols_hard()
 
     # Should match source_bits
     assert xp.array_equal(bits.flatten(), sig.source_bits.flatten())

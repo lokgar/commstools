@@ -195,9 +195,9 @@ def test_signal_resolution_and_demap(backend_device, xp):
     assert sig.resolved_symbols is None
     assert sig.resolved_bits is None
 
-    # Calling demap_symbols before resolve_symbols should raise ValueError
+    # Calling demap_symbols_hard before resolve_symbols should raise ValueError
     with pytest.raises(ValueError, match="No resolved symbols available"):
-        sig.demap_symbols()
+        sig.demap_symbols_hard()
 
     # Resolve symbols with offset
     sig.resolve_symbols(offset=0)
@@ -206,7 +206,7 @@ def test_signal_resolution_and_demap(backend_device, xp):
     assert isinstance(sig.resolved_symbols, xp.ndarray)
 
     # Demap
-    bits = sig.demap_symbols(hard=True)
+    bits = sig.demap_symbols_hard()
     assert sig.resolved_bits is not None
     assert len(sig.resolved_bits) == num_symbols
     assert xp.array_equal(bits, sig.resolved_bits)
@@ -221,28 +221,14 @@ def test_signal_resolution_and_demap(backend_device, xp):
     # Test BER with manual reference bits
     ref_bits = sig.source_bits
     if ref_bits is not None:
-        # ber() requires resolved_bits (populated by demap_symbols above)
+        # ber() requires resolved_bits (populated by demap_symbols_hard above)
         ber = sig.ber(reference_bits=ref_bits)
         assert 0 <= ber <= 1
 
     # Test that BER raises if resolved_bits is missing
     sig.resolved_bits = None
-    with pytest.raises(ValueError, match="Please call `demap_symbols\(\)` first"):
+    with pytest.raises(ValueError, match="Please call `demap_symbols_hard\\(\\)` first"):
         sig.ber(reference_bits=ref_bits)
-
-
-def test_signal_ber_soft_demap(backend_device, xp):
-    """Verify that BER uses the results of soft demapping correctly."""
-    sig = Signal.psk(order=4, num_symbols=100, sps=1, symbol_rate=1e6, seed=42)
-    sig.resolve_symbols()
-
-    # Perform soft demapping
-    sig.demap_symbols(hard=False, noise_var=0.1)
-    assert sig.resolved_llr is not None
-    assert sig.resolved_bits is not None  # Populated from LLRs
-
-    ber_soft = sig.ber()
-    assert 0 <= ber_soft <= 1
 
 
 def test_signal_decimate_to_symbol_rate(backend_device, xp):
@@ -439,21 +425,13 @@ def test_resolve_symbols_sps_errors(backend_device, xp):
 
 
 def test_demap_without_modulation(backend_device, xp):
-    """Verify demap_symbols raises error without modulation metadata (line 1656)."""
+    """Verify demap_symbols_hard raises error without modulation metadata."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0
     )
     s.resolved_symbols = xp.ones(10, dtype="complex64")
     with pytest.raises(ValueError, match="Modulation scheme and order required"):
-        s.demap_symbols()
-
-
-def test_demap_soft_without_noise_var(backend_device, xp):
-    """Verify soft demap raises without noise_var (line 1675)."""
-    sig = Signal.qam(order=4, num_symbols=50, sps=1, symbol_rate=1e6)
-    sig.resolve_symbols()
-    with pytest.raises(ValueError, match="noise_var required for soft demapping"):
-        sig.demap_symbols(hard=False)
+        s.demap_symbols_hard()
 
 
 def test_evm_no_reference(backend_device, xp):
