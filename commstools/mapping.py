@@ -67,16 +67,15 @@ def _get_jitted_soft_demap():
         def exact(symbols, constellation, bits_table_t, sigma_sq):
             """Exact LLR via log-sum-exp: symbols (N,), constellation (M,), bits_table_t (k, M)."""
             neg_exp = (
-                -jnp.abs(symbols[:, None] - constellation[None, :]) ** 2 / sigma_sq
+                -(jnp.abs(symbols[:, None] - constellation[None, :]) ** 2) / sigma_sq
             )  # (N, M)
 
             def bit_llr(bit_row):  # (M,)
                 e0 = jnp.where(bit_row == 0, neg_exp, -jnp.inf)  # (N, M)
                 e1 = jnp.where(bit_row == 1, neg_exp, -jnp.inf)  # (N, M)
-                return (
-                    jax.scipy.special.logsumexp(e0, axis=1)
-                    - jax.scipy.special.logsumexp(e1, axis=1)
-                )  # (N,)
+                return jax.scipy.special.logsumexp(
+                    e0, axis=1
+                ) - jax.scipy.special.logsumexp(e1, axis=1)  # (N,)
 
             return jax.vmap(bit_llr)(bits_table_t).T  # (k, N) -> (N, k)
 
@@ -199,9 +198,6 @@ def gray_constellation(
         f"Generating Gray-coded constellation: modulation={modulation}, order={order}, normalize={normalize}"
     )
     modulation = modulation.lower()
-    # Force unipolar if the modulation string says so
-    if "unipol" in modulation:
-        unipolar = True
 
     # Extract core modulation scheme
     if "psk" in modulation:
@@ -210,10 +206,6 @@ def gray_constellation(
         modulation = "qam"
     elif "ask" in modulation or "pam" in modulation:
         modulation = "ask"
-    else:
-        # Fallback to last part for custom schemes if any
-        if "-" in modulation:
-            modulation = modulation.split("-")[-1]
 
     if order < 2:
         raise ValueError("Order must be at least 2 for modulation")
@@ -748,14 +740,14 @@ def demap_symbols_soft(
         device = jax_symbols_flat.device
         constellation_jax = jax.device_put(jnp.asarray(constellation_np), device)
         bits_table_t_jax = jax.device_put(jnp.asarray(bits_table_t), device)
-        sigma_sq = jax.device_put(
-            jnp.asarray(sigma_sq_val, dtype=jnp.float32), device
-        )
+        sigma_sq = jax.device_put(jnp.asarray(sigma_sq_val, dtype=jnp.float32), device)
 
     # Compute LLRs via JIT-compiled kernels
     maxlog_fn, exact_fn = _get_jitted_soft_demap()
     if method == "maxlog":
-        llrs = maxlog_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
+        llrs = maxlog_fn(
+            jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq
+        )
     else:
         llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
 

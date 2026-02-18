@@ -537,15 +537,23 @@ def shape_pulse(
     rc_rolloff = kwargs.get("rc_rolloff", 0.35)
     smoothrect_bt = kwargs.get("smoothrect_bt", 1.0)
     gaussian_bt = kwargs.get("gaussian_bt", 0.3)
-    pulse_width = 1.0  # Hardcoded to 1.0 (NRZ)
+    pulse_width = kwargs.get("pulse_width", 1.0)
+
+    # Support explicit rz flag
+    if kwargs.get("rz", False):
+        pulse_width = 0.5
 
     symbols, xp, sp = dispatch(symbols)
 
     if pulse_shape == "none":
-        logger.debug("Pulse shaping disabled, expanding symbols by sps")
-        return normalize(expand(symbols, int(sps), axis=-1), "peak")
+        if kwargs.get("rz", False):
+            logger.debug("RZ signaling requested, using rect pulse shape")
+            pulse_shape = "rect"
+        else:
+            logger.debug("Pulse shaping disabled, expanding symbols by sps")
+            return normalize(expand(symbols, int(sps), axis=-1), "peak")
 
-    elif pulse_shape == "rect":
+    if pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
     elif pulse_shape == "smoothrect":
         # Note: Tap generators return NumPy arrays
