@@ -28,6 +28,8 @@ filtering :
     Digital filter design and pulse shaping.
 multirate :
     Resampling and polyphase filtering.
+equalizers :
+    Adaptive and block channel equalization (LMS, RLS, CMA, ZF/MMSE).
 spectral :
     Frequency domain analysis and transformations.
 """
@@ -36,7 +38,7 @@ import warnings
 
 __version__ = "0.1.0"
 
-from . import impairments, metrics, sync
+from . import equalizers, impairments, metrics, sync
 from .core import Preamble, Signal, SingleCarrierFrame
 from .logger import set_log_level
 from .plotting import apply_default_theme
@@ -49,6 +51,7 @@ __all__ = [
     "Preamble",
     "Signal",
     "SingleCarrierFrame",
+    "equalizers",
     "impairments",
     "metrics",
     "set_log_level",

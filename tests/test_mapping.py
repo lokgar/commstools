@@ -4,7 +4,14 @@ import numpy as np
 from commstools import mapping
 
 
-def test_qam_mapping(backend_device, xp):
+def _to_np(arr):
+    """Convert any array (NumPy, CuPy, JAX) to a plain NumPy array."""
+    if hasattr(arr, "get"):  # CuPy
+        return arr.get()
+    return np.asarray(arr)
+
+
+def test_qam_mapping(xp):
     """Verify QAM mapping produces the correct number of symbols."""
     # Use xp to create array on device
     bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1])
@@ -15,7 +22,7 @@ def test_qam_mapping(backend_device, xp):
     assert len(syms) == 2
 
 
-def test_psk_mapping(backend_device, xp):
+def test_psk_mapping(xp):
     """Verify PSK mapping produces the correct number of symbols."""
     bits = xp.array([0, 1])
 
@@ -25,7 +32,7 @@ def test_psk_mapping(backend_device, xp):
     assert len(syms) == 2
 
 
-def test_demap_dimensions_mimo(backend_device, xp):
+def test_demap_dimensions_mimo(xp):
     """Test that demap_symbols_hard preserves multidimensional structure."""
     modulation = "qam"
     order = 4
@@ -53,95 +60,75 @@ def test_demap_dimensions_mimo(backend_device, xp):
     assert xp.array_equal(bits_out.flatten(), bits_in)
 
 
-def test_soft_demap_sign_correctness(backend_device, xp):
-    """LLR sign should match hard decision for noiseless symbols."""
+def test_compute_llr_sign_correctness(xp):
+    """LLR sign should match hard decision at high SNR (noiseless symbols)."""
     modulation = "qam"
     order = 16
 
-    # Generate known bits and map to symbols
     bits = xp.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
-    # Very low noise variance (high SNR) for near-perfect decisions
-    noise_var = 1e-6
-
-    llrs = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="maxlog"
+    llrs = mapping.compute_llr(
+        symbols, modulation, order, noise_var=1e-6, method="maxlog"
     )
 
-    # Hard decision from LLR: bit = 0 if LLR > 0, else 1
-    hard_from_llr = (llrs < 0).astype("int32")
+    hard_from_llr = (np.asarray(llrs) < 0).astype("int32")
+    assert np.array_equal(hard_from_llr, _to_np(bits)), (
+        "LLR signs don't match original bits"
+    )
 
-    # Should match original bits
-    assert xp.array_equal(hard_from_llr, bits), "LLR signs don't match original bits"
 
-
-def test_soft_demap_roundtrip(backend_device, xp):
-    """Hard decision from LLR should match direct hard demapping."""
+def test_compute_llr_roundtrip(xp):
+    """Hard decision from LLR should match direct hard demapping at high SNR."""
     modulation = "psk"
     order = 8
 
-    # Generate random symbols
     bits = xp.array([0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
-    # Soft demap with very low noise
-    noise_var = 1e-6
-    llrs = mapping.demap_symbols_soft(symbols, modulation, order, noise_var)
+    llrs = mapping.compute_llr(symbols, modulation, order, noise_var=1e-6)
+    hard_from_llr = (np.asarray(llrs) < 0).astype("int32")
+    hard_direct = _to_np(mapping.demap_symbols_hard(symbols, modulation, order))
 
-    # Hard decision from LLR
-    hard_from_llr = (llrs < 0).astype("int32")
-
-    # Direct hard demapping
-    hard_direct = mapping.demap_symbols_hard(symbols, modulation, order)
-
-    assert xp.array_equal(hard_from_llr, hard_direct)
+    assert np.array_equal(hard_from_llr, hard_direct)
 
 
-def test_soft_demap_exact_vs_maxlog(backend_device, xp):
-    """Exact and max-log methods should give similar results at high SNR."""
+def test_compute_llr_exact_vs_maxlog(xp):
+    """Exact and max-log methods should agree on sign and be close in magnitude."""
     modulation = "qam"
     order = 4
 
     bits = xp.array([0, 0, 0, 1, 1, 0, 1, 1], dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order)
 
-    noise_var = 0.01  # Moderate SNR
-
-    llrs_maxlog = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="maxlog"
+    llrs_maxlog = np.asarray(
+        mapping.compute_llr(symbols, modulation, order, noise_var=0.01, method="maxlog")
     )
-    llrs_exact = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="exact"
+    llrs_exact = np.asarray(
+        mapping.compute_llr(symbols, modulation, order, noise_var=0.01, method="exact")
     )
 
-    # Signs should match
-    assert xp.array_equal(xp.sign(llrs_maxlog), xp.sign(llrs_exact))
+    assert np.array_equal(np.sign(llrs_maxlog), np.sign(llrs_exact))
 
-    # Values should be reasonably close (within 20% for QPSK at this SNR)
-    # Max-log is an approximation, so some difference is expected
-    ratio = xp.abs(llrs_maxlog) / (xp.abs(llrs_exact) + 1e-10)
-    assert xp.all(ratio > 0.5) and xp.all(ratio < 2.0)
+    # Max-log is an approximation; values should be within a reasonable ratio
+    ratio = np.abs(llrs_maxlog) / (np.abs(llrs_exact) + 1e-10)
+    assert np.all(ratio > 0.5) and np.all(ratio < 2.0)
 
 
-def test_soft_demap_mimo_shape(backend_device, xp):
-    """Soft demapping should preserve MIMO channel structure."""
+def test_compute_llr_mimo_shape(xp):
+    """compute_llr should preserve MIMO channel structure."""
     modulation = "qam"
     order = 4
 
-    # 2 streams, 4 symbols each
     bits = xp.zeros(16, dtype="int32")
     symbols = mapping.map_bits(bits, modulation, order).reshape(2, 4)
 
-    noise_var = 0.1
-    llrs = mapping.demap_symbols_soft(symbols, modulation, order, noise_var)
+    llrs = mapping.compute_llr(symbols, modulation, order, noise_var=0.1)
 
-    # Expected shape: (2, 4*2) = (2, 8)
-    expected_shape = (2, 8)
-    assert llrs.shape == expected_shape
+    assert llrs.shape == (2, 8)
 
 
-def test_gray_code_edge_cases(backend_device, xp):
+def test_gray_code_edge_cases():
     """Verify Gray code generation for boundary bit depths."""
 
     # n = 0
@@ -161,7 +148,7 @@ def test_gray_code_edge_cases(backend_device, xp):
         mapping.gray_to_binary(-1)
 
 
-def test_8qam_mapping(backend_device, xp):
+def test_8qam_mapping(xp):
     """Verify 8-QAM (rectangular) mapping and round-trip."""
     bits = xp.array([0, 0, 0, 1, 1, 1], dtype="int32")
     syms = mapping.map_bits(bits, modulation="qam", order=8)
@@ -171,7 +158,7 @@ def test_8qam_mapping(backend_device, xp):
     assert xp.array_equal(bits, bits_out)
 
 
-def test_cross_qam_32_mapping(backend_device, xp):
+def test_cross_qam_32_mapping(xp):
     """Verify 32-QAM (Cross) mapping and round-trip."""
     # 5 bits per symbol. 2 symbols = 10 bits.
     bits = xp.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0], dtype="int32")
@@ -182,7 +169,7 @@ def test_cross_qam_32_mapping(backend_device, xp):
     assert xp.array_equal(bits, bits_out)
 
 
-def test_soft_demap_methods_agree(backend_device, xp):
+def test_compute_llr_methods_agree(xp):
     """Verify maxlog and exact methods agree on sign for 16-QAM."""
     modulation = "qam"
     order = 16
@@ -190,24 +177,20 @@ def test_soft_demap_methods_agree(backend_device, xp):
     symbols = mapping.map_bits(bits, modulation, order)
     noise_var = 0.1
 
-    llrs_maxlog = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="maxlog"
+    llrs_maxlog = np.asarray(
+        mapping.compute_llr(symbols, modulation, order, noise_var, method="maxlog")
     )
-    llrs_exact = mapping.demap_symbols_soft(
-        symbols, modulation, order, noise_var, method="exact"
+    llrs_exact = np.asarray(
+        mapping.compute_llr(symbols, modulation, order, noise_var, method="exact")
     )
 
-    # Signs should match
-    assert xp.array_equal(xp.sign(llrs_exact), xp.sign(llrs_maxlog))
+    assert np.array_equal(np.sign(llrs_exact), np.sign(llrs_maxlog))
 
-    # Test error for unknown method
     with pytest.raises(ValueError, match="Unknown method"):
-        mapping.demap_symbols_soft(
-            symbols, modulation, order, noise_var, method="unknown"
-        )
+        mapping.compute_llr(symbols, modulation, order, noise_var, method="unknown")
 
 
-def test_gray_constellation_advanced(backend_device, xp):
+def test_gray_constellation_advanced(xp):
     """Verify constellation generation edge cases."""
     # 1. Unipolar via argument
     const_unipol = mapping.gray_constellation("pam", 4, unipolar=True)
@@ -233,7 +216,7 @@ def test_gray_constellation_advanced(backend_device, xp):
         mapping.gray_constellation("unknown", 4)
 
 
-def test_map_demap_unipolar(backend_device, xp):
+def test_map_demap_unipolar(xp):
     """Verify bit mapping and demapping with unipolar ASK/PAM."""
     bits = xp.array([0, 1, 1, 0])
     # Map to unipolar
@@ -244,14 +227,13 @@ def test_map_demap_unipolar(backend_device, xp):
     bits_rx = mapping.demap_symbols_hard(syms, "ask", 4, unipolar=True)
     assert xp.array_equal(bits, bits_rx)
 
-    # Soft demap from unipolar
-    llrs = mapping.demap_symbols_soft(syms, "ask", 4, noise_var=0.1, unipolar=True)
-    # Signs should allow recovering bits: LLR > 0 -> 0, LLR < 0 -> 1
-    bits_soft = (llrs < 0).astype("int32")
-    assert xp.array_equal(bits, bits_soft)
+    # LLR signs should recover the same bits
+    llrs = mapping.compute_llr(syms, "ask", 4, noise_var=0.1, unipolar=True)
+    bits_soft = (np.asarray(llrs) < 0).astype("int32")
+    assert np.array_equal(bits_soft, _to_np(bits))
 
 
-def test_mapping_more(backend_device, xp):
+def test_mapping_more(xp):
     """Verify more mapping edge cases."""
     # Order error in map_bits
     with pytest.raises(ValueError, match="at least 2"):
@@ -262,24 +244,22 @@ def test_mapping_more(backend_device, xp):
         mapping.demap_symbols_hard(xp.array([0]), "psk", 1)
 
 
-def test_mapping_order_errors(backend_device, xp):
+def test_mapping_order_errors(xp):
     """Verify order validation for power-of-2 requirements."""
     # map_bits
     with pytest.raises(ValueError, match="power of 2"):
         mapping.map_bits(xp.array([0, 0]), "psk", 3)
 
-    # demap_symbols_soft
+    # compute_llr
     with pytest.raises(ValueError, match="power of 2"):
-        mapping.demap_symbols_soft(xp.array([0.1]), "psk", 3, noise_var=0.1)
+        mapping.compute_llr(xp.array([0.1]), "psk", 3, noise_var=0.1)
 
 
-def test_demap_symbols_empty_shape(backend_device, xp):
+def test_demap_symbols_empty_shape(xp):
     """Verify demapping behavior for effectively scalar inputs."""
     # 0-dim array (scalar)
     s = xp.array(1.0)
     # constellation will be [-1, 1] for psk-2
-    # 1.0 is bit 1? No, 1.0 is mapped to bit?
-    # gray_constillation(psk, 2) -> [-1, 1]
     # index 0 is -1, index 1 is 1.
     # so 1.0 -> index 1 -> bit 1.
     bits = mapping.demap_symbols_hard(s, "psk", 2)
@@ -287,13 +267,13 @@ def test_demap_symbols_empty_shape(backend_device, xp):
     assert int(bits.item()) == 1
 
 
-def test_gray_code_zero(backend_device, xp):
+def test_gray_code_zero():
     """Verify Gray code for 0 bits."""
     assert np.array_equal(mapping.gray_code(0), [0])
     assert np.array_equal(mapping.gray_to_binary(0), [0])
 
 
-def test_gray_code_negative(backend_device, xp):
+def test_gray_code_negative():
     """Verify error for negative bits."""
     with pytest.raises(ValueError, match="n must be non-negative"):
         mapping.gray_code(-1)
@@ -301,13 +281,13 @@ def test_gray_code_negative(backend_device, xp):
         mapping.gray_to_binary(-1)
 
 
-def test_constellation_unsupported(backend_device, xp):
+def test_constellation_unsupported():
     """Verify error for unknown modulation type."""
     with pytest.raises(ValueError, match="Unsupported modulation type"):
         mapping.gray_constellation("chaos", 4)
 
 
-def test_constellation_order_error(backend_device, xp):
+def test_constellation_order_error():
     """Verify errors for non-matching orders."""
     with pytest.raises(ValueError, match="Order must be at least 2"):
         mapping.gray_constellation("qam", 1)
@@ -328,13 +308,13 @@ def test_constellation_order_error(backend_device, xp):
         _gray_ask(6)
 
 
-def test_constellation_unsupported_string(backend_device, xp):
+def test_constellation_unsupported_string():
     """Test that unsupported strings raise ValueError."""
     with pytest.raises(ValueError, match="Unsupported modulation type: custom-unknown"):
         mapping.gray_constellation("custom-unknown", 4)
 
 
-def test_qam_cross_fallback(backend_device, xp):
+def test_qam_cross_fallback():
     """Trigger the fallback in cross-QAM for small N."""
     # _gray_qam_cross(8) -> n=2, m=1. width=4, height=2.
     # n < 3 triggers n_shift=0 branch
@@ -344,14 +324,14 @@ def test_qam_cross_fallback(backend_device, xp):
     assert res.shape == (8,)
 
 
-def test_map_bits_divisibility(backend_device, xp):
+def test_map_bits_divisibility(xp):
     """Verify error when bit count is not divisible by bits per symbol."""
     bits = xp.array([1, 0, 1])  # 3 bits
     with pytest.raises(ValueError, match="must be divisible by bits per symbol"):
         mapping.map_bits(bits, "qam", 16)  # bits_per_symbol = 4
 
 
-def test_map_bits_fixed_dtypes(backend_device, xp):
+def test_map_bits_fixed_dtypes(xp):
     """Verify map_bits returns complex64 for PSK/QAM and float32 for ASK/PAM."""
     bits = xp.array([0, 1, 0, 1])
 
@@ -368,7 +348,7 @@ def test_map_bits_fixed_dtypes(backend_device, xp):
     assert out_psk.dtype == "complex64"
 
 
-def test_demap_symbols_returns_int8(backend_device, xp):
+def test_demap_symbols_returns_int8(xp):
     """Verify demap_symbols_hard returns int8 bits matching source_bits dtype."""
     bits = xp.array([0, 1, 0, 1], dtype="int8")
     symbols = mapping.map_bits(bits, "qam", 4)
@@ -376,56 +356,81 @@ def test_demap_symbols_returns_int8(backend_device, xp):
     assert demapped.dtype == "int8"
 
 
-def test_soft_demap_invalid_order(backend_device, xp):
-    """Verify error for non-power-of-2 order in soft demapping."""
+def test_compute_llr_invalid_order(xp):
+    """Verify error for non-power-of-2 order."""
     with pytest.raises(ValueError, match="Order must be a power of 2"):
-        mapping.demap_symbols_soft(xp.ones(1), "qam", 6, 0.1)
+        mapping.compute_llr(xp.ones(1), "qam", 6, 0.1)
 
 
-def test_soft_demap_invalid_method(backend_device, xp):
-    """Verify error for unknown method in soft demapping."""
+def test_compute_llr_invalid_method(xp):
+    """Verify error for unknown method."""
     with pytest.raises(ValueError, match="Unknown method"):
-        mapping.demap_symbols_soft(xp.ones(1), "qam", 4, 0.1, method="magic")
+        mapping.compute_llr(xp.ones(1), "qam", 4, 0.1, method="magic")
 
 
-# === JAX-specific soft demapping tests ===
+# === compute_llr always-JAX output and differentiability tests ===
 
 
-def test_soft_demap_jax_roundtrip():
-    """JAX array input should return JAX array output."""
+def test_compute_llr_numpy_input_returns_jax():
+    """NumPy input should return a JAX array."""
+    jax = pytest.importorskip("jax")
+
+    bits = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 16)
+
+    llrs = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1)
+
+    assert isinstance(llrs, jax.Array), (
+        "compute_llr must return jax.Array for NumPy input"
+    )
+
+
+def test_compute_llr_cupy_input_returns_jax():
+    """CuPy input should return a JAX array."""
+    jax = pytest.importorskip("jax")
+    cp = pytest.importorskip("cupy")
+
+    bits = cp.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 16)
+
+    llrs = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1)
+
+    assert isinstance(llrs, jax.Array), (
+        "compute_llr must return jax.Array for CuPy input"
+    )
+
+
+def test_compute_llr_jax_input_returns_jax():
+    """JAX array input should return a JAX array (maxlog)."""
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
 
     bits_np = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
-    symbols_np = mapping.map_bits(bits_np, "qam", 16)
-    symbols_jax = jnp.asarray(symbols_np)
+    symbols_jax = jnp.asarray(mapping.map_bits(bits_np, "qam", 16))
 
-    llrs = mapping.demap_symbols_soft(symbols_jax, "qam", 16, 0.1, method="maxlog")
+    llrs = mapping.compute_llr(symbols_jax, "qam", 16, noise_var=0.1, method="maxlog")
 
-    # Output should be a JAX array
     assert isinstance(llrs, jax.Array)
-    # Hard decision from LLR should match original bits
     hard = (np.asarray(llrs) < 0).astype("int32")
     assert np.array_equal(hard, bits_np)
 
 
-def test_soft_demap_jax_exact_roundtrip():
-    """JAX exact method should produce correct LLRs."""
+def test_compute_llr_jax_exact_returns_jax():
+    """JAX array input should return a JAX array (exact)."""
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
 
     bits_np = np.array([0, 1, 0, 1, 1, 0, 1, 0], dtype="int32")
-    symbols_np = mapping.map_bits(bits_np, "qam", 16)
-    symbols_jax = jnp.asarray(symbols_np)
+    symbols_jax = jnp.asarray(mapping.map_bits(bits_np, "qam", 16))
 
-    llrs = mapping.demap_symbols_soft(symbols_jax, "qam", 16, 0.01, method="exact")
+    llrs = mapping.compute_llr(symbols_jax, "qam", 16, noise_var=0.01, method="exact")
 
     assert isinstance(llrs, jax.Array)
     hard = (np.asarray(llrs) < 0).astype("int32")
     assert np.array_equal(hard, bits_np)
 
 
-def test_soft_demap_jax_gradient():
+def test_compute_llr_gradient():
     """jax.grad through LLRs w.r.t. input symbols should produce finite gradients."""
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
@@ -433,7 +438,7 @@ def test_soft_demap_jax_gradient():
     symbols_jax = jnp.array([0.7 + 0.7j, -0.7 - 0.7j], dtype=jnp.complex64)
 
     def loss_fn(syms):
-        llrs = mapping.demap_symbols_soft(syms, "qam", 4, 0.1, method="maxlog")
+        llrs = mapping.compute_llr(syms, "qam", 4, 0.1, method="maxlog")
         return jnp.sum(llrs**2)
 
     grad = jax.grad(loss_fn)(symbols_jax)
@@ -443,8 +448,8 @@ def test_soft_demap_jax_gradient():
     assert not jnp.all(grad == 0)
 
 
-def test_soft_demap_jax_vs_numpy():
-    """JAX and NumPy inputs should produce numerically close LLRs."""
+def test_compute_llr_numpy_vs_jax_input_agree():
+    """NumPy and JAX inputs should produce numerically identical LLRs."""
     pytest.importorskip("jax")
     import jax.numpy as jnp
 
@@ -452,8 +457,10 @@ def test_soft_demap_jax_vs_numpy():
     symbols_np = mapping.map_bits(bits, "psk", 8)
 
     for method in ("maxlog", "exact"):
-        llrs_np = mapping.demap_symbols_soft(symbols_np, "psk", 8, 0.05, method=method)
-        llrs_jax = mapping.demap_symbols_soft(
+        llrs_from_np = mapping.compute_llr(symbols_np, "psk", 8, 0.05, method=method)
+        llrs_from_jax = mapping.compute_llr(
             jnp.asarray(symbols_np), "psk", 8, 0.05, method=method
         )
-        np.testing.assert_allclose(np.asarray(llrs_np), np.asarray(llrs_jax), atol=1e-5)
+        np.testing.assert_allclose(
+            np.asarray(llrs_from_np), np.asarray(llrs_from_jax), atol=1e-5
+        )

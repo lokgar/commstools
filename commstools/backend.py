@@ -293,7 +293,7 @@ def dispatch(
     return data, xp, sp
 
 
-def to_jax(data: Any, device: Optional[str] = None) -> Any:
+def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None) -> Any:
     """
     Converts data to a JAX array with optimized device placement.
 
@@ -307,6 +307,10 @@ def to_jax(data: Any, device: Optional[str] = None) -> Any:
     device : {"CPU", "GPU", "TPU"}, optional
         Target JAX device platform. If None, the function attempts to
         preserve the device of the original data.
+    dtype : dtype, optional
+        Target data type. If None (default), implicit casting logic is applied:
+        complex128 -> complex64 and float64 -> float32 are enforced to avoid
+        backend bottlenecks, unless JAX x64 mode is explicitly enabled.
 
     Returns
     -------
@@ -325,6 +329,49 @@ def to_jax(data: Any, device: Optional[str] = None) -> Any:
     if jax is None:
         raise ImportError("JAX is not installed.")
 
+    # print(f"DEBUG: to_jax called. Data type: {getattr(data, 'dtype', 'unknown')}")
+
+    # Check for JAX x64 mode
+    try:
+        from jax.config import config
+
+        x64_enabled = config.read("jax_enable_x64")
+    except (ImportError, AttributeError):
+        x64_enabled = False
+
+    # Resolution of target dtype
+    # If explicit dtype is None, we apply the "DSP Design" heuristic:
+    # Downgrade 64-bit to 32-bit for performance unless x64 is strictly requested.
+    target_dtype = None
+    if dtype is not None:
+        target_dtype = dtype
+    elif not x64_enabled:
+        # Auto-cast logic
+        if hasattr(data, "dtype"):
+            dt = data.dtype
+            if dt == np.complex128:
+                target_dtype = np.complex64
+            elif dt == np.float64:
+                target_dtype = np.float32
+
+    # Apply cast if needed (before transfer if possible/efficient)
+    # For NumPy: cast on CPU before transfer/conversion
+    if (
+        isinstance(data, np.ndarray)
+        and target_dtype is not None
+        and data.dtype != target_dtype
+    ):
+        data = data.astype(target_dtype)
+
+    # For CuPy: cast on GPU before DLPack
+    if (
+        is_cupy_available()
+        and isinstance(data, cp.ndarray)
+        and target_dtype is not None
+        and data.dtype != target_dtype
+    ):
+        data = data.astype(target_dtype)
+
     target_device = None
     if device is not None:
         target_device = _get_jax_device(device.lower())
@@ -334,6 +381,17 @@ def to_jax(data: Any, device: Optional[str] = None) -> Any:
     # 1. Handle CuPy -> JAX (GPU)
     if is_cupy_available() and isinstance(data, cp.ndarray):
         try:
+            # DLPack requires contiguous memory and proper alignment.
+            # Enforce contiguous layout and 16-byte alignment (JAX/XLA requirement).
+            needs_copy = not data.flags.c_contiguous
+            if not needs_copy:
+                # Check for 16-byte alignment (common requirement for vectorized loads)
+                if data.data.ptr % 16 != 0:
+                    needs_copy = True
+
+            if needs_copy:
+                data = cp.array(data, copy=True, order="C")
+
             # DLPack is the fastest way for zero-copy GPU transfer
             jax_arr = jax_dlpack.from_dlpack(data)
             if target_device and jax_arr.device != target_device:
