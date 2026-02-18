@@ -209,12 +209,14 @@ def test_soft_demap_methods_agree(backend_device, xp):
 
 def test_gray_constellation_advanced(backend_device, xp):
     """Verify constellation generation edge cases."""
-    # 1. Unipolar forced by string
-    const_unipol = mapping.gray_constellation("pam-unipol", 4)
+    # 1. Unipolar via argument
+    const_unipol = mapping.gray_constellation("pam", 4, unipolar=True)
     assert xp.min(const_unipol) >= 0
 
-    # 2. Custom scheme with hyphen
-    const_custom = mapping.gray_constellation("my-pam", 4)
+    # 2. Custom scheme check (now simple string comparison)
+    # Note: 'my-pam' no longer automatically resolves to 'ask' unless we use 'pam' or 'ask'
+    # Actually gray_constellation uses "ask" in modulation.
+    const_custom = mapping.gray_constellation("pam", 4)
     assert len(const_custom) == 4
 
     # 3. Order error
@@ -326,15 +328,9 @@ def test_constellation_order_error(backend_device, xp):
         _gray_ask(6)
 
 
-def test_constellation_fallback_split(backend_device, xp):
-    """Test the hyphen split fallback in constellation naming."""
-    # "my-qam" -> core scheme is "qam" via 'in' check
-    c1 = mapping.gray_constellation("my-qam", 4)
-    c2 = mapping.gray_constellation("qam", 4)
-    assert xp.allclose(c1, c2)
-
-    # Triggering the split fallback (line 159)
-    with pytest.raises(ValueError, match="Unsupported modulation type: unknown"):
+def test_constellation_unsupported_string(backend_device, xp):
+    """Test that unsupported strings raise ValueError."""
+    with pytest.raises(ValueError, match="Unsupported modulation type: custom-unknown"):
         mapping.gray_constellation("custom-unknown", 4)
 
 
@@ -460,6 +456,4 @@ def test_soft_demap_jax_vs_numpy():
         llrs_jax = mapping.demap_symbols_soft(
             jnp.asarray(symbols_np), "psk", 8, 0.05, method=method
         )
-        np.testing.assert_allclose(
-            np.asarray(llrs_np), np.asarray(llrs_jax), atol=1e-5
-        )
+        np.testing.assert_allclose(np.asarray(llrs_np), np.asarray(llrs_jax), atol=1e-5)

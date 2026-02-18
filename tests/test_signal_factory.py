@@ -20,7 +20,7 @@ def test_rzpam_waveform(backend_device, xp):
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
-        mode="rz",
+        rz=True,
         pulse_shape="rect",
     )
     assert sig.samples.size > 0
@@ -34,7 +34,7 @@ def test_rzpam_waveform(backend_device, xp):
             num_symbols=10,
             sps=4,
             symbol_rate=1e3,
-            mode="rz",
+            rz=True,
             pulse_shape="rrc",
         )
 

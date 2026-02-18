@@ -55,7 +55,7 @@ def test_rzpam_pulse_params(backend_device, xp):
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
-        mode="rz",
+        rz=True,
         pulse_shape="smoothrect",
         smoothrect_bt=0.5,
     )
@@ -75,7 +75,7 @@ def test_rz_rect_taps_length(backend_device, xp):
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
-        mode="rz",
+        rz=True,
         pulse_shape="rect",
     )
     taps = sig.shaping_filter_taps()

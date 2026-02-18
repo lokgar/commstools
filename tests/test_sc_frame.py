@@ -119,8 +119,7 @@ def test_preamble_to_signal(backend_device, xp):
     sig = preamble.to_signal(sps=4, symbol_rate=1e6, pulse_shape="rrc")
 
     assert len(sig.samples) == 13 * 4  # 13 symbols * 4 sps
-    assert len(sig.samples) == 13 * 4  # 13 symbols * 4 sps
-    assert sig.modulation_scheme is None
+    assert sig.mod_scheme is None
     assert sig.source_symbols is None
 
 

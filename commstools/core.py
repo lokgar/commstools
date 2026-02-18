@@ -40,7 +40,6 @@ except ImportError:
 from . import helpers
 from .backend import (
     ArrayType,
-    dispatch,
     from_jax,
     get_array_module,
     get_scipy_module,
@@ -77,6 +76,10 @@ class SignalInfo(BaseModel):
         Modulation scheme used for the payload (e.g., 'QAM').
     payload_mod_order : int, optional
         Modulation order for the payload.
+    payload_mod_unipolar : bool
+        Whether the payload modulation is unipolar (for PAM/ASK).
+    payload_mod_rz : bool
+        Whether the payload modulation is RZ (for PAM/ASK).
     pilot_count : int
         Total number of pilot/reference symbols embedded in the frame.
     pilot_pattern : {"none", "block", "comb"}
@@ -89,6 +92,10 @@ class SignalInfo(BaseModel):
         Modulation scheme used for pilot symbols (e.g., 'PSK').
     pilot_mod_order : int, default 0
         Modulation order for pilot symbols.
+    pilot_mod_unipolar : bool
+        Whether the pilot modulation is unipolar (for PAM/ASK).
+    pilot_mod_rz : bool
+        Whether the pilot modulation is RZ (for PAM/ASK).
     pilot_gain_db : float, default 0.0
         Gain of pilot symbols in dB.
     guard_len : int
@@ -115,6 +122,7 @@ class SignalInfo(BaseModel):
     payload_len: Optional[int] = Field(default=None, ge=0)
     payload_mod_scheme: Optional[str] = None
     payload_mod_order: Optional[int] = Field(default=None, ge=2)
+    payload_mod_unipolar: Optional[bool] = None
 
     pilot_count: Optional[int] = Field(default=None, ge=0)
     pilot_pattern: Optional[Literal["none", "block", "comb"]] = None
@@ -122,6 +130,7 @@ class SignalInfo(BaseModel):
     pilot_block_len: Optional[int] = Field(default=None, ge=0)
     pilot_mod_scheme: Optional[str] = None
     pilot_mod_order: Optional[int] = Field(default=None, ge=2)
+    pilot_mod_unipolar: Optional[bool] = None
     pilot_gain_db: Optional[float] = None
 
     guard_len: Optional[int] = Field(default=None, ge=0)
@@ -149,24 +158,20 @@ class Signal(BaseModel):
         Sampling frequency in Hertz (Hz). Must be > 0.
     symbol_rate : float
         Symbol frequency (Baud rate) in Hertz (Hz). Must be > 0.
-    modulation_scheme : str, optional
+    mod_scheme : str, optional
         Identifier for the modulation format (e.g., 'QPSK', '16QAM').
-    modulation_order : int, optional
+    mod_order : int, optional
         The size of the symbol constellation (e.g., 4, 16).
+    mod_unipolar : bool, default False
+        If True, uses a unipolar constellation (e.g., 0 to M-1).
+    mod_rz : bool, default False
+        If True, uses Return-to-Zero (RZ) signaling.
     source_bits : array_like, optional
         The original binary data that generated the signal.
     source_symbols : array_like, optional
         The mapped constellation symbols before pulse shaping.
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., 'rrc', 'rect', 'gaussian').
-    spectral_domain : {"BASEBAND", "PASSBAND", "INTERMEDIATE"}
-        The signal's current placement in the frequency spectrum.
-    physical_domain : {"DIG", "RF", "OPT"}
-        The physical transmission domain: 'DIG' (Digital), 'RF' (Radio), 'OPT' (Optical).
-    center_frequency : float
-        The carrier or center frequency in Hz.
-    digital_frequency_offset : float
-        Cumulative digital frequency shift applied to the signal in Hz.
     filter_span : int
         Span of the pulse-shaping filter in symbols.
     rrc_rolloff : float
@@ -177,6 +182,14 @@ class Signal(BaseModel):
         Bandwidth-Time (BT) product for Gaussian pulse shaping.
     smoothrect_bt : float
         BT product for SmoothRect shaping filters.
+    spectral_domain : {"BASEBAND", "PASSBAND", "INTERMEDIATE"}
+        The signal's current placement in the frequency spectrum.
+    physical_domain : {"DIG", "RF", "OPT"}
+        The physical transmission domain: 'DIG' (Digital), 'RF' (Radio), 'OPT' (Optical).
+    center_frequency : float
+        The carrier or center frequency in Hz.
+    digital_frequency_offset : float
+        Cumulative digital frequency shift applied to the signal in Hz.
     signal_info : SignalInfo, optional
         Metadata describing the frame structure if this signal is part of a frame.
     """
@@ -188,22 +201,27 @@ class Signal(BaseModel):
     samples: Any
     sampling_rate: float = Field(..., gt=0)
     symbol_rate: float = Field(..., gt=0)
-    modulation_scheme: Optional[str] = None
-    modulation_order: Optional[int] = None
+
+    mod_scheme: Optional[str] = None
+    mod_order: Optional[int] = None
+    mod_unipolar: Optional[bool] = None
+    mod_rz: Optional[bool] = None
+
     source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
-    pulse_shape: Optional[str] = None
-    spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
-    physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
-    center_frequency: float = Field(default=0, ge=0)
-    digital_frequency_offset: float = Field(default=0)
 
-    # Pulse shaping parameters
+    pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
     rrc_rolloff: float = Field(default=0.35, ge=0, le=1)
     rc_rolloff: float = Field(default=0.35, ge=0, le=1)
     gaussian_bt: float = Field(default=0.3, gt=0)
     smoothrect_bt: float = Field(default=1.0, gt=0)
+
+    spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
+    physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
+
+    center_frequency: float = Field(default=0, ge=0)
+    digital_frequency_offset: float = Field(default=0)
 
     # Signal structure info (populated when Signal is generated from Frame/Preamble)
     signal_info: Optional[SignalInfo] = None
@@ -288,18 +306,14 @@ class Signal(BaseModel):
         """
         # Bit-first: derive symbols from bits if not provided
         if self.source_bits is not None and self.source_symbols is None:
-            if self.modulation_scheme and self.modulation_order:
+            if self.mod_scheme and self.mod_order:
                 from . import mapping
 
-                mod = self.modulation_scheme.lower()
-                unipolar = "unipol" in mod
-                if "-" in mod:
-                    if "rz" in mod:
-                        mod = mod.split("-")[1]
-                    else:
-                        mod = mod.split("-")[0]
                 self.source_symbols = mapping.map_bits(
-                    self.source_bits, mod, self.modulation_order, unipolar=unipolar
+                    self.source_bits,
+                    self.mod_scheme,
+                    self.mod_order,
+                    self.mod_unipolar,
                 )
 
         # Ensure source_symbols are normalized to unit average power for consistent metrics
@@ -334,8 +348,7 @@ class Signal(BaseModel):
             "Property": [
                 "Spectral Domain",
                 "Physical Domain",
-                "Modulation Scheme",
-                "Modulation Order",
+                "Modulation (Scheme/Order)",
                 "Symbol Rate",
                 "Bit Rate",
                 "Sampling Rate",
@@ -351,13 +364,10 @@ class Signal(BaseModel):
             "Value": [
                 self.spectral_domain,
                 self.physical_domain,
-                self.modulation_scheme,
-                str(self.modulation_order) if self.modulation_order else "None",
+                f"{self.mod_scheme or 'None'} / {self.mod_order or 'None'}{' (UNIPOL)' if self.mod_unipolar else ''}{' (RZ)' if self.mod_rz else ''}",
                 helpers.format_si(self.symbol_rate, "Baud"),
-                helpers.format_si(
-                    self.symbol_rate * np.log2(self.modulation_order), "bps"
-                )
-                if self.modulation_order
+                helpers.format_si(self.symbol_rate * np.log2(self.mod_order), "bps")
+                if self.mod_order
                 else "None",
                 helpers.format_si(self.sampling_rate, "Hz"),
                 f"{self.sps:.2f}",
@@ -604,8 +614,8 @@ class Signal(BaseModel):
         int or None
             Calculated as $\log_2(\text{modulation\_order})$.
         """
-        if self.modulation_order:
-            return int(np.log2(self.modulation_order))
+        if self.mod_order:
+            return int(np.log2(self.mod_order))
         return None
 
     # =========================================================================
@@ -836,10 +846,9 @@ class Signal(BaseModel):
             cmap=cmap,
             ax=ax,
             overlay_ideal=overlay_ideal,
-            modulation=self.modulation_scheme.lower()
-            if self.modulation_scheme
-            else None,
-            order=self.modulation_order,
+            modulation=self.mod_scheme,
+            order=self.mod_order,
+            unipolar=self.mod_unipolar,
             title=title,
             vmin=vmin,
             vmax=vmax,
@@ -1096,9 +1105,7 @@ class Signal(BaseModel):
         from . import filtering
 
         # Determine pulse width based on modulation if RZ
-        p_width = 1.0
-        if self.modulation_scheme and "RZ" in self.modulation_scheme.upper():
-            p_width = 0.5
+        p_width = 0.5 if self.mod_rz else 1.0
 
         # Generate taps using filtering module (returns default numpy usually)
         if self.pulse_shape == "rect":
@@ -1180,11 +1187,13 @@ class Signal(BaseModel):
     @classmethod
     def generate(
         cls,
-        modulation: str,
-        order: int,
         num_symbols: int,
         sps: float,
         symbol_rate: float,
+        modulation: str,
+        order: int,
+        unipolar: bool = False,
+        rz: bool = False,
         pulse_shape: str = "none",
         num_streams: int = 1,
         seed: Optional[int] = None,
@@ -1199,16 +1208,20 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        modulation : {"psk", "qam", "ask"}
-            The modulation scheme identifier.
-        order : int
-            Modulation order (e.g., 4, 16, 64).
         num_symbols : int
             Number of symbols to generate per stream.
         sps : float
             Samples per symbol.
         symbol_rate : float
             Symbol rate in symbols per second (Baud).
+        modulation : {"psk", "qam", "ask"}
+            The modulation scheme identifier.
+        order : int
+            Modulation order (e.g., 4, 16, 64).
+        unipolar : bool, default False
+            If True, uses a unipolar constellation.
+        rz : bool, default False
+            If True, uses Return-to-Zero signaling.
         pulse_shape : str, default "none"
             Pulse shaping filter type (e.g., 'rrc', 'rect').
         num_streams : int, default 1
@@ -1244,8 +1257,7 @@ class Signal(BaseModel):
         bits = helpers.random_bits(total_bits, seed=seed)
 
         # Map bits to symbols
-        unipolar = kwargs.pop("unipolar", None)
-        symbols_flat = mapping.map_bits(bits, modulation, order, unipolar=unipolar)
+        symbols_flat = mapping.map_bits(bits, modulation, order, unipolar)
 
         if num_streams > 1:
             # Shape: (Channels, Time)
@@ -1261,18 +1273,17 @@ class Signal(BaseModel):
         # Apply pulse shaping
         # shape_pulse defaults to axis=-1 (Time) which is correct for (C, T)
         samples = filtering.shape_pulse(
-            symbols,
-            sps=sps,
-            pulse_shape=pulse_shape,
-            **kwargs,
+            symbols=symbols, sps=sps, pulse_shape=pulse_shape, rz=rz, **kwargs
         )
 
         return cls(
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            modulation_scheme=modulation.upper(),
-            modulation_order=order,
+            mod_scheme=modulation.upper(),
+            mod_order=order,
+            mod_unipolar=unipolar,
+            mod_rz=rz,
             source_bits=bits,
             source_symbols=symbols,
             pulse_shape=pulse_shape,
@@ -1282,13 +1293,13 @@ class Signal(BaseModel):
     @classmethod
     def pam(
         cls,
-        order: int,
         num_symbols: int,
         sps: int,
         symbol_rate: float,
-        mode: Literal["rz", "nrz"] = "nrz",
+        order: int,
         unipolar: bool = False,
-        pulse_shape: Optional[str] = "rect",
+        rz: bool = False,
+        pulse_shape: Literal["rect", "smoothrect"] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
         **kwargs: Any,
@@ -1302,20 +1313,20 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        order : int
-            Modulation order (e.g., 2, 4, 8).
         num_symbols : int
             Total number of symbols to generate per stream.
         sps : int
             Samples per symbol. For RZ mode, this must be an even integer.
         symbol_rate : float
             Symbol rate in symbols per second (Baud).
-        mode : {"nrz", "rz"}, default "nrz"
-            Signaling mode. RZ uses a 50% duty cycle by default.
+        order : int
+            Modulation order (e.g., 2, 4, 8).
         unipolar : bool, default False
             If True, uses a unipolar constellation starting from 0 (e.g., 0, 1).
             If False, uses a symmetric bipolar constellation (e.g., -1, +1).
-        pulse_shape : str, optional
+        rz : bool, default False
+            If True, uses Return-to-Zero signaling.
+        pulse_shape : {"rect", "smoothrect"}, default "rect"
             Pulse shaping filter type. Default is "rect" for PAM.
         num_streams : int, default 1
             Number of independent streams (channels) to generate.
@@ -1338,99 +1349,40 @@ class Signal(BaseModel):
         will restore the symbols to unit average power for consistent metric
         calculation and demapping.
         """
-        from . import filtering
-
-        if mode == "rz":
+        if rz:
             if sps % 2 != 0:
                 raise ValueError("For correct RZ duty cycle, `sps` must be even")
 
-            p_shape = pulse_shape or "rect"
             allowed_rz_pulses = ["rect", "smoothrect"]
-            if p_shape not in allowed_rz_pulses:
+            if pulse_shape not in allowed_rz_pulses:
                 raise ValueError(
-                    f"Pulse shape '{p_shape}' is not allowed for RZ PAM. "
+                    f"Pulse shape '{pulse_shape}' is not allowed for RZ PAM. "
                     f"Allowed: {allowed_rz_pulses}"
                 )
 
-            # Generate symbols directly
-            # Bit-first architecture: generate bits → map to symbols
-            total_symbols = num_symbols * num_streams
-            k = int(np.log2(order))  # bits per symbol
-            bits = helpers.random_bits(total_symbols * k, seed=seed)
-
-            # Import mapping here to avoid circular imports
-            from . import mapping
-
-            scheme = f"RZ-PAM{'-UNIPOL' if unipolar else '-BIPOL'}"
-            symbols_flat = mapping.map_bits(bits, scheme, order, unipolar=unipolar)
-
-            if num_streams > 1:
-                symbols = symbols_flat.reshape(num_streams, num_symbols)
-                bits = bits.reshape(num_streams, num_symbols * k)
-            else:
-                symbols = symbols_flat
-
-            # Apply RZ Pulse Shaping
-            if p_shape == "rect":
-                h = np.ones(int(sps / 2))
-            elif p_shape == "smoothrect":
-                h = filtering.smoothrect_taps(
-                    sps=sps,
-                    span=kwargs.get("filter_span", 10),
-                    bt=kwargs.get("smoothrect_bt", 1.0),
-                    pulse_width=0.5,
-                )
-
-            if is_cupy_available():
-                symbols = to_device(symbols, "gpu")
-                bits = to_device(bits, "gpu")
-                h = to_device(h, "gpu")
-
-            _, xp, sp = dispatch(symbols)
-
-            # RZ hardcoded to 0.5 pulse width
-            from . import multirate
-
-            samples = helpers.normalize(
-                multirate.polyphase_resample(symbols, int(sps), 1, window=h, axis=-1),
-                "peak",
-            )
-
-            return cls(
-                samples=samples,
-                sampling_rate=symbol_rate * sps,
-                symbol_rate=symbol_rate,
-                modulation_scheme=f"RZ-PAM{'-UNIPOL' if unipolar else '-BIPOL'}",
-                modulation_order=order,
-                source_bits=bits,
-                source_symbols=symbols,
-                pulse_shape=p_shape,
-                **kwargs,
-            )
-        else:  # nrz
-            p_shape = pulse_shape or "rect"
-            scheme = f"PAM{'-UNIPOL' if unipolar else '-BIPOL'}"
-            sig = cls.generate(
-                modulation=scheme,
-                order=order,
-                num_symbols=num_symbols,
-                sps=sps,
-                symbol_rate=symbol_rate,
-                pulse_shape=p_shape,
-                num_streams=num_streams,
-                seed=seed,
-                unipolar=unipolar,
-                **kwargs,
-            )
-            return sig
+        return cls.generate(
+            num_symbols=num_symbols,
+            sps=sps,
+            symbol_rate=symbol_rate,
+            modulation="PAM",
+            order=order,
+            unipolar=unipolar,
+            rz=rz,
+            pulse_shape=pulse_shape,
+            num_streams=num_streams,
+            seed=seed,
+            **kwargs,
+        )
 
     @classmethod
     def psk(
         cls,
-        order: int,
         num_symbols: int,
         sps: float,
         symbol_rate: float,
+        order: int,
+        unipolar: bool = False,
+        rz: bool = False,
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
@@ -1441,14 +1393,18 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        order : int
-            Modulation order (e.g., 2 for BPSK, 4 for QPSK, 8 for 8-PSK).
         num_symbols : int
             Total number of symbols to generate per stream.
         sps : float
             Samples per symbol.
         symbol_rate : float
             Symbol rate in symbols per second (Baud).
+        order : int
+            Modulation order (e.g., 2 for BPSK, 4 for QPSK, 8 for 8-PSK).
+        unipolar : bool, default False
+            If True, uses a unipolar constellation.
+        rz : bool, default False
+            If True, uses Return-to-Zero signaling.
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
         num_streams : int, default 1
@@ -1481,16 +1437,20 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
+            unipolar=unipolar,
+            rz=rz,
             **kwargs,
         )
 
     @classmethod
     def qam(
         cls,
-        order: int,
         num_symbols: int,
         sps: float,
         symbol_rate: float,
+        order: int,
+        unipolar: bool = False,
+        rz: bool = False,
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
@@ -1501,14 +1461,18 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        order : int
-            Modulation order (e.g., 16, 64, 256).
         num_symbols : int
             Number of symbols to generate per stream.
         sps : float
             Samples per symbol.
         symbol_rate : float
             Symbol rate in symbols per second (Baud).
+        order : int
+            Modulation order (e.g., 16, 64, 256).
+        unipolar : bool, default False
+            If True, uses a unipolar constellation.
+        rz : bool, default False
+            If True, uses Return-to-Zero signaling.
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
         num_streams : int, default 1
@@ -1541,20 +1505,21 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
+            unipolar=unipolar,
+            rz=rz,
             **kwargs,
         )
 
     # =========================================================================
     # Resolving and Demapping Methods
     # =========================================================================
-    
+
     def resolve_symbols(self, offset: int = 0) -> ArrayType:
         """
         Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
         caches them in `self.resolved_symbols`.
 
-        WARNING: Only integer offsets are supported. For fractional we would
-        need interpolation.
+        WARNING: Only integer offsets are supported. Use after timing correction.
 
         Parameters
         ----------
@@ -1578,11 +1543,6 @@ class Signal(BaseModel):
         sps = self.sps
         if sps is None:
             raise ValueError("Symbol rate or sampling rate missing.")
-
-        # Apply timing offset if needed
-        # For simplicity, we use indexing. For fractional offset,
-        # we would need interpolation.
-        # Here we support integer offset.
 
         if sps < 1:
             raise ValueError("Symbol rate must be >= 1.")
@@ -1652,7 +1612,7 @@ class Signal(BaseModel):
         """
         from .mapping import demap_symbols_hard, demap_symbols_soft
 
-        if self.modulation_scheme is None or self.modulation_order is None:
+        if self.mod_scheme is None or self.mod_order is None:
             raise ValueError("Modulation scheme and order required for demapping.")
 
         if self.resolved_symbols is None:
@@ -1663,9 +1623,10 @@ class Signal(BaseModel):
 
         if hard:
             bits = demap_symbols_hard(
-                self.resolved_symbols,
-                self.modulation_scheme,
-                self.modulation_order,
+                symbols=self.resolved_symbols,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
                 **kwargs,
             )
             self.resolved_bits = bits
@@ -1674,10 +1635,11 @@ class Signal(BaseModel):
             if noise_var is None:
                 raise ValueError("noise_var required for soft demapping.")
             llr = demap_symbols_soft(
-                self.resolved_symbols,
-                self.modulation_scheme,
-                self.modulation_order,
-                noise_var,
+                symbols=self.resolved_symbols,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
+                noise_var=noise_var,
                 method=method,
                 **kwargs,
             )
@@ -1978,16 +1940,14 @@ class Preamble(BaseModel):
             preamble_seq_len=self.length,
             preamble_type=self.sequence_type,
             preamble_kwargs=self.kwargs,
-            payload_len=0,
-            pilot_count=0,
         )
 
         return Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            modulation_scheme=None,  # No single modulation for "preamble" frame
-            modulation_order=None,
+            mod_scheme=None,  # No single modulation for "preamble" frame
+            mod_order=None,
             source_symbols=None,  # Avoid redundancy per user request
             pulse_shape=pulse_shape,
             signal_info=signal_info,
@@ -2048,7 +2008,7 @@ class SingleCarrierFrame(BaseModel):
     payload_seed: int = 42
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = Field(default=4, ge=1)
-
+    payload_mod_unipolar: bool = False
     preamble: Optional[Preamble] = None
     preamble_mode: Literal["same", "time_orthogonal"] = "same"
 
@@ -2058,6 +2018,7 @@ class SingleCarrierFrame(BaseModel):
     pilot_seed: int = 1337
     pilot_mod_scheme: str = "PSK"
     pilot_mod_order: int = Field(default=4, ge=1)
+    pilot_mod_unipolar: bool = False
     pilot_gain_db: float = 0.0
 
     guard_type: Literal["zero", "cp"] = "zero"
@@ -2078,9 +2039,6 @@ class SingleCarrierFrame(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook.
-
-        Currently a placeholder as `Preamble` and other components handle their
-        own device placement and initialization.
         """
         pass
 
@@ -2164,9 +2122,10 @@ class SingleCarrierFrame(BaseModel):
         total_symbols = self.payload_len * self.num_streams
         bits = helpers.random_bits(total_symbols * k, seed=self.payload_seed)
         symbols = mapping.map_bits(
-            bits,
-            self.payload_mod_scheme,
-            self.payload_mod_order,
+            bits=bits,
+            modulation=self.payload_mod_scheme,
+            order=self.payload_mod_order,
+            unipolar=self.payload_mod_unipolar,
         )
 
         if self.num_streams > 1:
@@ -2198,9 +2157,10 @@ class SingleCarrierFrame(BaseModel):
         total_pilots = pilot_count * self.num_streams
         bits = helpers.random_bits(total_pilots * k, seed=self.pilot_seed)
         symbols = mapping.map_bits(
-            bits,
-            self.pilot_mod_scheme,
-            self.pilot_mod_order,
+            bits=bits,
+            modulation=self.pilot_mod_scheme,
+            order=self.pilot_mod_order,
+            unipolar=self.pilot_mod_unipolar,
         )
 
         if self.num_streams > 1:
@@ -2480,7 +2440,7 @@ class SingleCarrierFrame(BaseModel):
         # 1. Shape Body (Payload + Pilots)
         body_symbols = self.body_symbols
         body_samples = shape_pulse(
-            body_symbols,
+            symbols=body_symbols,
             sps=sps,
             pulse_shape=pulse_shape,
             filter_span=filter_span,
@@ -2553,10 +2513,11 @@ class SingleCarrierFrame(BaseModel):
             signal_type="single_carrier_frame",
             payload_mod_scheme=self.payload_mod_scheme,
             payload_mod_order=self.payload_mod_order,
+            payload_mod_unipolar=self.payload_mod_unipolar,
             preamble_seq_len=preamble_base_len,
             preamble_type=self.preamble.sequence_type if self.preamble else None,
             preamble_mode=self.preamble_mode if self.preamble else None,
-            preamble_kwargs=self.preamble.kwargs if self.preamble else {},
+            preamble_kwargs=self.preamble.kwargs if self.preamble else None,
             payload_len=self.payload_len,
             pilot_count=pilot_count,
             pilot_pattern=self.pilot_pattern,
@@ -2564,6 +2525,7 @@ class SingleCarrierFrame(BaseModel):
             pilot_block_len=self.pilot_block_len,
             pilot_mod_scheme=self.pilot_mod_scheme,
             pilot_mod_order=self.pilot_mod_order,
+            pilot_mod_unipolar=self.pilot_mod_unipolar,
             pilot_gain_db=self.pilot_gain_db,
             guard_len=self.guard_len,
             guard_type=self.guard_type,
@@ -2574,11 +2536,18 @@ class SingleCarrierFrame(BaseModel):
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            modulation_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
-            modulation_order=None,  # Moved to SignalInfo
+            mod_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
+            mod_order=None,  # Moved to SignalInfo
+            mod_unipolar=None,
+            mod_rz=None,
             source_bits=None,  # Avoid redundancy per user request; access via Frame
             source_symbols=None,  # Avoid redundancy; access via Frame
             pulse_shape=pulse_shape,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            smoothrect_bt=smoothrect_bt,
+            gaussian_bt=gaussian_bt,
             signal_info=signal_info,
             **kwargs,
         )

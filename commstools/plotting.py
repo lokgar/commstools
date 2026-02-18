@@ -1105,11 +1105,11 @@ def constellation(
     overlay_ideal: bool = False,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
+    unipolar: Optional[bool] = None,
     title: Optional[str] = "Constellation",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     show: bool = False,
-    unipolar: Optional[bool] = None,
     **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
     """
@@ -1131,8 +1131,12 @@ def constellation(
         Target axis.
     overlay_ideal : bool, default False
         If True, overlays theoretical points and scales them to signal power.
-    modulation, order : str, int, optional
-        Required parameters if `overlay_ideal` is enabled.
+    modulation : str, optional
+        Required parameter if `overlay_ideal` is enabled.
+    order : int, optional
+        Required parameter if `overlay_ideal` is enabled.
+    unipolar : bool, optional
+        Required parameter if `overlay_ideal` is enabled.
     title : str, optional
         Plot title.
     vmin, vmax : float, optional
@@ -1141,8 +1145,6 @@ def constellation(
         If True, calls `plt.show()`.
     **kwargs : Any
         Additional theoretical arguments passed to `ax.imshow`.
-    unipolar : bool, default False
-        If True, use unipolar constellation (ASK/PAM).
 
     Returns
     -------
