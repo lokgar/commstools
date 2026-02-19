@@ -692,6 +692,12 @@ def compute_llr(
     JIT compilation and autograd. Converting back to NumPy would discard
     that capability.
 
+    JAX arrays are returned asynchronously — the computation may not have
+    completed when the Python call returns. For accurate timing, call
+    ``result.block_until_ready()`` before stopping the timer. For
+    consuming the result (e.g. ``np.asarray(result)``), blocking happens
+    implicitly.
+
     Notes
     -----
     Max-Log approximation:
@@ -733,23 +739,23 @@ def compute_llr(
         # Explicitly cast constellation to complex64/float32 to match typical symbol precision
         const = gray_constellation(modulation, order, unipolar=unipolar)
         if jnp.iscomplexobj(jax_symbols_flat):
-            const = const.astype(np.complex64)
+            const = const.astype("complex64")
         else:
-            const = const.astype(np.float32)
+            const = const.astype("float32")
         constellation_jax = jnp.asarray(const)
 
         bits_table_t_jax = jnp.asarray(
             (
                 (
-                    np.arange(order, dtype=np.int32)[:, None]
-                    >> np.arange(k - 1, -1, -1, dtype=np.int32)
+                    np.arange(order, dtype="int32")[:, None]
+                    >> np.arange(k - 1, -1, -1, dtype="int32")
                 )
                 & 1
             )
-            .astype(np.int32)
+            .astype("int32")
             .T
         )
-        sigma_sq = jnp.asarray(max(noise_var, 1e-20), dtype=jnp.float32)
+        sigma_sq = jnp.asarray(max(noise_var, 1e-20), dtype="float32")
 
     # NumPy/CuPy path
     else:
@@ -759,7 +765,7 @@ def compute_llr(
 
         is_complex = symbols.dtype.kind == "c"
         jax_symbols_flat = to_jax(
-            symbols, dtype=np.complex64 if is_complex else np.float32
+            symbols, dtype="complex64" if is_complex else "float32"
         ).flatten()
         device = jax_symbols_flat.device
 
@@ -767,27 +773,27 @@ def compute_llr(
         # Generating on CPU is typically faster for small constants than launching GPU kernels.
         const = gray_constellation(modulation, order, unipolar=unipolar)
         if is_complex:
-            const = const.astype(np.complex64)
+            const = const.astype("complex64")
         else:
-            const = const.astype(np.float32)
+            const = const.astype("float32")
 
-        # Use device_put for efficiency
-        constellation_jax = jax.device_put(jnp.asarray(const), device)
+        # device_put accepts NumPy arrays directly — no intermediate jnp.asarray needed
+        constellation_jax = jax.device_put(const, device)
 
         bits_table_np = (
             (
                 (
-                    np.arange(order, dtype=np.int32)[:, None]
-                    >> np.arange(k - 1, -1, -1, dtype=np.int32)
+                    np.arange(order, dtype="int32")[:, None]
+                    >> np.arange(k - 1, -1, -1, dtype="int32")
                 )
                 & 1
             )
-            .astype(np.int32)
+            .astype("int32")
             .T
         )
-        bits_table_t_jax = jax.device_put(jnp.asarray(bits_table_np), device)
+        bits_table_t_jax = jax.device_put(bits_table_np, device)
         sigma_sq = jax.device_put(
-            jnp.asarray(max(noise_var, 1e-20), dtype=jnp.float32), device
+            jnp.asarray(max(noise_var, 1e-20), dtype="float32"), device
         )
 
     # Compute LLRs via JIT-compiled kernels

@@ -329,8 +329,6 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
     if jax is None:
         raise ImportError("JAX is not installed.")
 
-    # print(f"DEBUG: to_jax called. Data type: {getattr(data, 'dtype', 'unknown')}")
-
     # Check for JAX x64 mode
     try:
         from jax.config import config
@@ -349,10 +347,10 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
         # Auto-cast logic
         if hasattr(data, "dtype"):
             dt = data.dtype
-            if dt == np.complex128:
-                target_dtype = np.complex64
-            elif dt == np.float64:
-                target_dtype = np.float32
+            if dt == "complex128":
+                target_dtype = "complex64"
+            elif dt == "float64":
+                target_dtype = "float32"
 
     # Apply cast if needed (before transfer if possible/efficient)
     # For NumPy: cast on CPU before transfer/conversion
@@ -378,6 +376,9 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
         if target_device is None:
             raise ValueError(f"Requested JAX device '{device}' is not available.")
 
+    # --- Conversion paths (all funnel to `result`) ---
+    result = None
+
     # 1. Handle CuPy -> JAX (GPU)
     if is_cupy_available() and isinstance(data, cp.ndarray):
         try:
@@ -395,8 +396,9 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
             # DLPack is the fastest way for zero-copy GPU transfer
             jax_arr = jax_dlpack.from_dlpack(data)
             if target_device and jax_arr.device != target_device:
-                return jax.device_put(jax_arr, target_device)
-            return jax_arr
+                result = jax.device_put(jax_arr, target_device)
+            else:
+                result = jax_arr
         except Exception as e:
             logger.debug(
                 f"DLPack transfer from CuPy to JAX failed: {e}. Falling back to explicit conversion."
@@ -406,19 +408,34 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
     # If a target device is specified, use device_put directly.
     # This is more efficient than jnp.asarray(data) + device_put because it avoids
     # an intermediate placement on the JAX default device.
-    if target_device:
-        return jax.device_put(data, target_device)
+    if result is None and target_device:
+        result = jax.device_put(data, target_device)
 
     # 3. Preservation Logic (No target device specified)
-    if isinstance(data, np.ndarray):
+    if result is None and isinstance(data, np.ndarray):
         # Default for NumPy is CPU; ensure it stays there to preserve device origin.
         # JAX might otherwise default to placing it on GPU if available.
         cpu_dev = _get_jax_device("cpu")
         if cpu_dev:
-            return jax.device_put(data, cpu_dev)
+            result = jax.device_put(data, cpu_dev)
 
     # 4. General case (lists, scalars, or existing JAX arrays)
-    return jnp.asarray(data)
+    if result is None:
+        result = jnp.asarray(data)
+
+    # --- Post-conversion dtype guard ---
+    # Ensures the returned array matches the requested dtype, catching edge cases
+    # where DLPack, device_put, or JAX x64 mode silently preserve the original precision.
+    if target_dtype is not None and hasattr(result, "dtype"):
+        jax_target = jnp.dtype(target_dtype)
+        if result.dtype != jax_target:
+            logger.debug(
+                f"to_jax: post-conversion dtype mismatch ({result.dtype} != "
+                f"{jax_target}), casting."
+            )
+            result = result.astype(jax_target)
+
+    return result
 
 
 def from_jax(data: Any) -> ArrayType:

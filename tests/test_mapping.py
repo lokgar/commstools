@@ -435,7 +435,7 @@ def test_compute_llr_gradient():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
 
-    symbols_jax = jnp.array([0.7 + 0.7j, -0.7 - 0.7j], dtype=jnp.complex64)
+    symbols_jax = jnp.array([0.7 + 0.7j, -0.7 - 0.7j], dtype="complex64")
 
     def loss_fn(syms):
         llrs = mapping.compute_llr(syms, "qam", 4, 0.1, method="maxlog")

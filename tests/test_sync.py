@@ -476,7 +476,7 @@ def test_fft_fractional_delay_power_conservation(backend_device, xp):
     np.random.seed(42)
     N = 1000
     # Complex random signal
-    signal = (np.random.randn(N) + 1j * np.random.randn(N)).astype(np.complex64)
+    signal = (np.random.randn(N) + 1j * np.random.randn(N)).astype("complex64")
     signal_xp = xp.asarray(signal)
 
     delay = 0.3
@@ -496,7 +496,7 @@ def test_fft_fractional_delay_roundtrip(backend_device, xp):
 
     np.random.seed(42)
     N = 1000
-    signal = (np.random.randn(N) + 1j * np.random.randn(N)).astype(np.complex64)
+    signal = (np.random.randn(N) + 1j * np.random.randn(N)).astype("complex64")
     signal_xp = xp.asarray(signal)
 
     delay = 0.37
@@ -630,7 +630,9 @@ def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
 def test_estimate_timing_no_preamble_error(backend_device, xp):
     """Verify estimate_timing raises when neither info nor preamble given (line 564)."""
     sig = xp.zeros(100, dtype="complex64")
-    with pytest.raises(ValueError, match="Either 'info' or 'preamble' must be provided"):
+    with pytest.raises(
+        ValueError, match="Either 'info' or 'preamble' must be provided"
+    ):
         sync.estimate_timing(sig)
 
 

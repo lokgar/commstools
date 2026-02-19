@@ -34,6 +34,7 @@ zf_equalizer :
     Zero-Forcing / MMSE frequency-domain block equalizer.
 """
 
+import functools
 from dataclasses import dataclass
 from typing import Optional
 
@@ -85,16 +86,19 @@ class EqualizerResult:
 _JITTED_EQ = {}
 
 
-def _get_jitted_lms(num_taps, stride, n_train, const_size, num_ch, normalize):
+def _get_jitted_lms(num_taps, stride, const_size, num_ch, normalize):
     """Returns JIT-compiled LMS/NLMS butterfly scan."""
-    key = ("lms", num_taps, stride, n_train, const_size, num_ch, normalize)
+    key = ("lms", num_taps, stride, const_size, num_ch, normalize)
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
 
         @jax.jit
-        def lms_scan(x_input, training_padded, constellation, w_init, step_size):
+        def lms_scan(
+            x_input, training_padded, constellation, w_init, step_size, n_train
+        ):
             # x_input: (C, N_samples)    training_padded: (C, N_sym)
             # constellation: (M,)        w_init: (C, C, num_taps)
+            # n_train: int32 scalar — dynamic (no retrace on change)
 
             def step(W, idx):
                 sample_idx = idx * stride
@@ -136,16 +140,19 @@ def _get_jitted_lms(num_taps, stride, n_train, const_size, num_ch, normalize):
     return _JITTED_EQ[key]
 
 
-def _get_jitted_rls(num_taps, stride, n_train, const_size, num_ch):
+def _get_jitted_rls(num_taps, stride, const_size, num_ch):
     """Returns JIT-compiled RLS butterfly scan."""
-    key = ("rls", num_taps, stride, n_train, const_size, num_ch)
+    key = ("rls", num_taps, stride, const_size, num_ch)
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
 
         @jax.jit
-        def rls_scan(x_input, training_padded, constellation, w_init, P_init, lam):
+        def rls_scan(
+            x_input, training_padded, constellation, w_init, P_init, lam, n_train
+        ):
             # x_input: (C, N_samples)    training_padded: (C, N_sym)
             # w_init: (C, C, num_taps)   P_init: (C, C*num_taps, C*num_taps)
+            # n_train: int32 scalar — dynamic (no retrace on change)
 
             def step(carry, idx):
                 W, P = carry
@@ -190,14 +197,17 @@ def _get_jitted_rls(num_taps, stride, n_train, const_size, num_ch):
     return _JITTED_EQ[key]
 
 
-def _get_jitted_cma(num_taps, stride, num_ch, normalize, n_sym):
+def _get_jitted_cma(num_taps, stride, num_ch, normalize):
     """Returns JIT-compiled CMA butterfly scan."""
-    key = ("cma", num_taps, stride, num_ch, normalize, n_sym)
+    key = ("cma", num_taps, stride, num_ch, normalize)
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
 
-        @jax.jit
-        def cma_scan(x_input, w_init, step_size, r2):
+        # n_sym (arg 4) is static because lax.scan requires a compile-time
+        # iteration count.  JAX's own bounded LRU cache handles retracing
+        # when n_sym changes, preventing unbounded growth of _JITTED_EQ.
+        @functools.partial(jax.jit, static_argnums=(4,))
+        def cma_scan(x_input, w_init, step_size, r2, n_sym):
             def step(W, idx):
                 sample_idx = idx * stride
 
@@ -238,7 +248,7 @@ def _init_butterfly_weights(num_ch, num_taps, jnp):
 
     Returns ``(C, C, num_taps)`` with diagonal center taps = 1.
     """
-    W = jnp.zeros((num_ch, num_ch, num_taps), dtype=jnp.complex64)
+    W = jnp.zeros((num_ch, num_ch, num_taps), dtype="complex64")
     center = num_taps // 2
     for i in range(num_ch):
         W = W.at[i, i, center].set(1.0 + 0j)
@@ -266,12 +276,12 @@ def _prepare_training(
         constellation_np = (
             np.asarray(to_device(reference_constellation, "cpu"))
             .flatten()
-            .astype(np.complex64)
+            .astype("complex64")
         )
     elif training_symbols is not None:
         train_flat = np.asarray(to_device(training_symbols, "cpu")).flatten()
         constellation_np = np.unique(np.round(train_flat, decimals=8)).astype(
-            np.complex64
+            "complex64"
         )
     else:
         raise ValueError(
@@ -279,7 +289,7 @@ def _prepare_training(
         )
 
     if training_symbols is not None:
-        train_np = np.asarray(to_device(training_symbols, "cpu")).astype(np.complex64)
+        train_np = np.asarray(to_device(training_symbols, "cpu")).astype("complex64")
         if train_np.ndim == 1:
             train_np = (
                 np.tile(train_np[None, :], (num_ch, 1))
@@ -288,14 +298,14 @@ def _prepare_training(
             )
         n_raw = train_np.shape[1]
         n_train_aligned = max(0, min(n_raw - delay, n_sym))
-        train_full = np.zeros((num_ch, n_sym), dtype=np.complex64)
+        train_full = np.zeros((num_ch, n_sym), dtype="complex64")
         if n_train_aligned > 0:
             train_full[:, :n_train_aligned] = train_np[
                 :, delay : delay + n_train_aligned
             ]
     else:
         n_train_aligned = 0
-        train_full = np.zeros((num_ch, n_sym), dtype=np.complex64)
+        train_full = np.zeros((num_ch, n_sym), dtype="complex64")
 
     return constellation_np, train_full, n_train_aligned
 
@@ -451,9 +461,12 @@ def lms(
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
 
     scan_fn = _get_jitted_lms(
-        num_taps, stride, n_train_aligned, len(constellation_np), num_ch, normalize
+        num_taps, stride, len(constellation_np), num_ch, normalize
     )
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, train_jax, const_jax, w_init, mu_jax)
+    n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
+    y_jax, e_jax, W_jax, wh_jax = scan_fn(
+        x_jax, train_jax, const_jax, w_init, mu_jax, n_train_jax
+    )
 
     return _unpack_result(y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights)
 
@@ -548,15 +561,14 @@ def rls(
     w_init = to_jax(w_init, device=platform)
 
     regressor_dim = num_ch * num_taps
-    P_init = jnp.stack([jnp.eye(regressor_dim, dtype=jnp.complex64) / delta] * num_ch)
+    P_init = jnp.stack([jnp.eye(regressor_dim, dtype="complex64") / delta] * num_ch)
     P_init = to_jax(P_init, device=platform)
     lam_jax = to_jax(jnp.float32(forgetting_factor), device=platform)
 
-    scan_fn = _get_jitted_rls(
-        num_taps, stride, n_train_aligned, len(constellation_np), num_ch
-    )
+    scan_fn = _get_jitted_rls(num_taps, stride, len(constellation_np), num_ch)
+    n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
     y_jax, e_jax, W_jax, wh_jax = scan_fn(
-        x_jax, train_jax, const_jax, w_init, P_init, lam_jax
+        x_jax, train_jax, const_jax, w_init, P_init, lam_jax, n_train_jax
     )
 
     return _unpack_result(y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights)
@@ -663,9 +675,8 @@ def cma(
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     r2_jax = to_jax(jnp.float32(r2), device=platform)
 
-    # n_sym is static (part of cache key) — required for jnp.arange inside JIT
-    scan_fn = _get_jitted_cma(num_taps, stride, num_ch, normalize, n_sym)
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, w_init, mu_jax, r2_jax)
+    scan_fn = _get_jitted_cma(num_taps, stride, num_ch, normalize)
+    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, w_init, mu_jax, r2_jax, n_sym)
 
     return _unpack_result(y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights)
 

@@ -9,9 +9,13 @@ Functions
 ---------
 add_awgn :
     Adds Additive White Gaussian Noise based on Es/N0.
+apply_pmd :
+    Applies first-order Polarization Mode Dispersion to a dual-pol signal.
 """
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
+
+import numpy as np
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -123,3 +127,129 @@ def add_awgn(
         return sig
     else:
         return noisy_samples
+
+
+def apply_pmd(
+    signal: Union[ArrayType, "Signal"],
+    dgd: float,
+    theta: float = np.pi / 4,
+    sampling_rate: Optional[float] = None,
+) -> Union[ArrayType, "Signal"]:
+    """
+    Applies first-order Polarization Mode Dispersion (PMD) to a dual-pol signal.
+
+    Models static PMD as a frequency-dependent Jones matrix:
+
+    .. math::
+
+        H(f) = R(\\theta)^T \\cdot \\text{diag}(e^{-j\\pi f \\tau},\\;
+        e^{+j\\pi f \\tau}) \\cdot R(\\theta)
+
+    where :math:`\\tau` is the differential group delay (DGD) and
+    :math:`\\theta` is the polarization rotation angle.
+
+    The operation is fully vectorized in the frequency domain (no Python loops)
+    and backend-agnostic (NumPy / CuPy).
+
+    Parameters
+    ----------
+    signal : array_like or Signal
+        Dual-polarization signal. Shape: ``(2, N_samples)``.
+        For ``Signal`` objects, ``sampling_rate`` is extracted automatically.
+    dgd : float
+        Differential group delay in seconds. Use ``0`` to apply
+        pure rotation without DGD.
+    theta : float, default pi/4
+        Polarization rotation angle in radians.
+    sampling_rate : float, optional
+        Sampling rate in Hz. Required for raw arrays; extracted
+        automatically from ``Signal`` objects.
+
+    Returns
+    -------
+    array_like or Signal
+        PMD-distorted signal, same type/backend/shape as input.
+
+    Raises
+    ------
+    ValueError
+        If input is not 2-dimensional with first axis == 2.
+    ValueError
+        If ``sampling_rate`` is not provided for raw array input.
+
+    Examples
+    --------
+    >>> sig = Signal.qam(order=16, num_symbols=4096, sps=2,
+    ...                  symbol_rate=28e9, num_streams=2)
+    >>> distorted = apply_pmd(sig, dgd=5e-12, theta=np.pi/5)
+    """
+    from .core import Signal
+
+    logger.info(f"Applying PMD (DGD={dgd:.2e} s, theta={theta:.3f} rad).")
+
+    if isinstance(signal, Signal):
+        samples = signal.samples
+        sampling_rate = signal.sampling_rate
+    else:
+        if sampling_rate is None:
+            raise ValueError(
+                "sampling_rate must be provided for raw array input."
+            )
+        samples = signal
+
+    samples, xp, _ = dispatch(samples)
+
+    if samples.ndim != 2 or samples.shape[0] != 2:
+        raise ValueError(
+            f"apply_pmd requires dual-pol input with shape (2, N). "
+            f"Got shape {samples.shape}."
+        )
+
+    N = samples.shape[1]
+
+    # Frequency axis (Hz)
+    freqs = xp.fft.fftfreq(N, d=1.0 / sampling_rate)  # (N,)
+
+    # Rotation matrix R(theta) — real-valued, (2, 2)
+    c = float(np.cos(theta))
+    s = float(np.sin(theta))
+    R = xp.array([[c, -s], [s, c]], dtype=samples.dtype)
+
+    # DGD phase: exp(∓j·π·f·τ) per frequency bin — (N,)
+    phase = xp.asarray(np.pi) * freqs * dgd
+    D0 = xp.exp(-1j * phase)  # (N,) fast axis
+    D1 = xp.exp(1j * phase)   # (N,) slow axis
+
+    # Transform to frequency domain — (2, N)
+    S_F = xp.fft.fft(samples, axis=-1)
+
+    # Apply Jones matrix:  out = R^T @ (D * (R @ in))
+    # R = [[c, -s], [s, c]]  →  R^T = [[c, s], [-s, c]]
+
+    # Step 1: R @ S_F  (rotate into principal states)
+    rot_in = xp.empty_like(S_F)
+    rot_in[0] = R[0, 0] * S_F[0] + R[0, 1] * S_F[1]
+    rot_in[1] = R[1, 0] * S_F[0] + R[1, 1] * S_F[1]
+
+    # Step 2: Apply DGD phase
+    rot_in[0] *= D0
+    rot_in[1] *= D1
+
+    # Step 3: R^T @ result  (rotate back)
+    out_F = xp.empty_like(S_F)
+    out_F[0] = R[0, 0] * rot_in[0] + R[1, 0] * rot_in[1]
+    out_F[1] = R[0, 1] * rot_in[0] + R[1, 1] * rot_in[1]
+
+    # Back to time domain
+    result = xp.fft.ifft(out_F, axis=-1)
+
+    # Preserve input dtype (ifft may produce complex128 from complex64 input)
+    if result.dtype != samples.dtype:
+        result = result.astype(samples.dtype)
+
+    if isinstance(signal, Signal):
+        sig = signal.copy()
+        sig.samples = result
+        return sig
+    else:
+        return result
