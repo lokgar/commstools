@@ -232,6 +232,7 @@ class Signal(BaseModel):
 
     # Private: cached equalizer result for post-hoc inspection
     _equalizer_result: Any = PrivateAttr(default=None)
+    _num_train_symbols: int = PrivateAttr(default=0)
 
     # =========================================================================
     # Validators and Post-Initialization Hooks
@@ -870,7 +871,6 @@ class Signal(BaseModel):
                     c="cyan",
                     edgecolors="black",
                     s=10,
-                    linewidths=1,
                     zorder=10,
                     marker="o",
                 )
@@ -894,7 +894,6 @@ class Signal(BaseModel):
         self,
         smoothing: int = 50,
         ax=None,
-        title: Optional[str] = "Equalizer Diagnostics",
         show: bool = False,
     ) -> Optional[Tuple[Any, Any]]:
         """
@@ -908,8 +907,6 @@ class Signal(BaseModel):
             Moving-average window for the MSE convergence curve.
         ax : list of 2 Axes, optional
             Pre-existing axes ``[ax_convergence, ax_taps]``.
-        title : str, optional
-            Suptitle for the figure.
         show : bool, default False
             If True, calls ``plt.show()`` and returns None.
 
@@ -931,7 +928,6 @@ class Signal(BaseModel):
             self._equalizer_result,
             smoothing=smoothing,
             ax=ax,
-            title=title,
             show=show,
         )
 
@@ -1230,7 +1226,7 @@ class Signal(BaseModel):
     def equalize(
         self,
         method: str = "lms",
-        training_symbols: Optional[Any] = None,
+        num_train_symbols: Optional[int] = None,
         **kwargs,
     ) -> "Signal":
         """
@@ -1238,18 +1234,18 @@ class Signal(BaseModel):
 
         Signal metadata is used automatically:
 
+        - ``training_symbols`` is read from the signal (``source_symbols``).
         - ``sps`` is read from the signal (``sampling_rate / symbol_rate``).
           Adaptive equalizers require 2 SPS (T/2-spaced input).
-        - ``reference_constellation`` is built from ``mod_scheme`` /
-          ``mod_order`` for LMS and RLS (DD slicing).
-        - ``modulation`` / ``order`` are passed to CMA for R2 computation.
+        - ``modulation``, ``order``, and ``unipolar`` are passed to LMS, RLS,
+          and CMA to instantiate a reference constellation (DD slicing / R2 computation).
 
         Parameters
         ----------
         method : {"lms", "rls", "cma", "zf"}, default "lms"
             Equalization algorithm.
-        training_symbols : array_like, optional
-            Known symbols for data-aided equalization (at symbol rate, 1 SPS).
+        num_train_symbols : int, optional
+            Number of training symbols to use for data-aided equalization.
         **kwargs
             Algorithm-specific parameters forwarded to the equalizer
             function (e.g., ``num_taps``, ``step_size``, ``normalize``,
@@ -1267,9 +1263,8 @@ class Signal(BaseModel):
             If the signal is not at 2 SPS for adaptive methods.
         """
         from . import equalizers
-        from .mapping import gray_constellation
 
-        sps = int(self.sps) if self.sps else 2
+        sps = int(self.sps)
 
         if method != "zf" and sps != 2:
             raise ValueError(
@@ -1277,32 +1272,47 @@ class Signal(BaseModel):
                 f"(T/2-spaced input) — resample first."
             )
 
-        constellation = None
-        if self.mod_scheme and self.mod_order:
-            constellation = gray_constellation(self.mod_scheme, self.mod_order)
-
         if method == "lms":
-            kwargs.setdefault("reference_constellation", constellation)
-            result = equalizers.lms(self.samples, training_symbols, sps=sps, **kwargs)
-        elif method == "rls":
-            kwargs.setdefault("reference_constellation", constellation)
-            result = equalizers.rls(self.samples, training_symbols, sps=sps, **kwargs)
-        elif method == "cma":
-            kwargs.setdefault("modulation", self.mod_scheme)
-            kwargs.setdefault("order", self.mod_order)
-            result = equalizers.cma(self.samples, sps=sps, **kwargs)
-        elif method == "zf":
-            channel_estimate = kwargs.pop("channel_estimate")
-            noise_variance = kwargs.pop("noise_variance", 0.0)
-            self.samples = equalizers.zf_equalizer(
-                self.samples, channel_estimate, noise_variance
+            result = equalizers.lms(
+                self.samples,
+                training_symbols=self.source_symbols,
+                sps=sps,
+                num_train_symbols=num_train_symbols,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
+                **kwargs,
             )
+        elif method == "rls":
+            result = equalizers.rls(
+                self.samples,
+                training_symbols=self.source_symbols,
+                sps=sps,
+                num_train_symbols=num_train_symbols,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
+                **kwargs,
+            )
+        elif method == "cma":
+            result = equalizers.cma(
+                self.samples,
+                sps=sps,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
+                **kwargs,
+            )
+        elif method == "zf":
+            self.samples = equalizers.zf_equalizer(self.samples, **kwargs)
             return self
         else:
             raise ValueError(f"Unknown equalization method: {method}")
 
         self.samples = result.y_hat
         self._equalizer_result = result
+        self._num_train_symbols = getattr(result, "num_train_symbols", 0)
+        self.sampling_rate = self.symbol_rate
         return self
 
     # =========================================================================
@@ -1748,6 +1758,7 @@ class Signal(BaseModel):
     def evm(
         self,
         reference_symbols: Optional[ArrayType] = None,
+        discard_training: bool = True,
     ) -> Tuple[float, float]:
         """
         Computes the Error Vector Magnitude (EVM).
@@ -1760,6 +1771,10 @@ class Signal(BaseModel):
         reference_symbols : array_like, optional
             Known transmitted symbols. If None, defaults to `source_symbols`
             stored in the signal metadata.
+        discard_training : bool, default True
+            If True, automatically discards the initial `N` symbols used for
+            data-aided equalizer training before computing the metric to avoid
+            skewing the steady-state performance.
 
         Returns
         -------
@@ -1790,11 +1805,21 @@ class Signal(BaseModel):
                 "first to decimate the signal to symbol rate."
             )
 
-        return metrics.evm(self.resolved_symbols, ref)
+        y = self.resolved_symbols
+        r = ref
+        trim = self._num_train_symbols if discard_training else 0
+        if trim > 0:
+            logger.info(f"Discarding {trim} training symbols for EVM calculation.")
+            n = min(y.shape[-1], r.shape[-1])
+            y = y[..., trim:n]
+            r = r[..., trim:n]
+
+        return metrics.evm(y, r)
 
     def snr(
         self,
         reference_symbols: Optional[ArrayType] = None,
+        discard_training: bool = True,
     ) -> float:
         """
         Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
@@ -1807,6 +1832,10 @@ class Signal(BaseModel):
         reference_symbols : array_like, optional
             The known transmitted symbols. If None, defaults to the
             `source_symbols` stored in the signal metadata.
+        discard_training : bool, default True
+            If True, automatically discards the initial `N` symbols used for
+            data-aided equalizer training before computing the metric to avoid
+            skewing the steady-state performance.
 
         Returns
         -------
@@ -1835,11 +1864,21 @@ class Signal(BaseModel):
                 "No resolved symbols available. Please call `resolve_symbols()` "
                 "first to decimate the signal to symbol rate."
             )
-        return metrics.snr(self.resolved_symbols, ref)
+        y = self.resolved_symbols
+        r = ref
+        trim = self._num_train_symbols if discard_training else 0
+        if trim > 0:
+            logger.info(f"Discarding {trim} training symbols for SNR calculation.")
+            n = min(y.shape[-1], r.shape[-1])
+            y = y[..., trim:n]
+            r = r[..., trim:n]
+
+        return metrics.snr(y, r)
 
     def ber(
         self,
         reference_bits: Optional[ArrayType] = None,
+        discard_training: bool = True,
     ) -> Union[float, ArrayType]:
         """
         Computes the Bit Error Rate (BER).
@@ -1854,6 +1893,10 @@ class Signal(BaseModel):
         reference_bits : array_like, optional
             The original transmitted bits. If None, defaults to
             `source_bits` stored in metadata.
+        discard_training : bool, default True
+            If True, automatically discards the initial `N` symbols used for
+            data-aided equalizer training (converted to bits) before computing
+            the metric.
 
         Returns
         -------
@@ -1880,7 +1923,18 @@ class Signal(BaseModel):
                 "No resolved bits available. Please call `demap_symbols_hard()` first."
             )
 
-        return metrics.ber(self.resolved_bits, ref)
+        y = self.resolved_bits
+        r = ref
+        trim = self._num_train_symbols if discard_training else 0
+        if trim > 0 and self.mod_order is not None:
+            logger.info(f"Discarding {trim} training symbols for BER calculation.")
+            # Convert symbol trim index to bit trim index
+            bit_trim = trim * self.mod_order
+            n = min(y.shape[-1], r.shape[-1])
+            y = y[..., bit_trim:n]
+            r = r[..., bit_trim:n]
+
+        return metrics.ber(y, r)
 
 
 class Preamble(BaseModel):

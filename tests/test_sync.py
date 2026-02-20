@@ -663,7 +663,6 @@ def test_estimate_timing_with_info(backend_device, xp):
 
 def test_estimate_timing_skew_detection(backend_device, xp):
     """Verify skew warning among MIMO channels (line 645)."""
-    import logging
 
     # 2-channel signal with preambles at slightly different positions
     barker = sync.barker_sequence(7)
@@ -688,7 +687,6 @@ def test_estimate_timing_skew_detection(backend_device, xp):
 
 def test_correct_timing_per_channel(backend_device, xp):
     """Verify per-channel coarse timing correction (lines 769-772)."""
-    import numpy as np
 
     # 2-channel signal with peaks at different positions
     sig = xp.zeros((2, 50), dtype="complex64")

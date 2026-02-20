@@ -7,8 +7,6 @@ conversion using polyphase filter banks.
 
 Functions
 ---------
-polyphase_resample :
-    Performs rational rate conversion via polyphase filtering.
 decimate_to_symbol_rate :
     Optimized symbol extraction after matched filtering.
 expand :
@@ -26,101 +24,6 @@ from typing import Any, Optional
 
 from .backend import ArrayType, dispatch
 from .logger import logger
-
-
-def polyphase_resample(
-    samples: ArrayType,
-    up: int,
-    down: int,
-    axis: int = -1,
-    window: Optional[ArrayType] = None,
-) -> ArrayType:
-    """
-    TEMPORARY FIX, `resample_poly` WILL BE FIXED IN THE NEXT RELEASE OF CUPY.
-
-    Rational resampling using polyphase filtering.
-
-    This method changes the sampling rate of a signal by a rational factor
-    `up/down`. It applies an anti-aliasing/anti-imaging filter during the
-    process to prevent spectral overlap.
-
-    Parameters
-    ----------
-    samples : array_like
-        Input signal samples. Shape: (..., N_samples).
-    up : int
-        Upsampling factor (interpolation).
-    down : int
-        Downsampling factor (decimation).
-    axis : int, default -1
-        The axis along which to perform resampling.
-    window : array_like, optional
-        Custom FIR filter taps (window) to use for the polyphase filter.
-        If None, a Kaiser window is used by default. Shape: (N_taps,).
-
-    Returns
-    -------
-    array_like
-        Resampled signal. Shape: (..., N_samples * up / down).
-        Backend (NumPy/CuPy) matches the input `samples`.
-
-    Notes
-    -----
-    The CuPy implementation includes a stability workaround for
-    multidimensional arrays by iterating over channels when necessary,
-    avoiding certain CUDA-level kernel errors in `resample_poly`.
-    """
-    samples, xp, sp = dispatch(samples)
-
-    # Check if CuPy and multidimensional
-    # cupyx.scipy.signal.resample_poly crashes with CUDA_ERROR_INVALID_VALUE on some 2D/3D inputs
-    # even with correct axis alignment. We iterate over channels to avoid this.
-    is_cupy = xp.__name__ == "cupy"
-    if is_cupy and samples.ndim > 1:
-        # Move processing axis to -1 for canonical iteration
-        # Note: axis might be negative
-        samples_moved = xp.moveaxis(samples, axis, -1)
-        original_shape = samples_moved.shape
-        n_samples = original_shape[-1]
-
-        # Flatten non-processing dimensions: (C1, C2, ..., N) -> (FlatC, N)
-        samples_flat = samples_moved.reshape(-1, n_samples)
-
-        # Prepare kwargs
-        kwargs = {}
-        if window is not None:
-            kwargs["window"] = window
-
-        # Pre-allocate output: compute output length from first row
-        first_out = sp.signal.resample_poly(
-            samples_flat[0], up, down, axis=-1, padtype="constant", **kwargs
-        )
-        n_out = first_out.shape[-1]
-        n_channels = samples_flat.shape[0]
-
-        # Pre-allocate result array (avoid list.append() in DSP loops)
-        result_flat = xp.empty((n_channels, n_out), dtype=samples_flat.dtype)
-        result_flat[0] = first_out
-
-        for i in range(1, n_channels):
-            result_flat[i] = sp.signal.resample_poly(
-                samples_flat[i], up, down, axis=-1, padtype="constant", **kwargs
-            )
-
-        res = result_flat
-
-        # Reshape back to (C1, C2, ..., NewN)
-        new_shape = list(original_shape)
-        new_shape[-1] = res.shape[-1]
-        res = res.reshape(new_shape)
-
-        # Move axis back
-        res = xp.moveaxis(res, -1, axis)
-        return res
-    else:
-        if window is not None:
-            return sp.signal.resample_poly(samples, up, down, axis=axis, window=window)
-        return sp.signal.resample_poly(samples, up, down, axis=axis)
 
 
 def decimate_to_symbol_rate(
@@ -214,7 +117,7 @@ def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     """
     Increases the sampling rate by an integer factor with filtering.
 
-    This is a convenience wrapper around `polyphase_resample` that performs
+    This is a convenience wrapper around `resample_poly` that performs
     both zero-insertion (expansion) and anti-imaging filtering to suppress
     spectral replicas.
 
@@ -233,7 +136,8 @@ def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
         The upsampled signal. Shape: (..., N_samples * factor).
     """
     logger.debug(f"Upsampling by factor {factor} (polyphase, axis={axis}).")
-    return polyphase_resample(samples, factor, 1, axis=axis)
+    samples, xp, sp = dispatch(samples)
+    return sp.signal.resample_poly(samples, factor, 1, axis=axis)
 
 
 def decimate(
@@ -258,7 +162,7 @@ def decimate(
     method : {"decimate", "polyphase"}, default "decimate"
         The implementation strategy:
         - "decimate": Uses `scipy.signal.decimate` (Chebyshev I or FIR).
-        - "polyphase": Uses `polyphase_resample` for filter-and-sample.
+        - "polyphase": Uses `resample_poly` for filter-and-sample.
     axis : int, default -1
         The axis along which to perform decimation.
     **kwargs : Any
@@ -290,7 +194,7 @@ def decimate(
 
     elif method == "polyphase":
         # resample_poly with up=1
-        return polyphase_resample(samples, 1, int(factor), axis=axis)
+        return sp.signal.resample_poly(samples, 1, int(factor), axis=axis)
 
     else:
         raise ValueError(f"Unknown decimation method: {method}")
@@ -349,4 +253,5 @@ def resample(
         raise ValueError("Must specify either (up, down) or (sps_in, sps_out).")
 
     logger.debug(f"Resampling by rational factor {up}/{down} (polyphase, axis={axis}).")
-    return polyphase_resample(samples, int(up), int(down), axis=axis)
+    samples, xp, sp = dispatch(samples)
+    return sp.signal.resample_poly(samples, int(up), int(down), axis=axis)

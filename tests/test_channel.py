@@ -9,7 +9,7 @@ def test_awgn(backend_device, xp):
 
     snr_db = 10.0
 
-    noisy = impairments.add_awgn(data, snr_db, sps=1)
+    noisy = impairments.apply_awgn(data, snr_db, sps=1)
 
     assert isinstance(noisy, xp.ndarray)
     assert noisy.shape == data.shape
@@ -28,12 +28,12 @@ def test_awgn(backend_device, xp):
 
 
 def test_awgn_signal_object(backend_device, xp):
-    """Verify add_awgn with Signal objects."""
+    """Verify apply_awgn with Signal objects."""
     from commstools.core import Signal
 
     sig = Signal.pam(order=2, num_symbols=100, sps=4, symbol_rate=1e6)
 
-    noisy_sig = impairments.add_awgn(sig, esn0_db=10)
+    noisy_sig = impairments.apply_awgn(sig, esn0_db=10)
 
     assert isinstance(noisy_sig, Signal)
     assert noisy_sig.samples.shape == sig.samples.shape
@@ -41,27 +41,27 @@ def test_awgn_signal_object(backend_device, xp):
 
 
 def test_awgn_real_data(backend_device, xp):
-    """Verify add_awgn with real-valued data."""
+    """Verify apply_awgn with real-valued data."""
     data = xp.ones(1000, dtype="float32")
-    noisy = impairments.add_awgn(data, esn0_db=10, sps=1)
+    noisy = impairments.apply_awgn(data, esn0_db=10, sps=1)
 
     assert xp.isrealobj(noisy)
     assert not xp.allclose(noisy, data)
 
 
 def test_awgn_low_snr(backend_device, xp):
-    """Verify add_awgn with extremely low SNR values."""
+    """Verify apply_awgn with extremely low SNR values."""
     data = xp.ones(100, dtype=complex)
     # This should trigger the esn0_linear <= 1e-20 branch
-    noisy = impairments.add_awgn(data, esn0_db=-300, sps=1)
+    noisy = impairments.apply_awgn(data, esn0_db=-300, sps=1)
     measured_power = xp.mean(xp.abs(noisy) ** 2)
     assert float(measured_power) > 1e15
 
 
 def test_awgn_array_without_sps(backend_device, xp):
-    """Verify add_awgn raises when array input missing sps (line 72)."""
+    """Verify apply_awgn raises when array input missing sps (line 72)."""
     import pytest
 
     data = xp.ones(100, dtype=complex)
     with pytest.raises(ValueError, match="sps must be provided"):
-        impairments.add_awgn(data, esn0_db=10)
+        impairments.apply_awgn(data, esn0_db=10)

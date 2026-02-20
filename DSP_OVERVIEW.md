@@ -7,7 +7,7 @@
 - **Bit-First Architecture**: `Signal.source_bits`, `Preamble` class
 - **Backend Consistency**: `dispatch()` pattern, `xp.pi`, dtype propagation
 - **Precision Control**: `dtype` parameter in mapping/generation functions
-- **Es/N0 AWGN**: `add_awgn()` now uses standard Es/N0 with sps handling
+- **Es/N0 AWGN**: `apply_awgn()` now uses standard Es/N0 with sps handling
 - **Performance Metrics** (`metrics.py`): EVM, SNR estimation, BER, Q-factor
 - **Synchronization Utilities** (`sync.py`): Correlation, frame detection, Barker/ZC sequences
 - **Soft Demapping** (`mapping.py`): LLR calculation with max-log and exact methods

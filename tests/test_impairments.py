@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools.impairments import add_awgn, apply_pmd
+from commstools.impairments import apply_awgn, apply_pmd
 
 
 class TestApplyPMD:
@@ -50,10 +50,14 @@ class TestApplyPMD:
 
         out = apply_pmd(samples, dgd=0.0, theta=theta, sampling_rate=fs)
 
-        # After rotation: X' = cos^2(θ) + sin^2(θ) = 1 (no DGD)
-        # Actually H = R^T D R with D=I → H = R^T R = I
-        # So dgd=0 with any theta should be identity
-        assert xp.allclose(out, samples, atol=1e-5)
+        # After rotation with dgd=0, the channel should simply be R(theta).
+        # x_out = cos(theta) * x_in - sin(theta) * y_in
+        # y_out = sin(theta) * x_in + cos(theta) * y_in
+        expected = xp.zeros((2, N), dtype=xp.complex64)
+        expected[0, :] = np.cos(theta)
+        expected[1, :] = np.sin(theta)
+
+        assert xp.allclose(out, expected, atol=1e-5)
 
     def test_pure_rotation_with_dgd_zero_coupling(self, backend_device, xp):
         """With theta=0, DGD applies a phase shift but no polarization coupling."""
@@ -155,12 +159,12 @@ class TestApplyPMD:
 
 
 class TestAddAWGN:
-    """Basic tests for add_awgn."""
+    """Basic tests for apply_awgn."""
 
     def test_awgn_adds_noise(self, backend_device, xp):
         """Output should differ from input."""
         samples = xp.ones(1000, dtype=xp.complex64)
-        noisy = add_awgn(samples, esn0_db=10, sps=1)
+        noisy = apply_awgn(samples, esn0_db=10, sps=1)
 
         diff = xp.max(xp.abs(noisy - samples))
         if hasattr(diff, "get"):
@@ -171,6 +175,6 @@ class TestAddAWGN:
     def test_awgn_preserves_shape(self, backend_device, xp):
         """Output shape should match input."""
         samples = xp.ones((2, 500), dtype=xp.complex64)
-        noisy = add_awgn(samples, esn0_db=20, sps=2)
+        noisy = apply_awgn(samples, esn0_db=20, sps=2)
 
         assert noisy.shape == samples.shape
