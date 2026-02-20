@@ -213,7 +213,6 @@ def test_to_jax_list_and_scalar(xp):
 def test_to_jax_explicit_device(xp):
     """Verify to_jax with explicit device placement (line 340/352)."""
     try:
-        import jax
         import jax.numpy as jnp
     except ImportError:
         pytest.skip("JAX not installed")

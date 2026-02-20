@@ -318,8 +318,6 @@ def estimate_fractional_delay(
     return mu
 
 
-
-
 def fft_fractional_delay(
     signal: ArrayType,
     delay: Union[float, ArrayType],
@@ -406,8 +404,6 @@ def fft_fractional_delay(
     if was_1d:
         return result[0]
     return result
-
-
 
 
 def estimate_timing(

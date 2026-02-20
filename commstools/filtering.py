@@ -576,10 +576,7 @@ def shape_pulse(
     h = xp.asarray(h)
 
     # Apply Pulse Shaping via Polyphase Resampling
-    # efficient_polyphase_resample handles CuPy stability workaround for multidimensional arrays
-    from .multirate import polyphase_resample
-
-    res = polyphase_resample(symbols, int(sps), 1, window=h, axis=-1)
+    res = sp.signal.resample_poly(symbols, int(sps), 1, window=h, axis=-1)
 
     return normalize(res, "peak")
 

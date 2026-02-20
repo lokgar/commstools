@@ -110,18 +110,18 @@ def test_decimate_polyphase(backend_device, xp):
         multirate.decimate(data, factor, method="unknown")
 
 
-def test_polyphase_resample_cupy_multidim(backend_device, xp):
+def test_resample_cupy_multidim(backend_device, xp):
     """
-    Cover the manual loop workaround in polyphase_resample for CuPy
+    Cover proper execution of resample_poly for CuPy
     when input has >1 dimensions.
     """
     if backend_device != "gpu":
-        pytest.skip("Test specifically targets CuPy workaround path")
+        pytest.skip("Test specifically targets CuPy path")
 
     # 2 channels, 10 samples
     samples = xp.ones((2, 10))
     # Resample by 2/1
-    res = multirate.polyphase_resample(samples, up=2, down=1, axis=-1)
+    res = multirate.resample(samples, up=2, down=1, axis=-1)
 
     assert res.shape == (2, 20)
     assert isinstance(res, xp.ndarray)

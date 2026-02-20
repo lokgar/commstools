@@ -1061,8 +1061,8 @@ def ideal_constellation(
     ax.set_ylabel("Quadrature (Q)")
 
     # Center lines
-    ax.axhline(0, color="black", linewidth=1, zorder=0)
-    ax.axvline(0, color="black", linewidth=1, zorder=0)
+    ax.axhline(0, color="black", zorder=0)
+    ax.axvline(0, color="black", zorder=0)
 
     # Limits and Aspect
     max_range = np.max(np.abs(const))
@@ -1087,7 +1087,6 @@ def ideal_constellation(
             fill=False,
             color="gray",
             linestyle="-",
-            linewidth=0.5,
             alpha=0.5,
             zorder=-5,
         )
@@ -1297,7 +1296,6 @@ def constellation(
                     c="white",
                     s=10,
                     edgecolors="black",
-                    linewidths=1,
                     zorder=10,
                     marker="o",
                 )
@@ -1305,8 +1303,8 @@ def constellation(
                 logger.warning(f"Could not overlay ideal constellation: {e}")
 
     # Add center lines
-    ax.axhline(0, color="white", linewidth=0.5, alpha=0.5, zorder=5)
-    ax.axvline(0, color="white", linewidth=0.5, alpha=0.5, zorder=5)
+    ax.axhline(0, color="white", alpha=0.5, zorder=5)
+    ax.axvline(0, color="white", alpha=0.5, zorder=5)
 
     ax.set_xlabel("In-Phase (I)")
     ax.set_ylabel("Quadrature (Q)")
@@ -1332,7 +1330,6 @@ def equalizer_result(
     result,
     smoothing: int = 50,
     ax=None,
-    title: Optional[str] = None,
     show: bool = False,
 ) -> Optional[Tuple[Any, Any]]:
     """
@@ -1347,8 +1344,6 @@ def equalizer_result(
     ax : list of 2 Axes, optional
         Pre-existing axes ``[ax_convergence, ax_taps]``. If None, a new
         figure with 2 subplots is created.
-    title : str, optional
-        Suptitle for the figure.
     show : bool, default False
         If True, calls ``plt.show()`` and returns None.
 
@@ -1363,7 +1358,7 @@ def equalizer_result(
     is_mimo = error.ndim == 2
 
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3.5))
     else:
         axes = np.asarray(ax).flatten()[:2]
         fig = axes[0].figure
@@ -1381,7 +1376,7 @@ def equalizer_result(
             else:
                 mse_smooth = mse
             mse_db = 10 * np.log10(mse_smooth + 1e-30)
-            ax_conv.plot(mse_db, label=f"ch {ch}", linewidth=0.8)
+            ax_conv.plot(mse_db, label=f"ch {ch}")
         ax_conv.legend(fontsize=8)
     else:
         mse = np.abs(error) ** 2
@@ -1391,7 +1386,7 @@ def equalizer_result(
         else:
             mse_smooth = mse
         mse_db = 10 * np.log10(mse_smooth + 1e-30)
-        ax_conv.plot(mse_db, linewidth=0.8)
+        ax_conv.plot(mse_db)
 
     ax_conv.set_xlabel("Symbol Index")
     ax_conv.set_ylabel("MSE (dB)")
@@ -1404,33 +1399,29 @@ def equalizer_result(
         # Butterfly weights: (C, C, num_taps) — plot magnitude of each row
         num_ch = weights.shape[0]
         num_taps = weights.shape[2]
-        tap_idx = np.arange(num_taps)
+        tap_idx = np.arange(num_taps) - (num_taps // 2)
         for i in range(num_ch):
             for j in range(num_ch):
                 label = f"w[{i},{j}]"
                 ax_taps.plot(
-                    tap_idx, np.abs(weights[i, j]),
-                    marker="o", markersize=3, linewidth=0.8, label=label,
+                    tap_idx,
+                    np.abs(weights[i, j]),
+                    marker="o",
+                    markersize=3,
+                    label=label,
                 )
         ax_taps.legend(fontsize=7, ncol=2)
     else:
         # SISO: (num_taps,) — stem plot
         num_taps = weights.shape[0]
-        tap_idx = np.arange(num_taps)
-        markerline, stemlines, _ = ax_taps.stem(
-            tap_idx, np.abs(weights)
-        )
-        plt.setp(stemlines, linewidth=0.8)
+        tap_idx = np.arange(num_taps) - (num_taps // 2)
+        markerline, stemlines, _ = ax_taps.stem(tap_idx, np.abs(weights))
+        plt.setp(stemlines)
         plt.setp(markerline, markersize=4)
 
     ax_taps.set_xlabel("Tap Index")
     ax_taps.set_ylabel("|w|")
     ax_taps.set_title("Tap Weights")
-
-    if title is not None:
-        fig.suptitle(title)
-
-    fig.tight_layout()
 
     if show:
         plt.show()

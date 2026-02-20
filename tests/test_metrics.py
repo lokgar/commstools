@@ -3,7 +3,7 @@
 import pytest
 
 from commstools import metrics
-from commstools.impairments import add_awgn
+from commstools.impairments import apply_awgn
 from commstools.helpers import random_symbols
 
 
@@ -37,7 +37,7 @@ def test_snr_matches_applied(backend_device, xp):
 
     # Apply known Es/N0
     target_snr_db = 20.0
-    noisy = add_awgn(symbols, esn0_db=target_snr_db, sps=1)
+    noisy = apply_awgn(symbols, esn0_db=target_snr_db, sps=1)
 
     estimated_snr = metrics.snr(noisy, symbols)
 
@@ -266,11 +266,9 @@ def test_ber_length_mismatch(backend_device, xp):
 def test_ber_multichannel(backend_device, xp):
     """Verify multi-channel BER logging path (lines 306-311)."""
     # 2 channels, each with 10 bits
-    tx = xp.array([[0, 1, 0, 1, 1, 0, 0, 1, 0, 1],
-                    [1, 0, 1, 0, 0, 1, 1, 0, 1, 0]])
+    tx = xp.array([[0, 1, 0, 1, 1, 0, 0, 1, 0, 1], [1, 0, 1, 0, 0, 1, 1, 0, 1, 0]])
     # Channel 0: 1 error at position 0, Channel 1: 2 errors at positions 0,1
-    rx = xp.array([[1, 1, 0, 1, 1, 0, 0, 1, 0, 1],
-                    [0, 1, 1, 0, 0, 1, 1, 0, 1, 0]])
+    rx = xp.array([[1, 1, 0, 1, 1, 0, 0, 1, 0, 1], [0, 1, 1, 0, 0, 1, 1, 0, 1, 0]])
 
     ber_values = metrics.ber(rx, tx)
 
