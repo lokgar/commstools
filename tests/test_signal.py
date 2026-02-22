@@ -227,7 +227,9 @@ def test_signal_resolution_and_demap(backend_device, xp):
 
     # Test that BER raises if resolved_bits is missing
     sig.resolved_bits = None
-    with pytest.raises(ValueError, match="Please call `demap_symbols_hard\\(\\)` first"):
+    with pytest.raises(
+        ValueError, match="Please call `demap_symbols_hard\\(\\)` first"
+    ):
         sig.ber(reference_bits=ref_bits)
 
 
@@ -353,7 +355,7 @@ def test_signal_wrappers(backend_device, xp):
     # Plotting wrappers (just call them, assume plotting logic tested elsewhere)
     # We pass show=False to avoid blocking
     sig.plot_psd(show=False, nperseg=32)
-    sig.plot_symbols(num_symbols=10, show=False)
+    sig.plot_waveform(num_symbols=10, show=False)
     sig.plot_eye(show=False)
     sig.plot_constellation(show=False)
 

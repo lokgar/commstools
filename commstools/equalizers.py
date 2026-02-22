@@ -133,7 +133,7 @@ def _get_jitted_lms(num_taps, stride, const_size, num_ch, normalize):
                 else:
                     mu_eff = step_size
 
-                W_new = W + mu_eff * jnp.einsum("i,jt->ijt", e, jnp.conj(X_wins))
+                W_new = W + mu_eff * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
                 return W_new, (y, e, W_new)
 
             n_sym = training_padded.shape[1]
@@ -180,17 +180,18 @@ def _get_jitted_rls(num_taps, stride, const_size, num_ch):
 
                 x_bar = X_wins.flatten()  # (C * num_taps,)
 
-                def rls_update(args):
-                    w_row, P_i, e_i = args
-                    w_flat = w_row.flatten()
-                    Px = P_i @ x_bar  # P @ u
-                    denom = lam + jnp.dot(jnp.conj(x_bar), Px)  # λ + u^H P u
-                    k = Px / denom  # gain vector
-                    w_flat_new = w_flat + k * jnp.conj(e_i)  # w + k * e*
-                    P_new = (P_i - jnp.outer(k, jnp.conj(x_bar) @ P_i)) / lam
-                    return w_flat_new.reshape(num_ch, num_taps), P_new
+                Px = P @ x_bar
+                denom = lam + jnp.dot(jnp.conj(x_bar), Px)
+                k = Px / denom
 
-                W_new, P_new = jax.vmap(rls_update)((W, P, e))
+                def w_update(w_row, err_val):
+                    w_flat = w_row.flatten()
+                    w_flat_new = w_flat + k * jnp.conj(err_val)
+                    return w_flat_new.reshape(num_ch, num_taps)
+
+                W_new = jax.vmap(w_update)(W, e)
+                P_new = (P - jnp.outer(k, jnp.conj(x_bar) @ P)) / lam
+
                 return (W_new, P_new), (y, e, W_new)
 
             n_sym = training_padded.shape[1]
@@ -232,7 +233,7 @@ def _get_jitted_cma(num_taps, stride, num_ch, normalize):
                 else:
                     mu_eff = step_size
 
-                W_new = W - mu_eff * jnp.einsum("i,jt->ijt", e, jnp.conj(X_wins))
+                W_new = W - mu_eff * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
                 return W_new, (y, e, W_new)
 
             W_final, (y_hat, errors, w_hist) = jax.lax.scan(
@@ -322,7 +323,7 @@ def _get_jitted_block_lms(num_taps, stride, const_size, num_ch, normalize, block
 
                 # Average gradient across the block
                 grads = jax.vmap(
-                    lambda e_i, X_i: jnp.einsum("i,jt->ijt", e_i, jnp.conj(X_i))
+                    lambda e_i, X_i: jnp.einsum("i,jt->ijt", jnp.conj(e_i), X_i)
                 )(e_block, X_block)  # (B, C, C, num_taps)
                 avg_grad = jnp.mean(grads, axis=0)  # (C, C, num_taps)
 
@@ -361,7 +362,6 @@ def _get_jitted_block_cma(num_taps, stride, num_ch, normalize, block_size):
 
         @functools.partial(jax.jit, static_argnums=(4,))
         def block_cma_scan(x_input, w_init, step_size, r2, n_blocks, n_sym):
-
             def extract_window(ch, sample_idx):
                 return jax.lax.dynamic_slice(ch, (sample_idx,), (num_taps,))
 
@@ -389,7 +389,7 @@ def _get_jitted_block_cma(num_taps, stride, num_ch, normalize, block_size):
                 e_block = jnp.where(valid_mask, e_block, 0.0)
 
                 grads = jax.vmap(
-                    lambda e_i, X_i: jnp.einsum("i,jt->ijt", e_i, jnp.conj(X_i))
+                    lambda e_i, X_i: jnp.einsum("i,jt->ijt", jnp.conj(e_i), X_i)
                 )(e_block, X_block)
                 avg_grad = jnp.mean(grads, axis=0)
 
@@ -442,13 +442,9 @@ def _get_jitted_block_rls(num_taps, stride, const_size, num_ch, block_size):
             def extract_window(ch, sample_idx):
                 return jax.lax.dynamic_slice(ch, (sample_idx,), (num_taps,))
 
-            def forward_one(W, sym_idx):
+            def row_extract(sym_idx):
                 sample_idx = sym_idx * stride
-                X_wins = jax.vmap(extract_window, in_axes=(0, None))(
-                    x_input, sample_idx
-                )
-                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
-                return y, X_wins
+                return jax.vmap(extract_window, in_axes=(0, None))(x_input, sample_idx)
 
             def slicer(ch_y):
                 return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
@@ -458,45 +454,51 @@ def _get_jitted_block_rls(num_taps, stride, const_size, num_ch, block_size):
                 base = block_idx * B
                 sym_indices = base + jnp.arange(B)
 
-                # Phase 1: parallel forward pass with frozen weights
-                y_block, X_block = jax.vmap(lambda idx: forward_one(W, idx))(
-                    sym_indices
-                )  # (B, C), (B, C, num_taps)
+                # Phase 1: parallel window extraction
+                X_block = jax.vmap(row_extract)(sym_indices)  # (B, C, num_taps)
 
-                # Desired symbols
+                # Desired symbols from training (parallel slice)
                 d_train = jax.lax.dynamic_slice(
                     training_padded, (0, base), (num_ch, B)
                 ).T
-                dd = jax.vmap(lambda y_i: jax.vmap(slicer)(y_i))(y_block)
-                mask = (sym_indices < n_train)[:, None]
-                d_block = jnp.where(mask, d_train, dd)
-                e_block = d_block - y_block  # (B, C)
 
-                # Mask out ghost errors from out-of-bounds padding
-                valid_mask = (sym_indices < n_sym)[:, None]
-                e_block = jnp.where(valid_mask, e_block, 0.0)
+                is_valid = (sym_indices < n_sym)[:, None]  # (B, 1)
+                is_train = (sym_indices < n_train)[:, None]  # (B, 1)
 
                 # Phase 2: sequential RLS weight update over B symbols
                 def rls_inner_step(carry_inner, b_idx):
                     W_i, P_i = carry_inner
                     X_i = X_block[b_idx]  # (C, num_taps)
-                    e_i = e_block[b_idx]  # (C,)
+
+                    # Compute y
+                    y_i = jnp.einsum("ijt,jt->i", jnp.conj(W_i), X_i)
+
+                    # Slicer
+                    dd_i = jax.vmap(slicer)(y_i)
+                    d_i = jnp.where(is_train[b_idx], d_train[b_idx], dd_i)
+                    e_i = d_i - y_i
+
+                    # Mask out ghost errors from out-of-bounds padding
+                    e_i = jnp.where(is_valid[b_idx], e_i, 0.0)
+
                     x_bar = X_i.flatten()  # (C * num_taps,)
+                    Px = P_i @ x_bar
+                    denom = lam + jnp.dot(jnp.conj(x_bar), Px)
+                    k = Px / denom
 
-                    def rls_update(args):
-                        w_row, P_ch, e_ch = args
+                    def w_update(w_row, err_val):
                         w_flat = w_row.flatten()
-                        Px = P_ch @ x_bar
-                        denom = lam + jnp.dot(jnp.conj(x_bar), Px)
-                        k = Px / denom
-                        w_flat_new = w_flat + k * jnp.conj(e_ch)
-                        P_new = (P_ch - jnp.outer(k, jnp.conj(x_bar) @ P_ch)) / lam
-                        return w_flat_new.reshape(num_ch, num_taps), P_new
+                        w_flat_new = w_flat + k * jnp.conj(err_val)
+                        return w_flat_new.reshape(num_ch, num_taps)
 
-                    W_new, P_new = jax.vmap(rls_update)((W_i, P_i, e_i))
-                    return (W_new, P_new), None
+                    W_new = jax.vmap(w_update)(W_i, e_i)
+                    P_new = (P_i - jnp.outer(k, jnp.conj(x_bar) @ P_i)) / lam
 
-                (W_new, P_new), _ = jax.lax.scan(rls_inner_step, (W, P), jnp.arange(B))
+                    return (W_new, P_new), (y_i, e_i, W_new)
+
+                (W_new, P_new), (y_block, e_block, w_hist) = jax.lax.scan(
+                    rls_inner_step, (W, P), jnp.arange(B)
+                )
 
                 return (W_new, P_new), (y_block, e_block, W_new)
 
@@ -514,22 +516,6 @@ def _get_jitted_block_rls(num_taps, stride, const_size, num_ch, block_size):
 # ============================================================================
 # SHARED HELPERS
 # ============================================================================
-
-
-def _get_center_tap(num_taps, sps):
-    """Center tap index aligned with symbol-bearing sample positions.
-
-    For ``sps=2`` (T/2-spaced), ensures the center tap falls on an
-    even-indexed sample position within the filter window, which
-    corresponds to a symbol instant in the input signal. This prevents
-    initialization on inter-symbol samples that may have low energy
-    (e.g. near zero crossings after matched filtering or with
-    zero-stuffed signals).
-    """
-    center = num_taps // 2
-    if sps == 2 and center % 2 != 0:
-        center -= 1
-    return center
 
 
 def _normalize_inputs(samples, training_symbols, sps, xp):
@@ -580,7 +566,7 @@ def _init_butterfly_weights(num_ch, num_taps, jnp, sps=2):
     via :func:`_get_center_tap`.
     """
     W = jnp.zeros((num_ch, num_ch, num_taps), dtype="complex64")
-    center = _get_center_tap(num_taps, sps)
+    center = num_taps // 2
     W = W.at[jnp.arange(num_ch), jnp.arange(num_ch), center].set(1.0 + 0j)
     return W
 
@@ -607,7 +593,7 @@ def _prepare_training(
         On the same backend as ``training_symbols`` (or NumPy if None).
     n_train_aligned : int
     """
-    center = _get_center_tap(num_taps, sps)
+    center = num_taps // 2
     delay = center // sps
 
     if training_symbols is not None:
@@ -807,11 +793,15 @@ def lms(
     else:
         num_ch, n_samples = samples.shape
 
-    n_sym = (n_samples - num_taps + 1) // stride
-    if n_sym <= 0:
-        raise ValueError(
-            f"Not enough samples ({n_samples}) for {num_taps} taps with sps={sps}."
-        )
+    n_sym = n_samples // stride
+
+    # Pad samples with zeros to flush the filter pipeline properly
+    pad_len = num_taps - 1
+    samples_padded = (
+        xp.pad(samples, ((0, 0), (0, pad_len)))
+        if not was_1d
+        else xp.pad(samples, (0, pad_len))
+    )
 
     # For block mode, pad n_sym to a multiple of block_size
     if block_size > 1:
@@ -849,7 +839,7 @@ def lms(
     )
 
     # Convert to JAX — preserves device or overrides if `device` is given
-    x_jax = to_jax(samples, device=device)
+    x_jax = to_jax(samples_padded, device=device)
     if was_1d:
         x_jax = x_jax[None, :]
 
@@ -1006,11 +996,15 @@ def rls(
     else:
         num_ch, n_samples = samples.shape
 
-    n_sym = (n_samples - num_taps + 1) // stride
-    if n_sym <= 0:
-        raise ValueError(
-            f"Not enough samples ({n_samples}) for {num_taps} taps with sps={sps}."
-        )
+    n_sym = n_samples // stride
+
+    # Pad samples with zeros to flush the filter pipeline properly
+    pad_len = num_taps - 1
+    samples_padded = (
+        xp.pad(samples, ((0, 0), (0, pad_len)))
+        if not was_1d
+        else xp.pad(samples, (0, pad_len))
+    )
 
     # For block mode, pad n_sym to a multiple of block_size
     if block_size > 1:
@@ -1047,7 +1041,7 @@ def rls(
         num_train_symbols=num_train_symbols,
     )
 
-    x_jax = to_jax(samples, device=device)
+    x_jax = to_jax(samples_padded, device=device)
     if was_1d:
         x_jax = x_jax[None, :]
 
@@ -1070,7 +1064,7 @@ def rls(
     w_init = to_jax(w_init, device=platform)
 
     regressor_dim = num_ch * num_taps
-    P_init = jnp.stack([jnp.eye(regressor_dim, dtype="complex64") / delta] * num_ch)
+    P_init = jnp.eye(regressor_dim, dtype="complex64") / delta
     P_init = to_jax(P_init, device=platform)
     lam_jax = to_jax(jnp.float32(forgetting_factor), device=platform)
     n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
@@ -1208,13 +1202,17 @@ def cma(
     else:
         r2 = 1.0
 
-    n_sym = (n_samples - num_taps + 1) // stride
-    if n_sym <= 0:
-        raise ValueError(
-            f"Not enough samples ({n_samples}) for {num_taps} taps with sps={sps}."
-        )
+    n_sym = n_samples // stride
 
-    x_jax = to_jax(samples, device=device)
+    # Pad samples with zeros to flush the filter pipeline properly
+    pad_len = num_taps - 1
+    samples_padded = (
+        xp.pad(samples, ((0, 0), (0, pad_len)))
+        if not was_1d
+        else xp.pad(samples, (0, pad_len))
+    )
+
+    x_jax = to_jax(samples_padded, device=device)
     if was_1d:
         x_jax = x_jax[None, :]
 
@@ -1305,39 +1303,63 @@ def zf_equalizer(
     samples, xp, _ = dispatch(samples)
     channel_estimate = xp.asarray(channel_estimate)
 
-    was_1d = samples.ndim == 1
-    reg = noise_variance if noise_variance > 0 else 1e-12
+    import math
 
+    was_1d = samples.ndim == 1
     if was_1d:
-        N = samples.shape[0]
-        H = xp.fft.fft(channel_estimate, n=N)
-        W = xp.conj(H) / (xp.abs(H) ** 2 + reg)
-        return xp.fft.ifft(xp.fft.fft(samples) * W)
+        samples = samples[None, :]
+        channel_estimate = (
+            channel_estimate[None, None, :]
+            if channel_estimate.ndim == 1
+            else channel_estimate
+        )
 
     num_ch, N = samples.shape
+    L = channel_estimate.shape[-1] if channel_estimate.ndim > 0 else 1
+    reg = noise_variance if noise_variance > 0 else 1e-12
+
+    N_fft = max(1024, 2 ** math.ceil(math.log2(max(1, 4 * L))))
+    while N_fft <= L:
+        N_fft *= 2
+    B = N_fft - L + 1
+
+    pad_left = L - 1
+    num_blocks = math.ceil(N / B)
+    pad_right = num_blocks * B - N
+    samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+
+    # Vectorize window extraction using as_strided to avoid memory copies
+    stride = samples_padded.strides
+    windows = xp.lib.stride_tricks.as_strided(
+        samples_padded,
+        shape=(num_ch, num_blocks, N_fft),
+        strides=(stride[0], B * stride[1], stride[1]),
+    )
+
+    Y = xp.fft.fft(windows, n=N_fft, axis=-1)
 
     if channel_estimate.ndim == 1:
-        # SISO channel applied per-channel independently
-        H = xp.fft.fft(channel_estimate, n=N)
+        H = xp.fft.fft(channel_estimate, n=N_fft)
         W = xp.conj(H) / (xp.abs(H) ** 2 + reg)
-        Y = xp.fft.fft(samples, n=N, axis=-1)
-        return xp.fft.ifft(Y * W[None, :], axis=-1)
+        X_hat_f = Y * W
+    else:
+        H_f = xp.fft.fft(channel_estimate, n=N_fft, axis=-1)
+        Hk = xp.transpose(H_f, (2, 0, 1))
+        Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))
+        HHh = Hk @ Hk_H
 
-    # Full MIMO: (C, C, L)
-    H_f = xp.fft.fft(channel_estimate, n=N, axis=-1)  # (C, C, N)
-    Y = xp.fft.fft(samples, n=N, axis=-1)  # (C, N)
+        eye = xp.eye(num_ch, dtype=samples.dtype)[None, :, :]
+        inv_term = xp.linalg.inv(HHh + reg * eye)
+        Wk = Hk_H @ inv_term
 
-    # Vectorized loop-free MIMO inversion across frequencies
-    Hk = xp.transpose(H_f, (2, 0, 1))  # (N, C, C)
-    Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))  # (N, C, C)
-    HHh = Hk @ Hk_H
+        # Wk: (N_fft, num_ch, num_ch), Y: (num_ch, num_blocks, N_fft)
+        # Vectorized batch matrix multiplication across frequency bins and blocks
+        X_hat_f = xp.einsum("k c j, j b k -> c b k", Wk, Y)
 
-    eye = xp.eye(num_ch, dtype=samples.dtype)[None, :, :]
-    inv_term = xp.linalg.inv(HHh + reg * eye)
-    Wk = Hk_H @ inv_term  # (N, C, C)
+    # IFFT back to time domain
+    x_hat = xp.fft.ifft(X_hat_f, n=N_fft, axis=-1)
 
-    Y_t = xp.transpose(Y)[:, :, None]  # (N, C, 1)
-    X_hat_t = Wk @ Y_t  # (N, C, 1)
-    X_hat = xp.transpose(X_hat_t[..., 0])  # (C, N)
-
-    return xp.fft.ifft(X_hat, axis=-1)
+    # Discard circular wrap-around and extract valid linear convolution portions
+    valid = x_hat[:, :, L - 1 : L - 1 + B]
+    out = valid.reshape(num_ch, -1)[:, :N]
+    return out[0] if was_1d else out

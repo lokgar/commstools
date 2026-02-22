@@ -680,7 +680,7 @@ class Signal(BaseModel):
             **kwargs,
         )
 
-    def plot_symbols(
+    def plot_waveform(
         self,
         start_symbol: int = 0,
         num_symbols: int = None,
@@ -690,7 +690,9 @@ class Signal(BaseModel):
         **kwargs: Any,
     ) -> Optional[Tuple[Any, Any]]:
         """
-        Plots the time-domain waveform of the signal symbols.
+        Plots the time-domain waveform of the signal samples,
+        starting from the specified symbol and for the specified number of symbols,
+        so sps * num_symbols samples are plotted.
 
         Parameters
         ----------
