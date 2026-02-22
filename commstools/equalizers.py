@@ -225,7 +225,7 @@ def _get_jitted_cma(num_taps, stride, num_ch, normalize):
                 y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
 
                 # CMA error: e_i = y_i * (|y_i|^2 - R2)
-                e = y * (jnp.abs(y) ** 2 - r2)
+                e = y * (y * jnp.conj(y) - r2)
 
                 if normalize:
                     power = jnp.real(jnp.sum(X_wins * jnp.conj(X_wins))) + 1e-10
@@ -382,7 +382,7 @@ def _get_jitted_block_cma(num_taps, stride, num_ch, normalize, block_size):
                 )  # (B, C), (B, C, num_taps)
 
                 # CMA error: e = y * (|y|^2 - R2)
-                e_block = y_block * (jnp.abs(y_block) ** 2 - r2)  # (B, C)
+                e_block = y_block * (y_block * jnp.conj(y_block) - r2)  # (B, C)
 
                 # Mask out ghost errors from out-of-bounds padding
                 valid_mask = (sym_indices < n_sym)[:, None]
@@ -558,15 +558,14 @@ def _pad_to_block(n_sym, block_size):
     return n_blocks, n_blocks * block_size
 
 
-def _init_butterfly_weights(num_ch, num_taps, jnp, sps=2):
+def _init_butterfly_weights(num_ch, num_taps, jnp, sps=2, center_tap=None):
     """Center-tap identity initialization for butterfly weight matrix.
 
     Returns ``(C, C, num_taps)`` with diagonal center taps = 1.
-    The center tap is aligned with a symbol-bearing sample position
-    via :func:`_get_center_tap`.
+    The center tap is aligned around `center_tap` (defaults to `num_taps // 2`).
     """
     W = jnp.zeros((num_ch, num_ch, num_taps), dtype="complex64")
-    center = num_taps // 2
+    center = center_tap if center_tap is not None else num_taps // 2
     W = W.at[jnp.arange(num_ch), jnp.arange(num_ch), center].set(1.0 + 0j)
     return W
 
@@ -575,14 +574,9 @@ def _prepare_training(
     training_symbols,
     num_ch,
     n_sym,
-    num_taps,
-    sps=2,
     num_train_symbols=None,
 ):
     """Build center-tap-aligned training array.
-
-    Training symbols are delayed to match the equalizer's center-tap delay.
-    Delay in symbols = ``center_tap // sps``.
 
     Arrays are kept on their original device (NumPy or CuPy) to avoid
     unnecessary CPU round-trips.
@@ -593,9 +587,6 @@ def _prepare_training(
         On the same backend as ``training_symbols`` (or NumPy if None).
     n_train_aligned : int
     """
-    center = num_taps // 2
-    delay = center // sps
-
     if training_symbols is not None:
         # Keep training data on its original device
         train_arr, xp, _ = dispatch(training_symbols)
@@ -607,15 +598,13 @@ def _prepare_training(
                 else train_arr[None, :]
             )
         n_raw = train_arr.shape[1]
-        n_train_aligned = max(0, min(n_raw - delay, n_sym))
+        n_train_aligned = max(0, min(n_raw, n_sym))
         if num_train_symbols is not None:
             n_train_aligned = min(n_train_aligned, num_train_symbols)
 
         train_full = xp.zeros((num_ch, n_sym), dtype="complex64")
         if n_train_aligned > 0:
-            train_full[:, :n_train_aligned] = train_arr[
-                :, delay : delay + n_train_aligned
-            ]
+            train_full[:, :n_train_aligned] = train_arr[:, :n_train_aligned]
     else:
         n_train_aligned = 0
         train_full = np.zeros((num_ch, n_sym), dtype="complex64")
@@ -703,6 +692,7 @@ def lms(
     block_size: int = 1,
     num_train_symbols: Optional[int] = None,
     device: Optional[str] = None,
+    center_tap: Optional[int] = None,
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
@@ -762,6 +752,8 @@ def lms(
         equalizer will forcefully switch to blind Decision-Directed (DD)
         mode after this many symbols, even if more training symbols
         are available in the array.
+    center_tap : int, optional
+        Index of the center tap. If None, defaults to ``num_taps // 2``.
 
     Returns
     -------
@@ -795,12 +787,14 @@ def lms(
 
     n_sym = n_samples // stride
 
-    # Pad samples with zeros to flush the filter pipeline properly
-    pad_len = num_taps - 1
+    # Pad samples symmetrically to align output with zero-indexed transmitted symbols
+    c_tap = center_tap if center_tap is not None else num_taps // 2
+    pad_left = c_tap
+    pad_right = num_taps - 1 - pad_left
     samples_padded = (
-        xp.pad(samples, ((0, 0), (0, pad_len)))
+        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
         if not was_1d
-        else xp.pad(samples, (0, pad_len))
+        else xp.pad(samples, (pad_left, pad_right))
     )
 
     # For block mode, pad n_sym to a multiple of block_size
@@ -833,8 +827,6 @@ def lms(
         training_symbols,
         num_ch,
         n_sym_padded,
-        num_taps,
-        sps=sps,
         num_train_symbols=num_train_symbols,
     )
 
@@ -859,7 +851,9 @@ def lms(
 
     train_jax = to_jax(train_full, device=platform)
     const_jax = to_jax(constellation_np, device=platform)
-    w_init = _init_butterfly_weights(num_ch, num_taps, jnp, sps=sps)
+    w_init = _init_butterfly_weights(
+        num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+    )
     w_init = to_jax(w_init, device=platform)
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
@@ -919,6 +913,7 @@ def rls(
     block_size: int = 1,
     num_train_symbols: Optional[int] = None,
     device: Optional[str] = None,
+    center_tap: Optional[int] = None,
 ) -> EqualizerResult:
     """
     Recursive Least Squares adaptive equalizer with butterfly MIMO support.
@@ -965,6 +960,8 @@ def rls(
         equalizer will forcefully switch to blind Decision-Directed (DD)
         mode after this many symbols, even if more training symbols
         are available in the array.
+    center_tap : int, optional
+        Index of the center tap. If None, defaults to ``num_taps // 2``.
 
     Returns
     -------
@@ -998,12 +995,14 @@ def rls(
 
     n_sym = n_samples // stride
 
-    # Pad samples with zeros to flush the filter pipeline properly
-    pad_len = num_taps - 1
+    # Pad samples symmetrically to align output with zero-indexed transmitted symbols
+    c_tap = center_tap if center_tap is not None else num_taps // 2
+    pad_left = c_tap
+    pad_right = num_taps - 1 - pad_left
     samples_padded = (
-        xp.pad(samples, ((0, 0), (0, pad_len)))
+        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
         if not was_1d
-        else xp.pad(samples, (0, pad_len))
+        else xp.pad(samples, (pad_left, pad_right))
     )
 
     # For block mode, pad n_sym to a multiple of block_size
@@ -1036,8 +1035,6 @@ def rls(
         training_symbols,
         num_ch,
         n_sym_padded,
-        num_taps,
-        sps=sps,
         num_train_symbols=num_train_symbols,
     )
 
@@ -1060,7 +1057,9 @@ def rls(
 
     train_jax = to_jax(train_full, device=platform)
     const_jax = to_jax(constellation_np, device=platform)
-    w_init = _init_butterfly_weights(num_ch, num_taps, jnp, sps=sps)
+    w_init = _init_butterfly_weights(
+        num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+    )
     w_init = to_jax(w_init, device=platform)
 
     regressor_dim = num_ch * num_taps
@@ -1116,6 +1115,7 @@ def cma(
     store_weights: bool = False,
     block_size: int = 1,
     device: Optional[str] = None,
+    center_tap: Optional[int] = None,
 ) -> EqualizerResult:
     """
     Constant Modulus Algorithm blind equalizer with butterfly MIMO support.
@@ -1163,6 +1163,8 @@ def cma(
         Target device for equalizer execution (e.g. ``"cpu"`` or ``"gpu"``).
         If provided, the inputs are moved to this device for processing
         and then securely returned to their original device format.
+    center_tap : int, optional
+        Index of the center tap. If None, defaults to ``num_taps // 2``.
 
     Returns
     -------
@@ -1204,12 +1206,14 @@ def cma(
 
     n_sym = n_samples // stride
 
-    # Pad samples with zeros to flush the filter pipeline properly
-    pad_len = num_taps - 1
+    # Pad samples symmetrically to align output with zero-indexed transmitted symbols
+    c_tap = center_tap if center_tap is not None else num_taps // 2
+    pad_left = c_tap
+    pad_right = num_taps - 1 - pad_left
     samples_padded = (
-        xp.pad(samples, ((0, 0), (0, pad_len)))
+        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
         if not was_1d
-        else xp.pad(samples, (0, pad_len))
+        else xp.pad(samples, (pad_left, pad_right))
     )
 
     x_jax = to_jax(samples_padded, device=device)
@@ -1229,7 +1233,9 @@ def cma(
     except Exception:
         platform = "cpu"
 
-    w_init = _init_butterfly_weights(num_ch, num_taps, jnp, sps=sps)
+    w_init = _init_butterfly_weights(
+        num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+    )
     w_init = to_jax(w_init, device=platform)
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     r2_jax = to_jax(jnp.float32(r2), device=platform)
