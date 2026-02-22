@@ -313,14 +313,14 @@ def lowpass_taps(
     Returns
     -------
     ndarray
-        Filter taps normalized to unit energy.
+        Filter taps with 0 dB passband gain.
         Shape: (num_taps,).
     """
     logger.debug(f"Designing Lowpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=True
     )
-    return normalize(h, "unit_energy")
+    return h
 
 
 def highpass_taps(
@@ -347,7 +347,7 @@ def highpass_taps(
     Returns
     -------
     ndarray
-        Filter taps normalized to unit energy.
+        Filter taps with 0 dB passband gain.
         Shape: (num_taps,).
     """
     logger.debug(f"Designing Highpass FIR: cutoff={cutoff} Hz, taps={num_taps}")
@@ -355,7 +355,7 @@ def highpass_taps(
     h = scipy.signal.firwin(
         num_taps, cutoff, window=window, fs=sampling_rate, pass_zero=False
     )
-    return normalize(h, "unit_energy")
+    return h
 
 
 def bandpass_taps(
@@ -384,7 +384,7 @@ def bandpass_taps(
     Returns
     -------
     ndarray
-        Filter taps normalized to unit energy.
+        Filter taps with 0 dB passband gain.
         Shape: (num_taps,).
     """
     logger.debug(
@@ -398,7 +398,7 @@ def bandpass_taps(
         fs=sampling_rate,
         pass_zero=False,
     )
-    return normalize(h, "unit_energy")
+    return h
 
 
 def bandstop_taps(
@@ -427,7 +427,7 @@ def bandstop_taps(
     Returns
     -------
     ndarray
-        Filter taps normalized to unit energy.
+        Filter taps with 0 dB passband gain.
         Shape: (num_taps,).
     """
     logger.debug(
@@ -441,7 +441,7 @@ def bandstop_taps(
         fs=sampling_rate,
         pass_zero=True,
     )
-    return normalize(h, "unit_energy")
+    return h
 
 
 # ============================================================================

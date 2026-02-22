@@ -76,7 +76,6 @@ def test_highpass_taps(backend_device, xp):
     """Verify highpass FIR filter design."""
     taps = filtering.highpass_taps(num_taps=31, cutoff=0.2, sampling_rate=1.0)
     assert len(taps) == 31
-    assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
 
 
 def test_bandpass_taps(backend_device, xp):
@@ -85,7 +84,6 @@ def test_bandpass_taps(backend_device, xp):
         num_taps=31, low_cutoff=0.1, high_cutoff=0.3, sampling_rate=1.0
     )
     assert len(taps) == 31
-    assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
 
 
 def test_bandstop_taps(backend_device, xp):
@@ -94,14 +92,12 @@ def test_bandstop_taps(backend_device, xp):
         num_taps=31, low_cutoff=0.1, high_cutoff=0.3, sampling_rate=1.0
     )
     assert len(taps) == 31
-    assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
 
 
 def test_lowpass_taps(backend_device, xp):
     """Verify lowpass FIR filter design."""
     taps = filtering.lowpass_taps(num_taps=31, cutoff=0.2, sampling_rate=1.0)
     assert len(taps) == 31
-    assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
 
 
 def test_rrc_taps_rolloff_zero(backend_device, xp):
