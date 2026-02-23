@@ -233,6 +233,10 @@ class Signal(BaseModel):
     # Private: cached equalizer result for post-hoc inspection
     _equalizer_result: Any = PrivateAttr(default=None)
     _num_train_symbols: int = PrivateAttr(default=0)
+    # Symbols removed from the output tail (RLS: last num_taps//2 windows overlap
+    # zero-padding, producing spurious errors — those symbols are stripped from y_hat).
+    # Metric methods must trim the same count from the reference tail before comparing.
+    _num_tail_trim: int = PrivateAttr(default=0)
 
     # =========================================================================
     # Validators and Post-Initialization Hooks
@@ -615,7 +619,7 @@ class Signal(BaseModel):
         Returns
         -------
         int or None
-            Calculated as $\log_2(\text{modulation\_order})$.
+            Calculated as ``log2(modulation_order)``.
         """
         if self.mod_order:
             return int(np.log2(self.mod_order))
@@ -1228,41 +1232,201 @@ class Signal(BaseModel):
     def equalize(
         self,
         method: str = "lms",
+        # ── common to all adaptive equalizers ─────────────────────────────
+        num_taps: int = 21,
+        step_size: float = 0.01,
+        store_weights: bool = False,
+        block_size: int = 1,
+        center_tap: Optional[int] = None,
+        device: Optional[str] = "cpu",
+        # ── training control ───────────────────────────────────────────────
+        training_symbols: Optional[ArrayType] = None,
         num_train_symbols: Optional[int] = None,
-        **kwargs,
+        # ── RLS-specific ───────────────────────────────────────────────────
+        forgetting_factor: float = 0.99,
+        delta: float = 0.01,
+        leakage: float = 0.0,
+        # ── ZF/MMSE-specific ───────────────────────────────────────────────
+        channel_estimate: Optional[ArrayType] = None,
+        noise_variance: float = 0.0,
     ) -> "Signal":
         """
-        Applies adaptive or block equalization to the signal samples.
+        Apply adaptive or block equalization to the signal samples in-place.
 
-        Signal metadata is used automatically:
+        Signal metadata (``sps``, ``mod_scheme``, ``mod_order``, ``mod_unipolar``,
+        ``source_symbols``) is read automatically — you only need to supply the
+        algorithm-specific tuning parameters. After this call:
 
-        - ``training_symbols`` is read from the signal (``source_symbols``).
-        - ``sps`` is read from the signal (``sampling_rate / symbol_rate``).
-          Adaptive equalizers require 2 SPS (T/2-spaced input).
-        - ``modulation``, ``order``, and ``unipolar`` are passed to LMS, RLS,
-          and CMA to instantiate a reference constellation (DD slicing / R2 computation).
+        - ``signal.samples`` contains the equalized complex symbols at symbol
+          rate (1 SPS for adaptive methods).
+        - ``signal._equalizer_result`` holds the full
+          :class:`~commstools.equalizers.EqualizerResult` (adaptive methods only).
+
+        Algorithm overview
+        ------------------
+
+        +-----------+-------------------------+------------------+-------------------+
+        | method    | Training required       | Phase ambiguity  | Convergence       |
+        +===========+=========================+==================+===================+
+        | ``"lms"`` | data-aided → DD         | resolved         | moderate (NLMS)   |
+        +-----------+-------------------------+------------------+-------------------+
+        | ``"rls"`` | data-aided → DD         | resolved         | fast (optimal LS) |
+        +-----------+-------------------------+------------------+-------------------+
+        | ``"cma"`` | blind (no training)     | phase-ambiguous  | slow              |
+        +-----------+-------------------------+------------------+-------------------+
+        | ``"zf"``  | channel estimate needed | resolved         | instant (block)   |
+        +-----------+-------------------------+------------------+-------------------+
+
+        For ``"lms"`` and ``"rls"``, training symbols are taken from
+        ``signal.source_symbols`` by default. Pass ``training_symbols`` to
+        override with an external sequence (e.g. a received preamble from
+        a separate detector). After exhausting the training sequence, the
+        equalizer transitions to decision-directed (DD) mode using the
+        modulation constellation stored in the signal's metadata.
+
+        CMA ignores ``training_symbols`` entirely — it is a fully blind
+        algorithm. It recovers the channel up to a **phase ambiguity**, so a
+        carrier-phase recovery step (Viterbi-Viterbi, pilot-aided, etc.) is
+        typically needed afterwards.
 
         Parameters
         ----------
         method : {"lms", "rls", "cma", "zf"}, default "lms"
-            Equalization algorithm.
+            Equalization algorithm. See the table above for a summary.
+        num_taps : int, default 21
+            Number of FIR taps in the equalizer filter (per polyphase arm for
+            fractionally-spaced equalizers). Use at least ``4 * sps`` taps.
+            More taps allow deeper ISI compensation but slow convergence.
+            *Applies to: lms, rls, cma.*
+        step_size : float, default 0.01
+            NLMS step size (mu) for LMS, or fixed gradient step for CMA.
+
+            - **LMS**: normalized step in ``(0, 2)``; see
+              :func:`~commstools.equalizers.lms` for the stability derivation.
+              Larger values converge faster but increase steady-state
+              misadjustment. Typical: 0.01–0.1.
+            - **CMA**: fixed step on the non-convex Godard surface; must be
+              kept small (1e-5 to 1e-3) for stability. Unlike LMS, there is
+              no input-power normalization.
+
+            *Applies to: lms, cma.*
+        store_weights : bool, default False
+            If ``True``, the full tap-weight trajectory is stored in
+            ``signal._equalizer_result.weights_history``, enabling
+            convergence analysis and debugging. Incurs extra memory cost
+            proportional to ``num_symbols × num_taps``.
+            *Applies to: lms, rls, cma.*
+        block_size : int, default 1
+            Number of symbols processed per weight update.
+            ``block_size=1`` is the classical sample-by-sample update.
+            Larger values (8–64) reduce ``lax.scan`` loop iterations,
+            improving GPU throughput at the cost of slower adaptation. For
+            CMA, keep ``block_size ≤ 32`` due to the non-convex cost surface.
+            *Applies to: lms, rls, cma.*
+        center_tap : int, optional
+            Index of the center (decision-delay) tap. Defaults to
+            ``num_taps // 2``. Adjust when channel delay is asymmetric
+            (e.g., heavy pre-cursor ISI). *Applies to: lms, rls, cma.*
+        device : {"cpu", "gpu"}, optional
+            Force JAX computation to run on the specified device regardless
+            of where the input samples reside. Default is "cpu".
+            *Applies to: lms, rls, cma.*
+        training_symbols : array_like, optional
+            External training sequence to use instead of
+            ``signal.source_symbols``. Shape ``(N_train,)`` for SISO or
+            ``(C, N_train)`` for MIMO. Useful when the signal contains only
+            a received payload and training symbols come from a preamble
+            detector or a known pilot frame.
+            *Applies to: lms, rls. Ignored by cma and zf.*
         num_train_symbols : int, optional
-            Number of training symbols to use for data-aided equalization.
-        **kwargs
-            Algorithm-specific parameters forwarded to the equalizer
-            function (e.g., ``num_taps``, ``step_size``, ``normalize``,
-            ``forgetting_factor``, ``store_weights``).
+            Caps the number of data-aided symbols. After this many symbols,
+            the equalizer switches to blind decision-directed mode even if
+            more training symbols are available. When ``None``, the entire
+            training array (or ``source_symbols``) is used.
+            *Applies to: lms, rls.*
+        forgetting_factor : float, default 0.99
+            RLS exponential forgetting factor (λ). Range ``(0, 1]``.
+            Values near 1.0 give long-term memory (suitable for slowly
+            time-varying channels); values near 0.9 track fast variations
+            at the cost of higher estimation noise. *Applies to: rls.*
+        delta : float, default 0.01
+            RLS initialisation regularisation. The inverse correlation matrix
+            is initialised as ``P = (1/delta) × I``. Larger values impose a
+            stronger prior toward zero weights and slow initial convergence;
+            smaller values allow faster start-up at the risk of early
+            numerical instability on ill-conditioned channels.
+            *Applies to: rls.*
+        leakage : float, default 0.0
+            Diagonal loading coefficient for Leaky RLS. At every step,
+            ``leakage × I`` is added to the P matrix after the rank-1
+            downdate, flooring its minimum eigenvalue and preventing
+            null-subspace modes (noise-only bands in T/2-spaced signals)
+            from being amplified into the equalizer weights. Use ``0.0``
+            for standard RLS; for fractionally-spaced data start with
+            ``1e-4`` and tune upwards until EVM stops degrading.
+            *Applies to: rls.*
+        channel_estimate : array_like
+            Known channel impulse response used to construct the frequency-
+            domain equalizer. Shape ``(L,)`` for SISO or ``(C, C, L)`` for
+            MIMO (``H[rx, tx, delay]``). **Required** when ``method="zf"``;
+            ignored by all adaptive methods. *Applies to: zf.*
+        noise_variance : float, default 0.0
+            Noise power σ² for MMSE regularisation in the ZF equalizer.
+            ``0.0`` gives a pure Zero-Forcing inversion (may amplify noise
+            severely at spectral notches); any positive value yields an MMSE
+            solution that trades residual ISI for reduced noise enhancement.
+            Rule of thumb: set to the estimated noise variance of the
+            received signal (e.g. ``10 ** (-SNR_dB / 10)``).
+            *Applies to: zf.*
 
         Returns
         -------
         Signal
-            self (modified in-place). Equalizer result is accessible via
-            ``signal._equalizer_result``.
+            ``self``, enabling method chaining. Key side-effects:
+
+            - ``signal.samples`` — equalized symbols (1 SPS after adaptive
+              methods; unchanged rate for ZF).
+            - ``signal._equalizer_result`` — full
+              :class:`~commstools.equalizers.EqualizerResult` including
+              ``y_hat``, ``weights``, ``error``, and optionally
+              ``weights_history``. *Not set for ZF.*
+            - ``signal._num_train_symbols`` — actual number of training
+              symbols consumed (useful for discarding transients before
+              computing EVM/BER). *Not set for ZF.*
 
         Raises
         ------
         ValueError
-            If the signal is not at 2 SPS for adaptive methods.
+            If ``method`` is ``"lms"``, ``"rls"``, or ``"cma"`` and the
+            signal is not at 2 SPS. Resample to 2 SPS first.
+        ValueError
+            If ``method="zf"`` and ``channel_estimate`` is ``None``.
+        ValueError
+            If ``method`` is not one of the four supported algorithms.
+
+        Examples
+        --------
+        Data-aided LMS with decision-directed tail, then BER:
+
+        >>> sig = Signal.qam(symbol_rate=28e9, num_symbols=10_000, order=16,
+        ...                  pulse_shape="rrc", sps=2)
+        >>> sig.equalize(method="lms", num_taps=31, step_size=0.05,
+        ...              num_train_symbols=500)
+        >>> ber = sig.ber(discard_training=True)
+
+        Blind CMA for QPSK polarization demux, followed by Viterbi-Viterbi
+        carrier recovery (not shown):
+
+        >>> rx_mimo = ...  # (2, N) received samples at 2 SPS
+        >>> sig = Signal(samples=rx_mimo, sampling_rate=2*Rb, symbol_rate=Rb,
+        ...              mod_scheme="psk", mod_order=4)
+        >>> sig.equalize(method="cma", num_taps=21, step_size=5e-4)
+
+        ZF channel inversion with MMSE regularisation:
+
+        >>> h = estimate_channel(rx, pilot_syms)  # (L,) impulse response
+        >>> sig.equalize(method="zf", channel_estimate=h,
+        ...              noise_variance=1e-2)
         """
         from . import equalizers
 
@@ -1274,46 +1438,83 @@ class Signal(BaseModel):
                 f"(T/2-spaced input) — resample first."
             )
 
+        train = (
+            training_symbols if training_symbols is not None else self.source_symbols
+        )
+
         if method == "lms":
             result = equalizers.lms(
                 self.samples,
-                training_symbols=self.source_symbols,
+                training_symbols=train,
                 sps=sps,
+                num_taps=num_taps,
+                step_size=step_size,
+                store_weights=store_weights,
+                block_size=block_size,
+                center_tap=center_tap,
+                device=device,
                 num_train_symbols=num_train_symbols,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
-                **kwargs,
             )
         elif method == "rls":
             result = equalizers.rls(
                 self.samples,
-                training_symbols=self.source_symbols,
+                training_symbols=train,
                 sps=sps,
+                num_taps=num_taps,
+                forgetting_factor=forgetting_factor,
+                delta=delta,
+                leakage=leakage,
+                store_weights=store_weights,
+                block_size=block_size,
+                center_tap=center_tap,
+                device=device,
                 num_train_symbols=num_train_symbols,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
-                **kwargs,
             )
         elif method == "cma":
             result = equalizers.cma(
                 self.samples,
                 sps=sps,
+                num_taps=num_taps,
+                step_size=step_size,
+                store_weights=store_weights,
+                block_size=block_size,
+                center_tap=center_tap,
+                device=device,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
-                **kwargs,
             )
         elif method == "zf":
-            self.samples = equalizers.zf_equalizer(self.samples, **kwargs)
+            if channel_estimate is None:
+                raise ValueError(
+                    "method='zf' requires channel_estimate to be provided."
+                )
+            self.samples = equalizers.zf_equalizer(
+                self.samples,
+                channel_estimate=channel_estimate,
+                noise_variance=noise_variance,
+            )
             return self
         else:
-            raise ValueError(f"Unknown equalization method: {method}")
+            raise ValueError(
+                f"Unknown equalization method '{method}'. "
+                f"Choose from: 'lms', 'rls', 'cma', 'zf'."
+            )
 
         self.samples = result.y_hat
         self._equalizer_result = result
         self._num_train_symbols = getattr(result, "num_train_symbols", 0)
+        # RLS truncates the last num_taps//2 symbols from y_hat to remove the
+        # terminal artifact zone (windows that overlap right zero-padding). The
+        # reference arrays (source_symbols, source_bits) still have the original
+        # length; trim their tails by the same amount before metric comparisons.
+        self._num_tail_trim = num_taps // 2 if method == "rls" else 0
         self.sampling_rate = self.symbol_rate
         return self
 
@@ -1809,6 +2010,9 @@ class Signal(BaseModel):
 
         y = self.resolved_symbols
         r = ref
+        # Trim reference tail to match RLS output (last num_taps//2 symbols removed).
+        if self._num_tail_trim > 0:
+            r = r[..., : r.shape[-1] - self._num_tail_trim]
         trim = self._num_train_symbols if discard_training else 0
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for EVM calculation.")
@@ -1868,6 +2072,9 @@ class Signal(BaseModel):
             )
         y = self.resolved_symbols
         r = ref
+        # Trim reference tail to match RLS output (last num_taps//2 symbols removed).
+        if self._num_tail_trim > 0:
+            r = r[..., : r.shape[-1] - self._num_tail_trim]
         trim = self._num_train_symbols if discard_training else 0
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for SNR calculation.")
@@ -1927,6 +2134,12 @@ class Signal(BaseModel):
 
         y = self.resolved_bits
         r = ref
+        # Trim reference tail to match RLS output. RLS removes num_taps//2 symbols
+        # from y_hat; in the bit domain that is num_taps//2 * log2(M) bits.
+        if self._num_tail_trim > 0 and self.mod_order is not None:
+            bit_tail_trim = self._num_tail_trim * self.mod_order
+            if r.shape[-1] > bit_tail_trim:
+                r = r[..., : r.shape[-1] - bit_tail_trim]
         trim = self._num_train_symbols if discard_training else 0
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")

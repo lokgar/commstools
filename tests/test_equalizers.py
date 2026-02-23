@@ -363,6 +363,192 @@ class TestRLS:
 
 
 # ============================================================================
+# API REGRESSION TESTS
+# ============================================================================
+
+
+class TestAPIRegression:
+    """Verify that removed parameters no longer exist on the public API."""
+
+    def test_lms_has_no_normalize_param(self, backend_device, xp):
+        """lms() must not accept a 'normalize' keyword — always NLMS."""
+        from commstools import Signal
+
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
+        )
+        rx = xp.asarray(sig.samples)
+        tx = xp.asarray(sig.source_symbols)
+        with pytest.raises(TypeError, match="normalize"):
+            equalizers.lms(
+                rx,
+                training_symbols=tx,
+                num_taps=5,
+                modulation="psk",
+                order=4,
+                normalize=True,
+            )
+
+    def test_cma_has_no_normalize_param(self, backend_device, xp):
+        """cma() must not accept a 'normalize' keyword."""
+        from commstools import Signal
+
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
+        )
+        rx = xp.asarray(sig.samples)
+        with pytest.raises(TypeError, match="normalize"):
+            equalizers.cma(rx, num_taps=5, normalize=True)
+
+
+# ============================================================================
+# BLOCK MODE TESTS
+# ============================================================================
+
+
+class TestBlockMode:
+    """Smoke tests verifying block_size > 1 produces correct shapes and converges."""
+
+    def test_lms_block_output_shape(self, backend_device, xp):
+        """LMS block mode (block_size=8) output shape must match sample-by-sample."""
+        from commstools import Signal
+
+        n = 400
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=n, order=4, pulse_shape="rrc", sps=2, seed=1
+        )
+        tx = xp.asarray(sig.source_symbols)
+        rx = xp.asarray(sig.samples)
+
+        r_sample = equalizers.lms(
+            rx, training_symbols=tx, num_taps=11, modulation="psk", order=4
+        )
+        r_block = equalizers.lms(
+            rx,
+            training_symbols=tx,
+            num_taps=11,
+            modulation="psk",
+            order=4,
+            block_size=8,
+        )
+
+        assert r_block.y_hat.shape == r_sample.y_hat.shape
+        assert r_block.error.shape == r_sample.error.shape
+        assert r_block.weights.shape == r_sample.weights.shape
+
+    def test_cma_block_output_shape(self, backend_device, xp):
+        """CMA block mode (block_size=16) output shape must match sample-by-sample."""
+        from commstools import Signal
+
+        n = 400
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=n, order=4, pulse_shape="rrc", sps=2, seed=2
+        )
+        rx = xp.asarray(sig.samples)
+
+        r_sample = equalizers.cma(rx, num_taps=11)
+        r_block = equalizers.cma(rx, num_taps=11, block_size=16)
+
+        assert r_block.y_hat.shape == r_sample.y_hat.shape
+        assert r_block.error.shape == r_sample.error.shape
+        assert r_block.weights.shape == r_sample.weights.shape
+
+    def test_lms_block_convergence(self, backend_device, xp):
+        """LMS block mode should converge on a mild ISI channel."""
+        from commstools import Signal
+
+        n_symbols = 1000
+        channel = xp.array([0.2, 1.0, 0.2], dtype=xp.complex64)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=5,
+        )
+        tx = xp.asarray(sig.source_symbols)
+        rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
+
+        result = equalizers.lms(
+            rx,
+            training_symbols=tx,
+            num_taps=15,
+            step_size=0.05,
+            modulation="psk",
+            order=4,
+            block_size=16,
+        )
+
+        mse_tail = xp.mean(xp.abs(result.error[-200:]) ** 2)
+        if hasattr(mse_tail, "get"):
+            mse_tail = mse_tail.get()
+        assert mse_tail < 0.15, f"LMS block mode did not converge: MSE={mse_tail:.4f}"
+
+    def test_num_train_symbols_limits_training(self, backend_device, xp):
+        """num_train_symbols should cap the data-aided phase at the requested count.
+
+        Passing 5000 symbols with num_train_symbols=100 must give identical
+        results to passing only the first 100 symbols — confirming that the
+        trailing symbols are never seen by normalization or the kernel.
+        """
+        from commstools import Signal
+
+        n = 500
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=n, order=4, pulse_shape="rrc", sps=2, seed=9
+        )
+        tx = xp.asarray(sig.source_symbols)
+        rx = xp.asarray(sig.samples)
+
+        limit = 100
+
+        # Full training array with num_train_symbols=limit
+        result_capped = equalizers.lms(
+            rx,
+            training_symbols=tx,
+            num_taps=11,
+            modulation="psk",
+            order=4,
+            num_train_symbols=limit,
+        )
+
+        # Only the first `limit` symbols — should be identical
+        result_sliced = equalizers.lms(
+            rx,
+            training_symbols=tx[:limit],
+            num_taps=11,
+            modulation="psk",
+            order=4,
+        )
+
+        assert result_capped.num_train_symbols == limit
+        assert result_sliced.num_train_symbols == limit
+
+        import numpy as np
+
+        np.testing.assert_allclose(
+            np.abs(
+                np.asarray(
+                    result_capped.y_hat.get()
+                    if hasattr(result_capped.y_hat, "get")
+                    else result_capped.y_hat
+                )
+            ),
+            np.abs(
+                np.asarray(
+                    result_sliced.y_hat.get()
+                    if hasattr(result_sliced.y_hat, "get")
+                    else result_sliced.y_hat
+                )
+            ),
+            atol=1e-5,
+            err_msg="num_train_symbols=100 with 500-symbol array should match "
+            "passing only 100 symbols directly",
+        )
+
+
+# ============================================================================
 # CMA TESTS
 # ============================================================================
 
@@ -537,6 +723,39 @@ class TestZFEqualizer:
 
         out = equalizers.zf_equalizer(rx, h)
         assert out.shape == (2, n)
+
+    def test_mmse_multi_block_two_sided_channel(self, backend_device, xp):
+        """MMSE must correctly handle IIR two-sided response across multiple blocks.
+
+        Channel h=[0.2, 1.0, 0.2] is symmetric with minimum frequency response 0.6
+        (no spectral null). Its MMSE inverse is IIR and two-sided. The 50% overlap-save
+        architecture discards N_fft/4 samples from each end of every IFFT block,
+        rejecting both the causal and anti-causal circular transients. This test
+        uses N >> N_fft/2 (N_fft=1024, B=512) to exercise multiple block boundaries.
+        """
+        N = 2048  # 4 blocks: ceil(2048/512)=4
+        channel = xp.array([0.2, 1.0, 0.2], dtype=xp.complex64)
+        # h=[0.2,1,0.2]: H(e^jω) = e^{-jω}(1 + 0.4cos(ω)) >= 0.6 — no null
+
+        rng = xp.random.RandomState(7)
+        tx = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+
+        rx_full = xp.convolve(tx, channel, mode="full")
+        rx = rx_full[:N]
+
+        noise = 0.05 * (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+        rx_noisy = rx + noise
+
+        out = equalizers.zf_equalizer(rx_noisy, channel, noise_variance=0.0025)
+
+        # Skip edges affected by convolution truncation (mode="full"[:N])
+        interior = slice(10, N - 10)
+        mse = xp.mean(xp.abs(out[interior] - tx[interior]) ** 2)
+        if hasattr(mse, "get"):
+            mse = mse.get()
+
+        # At σ²=0.0025, worst-case MMSE MSE ≈ σ²/min(|H|²) ≈ 0.0025/0.36 ≈ 0.007
+        assert mse < 0.05, f"MMSE multi-block IIR test failed: interior MSE={mse:.4f}"
 
 
 # ============================================================================
