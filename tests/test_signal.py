@@ -1,6 +1,9 @@
 """Tests for the base Signal class and its core signal processing methods."""
 
+import numpy as np
 import pytest
+import matplotlib.pyplot as plt
+from unittest.mock import patch
 
 from commstools.core import Signal
 
@@ -348,8 +351,6 @@ def test_signal_wrappers(backend_device, xp):
     assert len(f) > 0
 
     # Clean up any existing figures from previous tests
-    import matplotlib.pyplot as plt
-
     plt.close("all")
 
     # Plotting wrappers (just call them, assume plotting logic tested elsewhere)
@@ -506,3 +507,265 @@ def test_signal_rz_modscheme_flags(backend_device, xp):
     assert s.source_symbols is not None
     assert len(s.source_symbols) == 2
     assert s.mod_rz is True
+
+
+# ============================================================================
+# SIGNAL.EQUALIZE METHODS — COVERAGE GAPS
+# ============================================================================
+
+
+def _make_psk_signal_2sps(xp, n_symbols=400, seed=0):
+    """Helper: make a 2-SPS PSK signal and return (sig, rx_sig)."""
+    orig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=seed,
+    )
+    rx = Signal(
+        samples=xp.asarray(orig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="psk",
+        mod_order=4,
+        source_symbols=orig.source_symbols,
+        source_bits=orig.source_bits,
+    )
+    return orig, rx
+
+
+def test_equalize_rls_method(backend_device, xp):
+    """Signal.equalize(method='rls') should run and set _num_tail_trim."""
+    _, rx = _make_psk_signal_2sps(xp, n_symbols=600)
+    rx.equalize(method="rls", num_taps=7, backend="numba")
+    assert rx.samples is not None
+    # RLS sets num_taps//2 tail trim
+    assert rx._num_tail_trim == 7 // 2
+
+
+def test_equalize_cma_method(backend_device, xp):
+    """Signal.equalize(method='cma') should work without training symbols."""
+    _, rx = _make_psk_signal_2sps(xp, n_symbols=400)
+    rx.equalize(method="cma", num_taps=7, backend="numba")
+    assert rx.samples is not None
+
+
+def test_equalize_rde_method(backend_device, xp):
+    """Signal.equalize(method='rde') should run on a QAM signal."""
+    orig = Signal.qam(
+        symbol_rate=1e6, num_symbols=400, order=16, pulse_shape="rrc", sps=2, seed=0
+    )
+    rx = Signal(
+        samples=xp.asarray(orig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="qam",
+        mod_order=16,
+    )
+    rx.equalize(method="rde", num_taps=7, backend="numba")
+    assert rx.samples is not None
+
+
+def test_equalize_zf_missing_channel_estimate(backend_device, xp):
+    """Signal.equalize(method='zf') without channel_estimate should raise ValueError."""
+    _, rx = _make_psk_signal_2sps(xp)
+    with pytest.raises(ValueError, match="channel_estimate"):
+        rx.equalize(method="zf")
+
+
+def test_equalize_unknown_method(backend_device, xp):
+    """Signal.equalize with an unknown method should raise ValueError."""
+    _, rx = _make_psk_signal_2sps(xp)
+    with pytest.raises(ValueError, match="Unknown equalization method"):
+        rx.equalize(method="superequal")
+
+
+def test_evm_with_rls_tail_trim_and_training_discard(backend_device, xp):
+    """EVM computation after RLS covers _num_tail_trim and _num_train_symbols trimming paths."""
+    n_symbols = 600
+    orig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=7,
+    )
+
+    rx = Signal(
+        samples=xp.asarray(orig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="psk",
+        mod_order=4,
+        source_symbols=orig.source_symbols,
+        source_bits=orig.source_bits,
+    )
+    rx.equalize(
+        method="rls",
+        num_taps=7,
+        backend="numba",
+        training_symbols=orig.source_symbols[:100],
+    )
+    rx.resolve_symbols()
+
+    # EVM with discard_training=True triggers the trim path (lines 2031-2034)
+    evm_pct, evm_db = rx.evm(discard_training=True)
+    assert np.isfinite(float(evm_db))
+    assert float(evm_pct) > 0
+
+    # EVM with discard_training=False still has _num_tail_trim (lines 2028)
+    evm_pct2, evm_db2 = rx.evm(discard_training=False)
+    assert np.isfinite(float(evm_db2))
+    assert float(evm_pct2) > 0
+
+
+def test_snr_with_rls_tail_trim_and_training_discard(backend_device, xp):
+    """SNR computation after RLS covers _num_tail_trim and _num_train_symbols trimming paths."""
+    n_symbols = 600
+    orig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=8,
+    )
+    rx = Signal(
+        samples=xp.asarray(orig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="psk",
+        mod_order=4,
+        source_symbols=orig.source_symbols,
+        source_bits=orig.source_bits,
+    )
+    rx.equalize(
+        method="rls",
+        num_taps=7,
+        backend="numba",
+        training_symbols=orig.source_symbols[:100],
+    )
+    rx.resolve_symbols()
+
+    snr_val = rx.snr(discard_training=True)
+    assert np.isfinite(snr_val)
+
+    snr_notrim = rx.snr(discard_training=False)
+    assert np.isfinite(snr_notrim)
+
+
+def test_ber_with_rls_tail_trim_and_training_discard(backend_device, xp):
+    """BER computation after RLS covers _num_tail_trim and _num_train_symbols trimming in bits."""
+    n_symbols = 600
+    orig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=11,
+    )
+    rx = Signal(
+        samples=xp.asarray(orig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="psk",
+        mod_order=4,
+        source_symbols=orig.source_symbols,
+        source_bits=orig.source_bits,
+    )
+    rx.equalize(
+        method="rls",
+        num_taps=7,
+        backend="numba",
+        training_symbols=orig.source_symbols[:100],
+    )
+    rx.resolve_symbols()
+    rx.demap_symbols_hard()
+
+    # discard_training=True: trims both tail symbols and training symbols
+    ber_val = rx.ber(discard_training=True)
+    assert np.isfinite(float(ber_val))
+    assert 0.0 <= float(ber_val) <= 1.0
+
+    # discard_training=False: only trims tail symbols (tests the bit_tail_trim path)
+    ber_notrim = rx.ber(discard_training=False)
+    assert np.isfinite(float(ber_notrim))
+    assert 0.0 <= float(ber_notrim) <= 1.0
+
+
+def test_plot_constellation_resolved_data(backend_device, xp):
+    """Signal.plot_constellation(data='resolved') should use resolved_symbols."""
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
+    )
+    rx = Signal(
+        samples=xp.asarray(sig.samples),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+        mod_scheme="psk",
+        mod_order=4,
+    )
+    rx.equalize(
+        method="lms", num_taps=7, backend="numba", training_symbols=sig.source_symbols
+    )
+    rx.resolve_symbols()
+
+    result = rx.plot_constellation(data="resolved", show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_plot_constellation_resolved_no_resolved_symbols(backend_device, xp):
+    """Signal.plot_constellation(data='resolved') raises ValueError if no resolved_symbols."""
+    sig = Signal(
+        samples=xp.ones(100, dtype="complex64"),
+        sampling_rate=2e6,
+        symbol_rate=1e6,
+    )
+    with pytest.raises(ValueError, match="No resolved_symbols"):
+        sig.plot_constellation(data="resolved", show=False)
+
+
+def test_plot_constellation_overlay_source_mimo(backend_device, xp):
+    """Signal.plot_constellation with MIMO signal and overlay_source=True."""
+    sig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=200,
+        order=4,
+        pulse_shape="rrc",
+        sps=1,
+        num_streams=2,
+        seed=0,
+    )
+    result = sig.plot_constellation(overlay_source=True, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_plot_constellation_show(backend_device, xp):
+    """Signal.plot_constellation(show=True) should call plt.show() and return None."""
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=1, seed=0
+    )
+    with patch("matplotlib.pyplot.show"):
+        result = sig.plot_constellation(show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_plot_constellation_overlay_source_siso(backend_device, xp):
+    """SISO signal with overlay_source=True uses the single-axes scatter path (core.py line 890)."""
+    # SISO signal with source_symbols set (at sps=1 so samples == symbols shape)
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=1, seed=0
+    )
+    assert sig.num_streams == 1
+    assert sig.source_symbols is not None
+
+    result = sig.plot_constellation(overlay_source=True, show=False)
+    assert result is not None
+    plt.close("all")

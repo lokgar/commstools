@@ -478,6 +478,106 @@ def _get_numba_cma():
     return _NUMBA_KERNELS["cma"]
 
 
+def _get_numba_rde():
+    """JIT-compile and cache the Numba RDE butterfly loop kernel.
+
+    RDE (Radius Directed Equalizer) is a CMA variant that selects a
+    per-symbol target radius from the set of unique constellation radii
+    rather than using a single fixed Godard radius.  This makes it
+    converge correctly on multi-ring constellations (16-QAM, 64-QAM).
+
+    Returns
+    -------
+    rde_loop : numba-compiled callable
+        See kernel source for argument shapes and semantics.
+    """
+    if "rde" not in _NUMBA_KERNELS:
+        numba_mod = _get_numba()
+        if numba_mod is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        def rde_loop(
+            x_padded,
+            W,
+            step_size,
+            radii,
+            stride,
+            store_weights,
+            y_out,
+            e_out,
+            w_hist_out,
+        ):
+            # x_padded    : (C, N_pad)            complex64
+            # W           : (C, C, num_taps)       complex64 — modified in-place
+            # step_size   : float32               — fixed gradient step μ
+            # radii       : (K,)                  float32   — unique |c| radii, sorted ascending
+            # stride      : int                   — sps
+            # store_weights : bool
+            # y_out       : (N_sym, C)             complex64
+            # e_out       : (N_sym, C)             complex64
+            # w_hist_out  : (N_sym or 1, C, C, T)  complex64
+            C = W.shape[0]
+            num_taps = W.shape[2]
+            n_sym = y_out.shape[0]
+            K = radii.shape[0]
+
+            X_wins = np.empty((C, num_taps), dtype=np.complex64)
+            y = np.empty(C, dtype=np.complex64)
+            e = np.empty(C, dtype=np.complex64)
+
+            for idx in range(n_sym):
+                sample_idx = idx * stride
+
+                # Window extraction
+                for c in range(C):
+                    for t in range(num_taps):
+                        X_wins[c, t] = x_padded[c, sample_idx + t]
+
+                # Butterfly forward pass
+                for i in range(C):
+                    acc = np.complex64(0.0)
+                    for j in range(C):
+                        for t in range(num_taps):
+                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
+                    y[i] = acc
+                    y_out[idx, i] = acc
+
+                # RDE error: e[i] = y[i] * (|y[i]|² − R_d²)
+                # R_d is the magnitude of the nearest constellation ring.
+                # Linear scan over K unique radii is cheap (K ≤ 8 for typical QAM).
+                for i in range(C):
+                    mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
+                    abs_y = mod2 ** np.float32(0.5)
+
+                    best_rd = radii[0]
+                    best_dist = abs(abs_y - radii[0])
+                    for k in range(1, K):
+                        dist_k = abs(abs_y - radii[k])
+                        if dist_k < best_dist:
+                            best_dist = dist_k
+                            best_rd = radii[k]
+
+                    e[i] = y[i] * np.float32(mod2 - best_rd * best_rd)
+                    e_out[idx, i] = e[i]
+
+                # Weight update: W -= mu * conj(e[i]) * X_wins[j,t]
+                for i in range(C):
+                    ce_i = np.conj(e[i])
+                    for j in range(C):
+                        for t in range(num_taps):
+                            W[i, j, t] = W[i, j, t] - step_size * ce_i * X_wins[j, t]
+
+                if store_weights:
+                    for i in range(C):
+                        for j in range(C):
+                            for t in range(num_taps):
+                                w_hist_out[idx, i, j, t] = W[i, j, t]
+
+        _NUMBA_KERNELS["rde"] = rde_loop
+    return _NUMBA_KERNELS["rde"]
+
+
 # ============================================================================
 # JAX KERNELS — ADAPTIVE EQUALIZER SCANS
 # ============================================================================
@@ -784,6 +884,82 @@ def _get_jax_cma(num_taps, stride, num_ch):
             return y_hat, errors, W_final, w_hist
 
         _JITTED_EQ[key] = cma_scan
+    return _JITTED_EQ[key]
+
+
+def _get_jax_rde(num_taps, stride, num_radii, num_ch):
+    """JIT-compile and cache the sample-by-sample RDE butterfly scan.
+
+    RDE (Radius Directed Equalizer) extends CMA by replacing the single
+    Godard radius with per-symbol radius selection from a precomputed set
+    of unique constellation magnitudes.  This provides correct blind
+    convergence on multi-ring constellations such as 16-QAM and 64-QAM.
+
+    Static closure variables (baked into the compiled kernel):
+
+    num_taps   : FIR filter length per polyphase arm.
+    stride     : decimation factor (sps, typically 2 for T/2-spaced input).
+    num_radii  : number of unique radii K — fixes the argmin shape at trace
+                 time so XLA can compile without dynamic dispatch.
+    num_ch     : MIMO butterfly width C.
+
+    Returns
+    -------
+    rde_scan : JIT-compiled callable
+        See the inner function for the call signature.
+    """
+    key = ("rde", num_taps, stride, num_radii, num_ch)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+
+        @functools.partial(jax.jit, static_argnums=(4,))
+        def rde_scan(x_input, w_init, step_size, radii, n_sym):
+            # Argument shapes and semantics
+            # ------------------------------
+            # x_input   : (C, N_pad)       complex64 — padded received samples
+            # w_init    : (C, C, num_taps) complex64 — initial butterfly weights
+            # step_size : scalar float32   — fixed gradient step μ
+            # radii     : (K,)             float32   — unique constellation radii, sorted
+            # n_sym     : int (static)     — total symbol count; fixes scan iteration count
+            #
+            # lax.scan carry  : W  (C, C, num_taps)
+            # lax.scan xs     : jnp.arange(n_sym)
+            # lax.scan output : y_hat   (n_sym, C)
+            #                   errors  (n_sym, C)   RDE errors y*(|y|²−R_d²)
+            #                   w_hist  (n_sym, C, C, num_taps)
+            #
+            # Per-step RDE gradient:
+            #   y     = einsum('ijt,jt->i', conj(W), X_wins)    (C,)
+            #   abs_y = sqrt(real(y*conj(y)))                   (C,)
+            #   R_d   = radii[argmin(|radii−abs_y|)]            (C,)  nearest ring
+            #   e     = y * (real(y*conj(y)) − R_d²)            (C,)
+            #   W    -= μ * einsum('i,jt->ijt', conj(e), X_wins)
+            def step(W, idx):
+                sample_idx = idx * stride
+
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )
+                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
+
+                abs_y2 = jnp.real(y * jnp.conj(y))  # (C,) strict real |y|²
+                abs_y = jnp.sqrt(abs_y2)             # (C,) |y|
+
+                # (C, K) distance table; argmin over K gives nearest radius index
+                dist = jnp.abs(abs_y[:, None] - radii[None, :])  # (C, K)
+                rd = radii[jnp.argmin(dist, axis=1)]              # (C,)
+
+                e = y * (abs_y2 - rd**2)
+
+                W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
+                return W_new, (y, e, W_new)
+
+            W_final, (y_hat, errors, w_hist) = jax.lax.scan(
+                step, w_init, jnp.arange(n_sym)
+            )
+            return y_hat, errors, W_final, w_hist
+
+        _JITTED_EQ[key] = rde_scan
     return _JITTED_EQ[key]
 
 
@@ -2012,6 +2188,245 @@ def cma(
 
     scan_fn = _get_jax_cma(num_taps, stride, num_ch)
     y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, w_init, mu_jax, r2_jax, n_sym)
+    return _unpack_result_jax(
+        y_jax,
+        e_jax,
+        W_jax,
+        wh_jax,
+        was_1d,
+        store_weights,
+        n_sym=None,
+        xp=xp,
+    )
+
+
+def rde(
+    samples: ArrayType,
+    num_taps: int = 21,
+    step_size: float = 1e-3,
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
+    unipolar: bool = False,
+    sps: int = 2,
+    store_weights: bool = False,
+    device: Optional[str] = "cpu",
+    center_tap: Optional[int] = None,
+    backend: str = "numba",
+) -> EqualizerResult:
+    """
+    Radius Directed Equalizer (RDE) — blind equalizer for multi-ring constellations.
+
+    RDE is a CMA variant that replaces the single Godard dispersion radius with
+    per-symbol radius selection from the set of unique constellation ring radii.
+    For each output sample ``y[n]``, the target radius ``R_d`` is chosen as the
+    magnitude of the nearest constellation ring::
+
+        R_d[n]  = argmin_r  | r − |y[n]| |     r ∈ { |c| : c ∈ constellation }
+        e[n]    = y[n] * ( |y[n]|² − R_d[n]² )
+        W      -= μ · conj(e[n]) ⊗ x[n]
+
+    This corrects CMA's fundamental weakness on higher-order QAM: CMA forces
+    all symbols toward a single average circle, severely degrading convergence
+    when the constellation spans multiple rings (e.g. inner, middle, outer rings
+    of 16-QAM).  RDE instead drives each symbol toward its *nearest* ring,
+    producing a signal-quality surface that matches the true constellation
+    geometry.
+
+    Like CMA, RDE is fully blind (no training symbols) and recovers the channel
+    up to a **phase ambiguity**.  A carrier-phase recovery step (Viterbi-Viterbi,
+    pilot-aided rotation, etc.) is typically needed afterwards.
+
+    Parameters
+    ----------
+    samples : array_like
+        Input signal samples. Shape: ``(N_samples,)`` or ``(C, N_samples)``.
+        Typically at 2 samples/symbol for fractionally-spaced equalization.
+    num_taps : int, default 21
+        Number of equalizer taps per FIR filter.
+    step_size : float, default 1e-3
+        RDE step size (mu). Same non-convex gradient geometry as CMA; use a
+        fixed step in the range 1e-5 to 1e-3 for stability.
+    modulation : str, optional
+        Modulation type for constellation construction (``"psk"``, ``"qam"``).
+        Required to extract unique ring radii.  If ``None``, falls back to a
+        single unit radius (identical to CMA with ``R²=1``).
+    order : int, optional
+        Modulation order (e.g. 4, 16, 64).
+    unipolar : bool, default False
+        Use unipolar constellation for radius extraction.
+    sps : int, default 2
+        Samples per symbol at the input. Must be 2 (T/2-spaced).
+    store_weights : bool, default False
+        If True, stores weight trajectory in ``result.weights_history``.
+    device : str, optional
+        Target JAX device (``'cpu'``, ``'gpu'``). Ignored for ``backend='numba'``.
+    center_tap : int, optional
+        Index of the center tap. Defaults to ``num_taps // 2``.
+    backend : str, default 'numba'
+        ``'numba'`` uses Numba ``@njit``; ``'jax'`` uses ``jax.lax.scan``.
+
+    Returns
+    -------
+    EqualizerResult
+        Equalized symbols, final weights, RDE error history, and optionally
+        weight trajectory.
+
+    Notes
+    -----
+    **Why RDE outperforms CMA on high-order QAM:**
+
+    For 16-QAM the Godard radius ``R² = E[|s|⁴]/E[|s|²] ≈ 1.32`` (normalized).
+    This single target is a poor proxy for the three distinct rings at
+    ``|c| ≈ {0.45, 1.00, 1.34}`` (normalized unit-average-power 16-QAM).
+    CMA pulls inner-ring symbols outward and outer-ring symbols inward,
+    creating a persistent gradient that opposes correct convergence.
+    RDE eliminates this bias entirely: each symbol is only attracted to its
+    own ring, so the steady-state gradient vanishes at the correct solution.
+
+    **Phase ambiguity:** Both CMA and RDE share the same 90°-symmetric cost
+    surface for QAM/PSK.  Use a phase recovery algorithm after blind equalization.
+
+    **GPU note:** RDE is inherently sequential (each weight update depends on
+    previous weights), so ``lax.scan`` serializes execution even on GPU.
+    Use ``device='cpu'`` for typical SISO sequences, or ``backend='numba'``
+    for CPU-optimal throughput.
+    """
+    logger.info(
+        f"RDE equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
+        f"backend={backend}"
+    )
+
+    samples, xp, _ = dispatch(samples)
+    stride = int(sps)
+    _validate_sps(sps, num_taps)
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        num_ch = 1
+        n_samples = samples.shape[0]
+    else:
+        num_ch, n_samples = samples.shape
+
+    # Compute unique ring radii from constellation.
+    # For constant-modulus signals (PSK) this degenerates to a single radius,
+    # making RDE identical to CMA.
+    if modulation is not None and order is not None:
+        from .mapping import gray_constellation
+
+        const = gray_constellation(modulation, order, unipolar=unipolar)
+        # Round to 6 significant digits to merge numerically identical radii
+        raw_radii = np.abs(const).astype(np.float32)
+        radii = np.unique(np.round(raw_radii, 6))
+        logger.debug(
+            f"RDE radii from {modulation.upper()}-{order}: "
+            + ", ".join(f"{r:.4f}" for r in radii)
+        )
+    else:
+        radii = np.array([1.0], dtype=np.float32)
+        logger.debug("RDE: no modulation provided, using single unit radius (≡ CMA)")
+
+    n_sym = n_samples // stride
+    num_radii = len(radii)
+
+    c_tap = center_tap if center_tap is not None else num_taps // 2
+    pad_left = c_tap
+    pad_right = n_sym * stride - n_samples + num_taps - 1 - pad_left
+
+    if backend == "numba":
+        numba = _get_numba()
+        if numba is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        samples_np = np.ascontiguousarray(
+            samples.get() if hasattr(samples, "get") else np.asarray(samples),
+            dtype=np.complex64,
+        )
+        samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
+
+        x_np = (
+            np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
+            if not was_1d
+            else np.pad(samples_np, (pad_left, pad_right))
+        )
+        x_np = np.ascontiguousarray(x_np)
+        if was_1d:
+            x_np = x_np[np.newaxis, :]
+
+        # Normalize radii to match the unit-power-normalized samples
+        # (constellation is unit-average-power after gray_constellation)
+        radii_np = np.ascontiguousarray(radii, dtype=np.float32)
+
+        W = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
+        y_out = np.empty((n_sym, num_ch), dtype=np.complex64)
+        e_out = np.empty((n_sym, num_ch), dtype=np.complex64)
+        w_hist_buf = (
+            np.empty((n_sym, num_ch, num_ch, num_taps), dtype=np.complex64)
+            if store_weights
+            else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
+        )
+        _get_numba_rde()(
+            x_np,
+            W,
+            np.float32(step_size),
+            radii_np,
+            stride,
+            store_weights,
+            y_out,
+            e_out,
+            w_hist_buf,
+        )
+        return _unpack_result_numpy(
+            y_out,
+            e_out,
+            W,
+            w_hist_buf,
+            was_1d,
+            store_weights,
+            n_sym=None,
+            xp=xp,
+        )
+
+    # JAX backend
+    jax, jnp, _ = _get_jax()
+    if jax is None:
+        raise ImportError("JAX is required for backend='jax'.")
+
+    samples, _ = _normalize_inputs_jax(samples, None, sps, xp)
+
+    samples_padded = (
+        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+        if not was_1d
+        else xp.pad(samples, (pad_left, pad_right))
+    )
+
+    x_jax = to_jax(samples_padded, device=device)
+    if was_1d:
+        x_jax = x_jax[None, :]
+
+    try:
+        platform = (
+            device.lower()
+            if device is not None
+            else (
+                x_jax.device.platform
+                if hasattr(x_jax, "device")
+                else list(x_jax.devices())[0].platform
+            )
+        )
+    except Exception:
+        platform = "cpu"
+
+    w_init = _init_butterfly_weights_jax(
+        num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+    )
+    w_init = to_jax(w_init, device=platform)
+    mu_jax = to_jax(jnp.float32(step_size), device=platform)
+    radii_jax = to_jax(
+        jnp.asarray(radii, dtype=jnp.float32), device=platform
+    )
+
+    scan_fn = _get_jax_rde(num_taps, stride, num_radii, num_ch)
+    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, w_init, mu_jax, radii_jax, n_sym)
     return _unpack_result_jax(
         y_jax,
         e_jax,

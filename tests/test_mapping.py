@@ -464,3 +464,20 @@ def test_compute_llr_numpy_vs_jax_input_agree():
         np.testing.assert_allclose(
             np.asarray(llrs_from_np), np.asarray(llrs_from_jax), atol=1e-5
         )
+
+
+def test_compute_llr_real_jax_symbols():
+    """compute_llr with real-valued JAX symbols (PAM) uses float32 constellation (line 744)."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    # PAM-4 uses real-valued symbols
+    bits = np.array([0, 0, 0, 1, 1, 0, 1, 1], dtype="int32")
+    symbols_np = mapping.map_bits(bits, "pam", 4)
+    # PAM symbols are real; wrap in JAX array
+    symbols_jax = jnp.asarray(symbols_np)
+    assert not jnp.iscomplexobj(symbols_jax), "PAM symbols should be real-valued"
+
+    llrs = mapping.compute_llr(symbols_jax, "pam", 4, noise_var=0.1)
+    assert isinstance(llrs, jax.Array)
+    assert llrs.shape == (len(bits),)

@@ -1265,17 +1265,19 @@ class Signal(BaseModel):
         Algorithm overview
         ------------------
 
-        +-----------+-------------------------+------------------+-------------------+
-        | method    | Training required       | Phase ambiguity  | Convergence       |
-        +===========+=========================+==================+===================+
-        | ``"lms"`` | data-aided → DD         | resolved         | moderate (NLMS)   |
-        +-----------+-------------------------+------------------+-------------------+
-        | ``"rls"`` | data-aided → DD         | resolved         | fast (optimal LS) |
-        +-----------+-------------------------+------------------+-------------------+
-        | ``"cma"`` | blind (no training)     | phase-ambiguous  | slow              |
-        +-----------+-------------------------+------------------+-------------------+
-        | ``"zf"``  | channel estimate needed | resolved         | instant (block)   |
-        +-----------+-------------------------+------------------+-------------------+
+        +-----------+-------------------------+------------------+-----------------------------------+
+        | method    | Training required       | Phase ambiguity  | Convergence                       |
+        +===========+=========================+==================+===================================+
+        | ``"lms"`` | data-aided → DD         | resolved         | moderate (NLMS)                   |
+        +-----------+-------------------------+------------------+-----------------------------------+
+        | ``"rls"`` | data-aided → DD         | resolved         | fast (optimal LS)                 |
+        +-----------+-------------------------+------------------+-----------------------------------+
+        | ``"cma"`` | blind (no training)     | phase-ambiguous  | slow; best for PSK/low-order QAM  |
+        +-----------+-------------------------+------------------+-----------------------------------+
+        | ``"rde"`` | blind (no training)     | phase-ambiguous  | slow; best for high-order QAM     |
+        +-----------+-------------------------+------------------+-----------------------------------+
+        | ``"zf"``  | channel estimate needed | resolved         | instant (block)                   |
+        +-----------+-------------------------+------------------+-----------------------------------+
 
         For ``"lms"`` and ``"rls"``, training symbols are taken from
         ``signal.source_symbols`` by default. Pass ``training_symbols`` to
@@ -1291,7 +1293,7 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        method : {"lms", "rls", "cma", "zf"}, default "lms"
+        method : {"lms", "rls", "cma", "rde", "zf"}, default "lms"
             Equalization algorithm. See the table above for a summary.
         num_taps : int, default 21
             Number of FIR taps in the equalizer filter (per polyphase arm for
@@ -1305,21 +1307,21 @@ class Signal(BaseModel):
               :func:`~commstools.equalizers.lms` for the stability derivation.
               Larger values converge faster but increase steady-state
               misadjustment. Typical: 0.01-0.1.
-            - **CMA**: fixed step on the non-convex Godard surface; must be
-              kept small (1e-5 to 1e-3) for stability. Unlike LMS, there is
+            - **CMA / RDE**: fixed step on the non-convex Godard surface; must
+              be kept small (1e-5 to 1e-3) for stability. Unlike LMS, there is
               no input-power normalization.
 
-            *Applies to: lms, cma.*
+            *Applies to: lms, cma, rde.*
         store_weights : bool, default False
             If ``True``, the full tap-weight trajectory is stored in
             ``signal._equalizer_result.weights_history``, enabling
             convergence analysis and debugging. Incurs extra memory cost
             proportional to ``num_symbols x num_taps``.
-            *Applies to: lms, rls, cma.*
+            *Applies to: lms, rls, cma, rde.*
         center_tap : int, optional
             Index of the center (decision-delay) tap. Defaults to
             ``num_taps // 2``. Adjust when channel delay is asymmetric
-            (e.g., heavy pre-cursor ISI). *Applies to: lms, rls, cma.*
+            (e.g., heavy pre-cursor ISI). *Applies to: lms, rls, cma, rde.*
         device : {"cpu", "gpu"}, optional
             Force JAX computation to run on the specified device regardless
             of where the input samples reside. Default is "cpu".
@@ -1393,8 +1395,8 @@ class Signal(BaseModel):
         Raises
         ------
         ValueError
-            If ``method`` is ``"lms"``, ``"rls"``, or ``"cma"`` and the
-            signal is not at 2 SPS. Resample to 2 SPS first.
+            If ``method`` is ``"lms"``, ``"rls"``, ``"cma"``, or ``"rde"`` and
+            the signal is not at 2 SPS. Resample to 2 SPS first.
         ValueError
             If ``method="zf"`` and ``channel_estimate`` is ``None``.
         ValueError
@@ -1433,6 +1435,7 @@ class Signal(BaseModel):
                 f"Signal is at {sps} SPS. Adaptive equalizers require 2 SPS "
                 f"(T/2-spaced input) — resample first."
             )
+
 
         train = (
             training_symbols if training_symbols is not None else self.source_symbols
@@ -1486,6 +1489,20 @@ class Signal(BaseModel):
                 unipolar=self.mod_unipolar,
                 backend=backend,
             )
+        elif method == "rde":
+            result = equalizers.rde(
+                self.samples,
+                sps=sps,
+                num_taps=num_taps,
+                step_size=step_size,
+                store_weights=store_weights,
+                center_tap=center_tap,
+                device=device,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                unipolar=self.mod_unipolar,
+                backend=backend,
+            )
         elif method == "zf":
             if channel_estimate is None:
                 raise ValueError(
@@ -1500,7 +1517,7 @@ class Signal(BaseModel):
         else:
             raise ValueError(
                 f"Unknown equalization method '{method}'. "
-                f"Choose from: 'lms', 'rls', 'cma', 'zf'."
+                f"Choose from: 'lms', 'rls', 'cma', 'rde', 'zf'."
             )
 
         self.samples = result.y_hat
@@ -2133,14 +2150,16 @@ class Signal(BaseModel):
         # Trim reference tail to match RLS output. RLS removes num_taps//2 symbols
         # from y_hat; in the bit domain that is num_taps//2 * log2(M) bits.
         if self._num_tail_trim > 0 and self.mod_order is not None:
-            bit_tail_trim = self._num_tail_trim * self.mod_order
+            bps = self.bits_per_symbol
+            bit_tail_trim = self._num_tail_trim * bps
             if r.shape[-1] > bit_tail_trim:
                 r = r[..., : r.shape[-1] - bit_tail_trim]
         trim = self._num_train_symbols if discard_training else 0
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
             # Convert symbol trim index to bit trim index
-            bit_trim = trim * self.mod_order
+            bps = self.bits_per_symbol
+            bit_trim = trim * bps
             n = min(y.shape[-1], r.shape[-1])
             y = y[..., bit_trim:n]
             r = r[..., bit_trim:n]

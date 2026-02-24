@@ -151,3 +151,12 @@ def test_smoothrect_pulse(backend_device, xp):
     symbols = xp.array([1, 1])
     res = filtering.shape_pulse(symbols, sps=8, pulse_shape="smoothrect", filter_span=4)
     assert len(res) == 16
+
+
+def test_shape_pulse_none_with_rz(backend_device, xp):
+    """shape_pulse with pulse_shape='none' and rz=True should use rect (lines 550-551)."""
+    symbols = xp.array([1, -1, 1], dtype=xp.complex64)
+    # With rz=True and 'none' pulse, it should expand with rect pulse
+    result = filtering.shape_pulse(symbols, sps=4, pulse_shape="none", rz=True)
+    assert result is not None
+    assert len(result) > 0

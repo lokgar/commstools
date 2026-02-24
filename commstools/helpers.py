@@ -147,11 +147,11 @@ def normalize(
         Normalization strategy:
         - "unity_gain": Sum of elements is 1.0 (DC gain normalization).
           Preserves signal levels (e.g., 5V -> 5V). Used for general filters.
-        - "unit_energy": L2-norm is 1.0 ($\sum |x|^2 = 1$).
+        - "unit_energy": L2-norm is 1.0 ($\\sum |x|^2 = 1$).
           Preserves total energy/noise power. Used for pulse shaping and matched filters.
         - "peak": Peak absolute value is 1.0.
           **Crucially**: For complex signals, normalizes Real and Imaginary components
-          independently to fit within DAC limits ($|I| \le 1, |Q| \le 1$).
+          independently to fit within DAC limits ($|I| \\le 1, |Q| \\le 1$).
           This maximizes dynamic range without clipping either independent channel.
         - "average_power" or "rms": Mean power (RMS) is 1.0 ($E[|x|^2] = 1$).
           Normalizes the composite complex signal power. Used for symbol constellations.

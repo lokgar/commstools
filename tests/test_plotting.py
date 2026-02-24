@@ -1,11 +1,13 @@
 """Tests for signal visualization and plotting tools."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from commstools import filtering
 from commstools.plotting import (
     _create_subplot_grid,
     _plot_eye_traces,
@@ -31,7 +33,7 @@ def test_eye_diagram_real(backend_device, xp, type):
         fig, ax = eye_diagram(samples, sps=sps, type=type, show=False)
         assert fig is not None
         assert ax is not None
-        plt.close(fig)
+        plt.close("all")
     except ImportError:
         if backend_device == "gpu":
             pytest.skip("Skipping GPU plot test if import failure")
@@ -48,13 +50,13 @@ def test_eye_diagram_complex(backend_device, xp):
     assert fig is not None
     assert isinstance(ax, (list, tuple, np.ndarray))
     assert len(ax) == 2
-    plt.close(fig)
+    plt.close("all")
 
     # With provided ax
     fig, axes = plt.subplots(2, 1)
     fig, ax_ret = eye_diagram(samples, sps=sps, ax=axes, show=False)
     assert ax_ret is axes
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_time_domain(backend_device, xp):
@@ -62,7 +64,7 @@ def test_time_domain(backend_device, xp):
     samples = xp.arange(100)
     fig, ax = time_domain(samples, sampling_rate=10.0, show=False)
     assert fig is not None
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_psd(backend_device, xp):
@@ -70,7 +72,7 @@ def test_psd(backend_device, xp):
     samples = xp.random.randn(256)
     fig, ax = psd(samples, sampling_rate=10.0, show=False)
     assert fig is not None
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_filter_response(backend_device, xp):
@@ -79,7 +81,7 @@ def test_filter_response(backend_device, xp):
     fig, axes = filter_response(taps, sps=1.0, show=False)
     assert fig is not None
     assert len(axes) == 3
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_constellation_1d(backend_device, xp):
@@ -88,7 +90,7 @@ def test_constellation_1d(backend_device, xp):
     fig, ax = constellation(samples, bins=50, show=False)
     assert fig is not None
     assert ax is not None
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_constellation_overlay_ideal(backend_device, xp):
@@ -98,7 +100,7 @@ def test_constellation_overlay_ideal(backend_device, xp):
         samples, bins=50, overlay_ideal=True, modulation="qam", order=16, show=False
     )
     assert fig is not None
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_constellation_mimo(backend_device, xp):
@@ -108,7 +110,7 @@ def test_constellation_mimo(backend_device, xp):
     fig, axes = constellation(samples, bins=50, show=False)
     assert fig is not None
     assert axes.shape == (2, 2)  # 2x2 grid
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_psd_mimo_grid(backend_device, xp):
@@ -118,7 +120,7 @@ def test_psd_mimo_grid(backend_device, xp):
     fig, axes = psd(samples, sampling_rate=10.0, show=False)
     assert fig is not None
     assert axes.shape == (2, 2)  # 2x2 grid, not (1, 4)
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_time_domain_mimo_grid(backend_device, xp):
@@ -128,7 +130,7 @@ def test_time_domain_mimo_grid(backend_device, xp):
     fig, axes = time_domain(samples, sampling_rate=10.0, show=False)
     assert fig is not None
     assert axes.shape == (2, 2)  # 2x2 grid, not (1, 4)
-    plt.close(fig)
+    plt.close("all")
 
 
 @pytest.mark.parametrize("plot_func", [psd, time_domain])
@@ -139,7 +141,7 @@ def test_multichannel_plots(backend_device, xp, plot_func):
     assert fig is not None
     # For 2 channels, it should return 2 axes
     assert axes.size == 2
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_eye_diagram_multichannel(backend_device, xp):
@@ -149,7 +151,7 @@ def test_eye_diagram_multichannel(backend_device, xp):
     fig, axes = eye_diagram(samples, sps=4, show=False)
     assert fig is not None
     assert axes.shape == (2, 2)
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_eye_diagram_axis_error(backend_device, xp):
@@ -158,11 +160,11 @@ def test_eye_diagram_axis_error(backend_device, xp):
     fig, ax = plt.subplots(1)
     with pytest.raises(ValueError, match="Not enough axes"):
         eye_diagram(samples, sps=4, ax=[ax], show=False)
-    plt.close(fig)
+    plt.close("all")
 
     with pytest.raises(ValueError, match="must provide a list of axes"):
         eye_diagram(samples, sps=4, ax=ax, show=False)
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_apply_theme():
@@ -179,7 +181,7 @@ def test_psd_wavelength(backend_device, xp):
     )
     assert fig is not None
     assert "Wavelength" in ax.get_xlabel()
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_psd_auto_scale(backend_device, xp):
@@ -189,12 +191,12 @@ def test_psd_auto_scale(backend_device, xp):
     # THz
     fig, ax = psd(samples, sampling_rate=2e12, show=False)
     assert "THz" in ax.get_xlabel()
-    plt.close(fig)
+    plt.close("all")
 
     # MHz
     fig, ax = psd(samples, sampling_rate=2e6, show=False)
     assert "MHz" in ax.get_xlabel()
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_multichannel_overlay(backend_device, xp):
@@ -207,7 +209,7 @@ def test_multichannel_overlay(backend_device, xp):
 
     # Time domain overlay
     time_domain(samples, sampling_rate=1.0, ax=ax, show=False)
-    plt.close(fig)
+    plt.close("all")
 
 
 def test_filter_response_axis_error(backend_device, xp):
@@ -227,11 +229,12 @@ def test_ideal_constellation_basic(backend_device, xp):
     """Verify ideal constellation plotting."""
     fig, ax = ideal_constellation("qam", 16, show=False)
     assert fig is not None
-    plt.close(fig)
+    plt.close("all")
 
     # Error case
     ret = ideal_constellation("invalid", 4, show=False)
     assert ret is None
+    plt.close("all")
 
 
 def test_constellation_histogram_overlay_error(backend_device, xp):
@@ -257,6 +260,7 @@ def test_subplot_grid(backend_device, xp):
     assert _create_subplot_grid(2) == (1, 2)
     assert _create_subplot_grid(3) == (2, 2)
     assert _create_subplot_grid(5) == (3, 2)
+    plt.close("all")
 
 
 def test_psd_axis_overlay_warning(caplog, backend_device, xp):
@@ -266,6 +270,7 @@ def test_psd_axis_overlay_warning(caplog, backend_device, xp):
     with patch("matplotlib.pyplot.show"):
         psd(sig, ax=ax)
     assert "Multiple channels detected but single axis provided" in caplog.text
+    plt.close("all")
 
 
 def test_psd_wavelength_warning(caplog, backend_device, xp):
@@ -274,6 +279,7 @@ def test_psd_wavelength_warning(caplog, backend_device, xp):
     with patch("matplotlib.pyplot.show"):
         psd(sig, x_axis="wavelength", domain="RF")
     assert "Wavelength plotting is typically used for optical signals" in caplog.text
+    plt.close("all")
 
 
 def test_psd_auto_scale_small(backend_device, xp):
@@ -281,6 +287,7 @@ def test_psd_auto_scale_small(backend_device, xp):
     sig = xp.ones(256)
     fig, ax = psd(sig, sampling_rate=1.0)
     assert "Hz" in ax.get_xlabel()
+    plt.close("all")
 
 
 def test_time_domain_limits(caplog, backend_device, xp):
@@ -290,6 +297,7 @@ def test_time_domain_limits(caplog, backend_device, xp):
     with patch("matplotlib.pyplot.show"):
         time_domain(sig, num_symbols=200, sps=1.0)
     assert "Limit exceeds number of symbols" in caplog.text
+    plt.close("all")
 
 
 def test_time_domain_auto_scale(backend_device, xp):
@@ -299,24 +307,29 @@ def test_time_domain_auto_scale(backend_device, xp):
     # ns
     _, ax = time_domain(sig, sampling_rate=1e10)
     assert "ns" in ax.get_xlabel()
+    plt.close("all")
 
     # ps
     _, ax = time_domain(sig, sampling_rate=1e13)
     assert "ps" in ax.get_xlabel()
+    plt.close("all")
 
     # us
     _, ax = time_domain(sig, sampling_rate=1e7)
     assert "µs" in ax.get_xlabel()
+    plt.close("all")
 
     # ms
     _, ax = time_domain(sig, sampling_rate=1e4)
     assert "ms" in ax.get_xlabel()
+    plt.close("all")
 
 
 def test_eye_diagram_sps_error(backend_device, xp):
     """Verify error for non-integer sps."""
     with pytest.raises(ValueError, match="sps must be an integer"):
         eye_diagram(xp.ones(10), sps=2.5)
+        plt.close("all")
 
 
 def test_eye_diagram_trace_len_error(backend_device, xp):
@@ -327,6 +340,7 @@ def test_eye_diagram_trace_len_error(backend_device, xp):
         _plot_eye_traces(
             xp.ones(5), sps=10, num_symbols=2, ax=MagicMock(), type="line", title=None
         )
+        plt.close("all")
 
 
 def test_eye_diagram_invalid_type(backend_device, xp):
@@ -335,19 +349,460 @@ def test_eye_diagram_invalid_type(backend_device, xp):
         _plot_eye_traces(
             xp.ones(100), sps=4, num_symbols=2, ax=MagicMock(), type="magic", title=None
         )
+        plt.close("all")
 
 
 def test_filter_response_no_sps(backend_device, xp):
     """Test filter_response without sps."""
     filter_response(xp.ones(10))
+    plt.close("all")
 
 
 def test_constellation_histogram_overlay_warning(caplog, backend_device, xp):
     """Verify warning when overlaying ideal on histogram."""
-    import logging
-
     caplog.set_level(logging.WARNING)
     # Constellation with bins > 0 triggers histogram
     # If modulation is None, it should warn
     constellation(xp.ones(10) + 1j, bins=10, overlay_ideal=True, modulation=None)
     assert "Modulation and order must be provided" in caplog.text
+    plt.close("all")
+
+
+# ============================================================================
+# PSD — FREQUENCY SCALING AND SHOW
+# ============================================================================
+
+
+def test_psd_ghz_scaling(backend_device, xp):
+    """PSD with GHz-range sampling rate triggers GHz scale factor (lines 298-299)."""
+    samples = xp.random.randn(256).astype(xp.float32)
+    fig, ax = psd(samples, sampling_rate=5e9, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_psd_khz_scaling(backend_device, xp):
+    """PSD with kHz-range sampling rate triggers kHz scale factor (lines 304-305)."""
+    samples = xp.random.randn(256).astype(xp.float32)
+    fig, ax = psd(samples, sampling_rate=5e3, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_psd_hz_scaling(backend_device, xp):
+    """PSD with Hz-range sampling rate uses default Hz unit."""
+    samples = xp.random.randn(256).astype(xp.float32)
+    fig, ax = psd(samples, sampling_rate=100.0, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_psd_xlim_ylim(backend_device, xp):
+    """PSD with xlim and ylim parameters applies axis limits (lines 313-316)."""
+    samples = xp.random.randn(256).astype(xp.float32)
+    fig, ax = psd(
+        samples, sampling_rate=1e6, xlim=(-0.4, 0.4), ylim=(-80, 0), show=False
+    )
+    assert fig is not None
+    plt.close("all")
+
+
+def test_psd_show(backend_device, xp):
+    """PSD with show=True calls plt.show() and returns None (lines 325-327)."""
+    samples = xp.random.randn(256).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = psd(samples, sampling_rate=1e6, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_psd_multichannel_show(backend_device, xp):
+    """PSD multichannel with show=True returns None (lines 243-245)."""
+    samples = xp.random.randn(2, 256).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = psd(samples, sampling_rate=1e6, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_psd_multichannel_single_axis_warning(backend_device, xp, caplog):
+    """PSD multichannel with single axis warns and overlays (lines 207-211)."""
+    samples = xp.random.randn(2, 256).astype(xp.float32)
+    fig0, ax0 = plt.subplots()
+    caplog.set_level(logging.WARNING)
+    fig, axes = psd(samples, sampling_rate=1e6, ax=ax0, show=False)
+    assert "Overlaying plots" in caplog.text
+    plt.close("all")
+
+
+# ============================================================================
+# CONSTELLATION — REAL SAMPLES, MULTICHANNEL, SHOW
+# ============================================================================
+
+
+def test_constellation_real_samples(backend_device, xp):
+    """Constellation with real (non-complex) samples warns and converts (lines 1219-1221)."""
+    samples = xp.ones(100, dtype=xp.float32)
+    with patch("commstools.plotting.logger.warning"):
+        result = constellation(samples, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_constellation_multichannel_single_axis_warning(backend_device, xp, caplog):
+    """Constellation multichannel with single axis warns (lines 1172-1177)."""
+    samples = xp.ones((2, 100), dtype=xp.complex64)
+    fig0, ax0 = plt.subplots()
+    caplog.set_level(logging.WARNING)
+    result = constellation(samples, ax=ax0, show=False)
+    assert result is not None
+    assert "Overlaying plots" in caplog.text
+    plt.close("all")
+
+
+def test_constellation_multichannel_axes_array(backend_device, xp):
+    """Constellation multichannel with axes array uses atleast_2d (lines 1179-1180)."""
+    samples = xp.ones((2, 100), dtype=xp.complex64)
+    fig0, axes0 = plt.subplots(1, 2)
+    result = constellation(samples, ax=axes0, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_constellation_multichannel_show(backend_device, xp):
+    """Constellation multichannel with show=True returns None (lines 1206-1208)."""
+    samples = xp.ones((2, 100), dtype=xp.complex64)
+    with patch("matplotlib.pyplot.show"):
+        result = constellation(samples, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_constellation_siso_show(backend_device, xp):
+    """Constellation SISO with show=True returns None (lines 1318-1320)."""
+    samples = xp.ones(100, dtype=xp.complex64)
+    with patch("matplotlib.pyplot.show"):
+        result = constellation(samples, show=True)
+    assert result is None
+    plt.close("all")
+
+
+# ============================================================================
+# EQUALIZER DIAGNOSTICS — MIMO, CUSTOM AXES, SHOW
+# ============================================================================
+
+
+def test_equalizer_result_mimo_weights(backend_device, xp):
+    """equalizer_result with MIMO error/weights covers MIMO branches (lines 1369-1413)."""
+    from commstools import equalizers
+    from commstools import Signal
+    from commstools.plotting import equalizer_result
+
+    n_symbols = 400
+    sig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        num_streams=2,
+        seed=0,
+    )
+    rx_mimo = xp.asarray(sig.samples)
+    train_mimo = xp.asarray(sig.source_symbols)
+
+    result = equalizers.lms(
+        rx_mimo,
+        training_symbols=train_mimo,
+        num_taps=7,
+        step_size=0.05,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+
+    fig, axes = equalizer_result(result, smoothing=10)
+    assert fig is not None
+    assert len(axes) == 2
+    plt.close("all")
+
+
+def test_equalizer_result_custom_axes(backend_device, xp):
+    """equalizer_result with pre-existing axes covers custom-ax branch (lines 1363-1364)."""
+    from commstools import equalizers, Signal
+    from commstools.plotting import equalizer_result
+
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
+    )
+    result = equalizers.lms(
+        xp.asarray(sig.samples),
+        training_symbols=xp.asarray(sig.source_symbols),
+        num_taps=7,
+        step_size=0.05,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+
+    fig0, axes0 = plt.subplots(1, 2)
+    fig_ret, axes_ret = equalizer_result(result, ax=axes0)
+    assert fig_ret is not None
+    plt.close("all")
+
+
+def test_equalizer_result_show(backend_device, xp):
+    """equalizer_result with show=True returns None (lines 1426-1428)."""
+    from commstools import equalizers, Signal
+    from commstools.plotting import equalizer_result
+
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
+    )
+    result = equalizers.lms(
+        xp.asarray(sig.samples),
+        training_symbols=xp.asarray(sig.source_symbols),
+        num_taps=7,
+        step_size=0.05,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+
+    with patch("matplotlib.pyplot.show"):
+        ret = equalizer_result(result, show=True)
+    assert ret is None
+    plt.close("all")
+
+
+# ============================================================================
+# EYE DIAGRAM — AXES ARRAY, SHOW
+# ============================================================================
+
+
+def test_eye_diagram_multichannel_axes_array(backend_device, xp):
+    """Eye diagram multichannel with axes array covers axes reshape (lines 769-772)."""
+    samples = xp.random.randn(2, 1000).astype(xp.float32)
+    fig0, axes0 = plt.subplots(2, 1)
+    fig, axes = eye_diagram(samples, sps=4, ax=list(axes0), show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_eye_diagram_multichannel_show(backend_device, xp):
+    """Eye diagram multichannel with show=True returns None (lines 798-800)."""
+    samples = xp.random.randn(2, 1000).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = eye_diagram(samples, sps=4, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_eye_diagram_real_with_ax(backend_device, xp):
+    """Eye diagram for real signal with a single pre-existing axis (line 817)."""
+    samples = xp.random.randn(500).astype(xp.float32)
+    fig0, ax0 = plt.subplots()
+    fig, ax = eye_diagram(samples, sps=4, ax=ax0, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+# ============================================================================
+# PSD — MULTICHANNEL AXES ARRAY
+# ============================================================================
+
+
+def test_psd_multichannel_axes_array(backend_device, xp):
+    """PSD multichannel with axes ndarray covers atleast_2d branch (lines 213-214)."""
+    samples = xp.random.randn(2, 256).astype(xp.float32)
+    fig0, axes0 = plt.subplots(1, 2)
+    fig, axes = psd(samples, sampling_rate=1e6, ax=axes0, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+# ============================================================================
+# TIME DOMAIN — MULTICHANNEL AXES, SHOW, SISO SHOW
+# ============================================================================
+
+
+def test_time_domain_multichannel_axes_array(backend_device, xp):
+    """time_domain() multichannel with axes array covers atleast_2d branch (lines 398-399)."""
+    samples = xp.random.randn(2, 1000).astype(xp.float32)
+    fig0, axes0 = plt.subplots(1, 2)
+    result = time_domain(samples, sampling_rate=1e6, ax=axes0, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_time_domain_multichannel_show(backend_device, xp):
+    """time_domain() multichannel with show=True returns None (lines 423-424)."""
+    samples = xp.random.randn(2, 1000).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = time_domain(samples, sampling_rate=1e6, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_time_domain_siso_show(backend_device, xp):
+    """time_domain() 1D with show=True returns None (lines 498-499)."""
+    samples = xp.random.randn(500).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = time_domain(samples, sampling_rate=1e6, show=True)
+    assert result is None
+    plt.close("all")
+
+
+# ============================================================================
+# EYE DIAGRAM — SISO SHOW, COMPLEX SINGLE AX ERROR, DENSE SIGNAL
+# ============================================================================
+
+
+def test_eye_diagram_siso_show(backend_device, xp):
+    """eye_diagram() 1D with show=True returns None (lines 863-864)."""
+    samples = xp.random.randn(1000).astype(xp.float32)
+    with patch("matplotlib.pyplot.show"):
+        result = eye_diagram(samples, sps=4, show=True)
+    assert result is None
+    plt.close("all")
+
+
+def test_eye_diagram_complex_single_ax_error(backend_device, xp):
+    """eye_diagram() with complex signal and single ax raises ValueError (line 821)."""
+    samples = (xp.random.randn(500) + 1j * xp.random.randn(500)).astype(xp.complex64)
+    fig0, ax0 = plt.subplots()
+    with pytest.raises(ValueError, match="complex"):
+        eye_diagram(samples, sps=4, ax=ax0, show=False)
+    plt.close("all")
+
+
+def test_eye_diagram_dense_line(backend_device, xp):
+    """eye_diagram() 'line' type with num_traces>5000 triggers skip path (lines 553-554)."""
+    # sps=2, N=10200, trace_len=4: num_traces = (10200-4)//2+1 = 5099 > 5000
+    samples = xp.random.randn(10200).astype(xp.float32)
+    fig, ax = eye_diagram(samples, sps=2, type="line", num_symbols=2, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_eye_diagram_dense_hist(backend_device, xp):
+    """eye_diagram() 'hist' type with num_traces>20000 triggers skip path (lines 588-589)."""
+    # sps=2, N=40100, trace_len=4: num_traces = (40100-4)//2+1 = 20049 > 20000
+    samples = xp.random.randn(40100).astype(xp.float32)
+    fig, ax = eye_diagram(samples, sps=2, type="hist", num_symbols=2, show=False)
+    assert fig is not None
+    plt.close("all")
+
+
+# ============================================================================
+# FILTER RESPONSE — COMPLEX TAPS, SHOW
+# ============================================================================
+
+
+def test_filter_response_complex_taps(backend_device, xp):
+    """filter_response() with complex taps plots I/Q components (lines 922-924)."""
+    taps = filtering.rrc_taps(sps=4, span=4, rolloff=0.35)
+    complex_taps = taps.astype(complex)
+    result = filter_response(complex_taps, sps=4, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_filter_response_show(backend_device, xp):
+    """filter_response() with show=True returns None (lines 974-975)."""
+    taps = filtering.rrc_taps(sps=4, span=4, rolloff=0.35)
+    with patch("matplotlib.pyplot.show"):
+        result = filter_response(taps, sps=4, show=True)
+    assert result is None
+    plt.close("all")
+
+
+# ============================================================================
+# IDEAL CONSTELLATION — CUSTOM AX, SHOW
+# ============================================================================
+
+
+def test_ideal_constellation_custom_ax(backend_device, xp):
+    """ideal_constellation() with provided ax uses ax.figure (line 1024)."""
+    fig0, ax0 = plt.subplots()
+    result = ideal_constellation(modulation="psk", order=4, ax=ax0, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+def test_ideal_constellation_show(backend_device, xp):
+    """ideal_constellation() with show=True returns None (lines 1096-1097)."""
+    with patch("matplotlib.pyplot.show"):
+        result = ideal_constellation(modulation="qam", order=16, show=True)
+    assert result is None
+    plt.close("all")
+
+
+# ============================================================================
+# CONSTELLATION — VMIN/VMAX
+# ============================================================================
+
+
+def test_constellation_vmin_vmax(backend_device, xp):
+    """constellation() with vmin/vmax covers imshow_kwargs branches (lines 1266, 1268)."""
+    samples = (xp.random.randn(500) + 1j * xp.random.randn(500)).astype(xp.complex64)
+    result = constellation(samples, vmin=0.0, vmax=1.0, show=False)
+    assert result is not None
+    plt.close("all")
+
+
+# ============================================================================
+# EQUALIZER RESULT — SHORT SMOOTHING WINDOW (SISO AND MIMO)
+# ============================================================================
+
+
+def test_equalizer_result_short_smoothing_siso(backend_device, xp):
+    """equalizer_result() SISO where len(mse) <= smoothing uses raw mse (line 1387)."""
+    from commstools import equalizers, Signal
+    from commstools.plotting import equalizer_result
+
+    sig = Signal.psk(
+        symbol_rate=1e6, num_symbols=50, order=4, pulse_shape="rrc", sps=2, seed=0
+    )
+    result = equalizers.lms(
+        xp.asarray(sig.samples),
+        training_symbols=xp.asarray(sig.source_symbols),
+        num_taps=5,
+        step_size=0.05,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+    # smoothing=1000 >> len(error)=25 → else branch (line 1387)
+    fig, axes = equalizer_result(result, smoothing=1000)
+    assert fig is not None
+    plt.close("all")
+
+
+def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
+    """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse (line 1377)."""
+    from commstools import equalizers, Signal
+    from commstools.plotting import equalizer_result
+
+    sig = Signal.psk(
+        symbol_rate=1e6,
+        num_symbols=50,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        num_streams=2,
+        seed=0,
+    )
+    result = equalizers.lms(
+        xp.asarray(sig.samples),
+        training_symbols=xp.asarray(sig.source_symbols),
+        num_taps=5,
+        step_size=0.05,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+    # smoothing=1000 >> len(error)=25 → else branch (line 1377)
+    fig, axes = equalizer_result(result, smoothing=1000)
+    assert fig is not None
+    plt.close("all")
