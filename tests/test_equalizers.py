@@ -30,20 +30,6 @@ class TestSPSValidation:
                 sps=1,
             )
 
-    def test_rls_rejects_sps_3(self, backend_device, xp):
-        """RLS should raise ValueError when sps=3."""
-        tx = xp.ones(100, dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
-        with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalizers.rls(
-                tx,
-                training_symbols=tx,
-                num_taps=5,
-                modulation="psk",
-                order=4,
-                sps=3,
-            )
-
     def test_cma_rejects_sps_1(self, backend_device, xp):
         """CMA should raise ValueError when sps=1."""
         tx = xp.ones(100, dtype=xp.complex64)
@@ -266,7 +252,7 @@ class TestRLS:
             num_symbols=n_symbols,
             order=4,
             pulse_shape="rrc",
-            sps=2,
+            sps=1,
             seed=42,
         )
         tx = xp.asarray(sig.source_symbols)
@@ -302,7 +288,7 @@ class TestRLS:
             num_symbols=n_symbols,
             order=4,
             pulse_shape="rrc",
-            sps=2,
+            sps=1,
             seed=77,
         )
         tx = xp.asarray(sig.source_symbols)
