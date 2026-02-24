@@ -17,6 +17,7 @@ dependencies = [
     "jax[cuda13]>=0.8.1",
     "cupy-cuda13x>=13.6.0",
     "nvidia-curand>=10.4.1.34",
+    "numba>=0.64.0",
 ]
 
 [dependency-groups]
