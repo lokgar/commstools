@@ -108,3 +108,46 @@ def test_rect_pulse_taps(backend_device, xp):
     )
     taps = sig.shaping_filter_taps()
     assert xp.allclose(taps, xp.ones(4))
+
+
+def test_gaussian_shaping_filter_taps(backend_device, xp):
+    """shaping_filter_taps for gaussian pulse shape returns valid taps (line 1170 core.py)."""
+    sig = Signal(
+        samples=xp.ones(40, dtype="complex64"),
+        sampling_rate=4e3,
+        symbol_rate=1e3,
+        pulse_shape="gaussian",
+        filter_span=4,
+        gaussian_bt=0.3,
+    )
+    taps = sig.shaping_filter_taps()
+    assert taps is not None
+    assert len(taps) > 0
+
+
+def test_rc_shaping_filter_taps(backend_device, xp):
+    """shaping_filter_taps for rc pulse shape returns valid taps (line 1182 core.py)."""
+    sig = Signal(
+        samples=xp.ones(40, dtype="complex64"),
+        sampling_rate=4e3,
+        symbol_rate=1e3,
+        pulse_shape="rc",
+        filter_span=4,
+        rc_rolloff=0.5,
+    )
+    taps = sig.shaping_filter_taps()
+    assert taps is not None
+    assert len(taps) > 0
+
+
+def test_matched_filter_logs_error_for_no_pulse_shape(backend_device, xp):
+    """matched_filter() with no pulse_shape logs an error and returns self (lines 1220-1222)."""
+    sig = Signal(
+        samples=xp.ones(10, dtype="complex64"),
+        sampling_rate=4e3,
+        symbol_rate=1e3,
+        # No pulse_shape set
+    )
+    # Should NOT raise, but log an error and return self unchanged
+    result = sig.matched_filter()
+    assert result is sig

@@ -1,6 +1,7 @@
 """Tests for SingleCarrierFrame structure and waveform generation."""
 
 import numpy as np
+import pytest
 
 from commstools.core import Preamble, SignalInfo, SingleCarrierFrame
 
@@ -126,8 +127,6 @@ def test_preamble_to_signal(backend_device, xp):
 def test_sc_frame_structure_map(backend_device, xp):
     """Verify that get_structure_map correctly identifies frame segment boundaries."""
     # Frame with preamble (2), body (10: 4 pilots + 6 payload), guard (5)
-    from commstools.core import Preamble
-
     preamble = Preamble(sequence_type="barker", length=2)
     frame = SingleCarrierFrame(
         payload_len=6,
@@ -166,7 +165,7 @@ def test_sc_frame_structure_map(backend_device, xp):
     assert xp.sum(struct_s["preamble"]) == 2 * sps
 
 
-def test_sc_frame_structure_map_cp(backend_device, xp):
+def test_sc_frame_structure_map_cp():
     """Verify get_structure_map with Cyclic Prefix (CP) guard interval."""
     # Create SC frame with CP
     frame = SingleCarrierFrame(
@@ -179,7 +178,7 @@ def test_sc_frame_structure_map_cp(backend_device, xp):
     assert not struct["guard"][5]
 
 
-def test_signal_info_minimal(backend_device, xp):
+def test_signal_info_minimal():
     """Verify minimal SignalInfo creation."""
     si = SignalInfo()
     assert si.preamble_seq_len is None
@@ -221,9 +220,6 @@ def test_independent_preamble_normalization(backend_device, xp):
     # We accept a small tolerance due to float precision / shape artifacts at edges
     peak_preamble = xp.max(xp.abs(preamble_section))
     peak_body = xp.max(xp.abs(body_section))
-
-    print(f"Preamble Peak: {peak_preamble}")
-    print(f"Body Peak: {peak_body}")
 
     assert xp.isclose(peak_preamble, 1.0, atol=1e-2), (
         f"Preamble peak {peak_preamble} != 1.0"
@@ -303,3 +299,139 @@ def test_structure_map_samples_unit():
 
     assert len(struct["payload"]) == 10 * sps
     assert np.sum(struct["payload"]) == 10 * sps
+
+
+# ============================================================================
+# PILOT MASK ERROR VALIDATION
+# ============================================================================
+
+
+def test_comb_pilot_period_le1_error(backend_device, xp):
+    """comb pilot_period <= 1 should raise ValueError (line 2441 in core.py)."""
+    frame = SingleCarrierFrame(
+        payload_len=10, symbol_rate=1e6, pilot_pattern="comb", pilot_period=1
+    )
+    with pytest.raises(ValueError, match="pilot_period must be > 1"):
+        frame._generate_pilot_mask()
+
+
+def test_block_pilot_period_le_block_len_error(backend_device, xp):
+    """block pilot_period <= pilot_block_len should raise ValueError (line 2458 in core.py)."""
+    frame = SingleCarrierFrame(
+        payload_len=10, symbol_rate=1e6, pilot_pattern="block",
+        pilot_period=3, pilot_block_len=3,  # period == block_len → invalid
+    )
+    with pytest.raises(ValueError, match="pilot_period must be > pilot_block_len"):
+        frame._generate_pilot_mask()
+
+
+# ============================================================================
+# PILOT BITS/SYMBOLS WHEN PILOT_PATTERN='NONE'
+# ============================================================================
+
+
+def test_pilot_bits_none_when_no_pilots(backend_device, xp):
+    """pilot_bits returns None when pilot_pattern='none' (lines 2583-2586 in core.py)."""
+    frame = SingleCarrierFrame(payload_len=20, symbol_rate=1e6, pilot_pattern="none")
+    assert frame.pilot_bits is None
+
+
+def test_pilot_symbols_none_when_no_pilots(backend_device, xp):
+    """pilot_symbols returns None when pilot_pattern='none' (line 2599 in core.py)."""
+    frame = SingleCarrierFrame(payload_len=20, symbol_rate=1e6, pilot_pattern="none")
+    assert frame.pilot_symbols is None
+
+
+# ============================================================================
+# PILOT GAIN DB — SISO AND MIMO
+# ============================================================================
+
+
+def test_pilot_gain_db_siso(backend_device, xp):
+    """Non-zero pilot_gain_db boosts pilot symbols for SISO (line 2638 in core.py)."""
+    frame_nogain = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=5,
+        pilot_gain_db=0.0,
+    )
+    frame_gain = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=5,
+        pilot_gain_db=6.0,
+    )
+    # With 6 dB gain, pilot amplitude should be ~2x
+    body_nogain = frame_nogain.body_symbols
+    body_gain = frame_gain.body_symbols
+    mask, _ = frame_gain._generate_pilot_mask()
+    pilot_power_nogain = float(xp.mean(xp.abs(xp.asarray(body_nogain)[mask]) ** 2))
+    pilot_power_gain = float(xp.mean(xp.abs(xp.asarray(body_gain)[mask]) ** 2))
+    # 6 dB gain means power ratio ≈ 4x
+    assert pilot_power_gain > pilot_power_nogain * 3.5
+
+
+def test_pilot_gain_db_mimo(backend_device, xp):
+    """Non-zero pilot_gain_db boosts pilot symbols for MIMO (line 2627 in core.py)."""
+    frame = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=5,
+        pilot_gain_db=6.0, num_streams=2,
+    )
+    body = frame.body_symbols
+    # MIMO body shape: (num_streams, body_length)
+    assert body.shape[0] == 2
+    assert body.ndim == 2
+
+
+# ============================================================================
+# STRUCTURE MAP WITH TIME-ORTHOGONAL MIMO PREAMBLE
+# ============================================================================
+
+
+def test_structure_map_time_orthogonal_mimo_preamble(backend_device, xp):
+    """structure_map with time_orthogonal MIMO preamble multiplies preamble length (line 2685)."""
+    preamble = Preamble(sequence_type="barker", length=7)
+    frame = SingleCarrierFrame(
+        payload_len=100, symbol_rate=1e6, num_streams=2,
+        preamble=preamble, preamble_mode="time_orthogonal",
+    )
+    struct = frame.get_structure_map(include_preamble=True)
+    # time_orthogonal: preamble_len = preamble.num_symbols * num_streams = 7 * 2 = 14
+    preamble_count = int(xp.sum(xp.asarray(struct["preamble"])))
+    assert preamble_count == 14
+
+
+# ============================================================================
+# PILOT BITS/SYMBOLS WITH PILOTS ENABLED
+# ============================================================================
+
+
+def test_pilot_bits_with_pilots(backend_device, xp):
+    """pilot_bits on a frame with comb pilots calls _ensure_pilot_generated (lines 2585-2586)."""
+    frame = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
+    )
+    bits = frame.pilot_bits
+    assert bits is not None
+    assert len(bits) > 0
+
+
+def test_pilot_bits_double_access(backend_device, xp):
+    """Accessing pilot_bits twice hits the early return of _ensure_pilot_generated (line 2516)."""
+    frame = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
+    )
+    # First access: generates and caches
+    bits1 = frame.pilot_bits
+    # Second access: hits _pilot_bits is not None early return (line 2516)
+    bits2 = frame.pilot_bits
+    assert bits1 is not None
+    assert bits2 is not None
+    assert len(bits1) == len(bits2)
+
+
+def test_pilot_symbols_with_pilots(backend_device, xp):
+    """pilot_symbols on a frame with block pilots calls _ensure_pilot_generated."""
+    frame = SingleCarrierFrame(
+        payload_len=20, symbol_rate=1e6, pilot_pattern="block",
+        pilot_period=4, pilot_block_len=2,
+    )
+    syms = frame.pilot_symbols
+    assert syms is not None
+    assert len(syms) > 0

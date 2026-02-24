@@ -27,12 +27,12 @@ def shift_frequency(
 
     This function shifts the signal spectrum by a specified offset in Hz
     by multiplying the samples with a complex phasor:
-    $s_{shifted}(t) = s(t) \cdot e^{j 2 \pi f_{offset} t}$
+    $s_{shifted}(t) = s(t) \\cdot e^{j 2 \\pi f_{offset} t}$
 
     To maintain phase continuity and prevent spectral leakage when the
     signal is treated as periodic (e.g., in circular convolution or
     FFT-based operations), the applied offset is quantized to the
-    fundamental frequency resolution of the signal ($\Delta f = f_s / N$).
+    fundamental frequency resolution of the signal ($\\Delta f = f_s / N$).
 
     Parameters
     ----------

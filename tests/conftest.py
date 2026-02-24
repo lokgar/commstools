@@ -6,6 +6,10 @@ transparently on both CPU (NumPy) and GPU (CuPy) backends.
 
 import warnings
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import numpy as np
 import pytest
 
