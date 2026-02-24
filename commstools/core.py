@@ -1428,7 +1428,7 @@ class Signal(BaseModel):
 
         sps = int(self.sps)
 
-        if method != "zf" and sps != 2:
+        if method not in ["zf", "rls"] and sps != 2:
             raise ValueError(
                 f"Signal is at {sps} SPS. Adaptive equalizers require 2 SPS "
                 f"(T/2-spaced input) — resample first."

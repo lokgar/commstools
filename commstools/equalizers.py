@@ -152,7 +152,7 @@ def _get_numba_lms():
         if numba_mod is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        @numba_mod.njit(cache=True, fastmath=True)
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
         def lms_loop(
             x_padded,
             training,
@@ -258,7 +258,7 @@ def _get_numba_rls():
         if numba_mod is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        @numba_mod.njit(cache=True, fastmath=True)
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
         def rls_loop(
             x_padded,
             training,
@@ -295,7 +295,6 @@ def _get_numba_rls():
             N = C * num_taps  # regressor dimension
             M = len(constellation)
 
-            X_wins = np.empty((C, num_taps), dtype=np.complex64)
             x_bar = np.empty(N, dtype=np.complex64)
             Px = np.empty(N, dtype=np.complex64)
             xH_P = np.empty(N, dtype=np.complex64)
@@ -303,25 +302,23 @@ def _get_numba_rls():
             y = np.empty(C, dtype=np.complex64)
             e = np.empty(C, dtype=np.complex64)
 
+            lam_f32 = np.float32(lam)
+            leak_term = np.float32(1.0) - np.float32(leakage)
+
             for idx in range(n_sym):
                 sample_idx = idx * stride
 
-                # Window extraction
-                for c in range(C):
-                    for t in range(num_taps):
-                        X_wins[c, t] = x_padded[c, sample_idx + t]
-
-                # Flatten regressor: x_bar[j*T+t] = X_wins[j, t]
+                # Flatten regressor directly from input
                 for j in range(C):
                     for t in range(num_taps):
-                        x_bar[j * num_taps + t] = X_wins[j, t]
+                        x_bar[j * num_taps + t] = x_padded[j, sample_idx + t]
 
                 # Butterfly forward pass
                 for i in range(C):
                     acc = np.complex64(0.0)
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
+                            acc = acc + np.conj(W[i, j, t]) * x_bar[j * num_taps + t]
                     y[i] = acc
                     y_out[idx, i] = acc
 
@@ -343,20 +340,17 @@ def _get_numba_rls():
                     e_out[idx, i] = e[i]
 
                 # Kalman gain: Px = P @ x_bar
-                for ii in range(N):
-                    acc_p = np.complex64(0.0)
-                    for jj in range(N):
-                        acc_p = acc_p + P[ii, jj] * x_bar[jj]
-                    Px[ii] = acc_p
+                Px = np.dot(P, x_bar)
 
                 # denom = λ + real(conj(x_bar) · Px)
-                denom = np.float32(lam)
+                denom = lam_f32
                 for jj in range(N):
                     denom = denom + (np.conj(x_bar[jj]) * Px[jj]).real
 
                 # k = Px / denom
+                inv_denom = np.float32(1.0) / denom
                 for ii in range(N):
-                    k[ii] = Px[ii] / denom
+                    k[ii] = Px[ii] * inv_denom
 
                 if idx < n_update_halt:
                     # Leaky W update: W[i,j,t] = (1−γ)W[i,j,t] + k[j*T+t]*conj(e[i])
@@ -364,21 +358,20 @@ def _get_numba_rls():
                         ce_i = np.conj(e[i])
                         for j in range(C):
                             for t in range(num_taps):
-                                W[i, j, t] = (np.float32(1.0) - leakage) * W[
-                                    i, j, t
-                                ] + k[j * num_taps + t] * ce_i
+                                W[i, j, t] = (
+                                    leak_term * W[i, j, t] + k[j * num_taps + t] * ce_i
+                                )
 
-                    # xH_P = conj(x_bar) @ P  (row vector)
+                    # Hermitian symmetry reduction: P is Hermitian, so x^H P = (P^H x)^H = (P x)^H
+                    # We already computed Px = P @ x_bar. Thus xH_P is simply conj(Px),
+                    # reducing the Riccati rank-1 update complexity by O(N^2).
                     for jj in range(N):
-                        acc_p = np.complex64(0.0)
-                        for ii in range(N):
-                            acc_p = acc_p + np.conj(x_bar[ii]) * P[ii, jj]
-                        xH_P[jj] = acc_p
+                        xH_P[jj] = np.conj(Px[jj])
 
                     # Riccati: P = (P - outer(k, xH_P)) / λ
                     for ii in range(N):
                         for jj in range(N):
-                            P[ii, jj] = (P[ii, jj] - k[ii] * xH_P[jj]) / lam
+                            P[ii, jj] = (P[ii, jj] - k[ii] * xH_P[jj]) / lam_f32
 
                 if store_weights:
                     for i in range(C):
@@ -403,7 +396,7 @@ def _get_numba_cma():
         if numba_mod is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        @numba_mod.njit(cache=True, fastmath=True)
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
         def cma_loop(
             x_padded,
             W,
@@ -561,10 +554,9 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
             def step(W, idx):
                 sample_idx = idx * stride
 
-                def get_win(ch):
-                    return jax.lax.dynamic_slice(ch, (sample_idx,), (num_taps,))
-
-                X_wins = jax.vmap(get_win)(x_input)  # (C, num_taps)
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )
 
                 # Butterfly: y_i = sum_j conj(W[i,j]) . X_wins[j]
                 y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
@@ -663,10 +655,9 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
                 W, P = carry
                 sample_idx = idx * stride
 
-                def get_win(ch):
-                    return jax.lax.dynamic_slice(ch, (sample_idx,), (num_taps,))
-
-                X_wins = jax.vmap(get_win)(x_input)  # (C, num_taps)
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )
 
                 y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
 
@@ -680,7 +671,7 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
                 x_bar = X_wins.flatten()  # (C * num_taps,)
 
                 Px = P @ x_bar
-                denom = lam + jnp.dot(jnp.conj(x_bar), Px)
+                denom = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px))
                 k = Px / denom
 
                 def w_update(w_row, err_val):
@@ -693,7 +684,9 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
 
                 W_upd = jax.vmap(w_update)(W, e)
                 # Standard Riccati update — no diagonal loading on P.
-                P_upd = (P - jnp.outer(k, jnp.conj(x_bar) @ P)) / lam
+                # Exploit Hermitian symmetry: x^H P = (P^H x)^H = (P x)^H = conj(Px)^T
+                # Reduces Riccati update by an O(N^2) mat-vec multiplication.
+                P_upd = (P - jnp.outer(k, jnp.conj(Px))) / lam
 
                 # Early halt: freeze W and P once the sliding window begins
                 # overlapping the right zero-padding (last num_taps//2 symbols).
@@ -757,10 +750,9 @@ def _get_jax_cma(num_taps, stride, num_ch):
             def step(W, idx):
                 sample_idx = idx * stride
 
-                def get_win(ch):
-                    return jax.lax.dynamic_slice(ch, (sample_idx,), (num_taps,))
-
-                X_wins = jax.vmap(get_win)(x_input)  # (C, num_taps)
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )
                 y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
 
                 # CMA error: e_i = y_i * (|y_i|^2 - R2)
@@ -1237,7 +1229,7 @@ def lms(
         Index of the center tap. If None, defaults to ``num_taps // 2``.
     backend : str, default 'numba'
         Execution backend. ``'numba'`` compiles the sequential loop with LLVM
-        via Numba ``@njit``; typically 2–5× faster than JAX on CPU for
+        via Numba ``@njit``; typically 2-5x faster than JAX on CPU for
         SISO/small-MIMO signals (no scan serialization overhead).
         ``'jax'`` uses ``jax.lax.scan`` and supports GPU placement and
         automatic differentiation through the equalizer.
@@ -1256,7 +1248,7 @@ def lms(
     The per-step arithmetic (a ``num_taps``-length dot product) is far too
     small to saturate GPU compute units, while kernel-launch and
     device-memory-transfer overhead dominate.  In practice, ``device='cpu'``
-    is 2–10× faster for typical SISO sequences up to ~100 k symbols.  Use
+    is 2-10x faster for typical SISO sequences up to ~100 k symbols.  Use
     ``device='gpu'`` only when the number of MIMO channels (``num_ch``) is
     large enough to amortize GPU launch costs, or when batching many
     independent signals externally.  For CPU-optimal throughput use
@@ -1544,7 +1536,7 @@ def rls(
         )
 
     logger.info(
-        f"RLS equalizer: num_taps={num_taps}, lambda={forgetting_factor}, "
+        f"RLS equalizer: num_taps={num_taps}, forgetting_factor={forgetting_factor}, "
         f"delta={delta:.2e}, leakage={leakage:.2e}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
     )
@@ -2077,12 +2069,34 @@ def zf_equalizer(
         HHh = Hk @ Hk_H
 
         eye = xp.eye(num_ch, dtype=samples.dtype)[None, :, :]
-        inv_term = xp.linalg.inv(HHh + reg * eye)
+        if num_ch == 2:
+            # Fast-path: Explicit 2x2 matrix inversion via Cramer's Rule avoiding
+            # GPU LAPACK solver overheads (e.g. cuSOLVER batch inversion).
+            H_reg = HHh + reg * eye
+            a = H_reg[:, 0, 0]
+            b = H_reg[:, 0, 1]
+            c = H_reg[:, 1, 0]
+            d = H_reg[:, 1, 1]
+            det = a * d - b * c
+
+            inv_term = xp.empty_like(H_reg)
+            inv_term[:, 0, 0] = d / det
+            inv_term[:, 0, 1] = -b / det
+            inv_term[:, 1, 0] = -c / det
+            inv_term[:, 1, 1] = a / det
+        else:
+            inv_term = xp.linalg.inv(HHh + reg * eye)
+
         Wk = Hk_H @ inv_term
 
         # Wk: (N_fft, num_ch, num_ch), Y: (num_ch, num_blocks, N_fft)
         # Vectorized batch matrix multiplication across frequency bins and blocks
-        X_hat_f = xp.einsum("k c j, j b k -> c b k", Wk, Y)
+        # using explicit batched GEMM instead of einsum for better GPU utilization
+        Y_t = xp.transpose(Y, (2, 0, 1))  # (N_fft, num_ch, num_blocks)
+        X_hat_k = (
+            Wk @ Y_t
+        )  # (N_fft, num_ch, num_ch) @ (N_fft, num_ch, num_blocks) -> (N_fft, num_ch, num_blocks)
+        X_hat_f = xp.transpose(X_hat_k, (1, 2, 0))  # -> (num_ch, num_blocks, N_fft)
 
     # IFFT back to time domain
     x_hat = xp.fft.ifft(X_hat_f, n=N_fft, axis=-1)
