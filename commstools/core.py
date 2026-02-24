@@ -1236,9 +1236,9 @@ class Signal(BaseModel):
         num_taps: int = 21,
         step_size: float = 0.01,
         store_weights: bool = False,
-        block_size: int = 1,
         center_tap: Optional[int] = None,
         device: Optional[str] = "cpu",
+        backend: Optional[str] = "numba",
         # ── training control ───────────────────────────────────────────────
         training_symbols: Optional[ArrayType] = None,
         num_train_symbols: Optional[int] = None,
@@ -1304,7 +1304,7 @@ class Signal(BaseModel):
             - **LMS**: normalized step in ``(0, 2)``; see
               :func:`~commstools.equalizers.lms` for the stability derivation.
               Larger values converge faster but increase steady-state
-              misadjustment. Typical: 0.01–0.1.
+              misadjustment. Typical: 0.01-0.1.
             - **CMA**: fixed step on the non-convex Godard surface; must be
               kept small (1e-5 to 1e-3) for stability. Unlike LMS, there is
               no input-power normalization.
@@ -1314,14 +1314,7 @@ class Signal(BaseModel):
             If ``True``, the full tap-weight trajectory is stored in
             ``signal._equalizer_result.weights_history``, enabling
             convergence analysis and debugging. Incurs extra memory cost
-            proportional to ``num_symbols × num_taps``.
-            *Applies to: lms, rls, cma.*
-        block_size : int, default 1
-            Number of symbols processed per weight update.
-            ``block_size=1`` is the classical sample-by-sample update.
-            Larger values (8–64) reduce ``lax.scan`` loop iterations,
-            improving GPU throughput at the cost of slower adaptation. For
-            CMA, keep ``block_size ≤ 32`` due to the non-convex cost surface.
+            proportional to ``num_symbols x num_taps``.
             *Applies to: lms, rls, cma.*
         center_tap : int, optional
             Index of the center (decision-delay) tap. Defaults to
@@ -1330,7 +1323,10 @@ class Signal(BaseModel):
         device : {"cpu", "gpu"}, optional
             Force JAX computation to run on the specified device regardless
             of where the input samples reside. Default is "cpu".
+            Ignored when ``backend="numba"``.
             *Applies to: lms, rls, cma.*
+        backend : {"numba", "jax"}, default "numba"
+            Computational backend for the equalization algorithm.
         training_symbols : array_like, optional
             External training sequence to use instead of
             ``signal.source_symbols``. Shape ``(N_train,)`` for SISO or
@@ -1351,14 +1347,14 @@ class Signal(BaseModel):
             at the cost of higher estimation noise. *Applies to: rls.*
         delta : float, default 0.01
             RLS initialisation regularisation. The inverse correlation matrix
-            is initialised as ``P = (1/delta) × I``. Larger values impose a
+            is initialised as ``P = (1/delta) x I``. Larger values impose a
             stronger prior toward zero weights and slow initial convergence;
             smaller values allow faster start-up at the risk of early
             numerical instability on ill-conditioned channels.
             *Applies to: rls.*
         leakage : float, default 0.0
             Diagonal loading coefficient for Leaky RLS. At every step,
-            ``leakage × I`` is added to the P matrix after the rank-1
+            ``leakage x I`` is added to the P matrix after the rank-1
             downdate, flooring its minimum eigenvalue and preventing
             null-subspace modes (noise-only bands in T/2-spaced signals)
             from being amplified into the equalizer weights. Use ``0.0``
@@ -1450,13 +1446,13 @@ class Signal(BaseModel):
                 num_taps=num_taps,
                 step_size=step_size,
                 store_weights=store_weights,
-                block_size=block_size,
                 center_tap=center_tap,
                 device=device,
                 num_train_symbols=num_train_symbols,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
+                backend=backend,
             )
         elif method == "rls":
             result = equalizers.rls(
@@ -1468,13 +1464,13 @@ class Signal(BaseModel):
                 delta=delta,
                 leakage=leakage,
                 store_weights=store_weights,
-                block_size=block_size,
                 center_tap=center_tap,
                 device=device,
                 num_train_symbols=num_train_symbols,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
+                backend=backend,
             )
         elif method == "cma":
             result = equalizers.cma(
@@ -1483,12 +1479,12 @@ class Signal(BaseModel):
                 num_taps=num_taps,
                 step_size=step_size,
                 store_weights=store_weights,
-                block_size=block_size,
                 center_tap=center_tap,
                 device=device,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
+                backend=backend,
             )
         elif method == "zf":
             if channel_estimate is None:
