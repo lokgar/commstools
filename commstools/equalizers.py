@@ -1551,7 +1551,6 @@ def rls(
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
-    _validate_sps(sps, num_taps)
 
     if training_symbols is not None:
         training_symbols, _, _ = dispatch(training_symbols)
