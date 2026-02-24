@@ -373,6 +373,17 @@ def _get_numba_rls():
                         for jj in range(N):
                             P[ii, jj] = (P[ii, jj] - k[ii] * xH_P[jj]) / lam_f32
 
+                    # Hermitian re-symmetrization: P ← (P + Pᴴ)/2
+                    # The 1/λ division amplifies asymmetry from FP rounding each
+                    # step. Without re-symmetrization, accumulated asymmetry
+                    # causes P eigenvalues to diverge in float32 for λ < 1.
+                    for ii in range(N):
+                        for jj in range(ii + 1, N):
+                            avg = (P[ii, jj] + np.conj(P[jj, ii])) * np.float32(0.5)
+                            P[ii, jj] = avg
+                            P[jj, ii] = np.conj(avg)
+                        P[ii, ii] = np.complex64(P[ii, ii].real)
+
                 if store_weights:
                     for i in range(C):
                         for j in range(C):
@@ -687,6 +698,9 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
                 # Exploit Hermitian symmetry: x^H P = (P^H x)^H = (P x)^H = conj(Px)^T
                 # Reduces Riccati update by an O(N^2) mat-vec multiplication.
                 P_upd = (P - jnp.outer(k, jnp.conj(Px))) / lam
+                # Hermitian re-symmetrization: P ← (P + Pᴴ)/2
+                # Prevents asymmetry drift from the 1/λ amplification.
+                P_upd = jnp.float32(0.5) * (P_upd + jnp.conj(P_upd).T)
 
                 # Early halt: freeze W and P once the sliding window begins
                 # overlapping the right zero-padding (last num_taps//2 symbols).
@@ -1472,8 +1486,49 @@ def rls(
         RLS forgetting factor (lambda). Range: (0, 1].
         Values close to 1 give longer memory.
     delta : float, default 0.01
-        Regularization for initial inverse correlation matrix
-        ``P = (1/delta) * I``.
+        Tikhonov regularisation coefficient that seeds the inverse correlation
+        matrix as ``P₀ = (1/delta) · I``.
+
+        **Physical interpretation.**  RLS recursively refines a running estimate
+        of ``Rxx⁻¹``, where ``Rxx = E[x xᴴ]`` is the input auto-correlation
+        matrix.  Before any data have been observed, ``P`` must be initialised
+        to some positive-definite matrix.  Choosing ``P₀ = (1/delta) · I``
+        is equivalent to assuming a fictitious prior with `delta` units of
+        regularisation energy per tap — a textbook Tikhonov (ridge) prior on
+        the tap vector with regularisation parameter ``delta``.
+
+        **Effect on convergence.**
+
+        * **Large delta** (e.g. 1.0): ``P₀`` is small → the first Kalman gain
+          vectors ``k = P x / (λ + xᴴ P x)`` are small → the equalizer adapts
+          sluggishly over the first tens of symbols.  Once enough data are seen
+          the bias disappears, so this is safe when a long training sequence is
+          available and numerical robustness is the priority.
+        * **Small delta** (e.g. 1e-4): ``P₀ = (1/delta) · I`` is a large matrix
+          → ``k`` is large for the first symbols → the equalizer converges in
+          very few symbols but the weight update is dominated by noise on those
+          first few observations, potentially requiring more symbols to settle.
+          Extremely small values (< 1e-5) risk numerical overflow of ``P``
+          before the Riccati update can contract it.
+
+        **Sensitivity to signal power.**  The code normalises input samples to
+        unit symbol-rate power before running the Riccati recursion, so
+        ``delta`` is expressed in normalised units (≈ noise variance scale) and
+        is not sensitive to the raw signal amplitude.
+
+        **Practical guidelines.**
+
+        * **Training-aided mode** (``training_symbols`` provided): the default
+          ``delta=0.01`` works well for most symbol rates and SNR regimes.
+          Increase toward 1.0 if tap weights oscillate wildly during the first
+          training symbols; decrease toward 1e-3 if convergence is slow and
+          your training block is short.
+        * **Decision-directed (DD) only**: prefer ``delta=1.0`` and rely on the
+          forgetting factor to drive convergence, keeping ``P`` bounded.
+        * **Fractionally-spaced signals** (``sps=2``, with ``leakage > 0``):
+          larger ``delta`` (0.1–1.0) helps counteract the positive-feedback
+          tendency of the unbounded ``P`` eigenvalues in the null sub-space.
+          Pair with ``leakage=1e-4`` for structural stability.
     leakage : float, default 0.0
         Weight-decay coefficient (γ) applied to the tap vector at every step::
 
