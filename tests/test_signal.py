@@ -365,7 +365,7 @@ def test_signal_wrappers(backend_device, xp):
 
 
 def test_signal_duration_mimo(backend_device, xp):
-    """Verify duration property for MIMO (2D) signal (line 583)."""
+    """Verify duration property for MIMO (2D) signal."""
     data = xp.zeros((2, 200))
     s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0)
     assert s.duration == 2.0  # 200 / 100
@@ -381,7 +381,7 @@ def test_signal_bits_per_symbol_set(backend_device, xp):
 
 
 def test_rzpam_odd_sps(backend_device, xp):
-    """Verify RZ-PAM raises error for odd SPS (line 1344-1345)."""
+    """Verify RZ-PAM raises error for odd SPS."""
     with pytest.raises(ValueError, match="sps.*must be even"):
         Signal.pam(
             order=2,
@@ -393,7 +393,7 @@ def test_rzpam_odd_sps(backend_device, xp):
 
 
 def test_rzpam_multi_stream(backend_device, xp):
-    """Verify RZ-PAM multi-stream reshape (lines 1367-1369)."""
+    """Verify RZ-PAM multi-stream reshape produces correctly shaped multichannel output."""
     sig = Signal.pam(
         order=2,
         num_symbols=10,
@@ -411,7 +411,7 @@ def test_rzpam_multi_stream(backend_device, xp):
 
 
 def test_resolve_symbols_sps_errors(backend_device, xp):
-    """Verify resolve_symbols error paths (lines 1579-1591)."""
+    """Verify resolve_symbols error paths for invalid SPS values."""
     # SPS < 1 (symbol_rate > sampling_rate)
     s = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=2.0
@@ -438,7 +438,7 @@ def test_demap_without_modulation(backend_device, xp):
 
 
 def test_evm_no_reference(backend_device, xp):
-    """Verify evm raises when no reference is available (lines 1731-1735)."""
+    """Verify evm raises when no reference is available."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0
     )
@@ -448,7 +448,7 @@ def test_evm_no_reference(backend_device, xp):
 
 
 def test_evm_no_resolved(backend_device, xp):
-    """Verify evm raises when no resolved_symbols (lines 1737-1741)."""
+    """Verify evm raises when no resolved_symbols are present."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"),
         sampling_rate=1.0,
@@ -460,7 +460,7 @@ def test_evm_no_resolved(backend_device, xp):
 
 
 def test_snr_no_reference(backend_device, xp):
-    """Verify snr raises when no reference is available (lines 1777-1781)."""
+    """Verify snr raises when no reference is available."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0
     )
@@ -470,7 +470,7 @@ def test_snr_no_reference(backend_device, xp):
 
 
 def test_snr_no_resolved(backend_device, xp):
-    """Verify snr raises when no resolved_symbols (lines 1783-1787)."""
+    """Verify snr raises when no resolved_symbols are present."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"),
         sampling_rate=1.0,
@@ -482,7 +482,7 @@ def test_snr_no_resolved(backend_device, xp):
 
 
 def test_ber_no_reference(backend_device, xp):
-    """Verify ber raises when no reference bits available (line 1823)."""
+    """Verify ber raises when no reference bits are available."""
     s = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=1.0
     )
@@ -611,12 +611,12 @@ def test_evm_with_rls_tail_trim_and_training_discard(backend_device, xp):
     )
     rx.resolve_symbols()
 
-    # EVM with discard_training=True triggers the trim path (lines 2031-2034)
+    # EVM with discard_training=True triggers the trim path
     evm_pct, evm_db = rx.evm(discard_training=True)
     assert np.isfinite(float(evm_db))
     assert float(evm_pct) > 0
 
-    # EVM with discard_training=False still has _num_tail_trim (lines 2028)
+    # EVM with discard_training=False still applies _num_tail_trim
     evm_pct2, evm_db2 = rx.evm(discard_training=False)
     assert np.isfinite(float(evm_db2))
     assert float(evm_pct2) > 0
@@ -758,8 +758,7 @@ def test_plot_constellation_show(backend_device, xp):
 
 
 def test_plot_constellation_overlay_source_siso(backend_device, xp):
-    """SISO signal with overlay_source=True uses the single-axes scatter path (core.py line 890)."""
-    # SISO signal with source_symbols set (at sps=1 so samples == symbols shape)
+    """SISO signal with overlay_source=True uses the single-axes scatter path."""
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=1, seed=0
     )
@@ -769,3 +768,83 @@ def test_plot_constellation_overlay_source_siso(backend_device, xp):
     result = sig.plot_constellation(overlay_source=True, show=False)
     assert result is not None
     plt.close("all")
+
+
+# ============================================================================
+# FACTORY METHOD TESTS
+# ============================================================================
+
+
+def test_pam_waveform(backend_device, xp):
+    """Verify basic PAM signal generation produces samples on the active device."""
+    sig = Signal.pam(order=2, unipolar=False, num_symbols=10, sps=4, symbol_rate=1e3)
+    assert sig.samples.size > 0
+    assert isinstance(sig.samples, xp.ndarray)
+    assert sig.mod_scheme is not None
+
+
+def test_rzpam_waveform(backend_device, xp):
+    """Verify Return-to-Zero PAM signal generation and pulse-shape validation."""
+    sig = Signal.pam(
+        order=2,
+        unipolar=False,
+        num_symbols=10,
+        sps=4,
+        symbol_rate=1e3,
+        rz=True,
+        pulse_shape="rect",
+    )
+    assert sig.samples.size > 0
+    assert isinstance(sig.samples, xp.ndarray)
+
+    with pytest.raises(ValueError, match="not allowed for RZ PAM"):
+        Signal.pam(
+            order=2,
+            unipolar=False,
+            num_symbols=10,
+            sps=4,
+            symbol_rate=1e3,
+            rz=True,
+            pulse_shape="rrc",
+        )
+
+
+def test_qam_waveform(backend_device, xp):
+    """Verify QAM signal generation populates samples and modulation metadata."""
+    sig = Signal.qam(order=16, num_symbols=10, sps=4, symbol_rate=1e3)
+    assert sig.samples.size > 0
+    assert isinstance(sig.samples, xp.ndarray)
+    assert sig.mod_order == 16
+
+
+def test_psk_waveform(backend_device, xp):
+    """Verify PSK signal generation, metadata, and unit-magnitude constellation."""
+    sig = Signal.psk(order=8, num_symbols=50, sps=2, symbol_rate=1e6, seed=0)
+    assert sig.samples.size > 0
+    assert isinstance(sig.samples, xp.ndarray)
+    assert sig.mod_order == 8
+    assert sig.mod_scheme is not None
+    # All PSK symbols should lie on the unit circle
+    syms = sig.source_symbols
+    if syms is not None:
+        magnitudes = xp.abs(syms)
+        assert xp.allclose(magnitudes, xp.ones_like(magnitudes), atol=1e-5)
+
+
+def test_signal_generate(backend_device, xp):
+    """Verify Signal.generate() produces correct metadata for any modulation."""
+    sig = Signal.generate(
+        num_symbols=100,
+        sps=4,
+        symbol_rate=1e6,
+        modulation="qam",
+        order=16,
+        pulse_shape="rrc",
+        seed=1,
+    )
+    assert sig.samples.size > 0
+    assert isinstance(sig.samples, xp.ndarray)
+    assert sig.symbol_rate == 1e6
+    assert sig.mod_order == 16
+    assert sig.source_bits is not None
+    assert sig.source_symbols is not None

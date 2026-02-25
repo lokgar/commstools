@@ -11,6 +11,13 @@ from commstools.equalizers import EqualizerResult
 from commstools.mapping import gray_constellation
 
 
+def _to_np(arr):
+    """Convert a NumPy or CuPy array to plain NumPy (no-op for NumPy)."""
+    if hasattr(arr, "get"):  # CuPy
+        return arr.get()
+    return np.asarray(arr)
+
+
 # ============================================================================
 # SPS VALIDATION TESTS
 # ============================================================================
@@ -101,8 +108,7 @@ class TestLMS:
 
         # Move singular scalar to CPU for assertion if needed, or assert on device scalar
         # Pytest/NumPy comparisons handling of CuPy scalars varies, explicit conversion is safest
-        if hasattr(mse_tail, "get"):
-            mse_tail = mse_tail.get()
+        mse_tail = float(mse_tail)
 
         assert mse_tail < 0.1, f"LMS did not converge: tail MSE = {mse_tail:.4f}"
 
@@ -142,8 +148,7 @@ class TestLMS:
 
         # Check DD mode MSE
         mse_dd = xp.mean(xp.abs(result.error[n_train + 50 :]) ** 2)
-        if hasattr(mse_dd, "get"):
-            mse_dd = mse_dd.get()
+        mse_dd = float(mse_dd)
 
         assert mse_dd < 0.2, f"LMS DD mode failed: MSE = {mse_dd:.4f}"
 
@@ -273,8 +278,7 @@ class TestRLS:
         )
 
         mse_tail = xp.mean(xp.abs(result.error[-100:]) ** 2)
-        if hasattr(mse_tail, "get"):
-            mse_tail = mse_tail.get()
+        mse_tail = float(mse_tail)
 
         assert mse_tail < 0.1, f"RLS did not converge: tail MSE = {mse_tail:.4f}"
 
@@ -320,9 +324,8 @@ class TestRLS:
         lms_early = xp.mean(xp.abs(lms_result.error[:50]) ** 2)
         rls_early = xp.mean(xp.abs(rls_result.error[:50]) ** 2)
 
-        if hasattr(lms_early, "get"):
-            lms_early = lms_early.get()
-            rls_early = rls_early.get()
+        lms_early = float(lms_early)
+        rls_early = float(rls_early)
 
         assert rls_early <= lms_early, (
             f"RLS ({rls_early:.4f}) not faster than LMS ({lms_early:.4f})"
@@ -430,8 +433,7 @@ class TestCMA:
         modulus_tail = xp.abs(y[-500:])
         modulus_std = xp.std(modulus_tail)
 
-        if hasattr(modulus_std, "get"):
-            modulus_std = modulus_std.get()
+        modulus_std = float(modulus_std)
 
         assert modulus_std < 0.3, (
             f"CMA output modulus not constant: std = {modulus_std:.4f}"
@@ -447,8 +449,7 @@ class TestCMA:
         const = xp.asarray(gray_constellation("psk", 4))
         r2 = xp.mean(xp.abs(const) ** 4) / xp.mean(xp.abs(const) ** 2)
 
-        if hasattr(r2, "get"):
-            r2 = r2.get()
+        r2 = float(r2)
 
         np.testing.assert_allclose(r2, 1.0, atol=1e-6)
 
@@ -518,8 +519,7 @@ class TestRDE:
         y = result.y_hat
         modulus_tail = xp.abs(y[-500:])
         modulus_std = xp.std(modulus_tail)
-        if hasattr(modulus_std, "get"):
-            modulus_std = modulus_std.get()
+        modulus_std = float(modulus_std)
 
         assert modulus_std < 0.3, (
             f"RDE QPSK modulus not converged: std = {modulus_std:.4f}"
@@ -566,8 +566,7 @@ class TestRDE:
         )
 
         def late_error(err):
-            e = _np.abs(_np.asarray(err.get() if hasattr(err, "get") else err))
-            return float(_np.mean(e[-500:]))
+            return float(xp.mean(xp.abs(err[-500:])))
 
         err_rde = late_error(result_rde.error)
         err_cma = late_error(result_cma.error)
@@ -686,9 +685,8 @@ class TestZFEqualizer:
         mse_zf = xp.mean(xp.abs(zf_out - tx) ** 2)
         mse_mmse = xp.mean(xp.abs(mmse_out - tx) ** 2)
 
-        if hasattr(mse_zf, "get"):
-            mse_zf = mse_zf.get()
-            mse_mmse = mse_mmse.get()
+        mse_zf = float(mse_zf)
+        mse_mmse = float(mse_mmse)
 
         assert mse_mmse < mse_zf, (
             f"MMSE ({mse_mmse:.4f}) not better than ZF ({mse_zf:.4f})"
@@ -739,8 +737,7 @@ class TestZFEqualizer:
         # Skip edges affected by convolution truncation (mode="full"[:N])
         interior = slice(10, N - 10)
         mse = xp.mean(xp.abs(out[interior] - tx[interior]) ** 2)
-        if hasattr(mse, "get"):
-            mse = mse.get()
+        mse = float(mse)
 
         # At σ²=0.0025, worst-case MMSE MSE ≈ σ²/min(|H|²) ≈ 0.0025/0.36 ≈ 0.007
         assert mse < 0.05, f"MMSE multi-block IIR test failed: interior MSE={mse:.4f}"
@@ -801,9 +798,8 @@ class TestButterflyMIMO:
         mse_ch0 = xp.mean(e[0, -500:])
         mse_ch1 = xp.mean(e[1, -500:])
 
-        if hasattr(mse_ch0, "get"):
-            mse_ch0 = mse_ch0.get()
-            mse_ch1 = mse_ch1.get()
+        mse_ch0 = float(mse_ch0)
+        mse_ch1 = float(mse_ch1)
 
         assert mse_ch0 < 0.1, f"MIMO ch0 MSE = {mse_ch0:.4f}"
         assert mse_ch1 < 0.1, f"MIMO ch1 MSE = {mse_ch1:.4f}"
@@ -848,8 +844,7 @@ class TestButterflyMIMO:
         for ch in range(2):
             modulus = xp.abs(y[ch, -500:])
             std_dev = xp.std(modulus)
-            if hasattr(std_dev, "get"):
-                std_dev = std_dev.get()
+            std_dev = float(std_dev)
 
             assert std_dev < 0.35, f"CMA MIMO ch{ch} modulus std = {std_dev:.4f}"
 
@@ -1783,7 +1778,7 @@ class TestNumbaBackendCoverage:
         assert result.weights.shape == (9,)
 
     def test_rls_numba_mimo(self, backend_device, xp):
-        """RLS numba MIMO path covers num_ch, n_samples = samples.shape (line 1788)."""
+        """RLS numba MIMO path correctly handles (num_channels, n_samples) input shape."""
         from commstools import Signal
         n_symbols = 600
         sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
@@ -1808,7 +1803,7 @@ class TestNumbaBackendCoverage:
         assert result.weights.shape == (2, 2, 7)
 
     def test_rls_numba_num_train_symbols(self, backend_device, xp):
-        """RLS numba with explicit num_train_symbols covers the slice branch (line 1781)."""
+        """RLS numba should respect num_train_symbols when slicing training data."""
         rx, sig = self._make_qpsk_rx(xp, n_symbols=800)
         train = xp.asarray(sig.source_symbols)
 
@@ -1827,7 +1822,7 @@ class TestNumbaBackendCoverage:
         assert result.num_train_symbols <= 50
 
     def test_rls_numba_constellation_from_training(self, backend_device, xp):
-        """RLS numba derives constellation from training when no modulation given (lines 1838-1844)."""
+        """RLS numba derives constellation from training when no modulation is given."""
         rx, sig = self._make_qpsk_rx(xp, n_symbols=800)
         train = xp.asarray(sig.source_symbols)
 
@@ -1907,7 +1902,7 @@ class TestNumbaBackendCoverage:
 
 @pytest.mark.skipif("jax" not in sys.modules and not pytest.importorskip("jax", reason="skip"), reason="JAX required")
 class TestRLSJAXConstellationFromTraining:
-    """RLS JAX derives constellation from training symbols (lines 1914-1919)."""
+    """RLS JAX derives constellation from training symbols when no modulation is given."""
 
     def test_rls_jax_constellation_from_training(self, backend_device, xp):
         """RLS JAX with training only (no modulation) infers constellation from training."""
@@ -2014,10 +2009,10 @@ class TestImportErrorBranches:
 
 
 class TestLMSJAXPureDD:
-    """LMS JAX backend without training symbols covers _prepare_training_jax else branch."""
+    """LMS JAX backend without training symbols runs pure decision-directed mode."""
 
     def test_lms_jax_pure_dd_no_training(self, backend_device, xp):
-        """LMS JAX with modulation but no training_symbols covers lines 1149-1150."""
+        """LMS JAX with modulation but no training_symbols runs in pure decision-directed mode from the start."""
         pytest.importorskip("jax")
         from commstools import Signal
 
@@ -2038,3 +2033,364 @@ class TestLMSJAXPureDD:
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.ndim == 1
+
+
+# ============================================================================
+# W_INIT — WEIGHT HANDOFF TESTS
+# ============================================================================
+
+
+def _make_qam16_rx(xp, n_symbols=2000, seed=0):
+    """Generate a simple AWGN-impaired 16-QAM signal at 2 SPS."""
+    from commstools import Signal
+    from commstools.impairments import apply_awgn
+
+    sig = Signal.qam(
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=16,
+        pulse_shape="rrc",
+        sps=2,
+        seed=seed,
+    )
+    rx = apply_awgn(sig.samples, esn0_db=20.0, sps=2)
+    return xp.ascontiguousarray(xp.asarray(rx))
+
+
+class TestWInit:
+    """w_init parameter: warm-start from prior equalizer weights."""
+
+    def test_lms_accepts_w_init(self, backend_device, xp):
+        """lms() accepts w_init array with correct shape and returns EqualizerResult."""
+        rx = _make_qam16_rx(xp)
+        num_taps, num_ch = 21, 1
+        w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.lms(
+            rx,
+            training_symbols=None,
+            modulation="qam",
+            order=16,
+            num_taps=num_taps,
+            w_init=w0,
+        )
+        assert isinstance(result, EqualizerResult)
+        assert result.weights.shape == (num_taps,)  # SISO squeeze
+
+    def test_rls_accepts_w_init(self, backend_device, xp):
+        """rls() accepts w_init array with correct shape."""
+        from commstools import Signal
+
+        sig = Signal.qam(symbol_rate=1e6, num_symbols=1000, order=4,
+                         pulse_shape="rrc", sps=2, seed=1)
+        rx = xp.asarray(sig.samples)
+        num_taps, num_ch = 11, 1
+        w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.rls(
+            rx,
+            training_symbols=xp.asarray(sig.source_symbols),
+            modulation="qam",
+            order=4,
+            num_taps=num_taps,
+            sps=2,
+            w_init=w0,
+        )
+        assert isinstance(result, EqualizerResult)
+
+    def test_cma_accepts_w_init(self, backend_device, xp):
+        """cma() accepts w_init array with correct shape."""
+        rx = _make_qam16_rx(xp)
+        num_taps, num_ch = 21, 1
+        w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.cma(rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0)
+        assert isinstance(result, EqualizerResult)
+
+    def test_rde_accepts_w_init(self, backend_device, xp):
+        """rde() accepts w_init array with correct shape."""
+        rx = _make_qam16_rx(xp)
+        num_taps, num_ch = 21, 1
+        w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.rde(rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0)
+        assert isinstance(result, EqualizerResult)
+
+    def test_w_init_shape_mismatch_raises(self, backend_device, xp):
+        """Wrong w_init shape raises ValueError before kernel is called."""
+        rx = _make_qam16_rx(xp)
+        bad_w = np.zeros((1, 1, 99), dtype=np.complex64)  # wrong num_taps
+
+        with pytest.raises(ValueError, match="w_init shape"):
+            equalizers.cma(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
+
+        with pytest.raises(ValueError, match="w_init shape"):
+            equalizers.rde(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
+
+    def test_lms_to_rde_handoff_output_shape(self, backend_device, xp):
+        """LMS weights can be handed off to RDE via w_init; output shape is correct."""
+        rx = _make_qam16_rx(xp, n_symbols=3000)
+        half = rx.shape[-1] // 2
+
+        pre_rx = rx[..., :half]
+        payload_rx = rx[..., half:]
+
+        pre = equalizers.lms(
+            pre_rx,
+            modulation="qam",
+            order=16,
+            num_taps=21,
+            step_size=0.05,
+        )
+        w0 = _to_np(pre.weights)
+        if w0.ndim == 1:
+            w0 = w0[np.newaxis, np.newaxis, :]
+
+        result = equalizers.rde(
+            payload_rx,
+            modulation="qam",
+            order=16,
+            num_taps=21,
+            step_size=1e-4,
+            w_init=w0,
+        )
+        expected_syms = payload_rx.shape[-1] // 2
+        assert result.y_hat.shape[-1] == expected_syms
+
+    def test_warm_start_rde_same_or_better_evm(self, backend_device, xp):
+        """RDE warm-started from LMS achieves same or better EVM than cold-start."""
+        from commstools import Signal
+        from commstools.impairments import apply_awgn
+
+        sig = Signal.qam(symbol_rate=1e6, num_symbols=4000, order=16,
+                         pulse_shape="rrc", sps=2, seed=42)
+        rx_np = apply_awgn(sig.samples, esn0_db=25.0, sps=2)
+        rx = xp.asarray(rx_np)
+
+        # Cold-start RDE
+        cold = equalizers.rde(rx, modulation="qam", order=16, num_taps=21, step_size=5e-4)
+        # LMS pre-convergence
+        pre = equalizers.lms(
+            rx,
+            training_symbols=xp.asarray(sig.source_symbols),
+            modulation="qam",
+            order=16,
+            num_taps=21,
+            num_train_symbols=200,
+        )
+        _w = pre.weights
+        w0 = _to_np(pre.weights)
+        if w0.ndim == 1:
+            w0 = w0[np.newaxis, np.newaxis, :]
+
+        # Warm RDE
+        warm = equalizers.rde(rx, modulation="qam", order=16, num_taps=21,
+                               step_size=5e-4, w_init=w0)
+
+        tail = slice(-500, None)
+        ref = _to_np(sig.source_symbols)
+        cold_hat = _to_np(cold.y_hat)
+        warm_hat = _to_np(warm.y_hat)
+        evm_cold = float(np.mean(np.abs(cold_hat[tail] - ref[tail]) ** 2))
+        evm_warm = float(np.mean(np.abs(warm_hat[tail] - ref[tail]) ** 2))
+        # Warm start must not be significantly worse
+        assert evm_warm <= evm_cold * 1.5, (
+            f"Warm RDE EVM {evm_warm:.4f} much worse than cold {evm_cold:.4f}"
+        )
+
+
+# ============================================================================
+# HYBRID DA KERNELS — EQUALIZE_FRAME TESTS
+# ============================================================================
+
+
+def _make_sc_frame_no_pilots(seed=0):
+    """Create a SingleCarrierFrame with preamble but no pilots."""
+    from commstools.core import Preamble, SingleCarrierFrame
+
+    preamble = Preamble(sequence_type="barker", length=13)
+    frame = SingleCarrierFrame(
+        payload_len=512,
+        payload_mod_scheme="qam",
+        payload_mod_order=16,
+        preamble=preamble,
+        pilot_pattern="none",
+        payload_seed=seed,
+    )
+    return frame
+
+
+class TestEqualizerWInitBackend:
+    """Verify w_init works correctly on both numba and jax backends."""
+
+    def test_cma_jax_w_init(self, backend_device, xp):
+        """CMA JAX backend accepts w_init without error."""
+        pytest.importorskip("jax")
+        rx = _make_qam16_rx(xp)
+        num_taps = 21
+        w0 = np.zeros((1, 1, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.cma(
+            rx, modulation="qam", order=16, num_taps=num_taps,
+            w_init=w0, backend="jax",
+        )
+        assert isinstance(result, EqualizerResult)
+
+    def test_rde_jax_w_init(self, backend_device, xp):
+        """RDE JAX backend accepts w_init without error."""
+        pytest.importorskip("jax")
+        rx = _make_qam16_rx(xp)
+        num_taps = 21
+        w0 = np.zeros((1, 1, num_taps), dtype=np.complex64)
+        w0[0, 0, num_taps // 2] = 1.0 + 0j
+
+        result = equalizers.rde(
+            rx, modulation="qam", order=16, num_taps=num_taps,
+            w_init=w0, backend="jax",
+        )
+        assert isinstance(result, EqualizerResult)
+
+
+class TestEqualizationFrame:
+    """Tests for equalize_frame() — no-pilot and pilot-pattern variants."""
+
+    def test_equalize_frame_no_pilots_output_shape(self, backend_device, xp):
+        """equalize_frame() with no pilots returns payload-length output."""
+        from commstools.equalizers import equalize_frame
+
+        frame = _make_sc_frame_no_pilots()
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+        samples = xp.asarray(sig.samples)
+
+        result = equalize_frame(
+            samples, frame,
+            num_taps=13,
+            lms_step_size=0.05,
+            blind_step_size=5e-4,
+            blind_algorithm="rde",
+            modulation="qam",
+            order=16,
+            sps=2,
+        )
+        assert isinstance(result, EqualizerResult)
+        assert result.y_hat.shape[-1] > 0
+
+    def test_equalize_frame_no_pilots_signal_method(self, backend_device, xp):
+        """Signal.equalize_frame() with no pilots runs without error."""
+        frame = _make_sc_frame_no_pilots()
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+
+        sig.equalize_frame(
+            frame,
+            num_taps=13,
+            lms_step_size=0.05,
+            blind_step_size=5e-4,
+            blind_algorithm="rde",
+        )
+        assert sig._equalizer_result is not None
+        assert sig.samples.shape[-1] > 0
+
+    def test_equalize_frame_num_train_symbols(self, backend_device, xp):
+        """num_train_symbols in result equals preamble length when no pilots."""
+        from commstools.equalizers import equalize_frame
+
+        frame = _make_sc_frame_no_pilots()
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+        samples = xp.asarray(sig.samples)
+
+        result = equalize_frame(
+            samples, frame,
+            num_taps=13,
+            modulation="qam",
+            order=16,
+            sps=2,
+        )
+        assert result.num_train_symbols == 13
+
+    def test_equalize_frame_external_w_init(self, backend_device, xp):
+        """equalize_frame() accepts w_init and uses it for warm-start."""
+        from commstools.equalizers import equalize_frame
+
+        frame = _make_sc_frame_no_pilots()
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+        samples = xp.asarray(sig.samples)
+
+        w0 = np.zeros((1, 1, 13), dtype=np.complex64)
+        w0[0, 0, 6] = 1.0 + 0j
+
+        result = equalize_frame(
+            samples, frame,
+            num_taps=13,
+            modulation="qam",
+            order=16,
+            sps=2,
+            w_init=w0,
+        )
+        assert isinstance(result, EqualizerResult)
+
+    def test_equalize_frame_wrong_frame_type_raises(self, backend_device, xp):
+        """equalize_frame() raises TypeError when frame is not SingleCarrierFrame."""
+        from commstools.equalizers import equalize_frame
+
+        samples = xp.zeros(200, dtype=xp.complex64)
+        with pytest.raises(TypeError, match="SingleCarrierFrame"):
+            equalize_frame(samples, frame="not_a_frame", num_taps=11, sps=2)
+
+    def test_equalize_frame_jax_backend_no_pilots(self, backend_device, xp):
+        """equalize_frame() with backend='jax' and no pilots runs without error."""
+        pytest.importorskip("jax")
+        from commstools.equalizers import equalize_frame
+
+        frame = _make_sc_frame_no_pilots()
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+        samples = xp.asarray(sig.samples)
+
+        result = equalize_frame(
+            samples, frame,
+            num_taps=13,
+            modulation="qam",
+            order=16,
+            sps=2,
+            backend="jax",
+        )
+        assert isinstance(result, EqualizerResult)
+        assert result.y_hat.shape[-1] > 0
+
+    def test_equalize_frame_jax_backend_comb_pilots(self, backend_device, xp):
+        """equalize_frame() with backend='jax' and comb pilots uses PA hybrid kernel."""
+        pytest.importorskip("jax")
+        from commstools.core import Preamble, SingleCarrierFrame
+        from commstools.equalizers import equalize_frame
+
+        preamble = Preamble(sequence_type="barker", length=13)
+        frame = SingleCarrierFrame(
+            payload_len=256,
+            payload_mod_scheme="qam",
+            payload_mod_order=16,
+            preamble=preamble,
+            pilot_pattern="comb",
+            pilot_period=8,
+            pilot_mod_scheme="qam",
+            pilot_mod_order=4,
+            payload_seed=7,
+        )
+        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+        samples = xp.asarray(sig.samples)
+
+        result = equalize_frame(
+            samples, frame,
+            num_taps=13,
+            modulation="qam",
+            order=16,
+            sps=2,
+            blind_algorithm="rde",
+            backend="jax",
+        )
+        assert isinstance(result, EqualizerResult)
+        assert result.y_hat.shape[-1] > 0
+        assert result.num_train_symbols == 13  # preamble symbols

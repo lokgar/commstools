@@ -1,4 +1,8 @@
-"""Tests for multi-stream (MIMO) Signal and Frame generation support."""
+"""Tests for multi-stream (MIMO / dual-polarization) Signal support.
+
+Covers factory generation, frame structure, validation, and DSP operations
+(upsample, decimate, resample, frequency shift, FIR filtering) on multi-channel signals.
+"""
 
 import pytest
 from pydantic import ValidationError
@@ -110,3 +114,83 @@ def test_signal_invalid_ndim(backend_device, xp):
     with pytest.raises(ValidationError) as excparams:
         Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
     assert "3 dimensions" in str(excparams.value)
+
+
+# ============================================================================
+# DSP Operations on Multi-Stream Signals
+# ============================================================================
+
+
+def test_dual_pol_initialization(backend_device, xp):
+    """Verify initialization of a dual-polarized (2-channel) signal."""
+    samples = xp.random.randn(2, 100) + 1j * xp.random.randn(2, 100)
+    sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
+
+    assert sig.samples.shape == (2, 100)
+    assert sig.num_streams == 2
+
+
+def test_dual_pol_upsample(backend_device, xp):
+    """Verify that integer upsampling is correctly applied to both polarization channels."""
+    samples = xp.random.randn(2, 100)
+    sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
+
+    sig.upsample(2)
+    assert sig.samples.shape == (2, 200)
+    assert sig.sampling_rate == 2.0
+
+
+def test_dual_pol_decimate(backend_device, xp):
+    """Verify that integer decimation is correctly applied to both polarization channels."""
+    samples = xp.random.randn(2, 200)
+    sig = Signal(samples=samples, sampling_rate=2.0, symbol_rate=1.0)
+
+    sig.decimate(2)
+    assert sig.samples.shape == (2, 100)
+    assert sig.sampling_rate == 1.0
+
+
+def test_dual_pol_resample(backend_device, xp):
+    """Verify that rational resampling is correctly applied to both polarization channels."""
+    samples = xp.random.randn(2, 100)
+    sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
+
+    sig.resample(up=3, down=2)
+    assert sig.samples.shape == (2, 150)
+    assert sig.sampling_rate == 1.5
+
+
+def test_dual_pol_frequency_shift(backend_device, xp):
+    """Verify that frequency shifting results in consistent phase rotation across channels."""
+    samples = xp.ones((2, 100), dtype=complex)
+    sig = Signal(samples=samples, sampling_rate=100.0, symbol_rate=100.0)
+
+    # Shift by 25 Hz (1/4 of Fs) -> exp(j*pi/2 * n) per sample
+    sig.shift_frequency(25.0)
+
+    expected_sample_1 = xp.exp(1j * xp.pi / 2)
+
+    assert xp.allclose(sig.samples[0, 0], 1.0, atol=1e-6)
+    assert xp.allclose(sig.samples[0, 1], expected_sample_1, atol=1e-6)
+    assert xp.allclose(sig.samples[1, 1], expected_sample_1, atol=1e-6)
+
+
+def test_dual_pol_fir_filter(backend_device, xp):
+    """Verify that FIR filtering correctly processes multi-stream Signal samples."""
+    samples = xp.zeros((2, 10))
+    samples[:, 0] = 1.0
+    sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
+
+    taps = xp.array([0.5, 0.5])
+    sig.fir_filter(taps)
+
+    assert xp.any(sig.samples != 0)
+    assert sig.samples.shape == (2, 10)
+
+
+def test_siso_fallback(backend_device, xp):
+    """Verify that 1D samples are correctly treated as single-polarization (SISO)."""
+    samples = xp.random.randn(100)
+    sig = Signal(samples=samples, sampling_rate=1.0, symbol_rate=1.0)
+    assert sig.num_streams == 1
+    assert sig.samples.ndim == 1

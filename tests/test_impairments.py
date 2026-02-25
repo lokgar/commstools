@@ -29,12 +29,8 @@ class TestApplyPMD:
 
         out = apply_pmd(samples, dgd=5e-12, theta=np.pi / 5, sampling_rate=fs)
 
-        power_in = xp.sum(xp.abs(samples) ** 2)
-        power_out = xp.sum(xp.abs(out) ** 2)
-
-        if hasattr(power_in, "get"):
-            power_in = power_in.get()
-            power_out = power_out.get()
+        power_in = float(xp.sum(xp.abs(samples) ** 2))
+        power_out = float(xp.sum(xp.abs(out) ** 2))
 
         np.testing.assert_allclose(power_out, power_in, rtol=1e-4)
 
@@ -71,12 +67,8 @@ class TestApplyPMD:
 
         # With theta=0, R=I so H=diag(D0, D1) — only phase shift per pol
         # Output power should still be preserved
-        power_in = xp.sum(xp.abs(samples) ** 2)
-        power_out = xp.sum(xp.abs(out) ** 2)
-
-        if hasattr(power_in, "get"):
-            power_in = power_in.get()
-            power_out = power_out.get()
+        power_in = float(xp.sum(xp.abs(samples) ** 2))
+        power_out = float(xp.sum(xp.abs(out) ** 2))
 
         np.testing.assert_allclose(power_out, power_in, rtol=1e-4)
 
@@ -151,25 +143,19 @@ class TestApplyPMD:
         out = apply_pmd(samples, dgd=10e-12, theta=np.pi / 4, sampling_rate=fs)
 
         # Signal should be different from input
-        diff = xp.max(xp.abs(out - samples))
-        if hasattr(diff, "get"):
-            diff = diff.get()
-
+        diff = float(xp.max(xp.abs(out - samples)))
         assert diff > 0.01, "PMD with DGD should modify the signal"
 
 
 class TestAddAWGN:
-    """Basic tests for apply_awgn."""
+    """Tests for apply_awgn."""
 
     def test_awgn_adds_noise(self, backend_device, xp):
         """Output should differ from input."""
         samples = xp.ones(1000, dtype=xp.complex64)
         noisy = apply_awgn(samples, esn0_db=10, sps=1)
 
-        diff = xp.max(xp.abs(noisy - samples))
-        if hasattr(diff, "get"):
-            diff = diff.get()
-
+        diff = float(xp.max(xp.abs(noisy - samples)))
         assert diff > 0.001
 
     def test_awgn_preserves_shape(self, backend_device, xp):
@@ -178,3 +164,44 @@ class TestAddAWGN:
         noisy = apply_awgn(samples, esn0_db=20, sps=2)
 
         assert noisy.shape == samples.shape
+
+    def test_awgn_noise_power(self, backend_device, xp):
+        """Noise power should match 10^(-SNR/10) for a unit-power signal."""
+        data = xp.ones(1000, dtype=complex)
+        noisy = apply_awgn(data, esn0_db=10.0, sps=1)
+        noise = noisy - data
+        measured = float(xp.mean(xp.abs(noise) ** 2))
+        # Signal power = 1, SNR = 10 dB → noise power = 10^(-1) = 0.1
+        assert 0.08 < measured < 0.12, f"Noise power {measured:.4f} outside expected range"
+
+    def test_awgn_signal_object(self, backend_device, xp):
+        """apply_awgn should accept Signal objects and return a Signal."""
+        from commstools.core import Signal
+
+        sig = Signal.pam(order=2, num_symbols=100, sps=4, symbol_rate=1e6)
+        noisy_sig = apply_awgn(sig, esn0_db=10)
+
+        assert isinstance(noisy_sig, Signal)
+        assert noisy_sig.samples.shape == sig.samples.shape
+        assert noisy_sig.sps == 4
+
+    def test_awgn_real_data(self, backend_device, xp):
+        """apply_awgn should handle real-valued input and return a real output."""
+        data = xp.ones(1000, dtype="float32")
+        noisy = apply_awgn(data, esn0_db=10, sps=1)
+
+        assert xp.isrealobj(noisy)
+        assert not xp.allclose(noisy, data)
+
+    def test_awgn_low_snr(self, backend_device, xp):
+        """Extremely low SNR should produce very high noise power."""
+        data = xp.ones(100, dtype=complex)
+        noisy = apply_awgn(data, esn0_db=-300, sps=1)
+        measured_power = float(xp.mean(xp.abs(noisy) ** 2))
+        assert measured_power > 1e15
+
+    def test_awgn_array_without_sps(self, backend_device, xp):
+        """Array input without sps argument should raise ValueError."""
+        data = xp.ones(100, dtype=complex)
+        with pytest.raises(ValueError, match="sps must be provided"):
+            apply_awgn(data, esn0_db=10)

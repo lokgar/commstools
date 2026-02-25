@@ -727,6 +727,24 @@ def compute_llr(
             "JAX is required for LLR computation. Install with: pip install jax"
         )
 
+    # Build constellation and bits table on CPU once — shared by both paths.
+    is_complex = symbols.dtype.kind == "c"
+    const = gray_constellation(modulation, order, unipolar=unipolar).astype(
+        "complex64" if is_complex else "float32"
+    )
+    bits_table_np = (
+        (
+            (
+                np.arange(order, dtype="int32")[:, None]
+                >> np.arange(k - 1, -1, -1, dtype="int32")
+            )
+            & 1
+        )
+        .astype("int32")
+        .T
+    )
+    sigma_np = np.float32(max(noise_var, 1e-20))
+
     # JAX path
     if is_jax_array(symbols):
         if hasattr(symbols, "shape"):
@@ -736,65 +754,24 @@ def compute_llr(
             original_shape = jnp.shape(symbols)
 
         jax_symbols_flat = symbols.flatten()
-        # Explicitly cast constellation to complex64/float32 to match typical symbol precision
-        const = gray_constellation(modulation, order, unipolar=unipolar)
-        if jnp.iscomplexobj(jax_symbols_flat):
-            const = const.astype("complex64")
-        else:
-            const = const.astype("float32")
         constellation_jax = jnp.asarray(const)
-
-        bits_table_t_jax = jnp.asarray(
-            (
-                (
-                    np.arange(order, dtype="int32")[:, None]
-                    >> np.arange(k - 1, -1, -1, dtype="int32")
-                )
-                & 1
-            )
-            .astype("int32")
-            .T
-        )
-        sigma_sq = jnp.asarray(max(noise_var, 1e-20), dtype="float32")
+        bits_table_t_jax = jnp.asarray(bits_table_np)
+        sigma_sq = jnp.asarray(sigma_np)
 
     # NumPy/CuPy path
     else:
-        # Use dispatch to ensure we have a proper array module (xp) and array input
         symbols, xp, _ = dispatch(symbols)
         original_shape = symbols.shape
 
-        is_complex = symbols.dtype.kind == "c"
         jax_symbols_flat = to_jax(
             symbols, dtype="complex64" if is_complex else "float32"
         ).flatten()
         device = jax_symbols_flat.device
 
-        # Generate constellation on CPU (NumPy) then move to JAX device.
-        # Generating on CPU is typically faster for small constants than launching GPU kernels.
-        const = gray_constellation(modulation, order, unipolar=unipolar)
-        if is_complex:
-            const = const.astype("complex64")
-        else:
-            const = const.astype("float32")
-
         # device_put accepts NumPy arrays directly — no intermediate jnp.asarray needed
         constellation_jax = jax.device_put(const, device)
-
-        bits_table_np = (
-            (
-                (
-                    np.arange(order, dtype="int32")[:, None]
-                    >> np.arange(k - 1, -1, -1, dtype="int32")
-                )
-                & 1
-            )
-            .astype("int32")
-            .T
-        )
         bits_table_t_jax = jax.device_put(bits_table_np, device)
-        sigma_sq = jax.device_put(
-            jnp.asarray(max(noise_var, 1e-20), dtype="float32"), device
-        )
+        sigma_sq = jax.device_put(jnp.asarray(sigma_np), device)
 
     # Compute LLRs via JIT-compiled kernels
     maxlog_fn, exact_fn = _get_jitted_soft_demap()

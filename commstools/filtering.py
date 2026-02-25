@@ -622,12 +622,15 @@ def matched_filter(
     pulse_taps = xp.asarray(pulse_taps)
     matched_taps = xp.conj(pulse_taps[::-1])
 
-    if taps_normalization == "unity_gain" or taps_normalization == "gain":
+    if taps_normalization == "unity_gain":
         matched_taps = normalize(matched_taps, mode="unity_gain")
-    elif taps_normalization == "unit_energy" or taps_normalization == "energy":
+    elif taps_normalization == "unit_energy":
         matched_taps = normalize(matched_taps, mode="unit_energy")
     else:
-        raise ValueError(f"Not implemented taps normalization: {taps_normalization}")
+        raise ValueError(
+            f"Unknown taps_normalization: {taps_normalization!r}. "
+            "Use 'unity_gain' or 'unit_energy'."
+        )
 
     # Apply filter
     output = fir_filter(samples, matched_taps, axis=axis)

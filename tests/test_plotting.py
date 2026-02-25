@@ -374,7 +374,7 @@ def test_constellation_histogram_overlay_warning(caplog, backend_device, xp):
 
 
 def test_psd_ghz_scaling(backend_device, xp):
-    """PSD with GHz-range sampling rate triggers GHz scale factor (lines 298-299)."""
+    """PSD with GHz-range sampling rate triggers GHz scale factor."""
     samples = xp.random.randn(256).astype(xp.float32)
     fig, ax = psd(samples, sampling_rate=5e9, show=False)
     assert fig is not None
@@ -382,7 +382,7 @@ def test_psd_ghz_scaling(backend_device, xp):
 
 
 def test_psd_khz_scaling(backend_device, xp):
-    """PSD with kHz-range sampling rate triggers kHz scale factor (lines 304-305)."""
+    """PSD with kHz-range sampling rate triggers kHz scale factor."""
     samples = xp.random.randn(256).astype(xp.float32)
     fig, ax = psd(samples, sampling_rate=5e3, show=False)
     assert fig is not None
@@ -398,7 +398,7 @@ def test_psd_hz_scaling(backend_device, xp):
 
 
 def test_psd_xlim_ylim(backend_device, xp):
-    """PSD with xlim and ylim parameters applies axis limits (lines 313-316)."""
+    """PSD with xlim and ylim parameters applies axis limits."""
     samples = xp.random.randn(256).astype(xp.float32)
     fig, ax = psd(
         samples, sampling_rate=1e6, xlim=(-0.4, 0.4), ylim=(-80, 0), show=False
@@ -408,7 +408,7 @@ def test_psd_xlim_ylim(backend_device, xp):
 
 
 def test_psd_show(backend_device, xp):
-    """PSD with show=True calls plt.show() and returns None (lines 325-327)."""
+    """PSD with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(256).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = psd(samples, sampling_rate=1e6, show=True)
@@ -417,7 +417,7 @@ def test_psd_show(backend_device, xp):
 
 
 def test_psd_multichannel_show(backend_device, xp):
-    """PSD multichannel with show=True returns None (lines 243-245)."""
+    """PSD multichannel with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(2, 256).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = psd(samples, sampling_rate=1e6, show=True)
@@ -426,7 +426,7 @@ def test_psd_multichannel_show(backend_device, xp):
 
 
 def test_psd_multichannel_single_axis_warning(backend_device, xp, caplog):
-    """PSD multichannel with single axis warns and overlays (lines 207-211)."""
+    """PSD multichannel with single axis warns and overlays all channels on it."""
     samples = xp.random.randn(2, 256).astype(xp.float32)
     fig0, ax0 = plt.subplots()
     caplog.set_level(logging.WARNING)
@@ -441,7 +441,7 @@ def test_psd_multichannel_single_axis_warning(backend_device, xp, caplog):
 
 
 def test_constellation_real_samples(backend_device, xp):
-    """Constellation with real (non-complex) samples warns and converts (lines 1219-1221)."""
+    """Constellation with real (non-complex) samples warns and converts to complex."""
     samples = xp.ones(100, dtype=xp.float32)
     with patch("commstools.plotting.logger.warning"):
         result = constellation(samples, show=False)
@@ -450,7 +450,7 @@ def test_constellation_real_samples(backend_device, xp):
 
 
 def test_constellation_multichannel_single_axis_warning(backend_device, xp, caplog):
-    """Constellation multichannel with single axis warns (lines 1172-1177)."""
+    """Constellation multichannel with single axis warns and overlays all channels."""
     samples = xp.ones((2, 100), dtype=xp.complex64)
     fig0, ax0 = plt.subplots()
     caplog.set_level(logging.WARNING)
@@ -461,7 +461,7 @@ def test_constellation_multichannel_single_axis_warning(backend_device, xp, capl
 
 
 def test_constellation_multichannel_axes_array(backend_device, xp):
-    """Constellation multichannel with axes array uses atleast_2d (lines 1179-1180)."""
+    """Constellation multichannel with axes array normalizes to 2D layout."""
     samples = xp.ones((2, 100), dtype=xp.complex64)
     fig0, axes0 = plt.subplots(1, 2)
     result = constellation(samples, ax=axes0, show=False)
@@ -470,7 +470,7 @@ def test_constellation_multichannel_axes_array(backend_device, xp):
 
 
 def test_constellation_multichannel_show(backend_device, xp):
-    """Constellation multichannel with show=True returns None (lines 1206-1208)."""
+    """Constellation multichannel with show=True calls plt.show() and returns None."""
     samples = xp.ones((2, 100), dtype=xp.complex64)
     with patch("matplotlib.pyplot.show"):
         result = constellation(samples, show=True)
@@ -479,7 +479,7 @@ def test_constellation_multichannel_show(backend_device, xp):
 
 
 def test_constellation_siso_show(backend_device, xp):
-    """Constellation SISO with show=True returns None (lines 1318-1320)."""
+    """Constellation SISO with show=True calls plt.show() and returns None."""
     samples = xp.ones(100, dtype=xp.complex64)
     with patch("matplotlib.pyplot.show"):
         result = constellation(samples, show=True)
@@ -493,7 +493,7 @@ def test_constellation_siso_show(backend_device, xp):
 
 
 def test_equalizer_result_mimo_weights(backend_device, xp):
-    """equalizer_result with MIMO error/weights covers MIMO branches (lines 1369-1413)."""
+    """equalizer_result with MIMO error/weights plots per-channel error curves and weight matrices."""
     from commstools import equalizers
     from commstools import Signal
     from commstools.plotting import equalizer_result
@@ -528,7 +528,7 @@ def test_equalizer_result_mimo_weights(backend_device, xp):
 
 
 def test_equalizer_result_custom_axes(backend_device, xp):
-    """equalizer_result with pre-existing axes covers custom-ax branch (lines 1363-1364)."""
+    """equalizer_result with pre-existing axes uses them rather than creating new figures."""
     from commstools import equalizers, Signal
     from commstools.plotting import equalizer_result
 
@@ -552,7 +552,7 @@ def test_equalizer_result_custom_axes(backend_device, xp):
 
 
 def test_equalizer_result_show(backend_device, xp):
-    """equalizer_result with show=True returns None (lines 1426-1428)."""
+    """equalizer_result with show=True calls plt.show() and returns None."""
     from commstools import equalizers, Signal
     from commstools.plotting import equalizer_result
 
@@ -581,7 +581,7 @@ def test_equalizer_result_show(backend_device, xp):
 
 
 def test_eye_diagram_multichannel_axes_array(backend_device, xp):
-    """Eye diagram multichannel with axes array covers axes reshape (lines 769-772)."""
+    """Eye diagram multichannel with axes array reshapes them for per-channel plotting."""
     samples = xp.random.randn(2, 1000).astype(xp.float32)
     fig0, axes0 = plt.subplots(2, 1)
     fig, axes = eye_diagram(samples, sps=4, ax=list(axes0), show=False)
@@ -590,7 +590,7 @@ def test_eye_diagram_multichannel_axes_array(backend_device, xp):
 
 
 def test_eye_diagram_multichannel_show(backend_device, xp):
-    """Eye diagram multichannel with show=True returns None (lines 798-800)."""
+    """Eye diagram multichannel with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(2, 1000).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = eye_diagram(samples, sps=4, show=True)
@@ -599,7 +599,7 @@ def test_eye_diagram_multichannel_show(backend_device, xp):
 
 
 def test_eye_diagram_real_with_ax(backend_device, xp):
-    """Eye diagram for real signal with a single pre-existing axis (line 817)."""
+    """Eye diagram for real signal with a single pre-existing axis uses it directly."""
     samples = xp.random.randn(500).astype(xp.float32)
     fig0, ax0 = plt.subplots()
     fig, ax = eye_diagram(samples, sps=4, ax=ax0, show=False)
@@ -613,7 +613,7 @@ def test_eye_diagram_real_with_ax(backend_device, xp):
 
 
 def test_psd_multichannel_axes_array(backend_device, xp):
-    """PSD multichannel with axes ndarray covers atleast_2d branch (lines 213-214)."""
+    """PSD multichannel with axes ndarray normalizes axes to 2D layout."""
     samples = xp.random.randn(2, 256).astype(xp.float32)
     fig0, axes0 = plt.subplots(1, 2)
     fig, axes = psd(samples, sampling_rate=1e6, ax=axes0, show=False)
@@ -627,7 +627,7 @@ def test_psd_multichannel_axes_array(backend_device, xp):
 
 
 def test_time_domain_multichannel_axes_array(backend_device, xp):
-    """time_domain() multichannel with axes array covers atleast_2d branch (lines 398-399)."""
+    """time_domain() multichannel with axes array normalizes axes to 2D layout."""
     samples = xp.random.randn(2, 1000).astype(xp.float32)
     fig0, axes0 = plt.subplots(1, 2)
     result = time_domain(samples, sampling_rate=1e6, ax=axes0, show=False)
@@ -636,7 +636,7 @@ def test_time_domain_multichannel_axes_array(backend_device, xp):
 
 
 def test_time_domain_multichannel_show(backend_device, xp):
-    """time_domain() multichannel with show=True returns None (lines 423-424)."""
+    """time_domain() multichannel with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(2, 1000).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = time_domain(samples, sampling_rate=1e6, show=True)
@@ -645,7 +645,7 @@ def test_time_domain_multichannel_show(backend_device, xp):
 
 
 def test_time_domain_siso_show(backend_device, xp):
-    """time_domain() 1D with show=True returns None (lines 498-499)."""
+    """time_domain() 1D with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(500).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = time_domain(samples, sampling_rate=1e6, show=True)
@@ -659,7 +659,7 @@ def test_time_domain_siso_show(backend_device, xp):
 
 
 def test_eye_diagram_siso_show(backend_device, xp):
-    """eye_diagram() 1D with show=True returns None (lines 863-864)."""
+    """eye_diagram() 1D with show=True calls plt.show() and returns None."""
     samples = xp.random.randn(1000).astype(xp.float32)
     with patch("matplotlib.pyplot.show"):
         result = eye_diagram(samples, sps=4, show=True)
@@ -668,7 +668,7 @@ def test_eye_diagram_siso_show(backend_device, xp):
 
 
 def test_eye_diagram_complex_single_ax_error(backend_device, xp):
-    """eye_diagram() with complex signal and single ax raises ValueError (line 821)."""
+    """eye_diagram() with complex signal and single ax raises ValueError requiring two axes."""
     samples = (xp.random.randn(500) + 1j * xp.random.randn(500)).astype(xp.complex64)
     fig0, ax0 = plt.subplots()
     with pytest.raises(ValueError, match="complex"):
@@ -677,7 +677,7 @@ def test_eye_diagram_complex_single_ax_error(backend_device, xp):
 
 
 def test_eye_diagram_dense_line(backend_device, xp):
-    """eye_diagram() 'line' type with num_traces>5000 triggers skip path (lines 553-554)."""
+    """eye_diagram() 'line' type with num_traces>5000 triggers downsampling skip path."""
     # sps=2, N=10200, trace_len=4: num_traces = (10200-4)//2+1 = 5099 > 5000
     samples = xp.random.randn(10200).astype(xp.float32)
     fig, ax = eye_diagram(samples, sps=2, type="line", num_symbols=2, show=False)
@@ -686,7 +686,7 @@ def test_eye_diagram_dense_line(backend_device, xp):
 
 
 def test_eye_diagram_dense_hist(backend_device, xp):
-    """eye_diagram() 'hist' type with num_traces>20000 triggers skip path (lines 588-589)."""
+    """eye_diagram() 'hist' type with num_traces>20000 triggers downsampling skip path."""
     # sps=2, N=40100, trace_len=4: num_traces = (40100-4)//2+1 = 20049 > 20000
     samples = xp.random.randn(40100).astype(xp.float32)
     fig, ax = eye_diagram(samples, sps=2, type="hist", num_symbols=2, show=False)
@@ -700,7 +700,7 @@ def test_eye_diagram_dense_hist(backend_device, xp):
 
 
 def test_filter_response_complex_taps(backend_device, xp):
-    """filter_response() with complex taps plots I/Q components (lines 922-924)."""
+    """filter_response() with complex taps plots I/Q components separately."""
     taps = filtering.rrc_taps(sps=4, span=4, rolloff=0.35)
     complex_taps = taps.astype(complex)
     result = filter_response(complex_taps, sps=4, show=False)
@@ -709,7 +709,7 @@ def test_filter_response_complex_taps(backend_device, xp):
 
 
 def test_filter_response_show(backend_device, xp):
-    """filter_response() with show=True returns None (lines 974-975)."""
+    """filter_response() with show=True calls plt.show() and returns None."""
     taps = filtering.rrc_taps(sps=4, span=4, rolloff=0.35)
     with patch("matplotlib.pyplot.show"):
         result = filter_response(taps, sps=4, show=True)
@@ -723,7 +723,7 @@ def test_filter_response_show(backend_device, xp):
 
 
 def test_ideal_constellation_custom_ax(backend_device, xp):
-    """ideal_constellation() with provided ax uses ax.figure (line 1024)."""
+    """ideal_constellation() with provided ax uses that axis's figure."""
     fig0, ax0 = plt.subplots()
     result = ideal_constellation(modulation="psk", order=4, ax=ax0, show=False)
     assert result is not None
@@ -731,7 +731,7 @@ def test_ideal_constellation_custom_ax(backend_device, xp):
 
 
 def test_ideal_constellation_show(backend_device, xp):
-    """ideal_constellation() with show=True returns None (lines 1096-1097)."""
+    """ideal_constellation() with show=True calls plt.show() and returns None."""
     with patch("matplotlib.pyplot.show"):
         result = ideal_constellation(modulation="qam", order=16, show=True)
     assert result is None
@@ -744,7 +744,7 @@ def test_ideal_constellation_show(backend_device, xp):
 
 
 def test_constellation_vmin_vmax(backend_device, xp):
-    """constellation() with vmin/vmax covers imshow_kwargs branches (lines 1266, 1268)."""
+    """constellation() with vmin/vmax sets color scale bounds on the histogram plot."""
     samples = (xp.random.randn(500) + 1j * xp.random.randn(500)).astype(xp.complex64)
     result = constellation(samples, vmin=0.0, vmax=1.0, show=False)
     assert result is not None
@@ -757,7 +757,7 @@ def test_constellation_vmin_vmax(backend_device, xp):
 
 
 def test_equalizer_result_short_smoothing_siso(backend_device, xp):
-    """equalizer_result() SISO where len(mse) <= smoothing uses raw mse (line 1387)."""
+    """equalizer_result() SISO where len(mse) <= smoothing uses raw mse without smoothing."""
     from commstools import equalizers, Signal
     from commstools.plotting import equalizer_result
 
@@ -773,14 +773,14 @@ def test_equalizer_result_short_smoothing_siso(backend_device, xp):
         order=4,
         backend="numba",
     )
-    # smoothing=1000 >> len(error)=25 → else branch (line 1387)
+    # smoothing=1000 >> len(error)=25 → uses raw mse without smoothing
     fig, axes = equalizer_result(result, smoothing=1000)
     assert fig is not None
     plt.close("all")
 
 
 def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
-    """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse (line 1377)."""
+    """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse without smoothing."""
     from commstools import equalizers, Signal
     from commstools.plotting import equalizer_result
 
@@ -802,7 +802,7 @@ def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
         order=4,
         backend="numba",
     )
-    # smoothing=1000 >> len(error)=25 → else branch (line 1377)
+    # smoothing=1000 >> len(error)=25 → uses raw mse without smoothing
     fig, axes = equalizer_result(result, smoothing=1000)
     assert fig is not None
     plt.close("all")

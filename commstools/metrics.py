@@ -25,6 +25,15 @@ if TYPE_CHECKING:
     from .core import Signal
 
 
+def _extract_symbols(s: Union[ArrayType, "Signal"]) -> ArrayType:
+    """Return the array from a Signal (preferring source_symbols) or pass through."""
+    from .core import Signal
+
+    if isinstance(s, Signal):
+        return s.source_symbols if s.source_symbols is not None else s.samples
+    return s
+
+
 def evm(
     rx_symbols: Union[ArrayType, "Signal"],
     tx_symbols: Union[ArrayType, "Signal"],
@@ -57,29 +66,9 @@ def evm(
     For MIMO, metrics are calculated independently for each stream (row).
     """
     from . import helpers
-    from .core import Signal
 
-    # Extract samples
-    if isinstance(rx_symbols, Signal):
-        rx = (
-            rx_symbols.source_symbols
-            if rx_symbols.source_symbols is not None
-            else rx_symbols.samples
-        )
-    else:
-        rx = rx_symbols
-
-    if isinstance(tx_symbols, Signal):
-        tx = (
-            tx_symbols.source_symbols
-            if tx_symbols.source_symbols is not None
-            else tx_symbols.samples
-        )
-    else:
-        tx = tx_symbols
-
-    rx, xp, _ = dispatch(rx)
-    tx = xp.asarray(tx)
+    rx, xp, _ = dispatch(_extract_symbols(rx_symbols))
+    tx = xp.asarray(_extract_symbols(tx_symbols))
 
     # Ensure shape consistency
     if rx.shape != tx.shape:
@@ -175,28 +164,9 @@ def snr(
         Estimated SNR in dB. Returns array if input is multichannel.
     """
     from . import helpers
-    from .core import Signal
 
-    if isinstance(rx_symbols, Signal):
-        rx = (
-            rx_symbols.source_symbols
-            if rx_symbols.source_symbols is not None
-            else rx_symbols.samples
-        )
-    else:
-        rx = rx_symbols
-
-    if isinstance(tx_symbols, Signal):
-        tx = (
-            tx_symbols.source_symbols
-            if tx_symbols.source_symbols is not None
-            else tx_symbols.samples
-        )
-    else:
-        tx = tx_symbols
-
-    rx, xp, _ = dispatch(rx)
-    tx = xp.asarray(tx)
+    rx, xp, _ = dispatch(_extract_symbols(rx_symbols))
+    tx = xp.asarray(_extract_symbols(tx_symbols))
 
     if rx.shape != tx.shape:
         raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")

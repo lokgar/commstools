@@ -130,7 +130,10 @@ def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> Arr
         The RMS value of the input.
     """
     x, xp, _ = dispatch(x)
-    return xp.sqrt(xp.mean(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
+    # RMS = ||x||₂ / √N  →  linalg.norm routes through BLAS (DZNRM2/SNRM2),
+    # eliminating the abs(x)**2 and mean() intermediate allocations.
+    n = x.size if axis is None else x.shape[axis]
+    return xp.linalg.norm(x, axis=axis, keepdims=keepdims) / xp.sqrt(n)
 
 
 def normalize(
@@ -176,9 +179,11 @@ def normalize(
         norm_factor = xp.sum(x, axis=axis, keepdims=keepdims)
 
     elif mode == "unit_energy":
-        # L2 norm = 1: ||x||₂ = sqrt(sum(|x|²)) = 1
+        # L2 norm = 1: ||x||₂ = 1
         # Use case: matched filter taps (preserves SNR after correlation)
-        norm_factor = xp.sqrt(xp.sum(xp.abs(x) ** 2, axis=axis, keepdims=keepdims))
+        # linalg.norm routes through BLAS (DNRM2/DZNRM2 on CPU, cuBLAS on GPU):
+        # numerically superior (compensated summation) and avoids intermediate allocations.
+        norm_factor = xp.linalg.norm(x, axis=axis, keepdims=keepdims)
 
     elif mode == "peak":
         # Peak normalization: max of any channel = 1
@@ -191,7 +196,7 @@ def normalize(
         else:
             norm_factor = xp.max(xp.abs(x), axis=axis, keepdims=keepdims)
 
-    elif mode in ("average_power", "rms"):
+    elif mode == "average_power":
         # RMS = 1: sqrt(mean(|x|²)) = 1, so mean(|x|²) = 1
         # Use case: signals where average power should be normalized
         norm_factor = rms(x, axis=axis, keepdims=keepdims)
@@ -303,7 +308,9 @@ def validate_array(
 
     if complex_only and not np.iscomplexobj(v):
         xp = get_array_module(v)
-        v = v.astype(xp.complex128)
+        # Preserve single-precision: float32 → complex64, everything else → complex128
+        complex_dtype = xp.complex64 if v.dtype == xp.float32 else xp.complex128
+        v = v.astype(complex_dtype)
 
     return v
 
@@ -350,11 +357,8 @@ def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> Ar
     x0 = x_p[idxs - 1]
     x1 = x_p[idxs]
 
-    # Calculate weights
     denominator = x1 - x0
-    # Avoid division by zero
-    denominator[denominator == 0] = 1.0
-    weights = (x - x0) / denominator
+    weights = (x - x0) / xp.where(denominator == 0, 1.0, denominator)
 
     # Get the bounding values
     # f_p is (..., T)
@@ -418,12 +422,10 @@ def cross_correlate_fft(
     L = template.shape[-1]
     full_len = N + L - 1
 
-    # Power-of-2 FFT length for efficiency
-    n_fft = (
-        1 << full_len.bit_length()
-        if isinstance(full_len, int)
-        else 1 << int(full_len).bit_length()
-    )
+    # Smallest power-of-2 >= full_len for FFT efficiency.
+    # `(full_len - 1).bit_length()` is the canonical integer-only formula;
+    # `full_len.bit_length()` would round up even when full_len is already a power of 2.
+    n_fft = 1 << (full_len - 1).bit_length()
 
     # FFT-based correlation: R[k] = IFFT(FFT(signal) * conj(FFT(template)))
     # Circular correlation places positive lags at 0..N-1 and negative lags
