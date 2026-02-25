@@ -1,9 +1,9 @@
 """
 Adaptive and block equalization algorithms.
 
-This module provides production-grade equalizer implementations for
-compensating inter-symbol interference (ISI) and channel distortion
-in digital communication systems.
+This module provides equalizer implementations for compensating
+inter-symbol interference (ISI) and channel distortion in digital
+communication systems.
 
 Adaptive algorithms (LMS, RLS, CMA) support two execution backends:
 
