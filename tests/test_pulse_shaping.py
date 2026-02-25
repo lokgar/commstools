@@ -111,7 +111,7 @@ def test_rect_pulse_taps(backend_device, xp):
 
 
 def test_gaussian_shaping_filter_taps(backend_device, xp):
-    """shaping_filter_taps for gaussian pulse shape returns valid taps (line 1170 core.py)."""
+    """shaping_filter_taps for gaussian pulse shape returns valid taps."""
     sig = Signal(
         samples=xp.ones(40, dtype="complex64"),
         sampling_rate=4e3,
@@ -126,7 +126,7 @@ def test_gaussian_shaping_filter_taps(backend_device, xp):
 
 
 def test_rc_shaping_filter_taps(backend_device, xp):
-    """shaping_filter_taps for rc pulse shape returns valid taps (line 1182 core.py)."""
+    """shaping_filter_taps for rc pulse shape returns valid taps."""
     sig = Signal(
         samples=xp.ones(40, dtype="complex64"),
         sampling_rate=4e3,
@@ -141,7 +141,7 @@ def test_rc_shaping_filter_taps(backend_device, xp):
 
 
 def test_matched_filter_logs_error_for_no_pulse_shape(backend_device, xp):
-    """matched_filter() with no pulse_shape logs an error and returns self (lines 1220-1222)."""
+    """matched_filter() with no pulse_shape logs an error and returns self unchanged."""
     sig = Signal(
         samples=xp.ones(10, dtype="complex64"),
         sampling_rate=4e3,

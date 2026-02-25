@@ -2,9 +2,10 @@
 
 This module provides the `backend_device` and `xp` fixtures, allowing tests to run
 transparently on both CPU (NumPy) and GPU (CuPy) backends.
-"""
 
-import warnings
+The `--device` CLI option (cpu | gpu | all) controls which backends are exercised.
+The default is set to "all" in pyproject.toml [tool.pytest.ini_options] addopts.
+"""
 
 import matplotlib
 
@@ -14,8 +15,6 @@ import numpy as np
 import pytest
 
 from commstools import backend
-
-warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental.*")
 
 try:
     import cupy as cp
@@ -37,7 +36,7 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
-    """Parameterize the backend_device fixture based on the --device option."""
+    """Parametrize the backend_device fixture based on the --device option."""
     if "backend_device" in metafunc.fixturenames:
         device_opt = metafunc.config.getoption("--device")
         if device_opt == "all":
@@ -68,19 +67,17 @@ def backend_device(request):
     str
         One of {"cpu", "gpu"}.
     """
-
     device = request.param
     if device == "gpu":
         backend.use_cpu_only(False)
         if not _CUPY_AVAILABLE:
             pytest.skip("CuPy not installed, skipping GPU tests")
         try:
-            # Aggressive check for functional GPU context
+            # Aggressive check for a functional GPU context
             cp.zeros(1)
             try:
                 cp.random.randn(1)
             except ImportError:
-                # catch specific libcurand error
                 raise
         except Exception as e:
             pytest.skip(f"CuPy installed but not functional (missing libs?): {e}")
@@ -89,10 +86,11 @@ def backend_device(request):
         # Force CPU to prevent accidental GPU usage in "cpu" tests
         backend.use_cpu_only(True)
 
-    yield device
-
-    # Restore default state (allow GPU) after test
-    backend.use_cpu_only(False)
+    try:
+        yield device
+    finally:
+        # Always restore default state so later tests are not affected
+        backend.use_cpu_only(False)
 
 
 @pytest.fixture

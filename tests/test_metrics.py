@@ -217,7 +217,7 @@ def test_evm_signal_extraction(backend_device, xp):
 
 
 def test_evm_array_handling(backend_device, xp):
-    """Verify evm multichannel array handling (lines 135-143)."""
+    """Verify evm multichannel array handling."""
     # 2 channels, one with error, one perfect
     rx = xp.array([[1.0, 1.0], [1.0, 0.8]])
     tx = xp.array([[1.0, 1.0], [1.1, 1.1]])  # Ch 1 is [1.0, 1.0] after norm
@@ -235,7 +235,7 @@ def test_evm_array_handling(backend_device, xp):
 
 
 def test_snr_scalar_low_power(backend_device, xp):
-    """Verify snr returns -inf for scalar zero reference (line 238)."""
+    """Verify snr returns -inf when reference power is zero."""
     rx = xp.ones(10)
     tx = xp.zeros(10)
     # Ref power is 0, noise is 1.0. SNR should be -inf dB.
@@ -243,7 +243,7 @@ def test_snr_scalar_low_power(backend_device, xp):
 
 
 def test_snr_array_low_power(backend_device, xp):
-    """Verify snr array handling for zero reference (lines 243-246)."""
+    """Verify snr array handling returns -inf per channel when reference power is zero."""
     rx = xp.ones((2, 10))
     tx = xp.zeros((2, 10))
     # Both channels have 0 signal ref
@@ -264,7 +264,7 @@ def test_ber_length_mismatch(backend_device, xp):
 
 
 def test_ber_multichannel(backend_device, xp):
-    """Verify multi-channel BER logging path (lines 306-311)."""
+    """Verify multi-channel BER returns per-channel error rates."""
     # 2 channels, each with 10 bits
     tx = xp.array([[0, 1, 0, 1, 1, 0, 0, 1, 0, 1], [1, 0, 1, 0, 0, 1, 1, 0, 1, 0]])
     # Channel 0: 1 error at position 0, Channel 1: 2 errors at positions 0,1

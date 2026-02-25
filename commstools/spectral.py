@@ -83,10 +83,9 @@ def shift_frequency(
     phase = 2 * xp.pi * actual_offset * t
     mixer = xp.exp(1j * phase)
 
-    # Broadcast mixer if samples is multidimensional (N_channels, N_samples)
+    # Broadcast mixer to match samples shape: (1, ..., 1, N)
     if samples.ndim > 1:
-        # Reshape mixer to (1, N) from (N,)
-        mixer = mixer.reshape(1, -1)
+        mixer = mixer.reshape((1,) * (samples.ndim - 1) + (-1,))
 
     return samples * mixer, float(actual_offset)
 

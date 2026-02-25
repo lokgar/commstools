@@ -32,6 +32,9 @@ from .backend import ArrayType, dispatch, is_cupy_available, to_device
 from .core import Preamble, Signal, SignalInfo
 from .logger import logger
 
+# Window length for DFT-upsampling in estimate_fractional_delay()
+_DFT_WINDOW = 33
+
 # Standard Barker codes
 _BARKER_SEQUENCES = {
     2: [1, -1],
@@ -159,7 +162,7 @@ def estimate_fractional_delay(
 
     When the input is **complex**, the peak is phase-rotated to the real
     axis before fitting. This preserves the true peak shape (unlike
-    fitting to ``|R|``) and improves accuracy by 2–5× for typical
+    fitting to ``|R|``) and improves accuracy by 2-5x for typical
     matched-filter outputs.
 
     If ``dft_upsample > 1``, performs a "Zoom FFT" (DFT zero-padding)
@@ -204,16 +207,16 @@ def estimate_fractional_delay(
     k = peak_indices.astype(int)
     mu = xp.zeros(C, dtype=correlation.real.dtype)
 
-    def _calculate_mu(r_m1, r_0, r_p1, xp, method):
-        if xp.iscomplexobj(r_0):
-            phase = xp.exp(-1j * xp.angle(r_0))
-            alpha = (r_m1 * phase).real
-            beta = (r_0 * phase).real
-            gamma = (r_p1 * phase).real
+    def _calculate_mu(r_prev, r_curr, r_next, xp, method):
+        if xp.iscomplexobj(r_curr):
+            phase = xp.exp(-1j * xp.angle(r_curr))
+            alpha = (r_prev * phase).real
+            beta = (r_curr * phase).real
+            gamma = (r_next * phase).real
         else:
-            alpha = r_m1
-            beta = r_0
-            gamma = r_p1
+            alpha = r_prev
+            beta = r_curr
+            gamma = r_next
 
         if method == "log-parabolic":
             eps = 1e-12
@@ -231,14 +234,13 @@ def estimate_fractional_delay(
         mu_val = xp.where(valid, mu_val, xp.zeros_like(mu_val))
         return xp.clip(mu_val, -0.5, 0.5)
 
+    half_W = _DFT_WINDOW // 2
+    interior_mask = (k >= half_W) & (k < N - half_W)
+
     # -------------------------------------------------------------------------
     # Path A: DFT Upsampling
     # -------------------------------------------------------------------------
     if dft_upsample > 1:
-        W = 33
-        half_W = W // 2
-        interior_mask = (k >= half_W) & (k < N - half_W)
-
         if xp.any(interior_mask):
             valid_indices = xp.where(interior_mask)[0]
             k_valid = k[interior_mask]
@@ -248,9 +250,9 @@ def estimate_fractional_delay(
             windows = correlation[valid_indices[:, None], gather_idx]
 
             specs = xp.fft.fft(windows, axis=-1)
-            pos_limit = (W + 1) // 2
-            neg_len = W - pos_limit
-            target_len = W * dft_upsample
+            pos_limit = (_DFT_WINDOW + 1) // 2
+            neg_len = _DFT_WINDOW - pos_limit
+            target_len = _DFT_WINDOW * dft_upsample
             padded_specs = xp.zeros((len(valid_indices), target_len), dtype=specs.dtype)
             padded_specs[:, :pos_limit] = specs[:, :pos_limit]
             padded_specs[:, -neg_len:] = specs[:, pos_limit:]
@@ -261,11 +263,11 @@ def estimate_fractional_delay(
             k_up_safe = xp.clip(k_up, 1, target_len - 2)
 
             row_idx = xp.arange(len(valid_indices))
-            r_m1 = upsampled[row_idx, k_up_safe - 1]
-            r_0 = upsampled[row_idx, k_up_safe]
-            r_p1 = upsampled[row_idx, k_up_safe + 1]
+            r_prev = upsampled[row_idx, k_up_safe - 1]
+            r_curr = upsampled[row_idx, k_up_safe]
+            r_next = upsampled[row_idx, k_up_safe + 1]
 
-            mu_up = _calculate_mu(r_m1, r_0, r_p1, xp, method)
+            mu_up = _calculate_mu(r_prev, r_curr, r_next, xp, method)
 
             # Position relative to window start: k_up + mu_up
             # Center of window is at index (half_W * dft_upsample)?
@@ -296,21 +298,17 @@ def estimate_fractional_delay(
             interior_all = (k >= 1) & (k < N - 1)
             k_all_safe = xp.clip(k, 1, N - 2)
 
-            r_m1 = correlation[ch_idx, k_all_safe - 1]
-            r_0 = correlation[ch_idx, k_all_safe]
-            r_p1 = correlation[ch_idx, k_all_safe + 1]
+            r_prev = correlation[ch_idx, k_all_safe - 1]
+            r_curr = correlation[ch_idx, k_all_safe]
+            r_next = correlation[ch_idx, k_all_safe + 1]
 
-            mu_std = _calculate_mu(r_m1, r_0, r_p1, xp, method)
+            mu_std = _calculate_mu(r_prev, r_curr, r_next, xp, method)
             mu_std = xp.where(interior_all, mu_std, xp.zeros_like(mu_std))
 
             if dft_upsample == 1:
                 mu = mu_std
             else:
-                # Merge: favor DFT result if it was computed (non-zero? no, check mask)
-                # Re-calculate interior_mask from Path A logic to be sure
-                W = 33
-                half_W = W // 2
-                interior_mask = (k >= half_W) & (k < N - half_W)
+                # Merge: DFT result for interior channels, standard for edge channels
                 mu = xp.where(interior_mask, mu, mu_std)
 
     if scalar_input:
@@ -607,9 +605,9 @@ def estimate_timing(
 
     # === Per-Channel Normalization ===
     # Calculate Energy per channel
-    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C,) or broadcasted
-    if e_p.ndim < 1 or e_p.shape[0] != num_sig_ch:  # Handle scalar broadcast
-        e_p = xp.broadcast_to(e_p, (num_sig_ch,))
+    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C,) or scalar
+    if e_p.ndim == 0:  # SISO: broadcast scalar energy to all channels
+        e_p = xp.full(num_sig_ch, e_p)
 
     e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
 

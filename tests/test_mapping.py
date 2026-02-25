@@ -467,7 +467,7 @@ def test_compute_llr_numpy_vs_jax_input_agree():
 
 
 def test_compute_llr_real_jax_symbols():
-    """compute_llr with real-valued JAX symbols (PAM) uses float32 constellation (line 744)."""
+    """compute_llr with real-valued JAX symbols (PAM) should cast the constellation to float32."""
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
 

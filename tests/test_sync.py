@@ -265,24 +265,6 @@ def test_estimate_timing_returns_tuple(backend_device, xp):
     assert abs(float(frac[0])) < 0.5
 
 
-def test_detect_preamble_autocorr(backend_device, xp):
-    """Verify preamble detection using autocorrelation (for periodic preambles)."""
-    # Create a periodic preamble
-    chunk = xp.array([1, 1, -1, -1])
-    preamble = xp.tile(chunk, 4)  # 16 samples
-    data = xp.zeros(100)
-    start_idx = 30
-    data[start_idx : start_idx + 16] = preamble
-
-    # Cross-corr works as well, but let's test specifically the autocorrelation detection if it existed.
-    # Actually 'estimate_timing' uses correlation.
-    # Let's check if there is an autocorrelation-based detector.
-    # Looking at sync.py missing lines, 81 was in 'detect_preamble_autocorr'?
-
-    if hasattr(sync, "detect_preamble_autocorr"):
-        lag = sync.detect_preamble_autocorr(data, period=4, threshold=0.5)
-        # Should detect start around 30
-        assert 28 <= lag <= 32
 
 
 def test_estimate_timing_debug_plot(backend_device, xp):
@@ -609,7 +591,7 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
 
 
 def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
-    """Verify fft_fractional_delay with 0-d array delay (line 384)."""
+    """Verify fft_fractional_delay with 0-d array delay input."""
     import numpy as np
 
     f = 0.02
@@ -628,7 +610,7 @@ def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
 
 
 def test_estimate_timing_no_preamble_error(backend_device, xp):
-    """Verify estimate_timing raises when neither info nor preamble given (line 564)."""
+    """Verify estimate_timing raises when neither info nor preamble given."""
     sig = xp.zeros(100, dtype="complex64")
     with pytest.raises(
         ValueError, match="Either 'info' or 'preamble' must be provided"
@@ -637,7 +619,7 @@ def test_estimate_timing_no_preamble_error(backend_device, xp):
 
 
 def test_estimate_timing_with_info(backend_device, xp):
-    """Verify estimate_timing with SignalInfo reconstruction (lines 526-550)."""
+    """Verify estimate_timing with SignalInfo reconstruction from preamble type and length."""
     from commstools.core import SignalInfo
 
     # Create a signal with a Barker-7 preamble embedded at sample 40
@@ -662,7 +644,7 @@ def test_estimate_timing_with_info(backend_device, xp):
 
 
 def test_estimate_timing_skew_detection(backend_device, xp):
-    """Verify skew warning among MIMO channels (line 645)."""
+    """Verify skew warning is emitted when MIMO channels have different preamble positions."""
 
     # 2-channel signal with preambles at slightly different positions
     barker = sync.barker_sequence(7)
@@ -686,7 +668,7 @@ def test_estimate_timing_skew_detection(backend_device, xp):
 
 
 def test_correct_timing_per_channel(backend_device, xp):
-    """Verify per-channel coarse timing correction (lines 769-772)."""
+    """Verify per-channel coarse timing correction using an array of offsets."""
 
     # 2-channel signal with peaks at different positions
     sig = xp.zeros((2, 50), dtype="complex64")
@@ -704,7 +686,7 @@ def test_correct_timing_per_channel(backend_device, xp):
 
 
 def test_correct_timing_fractional_array(backend_device, xp):
-    """Verify fractional offset as array + MIMO return (lines 779-780, 787)."""
+    """Verify fractional offset as array applies per-channel FFT delay and returns 2D output."""
     import numpy as np
 
     f = 0.02
@@ -732,7 +714,7 @@ def test_correct_timing_fractional_array(backend_device, xp):
 
 
 def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
-    """Verify DFT upsample with edge peak falls back to standard (lines 289, 311-314)."""
+    """Verify DFT upsample with edge peak falls back to standard parabolic estimation."""
     import numpy as np
 
     N = 100
@@ -751,7 +733,7 @@ def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
 
 
 def test_estimate_timing_info_without_sps(backend_device, xp):
-    """Verify estimate_timing raises when info provided but sps missing (line 535)."""
+    """Verify estimate_timing raises when info is provided but sps is missing."""
     from commstools.core import SignalInfo
 
     sig = xp.zeros(100, dtype="complex64")

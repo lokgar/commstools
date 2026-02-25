@@ -208,7 +208,7 @@ def apply_pmd(
     s = float(xp.sin(theta))
     R = xp.array([[c, -s], [s, c]], dtype=samples.dtype)
 
-    phase = xp.asarray(xp.pi) * freqs * dgd
+    phase = xp.pi * freqs * dgd
     D = xp.stack([xp.exp(-1j * phase), xp.exp(1j * phase)])
 
     S_F = xp.fft.fft(samples, axis=-1)

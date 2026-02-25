@@ -186,14 +186,14 @@ def test_jax_conversions(backend_device, xp):
 
 
 def test_to_device_list_input(xp):
-    """Verify to_device handles plain list input (line 251)."""
+    """Verify to_device handles plain list input by converting to ndarray."""
     result = backend.to_device([1, 2, 3], "cpu")
     assert isinstance(result, np.ndarray)
     assert np.array_equal(result, [1, 2, 3])
 
 
 def test_to_jax_list_and_scalar(xp):
-    """Verify to_jax handles list and scalar inputs (line 363)."""
+    """Verify to_jax handles list and scalar inputs by converting via jnp.asarray."""
     try:
         import jax.numpy as jnp
     except ImportError:
@@ -211,7 +211,7 @@ def test_to_jax_list_and_scalar(xp):
 
 
 def test_to_jax_explicit_device(xp):
-    """Verify to_jax with explicit device placement (line 340/352)."""
+    """Verify to_jax with explicit device placement places the array on the requested device."""
     try:
         import jax.numpy as jnp
     except ImportError:

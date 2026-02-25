@@ -307,7 +307,7 @@ def test_structure_map_samples_unit():
 
 
 def test_comb_pilot_period_le1_error(backend_device, xp):
-    """comb pilot_period <= 1 should raise ValueError (line 2441 in core.py)."""
+    """comb pilot_period <= 1 should raise ValueError."""
     frame = SingleCarrierFrame(
         payload_len=10, symbol_rate=1e6, pilot_pattern="comb", pilot_period=1
     )
@@ -316,7 +316,7 @@ def test_comb_pilot_period_le1_error(backend_device, xp):
 
 
 def test_block_pilot_period_le_block_len_error(backend_device, xp):
-    """block pilot_period <= pilot_block_len should raise ValueError (line 2458 in core.py)."""
+    """block pilot_period <= pilot_block_len should raise ValueError."""
     frame = SingleCarrierFrame(
         payload_len=10, symbol_rate=1e6, pilot_pattern="block",
         pilot_period=3, pilot_block_len=3,  # period == block_len → invalid
@@ -331,13 +331,13 @@ def test_block_pilot_period_le_block_len_error(backend_device, xp):
 
 
 def test_pilot_bits_none_when_no_pilots(backend_device, xp):
-    """pilot_bits returns None when pilot_pattern='none' (lines 2583-2586 in core.py)."""
+    """pilot_bits returns None when pilot_pattern='none'."""
     frame = SingleCarrierFrame(payload_len=20, symbol_rate=1e6, pilot_pattern="none")
     assert frame.pilot_bits is None
 
 
 def test_pilot_symbols_none_when_no_pilots(backend_device, xp):
-    """pilot_symbols returns None when pilot_pattern='none' (line 2599 in core.py)."""
+    """pilot_symbols returns None when pilot_pattern='none'."""
     frame = SingleCarrierFrame(payload_len=20, symbol_rate=1e6, pilot_pattern="none")
     assert frame.pilot_symbols is None
 
@@ -348,7 +348,7 @@ def test_pilot_symbols_none_when_no_pilots(backend_device, xp):
 
 
 def test_pilot_gain_db_siso(backend_device, xp):
-    """Non-zero pilot_gain_db boosts pilot symbols for SISO (line 2638 in core.py)."""
+    """Non-zero pilot_gain_db boosts pilot symbols for SISO."""
     frame_nogain = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=5,
         pilot_gain_db=0.0,
@@ -368,7 +368,7 @@ def test_pilot_gain_db_siso(backend_device, xp):
 
 
 def test_pilot_gain_db_mimo(backend_device, xp):
-    """Non-zero pilot_gain_db boosts pilot symbols for MIMO (line 2627 in core.py)."""
+    """Non-zero pilot_gain_db boosts pilot symbols for MIMO."""
     frame = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=5,
         pilot_gain_db=6.0, num_streams=2,
@@ -385,7 +385,7 @@ def test_pilot_gain_db_mimo(backend_device, xp):
 
 
 def test_structure_map_time_orthogonal_mimo_preamble(backend_device, xp):
-    """structure_map with time_orthogonal MIMO preamble multiplies preamble length (line 2685)."""
+    """structure_map with time_orthogonal MIMO preamble multiplies preamble length by num_streams."""
     preamble = Preamble(sequence_type="barker", length=7)
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, num_streams=2,
@@ -403,7 +403,7 @@ def test_structure_map_time_orthogonal_mimo_preamble(backend_device, xp):
 
 
 def test_pilot_bits_with_pilots(backend_device, xp):
-    """pilot_bits on a frame with comb pilots calls _ensure_pilot_generated (lines 2585-2586)."""
+    """pilot_bits on a frame with comb pilots generates and returns pilot bit data."""
     frame = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
     )
@@ -413,13 +413,13 @@ def test_pilot_bits_with_pilots(backend_device, xp):
 
 
 def test_pilot_bits_double_access(backend_device, xp):
-    """Accessing pilot_bits twice hits the early return of _ensure_pilot_generated (line 2516)."""
+    """Accessing pilot_bits twice returns consistent cached results."""
     frame = SingleCarrierFrame(
         payload_len=20, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
     )
     # First access: generates and caches
     bits1 = frame.pilot_bits
-    # Second access: hits _pilot_bits is not None early return (line 2516)
+    # Second access: returns cached value without regenerating
     bits2 = frame.pilot_bits
     assert bits1 is not None
     assert bits2 is not None

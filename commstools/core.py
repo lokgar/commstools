@@ -1531,6 +1531,83 @@ class Signal(BaseModel):
         self.sampling_rate = self.symbol_rate
         return self
 
+    def equalize_frame(
+        self,
+        frame: "SingleCarrierFrame",
+        num_taps: int = 21,
+        lms_step_size: float = 0.01,
+        blind_step_size: float = 1e-4,
+        blind_algorithm: str = "rde",
+        modulation: Optional[str] = None,
+        order: Optional[int] = None,
+        backend: str = "numba",
+        store_weights: bool = False,
+        w_init: Optional["ArrayType"] = None,
+    ) -> "Signal":
+        """Frame-aware multi-stage equalization with automatic weight handoff.
+
+        Orchestrates preamble DA-LMS pre-convergence followed by a blind or
+        hybrid payload pass:
+
+        * **No pilots** — preamble LMS → blind CMA/RDE (two separate stages
+          with weight handoff via ``w_init``).
+        * **Block or comb pilots** — preamble LMS → single-pass hybrid kernel
+          (DA-LMS at pilot positions, blind CMA/RDE at data positions).
+
+        Parameters
+        ----------
+        frame : SingleCarrierFrame
+            Frame structure that generated this signal.
+        num_taps : int, default 21
+            FIR tap count for all equalizer stages.
+        lms_step_size : float, default 0.01
+            NLMS step size for the preamble (and pilot-position) DA-LMS stage.
+        blind_step_size : float, default 1e-4
+            Fixed gradient step for the blind CMA/RDE data stage.
+        blind_algorithm : {"rde", "cma"}, default "rde"
+            Blind algorithm for data positions.
+        modulation : str, optional
+            Modulation type (e.g. ``"qam"``).  Defaults to
+            ``self.mod_scheme`` when ``None``.
+        order : int, optional
+            Modulation order.  Defaults to ``self.mod_order`` when ``None``.
+        backend : str, default "numba"
+            Kernel backend (``"numba"`` or ``"jax"``).
+        store_weights : bool, default False
+            Store weight history for the payload blind stage.
+        w_init : array_like, optional
+            External initial weights passed to the preamble LMS (or directly
+            to the blind stage if there is no preamble).
+
+        Returns
+        -------
+        Signal
+            ``self`` with ``samples`` replaced by the equalized payload symbols
+            (1 SPS) and ``_equalizer_result`` populated.
+        """
+        from . import equalizers  # noqa: PLC0415
+
+        result = equalizers.equalize_frame(
+            self.samples,
+            frame,
+            num_taps=num_taps,
+            lms_step_size=lms_step_size,
+            blind_step_size=blind_step_size,
+            blind_algorithm=blind_algorithm,
+            modulation=modulation or self.mod_scheme,
+            order=order or self.mod_order,
+            sps=int(round(self.sps)),
+            backend=backend,
+            store_weights=store_weights,
+            w_init=w_init,
+        )
+        self.samples = result.y_hat
+        self._equalizer_result = result
+        self._num_train_symbols = getattr(result, "num_train_symbols", 0)
+        self._num_tail_trim = 0
+        self.sampling_rate = self.symbol_rate
+        return self
+
     # =========================================================================
     # Generation Factory Methods
     # =========================================================================
