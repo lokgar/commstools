@@ -494,7 +494,7 @@ def test_constellation_siso_show(backend_device, xp):
 
 def test_equalizer_result_mimo_weights(backend_device, xp):
     """equalizer_result with MIMO error/weights plots per-channel error curves and weight matrices."""
-    from commstools import equalizers
+    from commstools import equalization
     from commstools import Signal
     from commstools.plotting import equalizer_result
 
@@ -511,7 +511,7 @@ def test_equalizer_result_mimo_weights(backend_device, xp):
     rx_mimo = xp.asarray(sig.samples)
     train_mimo = xp.asarray(sig.source_symbols)
 
-    result = equalizers.lms(
+    result = equalization.lms(
         rx_mimo,
         training_symbols=train_mimo,
         num_taps=7,
@@ -529,13 +529,13 @@ def test_equalizer_result_mimo_weights(backend_device, xp):
 
 def test_equalizer_result_custom_axes(backend_device, xp):
     """equalizer_result with pre-existing axes uses them rather than creating new figures."""
-    from commstools import equalizers, Signal
+    from commstools import equalization, Signal
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
-    result = equalizers.lms(
+    result = equalization.lms(
         xp.asarray(sig.samples),
         training_symbols=xp.asarray(sig.source_symbols),
         num_taps=7,
@@ -553,13 +553,13 @@ def test_equalizer_result_custom_axes(backend_device, xp):
 
 def test_equalizer_result_show(backend_device, xp):
     """equalizer_result with show=True calls plt.show() and returns None."""
-    from commstools import equalizers, Signal
+    from commstools import equalization, Signal
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
-    result = equalizers.lms(
+    result = equalization.lms(
         xp.asarray(sig.samples),
         training_symbols=xp.asarray(sig.source_symbols),
         num_taps=7,
@@ -758,13 +758,13 @@ def test_constellation_vmin_vmax(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_siso(backend_device, xp):
     """equalizer_result() SISO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import equalizers, Signal
+    from commstools import equalization, Signal
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=50, order=4, pulse_shape="rrc", sps=2, seed=0
     )
-    result = equalizers.lms(
+    result = equalization.lms(
         xp.asarray(sig.samples),
         training_symbols=xp.asarray(sig.source_symbols),
         num_taps=5,
@@ -781,7 +781,7 @@ def test_equalizer_result_short_smoothing_siso(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
     """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import equalizers, Signal
+    from commstools import equalization, Signal
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
@@ -793,7 +793,7 @@ def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
         num_streams=2,
         seed=0,
     )
-    result = equalizers.lms(
+    result = equalization.lms(
         xp.asarray(sig.samples),
         training_symbols=xp.asarray(sig.source_symbols),
         num_taps=5,

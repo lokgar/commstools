@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from commstools import equalizers
-from commstools.equalizers import EqualizerResult
+from commstools import equalization
+from commstools.equalization import EqualizerResult
 from commstools.mapping import gray_constellation
 
 
@@ -29,9 +29,9 @@ class TestSPSValidation:
     def test_lms_rejects_sps_1(self, backend_device, xp):
         """LMS should raise ValueError when sps=1."""
         tx = xp.ones(100, dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
+
         with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalizers.lms(
+            equalization.lms(
                 tx,
                 training_symbols=tx,
                 num_taps=5,
@@ -44,7 +44,7 @@ class TestSPSValidation:
         """CMA should raise ValueError when sps=1."""
         tx = xp.ones(100, dtype=xp.complex64)
         with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalizers.cma(tx, num_taps=5, sps=1)
+            equalization.cma(tx, num_taps=5, sps=1)
 
 
 # ============================================================================
@@ -60,7 +60,6 @@ class TestLMS:
         n_symbols = 1000
         # Create channel on device
         channel = xp.array([0.2, 1.0, 0.3], dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         # Generate bits and symbols on device
         # Generate symbols and RRC pulse-shaped waveform
@@ -91,7 +90,7 @@ class TestLMS:
         )
         rx = rx + noise
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=tx,
             num_taps=15,
@@ -117,7 +116,6 @@ class TestLMS:
         n_symbols = 1000
         n_train = 300
         channel = xp.array([0.1, 1.0, 0.2], dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         # Generate symbols and RRC pulse-shaped waveform
 
@@ -137,7 +135,7 @@ class TestLMS:
         rx_up = xp.asarray(sig.samples)
         rx = xp.convolve(rx_up, channel, mode="same")
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=tx[:n_train],
             num_taps=15,
@@ -155,7 +153,6 @@ class TestLMS:
     def test_output_shape_siso(self, backend_device, xp):
         """LMS SISO output shapes should be correct."""
         n = 500
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -165,7 +162,7 @@ class TestLMS:
         tx = xp.asarray(sig.source_symbols)
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=tx,
             num_taps=11,
@@ -182,7 +179,6 @@ class TestLMS:
         """Weight history should be stored when requested."""
         n = 200
         num_taps = 7
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -192,7 +188,7 @@ class TestLMS:
         tx = xp.asarray(sig.source_symbols)
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=tx,
             num_taps=num_taps,
@@ -207,7 +203,6 @@ class TestLMS:
 
     def test_no_weights_by_default(self, backend_device, xp):
         """Weight history should be None by default."""
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -217,7 +212,7 @@ class TestLMS:
         tx = xp.asarray(sig.source_symbols)
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=tx,
             num_taps=5,
@@ -236,7 +231,7 @@ class TestLMS:
         )
         rx = xp.asarray(sig.samples)
         with pytest.raises(ValueError):
-            equalizers.lms(rx)
+            equalization.lms(rx)
 
 
 # ============================================================================
@@ -251,7 +246,6 @@ class TestRLS:
         """RLS should converge on a known ISI channel."""
         n_symbols = 500
         channel = xp.array([0.2, 1.0, 0.3], dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -268,7 +262,7 @@ class TestRLS:
 
         rx = xp.convolve(rx_up, channel, mode="same")
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=tx,
             num_taps=15,
@@ -286,7 +280,6 @@ class TestRLS:
         """RLS should converge faster than LMS (lower MSE in early symbols)."""
         n_symbols = 300
         channel = xp.array([0.3, 1.0, 0.2], dtype=xp.complex64)
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -303,7 +296,7 @@ class TestRLS:
 
         rx = xp.convolve(rx_up, channel, mode="same")
 
-        lms_result = equalizers.lms(
+        lms_result = equalization.lms(
             rx,
             training_symbols=tx,
             num_taps=15,
@@ -311,7 +304,7 @@ class TestRLS:
             modulation="psk",
             order=4,
         )
-        rls_result = equalizers.rls(
+        rls_result = equalization.rls(
             rx,
             training_symbols=tx,
             num_taps=15,
@@ -333,7 +326,6 @@ class TestRLS:
 
     def test_output_shape_siso(self, backend_device, xp):
         """RLS SISO output shapes should match LMS convention."""
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
         from commstools import Signal
 
         sig = Signal.psk(
@@ -342,7 +334,7 @@ class TestRLS:
         tx = xp.asarray(sig.source_symbols)
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=tx,
             num_taps=11,
@@ -372,7 +364,7 @@ class TestAPIRegression:
         rx = xp.asarray(sig.samples)
         tx = xp.asarray(sig.source_symbols)
         with pytest.raises(TypeError, match="normalize"):
-            equalizers.lms(
+            equalization.lms(
                 rx,
                 training_symbols=tx,
                 num_taps=5,
@@ -390,7 +382,7 @@ class TestAPIRegression:
         )
         rx = xp.asarray(sig.samples)
         with pytest.raises(TypeError, match="normalize"):
-            equalizers.cma(rx, num_taps=5, normalize=True)
+            equalization.cma(rx, num_taps=5, normalize=True)
 
 
 # ============================================================================
@@ -420,7 +412,7 @@ class TestCMA:
         rx = xp.convolve(rx_up, channel, mode="same")
         rx = xp.ascontiguousarray(rx)  # Ensure contiguous for JAX
 
-        result = equalizers.cma(
+        result = equalization.cma(
             rx,
             num_taps=21,
             step_size=0.005,
@@ -462,7 +454,7 @@ class TestCMA:
         )
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.cma(rx, num_taps=11, step_size=0.01)
+        result = equalization.cma(rx, num_taps=11, step_size=0.01)
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[0] > 0
@@ -476,7 +468,7 @@ class TestCMA:
         )
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.cma(rx, num_taps=11)
+        result = equalization.cma(rx, num_taps=11)
 
         assert result.y_hat.ndim == 1
         assert result.weights.shape == (11,)
@@ -508,7 +500,7 @@ class TestRDE:
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         rx = xp.ascontiguousarray(rx)
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx,
             num_taps=21,
             step_size=0.005,
@@ -541,7 +533,7 @@ class TestRDE:
         so it approaches zero as the equalizer converges to correct ISI
         compensation.  Therefore: mean(|e_RDE|) << mean(|e_CMA|) at steady state.
         """
-        import numpy as _np
+
         from commstools import Signal
 
         n_symbols = 5000
@@ -558,10 +550,10 @@ class TestRDE:
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         rx = xp.ascontiguousarray(rx)
 
-        result_rde = equalizers.rde(
+        result_rde = equalization.rde(
             rx, num_taps=21, step_size=5e-4, modulation="qam", order=16
         )
-        result_cma = equalizers.cma(
+        result_cma = equalization.cma(
             rx, num_taps=21, step_size=5e-4, modulation="qam", order=16
         )
 
@@ -599,7 +591,7 @@ class TestRDE:
         )
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.rde(rx, num_taps=11, modulation="qam", order=16)
+        result = equalization.rde(rx, num_taps=11, modulation="qam", order=16)
 
         assert result.y_hat.ndim == 1
         assert result.weights.shape == (11,)
@@ -642,7 +634,7 @@ class TestZFEqualizer:
         rng = xp.random.RandomState(0)
         symbols = (rng.randn(n) + 1j * rng.randn(n)).astype(xp.complex64)
 
-        equalized = equalizers.zf_equalizer(symbols, channel)
+        equalized = equalization.zf_equalizer(symbols, channel)
 
         # Check equality
         # xp.allclose works for both numpy and cupy
@@ -660,7 +652,7 @@ class TestZFEqualizer:
         # Apply Channel
         rx = xp.convolve(tx, channel, mode="full")[:n]
 
-        equalized = equalizers.zf_equalizer(rx, channel)
+        equalized = equalization.zf_equalizer(rx, channel)
 
         assert xp.allclose(equalized, tx, atol=1e-4)
 
@@ -679,8 +671,8 @@ class TestZFEqualizer:
         noise = 0.1 * (rng.randn(n) + 1j * rng.randn(n)).astype(xp.complex64)
         rx_noisy = rx + noise
 
-        zf_out = equalizers.zf_equalizer(rx_noisy, channel)
-        mmse_out = equalizers.zf_equalizer(rx_noisy, channel, noise_variance=0.01)
+        zf_out = equalization.zf_equalizer(rx_noisy, channel)
+        mmse_out = equalization.zf_equalizer(rx_noisy, channel, noise_variance=0.01)
 
         mse_zf = xp.mean(xp.abs(zf_out - tx) ** 2)
         mse_mmse = xp.mean(xp.abs(mmse_out - tx) ** 2)
@@ -698,7 +690,7 @@ class TestZFEqualizer:
         rx = xp.ones(n, dtype=xp.complex64)
         h = xp.array([1.0 + 0j], dtype=xp.complex64)
 
-        out = equalizers.zf_equalizer(rx, h)
+        out = equalization.zf_equalizer(rx, h)
         assert out.shape == (n,)
 
     def test_mimo_per_channel(self, backend_device, xp):
@@ -707,7 +699,7 @@ class TestZFEqualizer:
         rx = xp.ones((2, n), dtype=xp.complex64)
         h = xp.array([1.0 + 0j], dtype=xp.complex64)
 
-        out = equalizers.zf_equalizer(rx, h)
+        out = equalization.zf_equalizer(rx, h)
         assert out.shape == (2, n)
 
     def test_mmse_multi_block_two_sided_channel(self, backend_device, xp):
@@ -732,7 +724,7 @@ class TestZFEqualizer:
         noise = 0.05 * (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
         rx_noisy = rx + noise
 
-        out = equalizers.zf_equalizer(rx_noisy, channel, noise_variance=0.0025)
+        out = equalization.zf_equalizer(rx_noisy, channel, noise_variance=0.0025)
 
         # Skip edges affected by convolution truncation (mode="full"[:N])
         interior = slice(10, N - 10)
@@ -754,7 +746,6 @@ class TestButterflyMIMO:
     def test_lms_2x2_cross_channel(self, backend_device, xp):
         """LMS butterfly should recover 2 streams through a 2x2 mixing channel."""
         n_symbols = 3000
-        constellation = xp.asarray(gray_constellation("psk", 4)).astype(xp.complex64)
 
         from commstools import Signal
 
@@ -777,7 +768,7 @@ class TestButterflyMIMO:
         rx_mimo = H @ rx_up
         rx_mimo = xp.ascontiguousarray(rx_mimo)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx_mimo,
             training_symbols=tx_mimo,
             num_taps=21,
@@ -829,7 +820,7 @@ class TestButterflyMIMO:
         rx_mimo = H @ rx_up
         rx_mimo = xp.ascontiguousarray(rx_mimo)
 
-        result = equalizers.cma(
+        result = equalization.cma(
             rx_mimo,
             num_taps=11,
             step_size=0.003,
@@ -890,7 +881,7 @@ class TestButterflyMIMO:
 
         rx = xp.fft.ifft(Rx_f, axis=-1).astype(xp.complex64)
 
-        equalized = equalizers.zf_equalizer(rx, H)
+        equalized = equalization.zf_equalizer(rx, H)
 
         assert xp.allclose(equalized, tx, atol=1e-3)
 
@@ -917,7 +908,6 @@ class TestSignalIntegration:
             sps=2,
             seed=55,
         )
-        tx = xp.asarray(orig_sig.source_symbols)
         rx = xp.asarray(orig_sig.samples)
 
         # Explicitly pass samples to Signal, it should respect backend
@@ -1000,7 +990,6 @@ class TestSignalIntegration:
             sps=2,
             seed=55,
         )
-        tx = xp.asarray(orig_sig.source_symbols)
         rx = xp.asarray(orig_sig.samples)
 
         sig = Signal(
@@ -1040,8 +1029,12 @@ class TestJAXBackend:
 
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
         sig = Signal.psk(
-            symbol_rate=1e6, num_symbols=n_symbols, order=4,
-            pulse_shape="rrc", sps=2, seed=seed,
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=seed,
         )
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         return xp.ascontiguousarray(rx), sig
@@ -1052,8 +1045,12 @@ class TestJAXBackend:
 
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
         sig = Signal.qam(
-            symbol_rate=1e6, num_symbols=n_symbols, order=16,
-            pulse_shape="rrc", sps=2, seed=seed,
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=16,
+            pulse_shape="rrc",
+            sps=2,
+            seed=seed,
         )
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         return xp.ascontiguousarray(rx), sig
@@ -1065,7 +1062,7 @@ class TestJAXBackend:
         rx, sig = self._make_qpsk_rx(xp)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=train,
             num_taps=11,
@@ -1086,7 +1083,7 @@ class TestJAXBackend:
         train = xp.asarray(sig.source_symbols)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=train,
             num_taps=7,
@@ -1106,7 +1103,7 @@ class TestJAXBackend:
         train = xp.asarray(sig.source_symbols)
 
         # Pass training only, no modulation/order — constellation inferred from train
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=train,
             num_taps=7,
@@ -1123,7 +1120,7 @@ class TestJAXBackend:
         rx, sig = self._make_qpsk_rx(xp, n_symbols=1000)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=train,
             num_taps=11,
@@ -1142,14 +1139,20 @@ class TestJAXBackend:
         from commstools import Signal
 
         n_symbols = 1000
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=3)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=3,
+        )
         rx1 = xp.asarray(sig.samples)
         rx2 = xp.roll(rx1, 1)
         rx_mimo = xp.stack([rx1, rx2], axis=0)  # (2, N)
         train = xp.stack([xp.asarray(sig.source_symbols)] * 2, axis=0)
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx_mimo,
             training_symbols=train,
             num_taps=7,
@@ -1169,7 +1172,7 @@ class TestJAXBackend:
         rx, sig = self._make_qpsk_rx(xp)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=1,
@@ -1188,7 +1191,7 @@ class TestJAXBackend:
         rx, sig = self._make_qpsk_rx(xp)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=1,
@@ -1207,7 +1210,7 @@ class TestJAXBackend:
         rx, sig = self._make_qpsk_rx(xp, n_symbols=500)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=1,
@@ -1226,7 +1229,7 @@ class TestJAXBackend:
         """CMA JAX backend should converge for QPSK."""
         rx, _ = self._make_qpsk_rx(xp)
 
-        result = equalizers.cma(
+        result = equalization.cma(
             rx,
             num_taps=11,
             step_size=0.005,
@@ -1244,7 +1247,7 @@ class TestJAXBackend:
         rx, _ = self._make_qpsk_rx(xp, n_symbols=400)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.cma(
+        result = equalization.cma(
             rx,
             num_taps=7,
             step_size=0.005,
@@ -1261,7 +1264,7 @@ class TestJAXBackend:
         """CMA JAX backend should work with default R²=1.0 (no modulation given)."""
         rx, _ = self._make_qpsk_rx(xp, n_symbols=400)
 
-        result = equalizers.cma(rx, num_taps=7, step_size=0.005, backend="jax")
+        result = equalization.cma(rx, num_taps=7, step_size=0.005, backend="jax")
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[0] > 0
@@ -1272,7 +1275,7 @@ class TestJAXBackend:
         """RDE JAX backend should converge on QPSK."""
         rx, _ = self._make_qpsk_rx(xp)
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx,
             num_taps=11,
             step_size=0.005,
@@ -1289,7 +1292,7 @@ class TestJAXBackend:
         """RDE JAX backend should converge on 16-QAM."""
         rx, _ = self._make_qam16_rx(xp)
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx,
             num_taps=11,
             step_size=5e-4,
@@ -1306,7 +1309,7 @@ class TestJAXBackend:
         rx, _ = self._make_qpsk_rx(xp, n_symbols=400)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx,
             num_taps=7,
             step_size=0.005,
@@ -1323,7 +1326,7 @@ class TestJAXBackend:
         """RDE JAX backend with no modulation should fall back to unit radius (≡ CMA)."""
         rx, _ = self._make_qpsk_rx(xp, n_symbols=400)
 
-        result = equalizers.rde(rx, num_taps=7, step_size=0.005, backend="jax")
+        result = equalization.rde(rx, num_taps=7, step_size=0.005, backend="jax")
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[0] > 0
@@ -1333,12 +1336,18 @@ class TestJAXBackend:
         from commstools import Signal
 
         n_symbols = 1000
-        sig = Signal.qam(symbol_rate=1e6, num_symbols=n_symbols, order=16,
-                         pulse_shape="rrc", sps=2, seed=5)
+        sig = Signal.qam(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=16,
+            pulse_shape="rrc",
+            sps=2,
+            seed=5,
+        )
         rx1 = xp.asarray(sig.samples)
         rx_mimo = xp.stack([rx1, xp.roll(rx1, 2)], axis=0)
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx_mimo,
             num_taps=7,
             step_size=5e-4,
@@ -1352,16 +1361,28 @@ class TestJAXBackend:
 
     def test_kernel_cache_reuse(self, backend_device, xp):
         """Calling the same JAX algorithm twice with identical parameters must reuse the cache."""
-        from commstools.equalizers import _JITTED_EQ
+        from commstools.equalization import _JITTED_EQ
 
         rx, sig = self._make_qpsk_rx(xp, n_symbols=300)
         train = xp.asarray(sig.source_symbols)
 
-        equalizers.lms(rx, training_symbols=train, num_taps=5, modulation="psk",
-                       order=4, backend="jax")
+        equalization.lms(
+            rx,
+            training_symbols=train,
+            num_taps=5,
+            modulation="psk",
+            order=4,
+            backend="jax",
+        )
         key_after_first = set(_JITTED_EQ.keys())
-        equalizers.lms(rx, training_symbols=train, num_taps=5, modulation="psk",
-                       order=4, backend="jax")
+        equalization.lms(
+            rx,
+            training_symbols=train,
+            num_taps=5,
+            modulation="psk",
+            order=4,
+            backend="jax",
+        )
         key_after_second = set(_JITTED_EQ.keys())
 
         # No new keys should be added on the second identical call
@@ -1379,8 +1400,15 @@ class TestStoreWeights:
 
     def _qpsk_rx(self, xp, n_symbols=600, seed=0):
         from commstools import Signal
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=seed)
+
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=seed,
+        )
         return xp.ascontiguousarray(xp.asarray(sig.samples)), sig
 
     def test_lms_store_weights_numba(self, backend_device, xp):
@@ -1388,10 +1416,15 @@ class TestStoreWeights:
         rx, sig = self._qpsk_rx(xp)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.lms(
-            rx, training_symbols=xp.asarray(sig.source_symbols),
-            num_taps=9, step_size=0.05, modulation="psk", order=4,
-            backend="numba", store_weights=True,
+        result = equalization.lms(
+            rx,
+            training_symbols=xp.asarray(sig.source_symbols),
+            num_taps=9,
+            step_size=0.05,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            store_weights=True,
         )
 
         assert result.weights_history is not None
@@ -1401,10 +1434,15 @@ class TestStoreWeights:
         """RLS Numba: weights_history has shape (N_sym_truncated, num_taps) for SISO."""
         rx, sig = self._qpsk_rx(xp)
 
-        result = equalizers.rls(
-            rx, training_symbols=xp.asarray(sig.source_symbols),
-            sps=1, num_taps=7, modulation="psk", order=4,
-            backend="numba", store_weights=True,
+        result = equalization.rls(
+            rx,
+            training_symbols=xp.asarray(sig.source_symbols),
+            sps=1,
+            num_taps=7,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            store_weights=True,
         )
 
         assert result.weights_history is not None
@@ -1417,9 +1455,14 @@ class TestStoreWeights:
         rx, _ = self._qpsk_rx(xp)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.cma(
-            rx, num_taps=9, step_size=0.005, modulation="psk", order=4,
-            backend="numba", store_weights=True,
+        result = equalization.cma(
+            rx,
+            num_taps=9,
+            step_size=0.005,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            store_weights=True,
         )
 
         assert result.weights_history is not None
@@ -1430,9 +1473,14 @@ class TestStoreWeights:
         rx, _ = self._qpsk_rx(xp)
         n_sym = rx.shape[0] // 2
 
-        result = equalizers.rde(
-            rx, num_taps=9, step_size=0.005, modulation="psk", order=4,
-            backend="numba", store_weights=True,
+        result = equalization.rde(
+            rx,
+            num_taps=9,
+            step_size=0.005,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            store_weights=True,
         )
 
         assert result.weights_history is not None
@@ -1442,15 +1490,21 @@ class TestStoreWeights:
         """LMS Numba MIMO: weights_history has shape (N_sym, C, C, num_taps)."""
         from commstools import Signal
 
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=600, order=4,
-                         pulse_shape="rrc", sps=2, seed=0)
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=600, order=4, pulse_shape="rrc", sps=2, seed=0
+        )
         rx = xp.asarray(sig.samples)
         rx_mimo = xp.stack([rx, xp.roll(rx, 1)], axis=0)
         train = xp.stack([xp.asarray(sig.source_symbols)] * 2, axis=0)
 
-        result = equalizers.lms(
-            rx_mimo, training_symbols=train, num_taps=5,
-            modulation="psk", order=4, backend="numba", store_weights=True,
+        result = equalization.lms(
+            rx_mimo,
+            training_symbols=train,
+            num_taps=5,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            store_weights=True,
         )
 
         n_sym = rx.shape[0] // 2
@@ -1463,11 +1517,11 @@ class TestStoreWeights:
         train = xp.asarray(sig.source_symbols)
 
         for algo, kwargs in [
-            ("lms",  dict(training_symbols=train, modulation="psk", order=4)),
-            ("cma",  dict(modulation="psk", order=4)),
-            ("rde",  dict(modulation="psk", order=4)),
+            ("lms", dict(training_symbols=train, modulation="psk", order=4)),
+            ("cma", dict(modulation="psk", order=4)),
+            ("rde", dict(modulation="psk", order=4)),
         ]:
-            result = getattr(equalizers, algo)(rx, num_taps=7, **kwargs)
+            result = getattr(equalization, algo)(rx, num_taps=7, **kwargs)
             assert result.weights_history is None, (
                 f"{algo}: expected weights_history=None by default"
             )
@@ -1483,33 +1537,40 @@ class TestEdgeCases:
 
     def _qpsk_rx(self, xp, n_symbols=500, seed=0):
         from commstools import Signal
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=seed)
+
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=seed,
+        )
         return xp.ascontiguousarray(xp.asarray(sig.samples)), sig
 
     def test_rde_rejects_sps_1(self, backend_device, xp):
         """RDE should raise ValueError when sps=1."""
         tx = xp.ones(100, dtype=xp.complex64)
         with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalizers.rde(tx, num_taps=5, modulation="psk", order=4, sps=1)
+            equalization.rde(tx, num_taps=5, modulation="psk", order=4, sps=1)
 
     def test_lms_raises_no_constellation_numba(self, backend_device, xp):
         """LMS Numba: ValueError when no modulation and no training symbols (DD impossible)."""
         rx, _ = self._qpsk_rx(xp)
         with pytest.raises(ValueError, match="modulation and order must be provided"):
-            equalizers.lms(rx, num_taps=7, backend="numba")
+            equalization.lms(rx, num_taps=7, backend="numba")
 
     def test_lms_raises_no_constellation_jax(self, backend_device, xp):
         """LMS JAX: same ValueError for missing constellation."""
         pytest.importorskip("jax")
         rx, _ = self._qpsk_rx(xp)
         with pytest.raises(ValueError, match="modulation and order must be provided"):
-            equalizers.lms(rx, num_taps=7, backend="jax")
+            equalization.lms(rx, num_taps=7, backend="jax")
 
     def test_rls_warns_fractional_spacing(self, backend_device, xp):
         """RLS should warn when sps > 1 (ill-conditioned correlation matrix)."""
         rx, sig = self._qpsk_rx(xp, n_symbols=400)
-        result = equalizers.rls(
+        result = equalization.rls(
             xp.asarray(sig.samples),
             training_symbols=xp.asarray(sig.source_symbols),
             sps=2,
@@ -1524,12 +1585,16 @@ class TestEdgeCases:
     def test_validate_sps_small_num_taps(self, backend_device, xp, caplog):
         """_validate_sps should log a warning when num_taps < 4*sps."""
         import logging
+
         rx, sig = self._qpsk_rx(xp)
         with caplog.at_level(logging.WARNING, logger="commstools"):
-            equalizers.lms(
-                rx, training_symbols=xp.asarray(sig.source_symbols),
+            equalization.lms(
+                rx,
+                training_symbols=xp.asarray(sig.source_symbols),
                 num_taps=3,  # < 4*sps=8 → should warn
-                modulation="psk", order=4, backend="numba",
+                modulation="psk",
+                order=4,
+                backend="numba",
             )
         assert any("small" in r.message.lower() for r in caplog.records)
 
@@ -1537,7 +1602,7 @@ class TestEdgeCases:
         """RDE with no modulation should use unit radius (same gradient as CMA R²=1)."""
         rx, _ = self._qpsk_rx(xp)
 
-        result = equalizers.rde(rx, num_taps=7, step_size=0.005, backend="numba")
+        result = equalization.rde(rx, num_taps=7, step_size=0.005, backend="numba")
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[0] > 0
@@ -1546,12 +1611,13 @@ class TestEdgeCases:
         """RDE MIMO path with no modulation should run (unit radius, 2-ch)."""
         from commstools import Signal
 
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=600, order=4,
-                         pulse_shape="rrc", sps=2, seed=0)
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=600, order=4, pulse_shape="rrc", sps=2, seed=0
+        )
         rx = xp.asarray(sig.samples)
         rx_mimo = xp.stack([rx, xp.roll(rx, 1)], axis=0)
 
-        result = equalizers.rde(rx_mimo, num_taps=7, step_size=5e-4, backend="numba")
+        result = equalization.rde(rx_mimo, num_taps=7, step_size=5e-4, backend="numba")
 
         assert result.y_hat.shape == (2, rx.shape[0] // 2)
 
@@ -1560,9 +1626,15 @@ class TestEdgeCases:
         rx, sig = self._qpsk_rx(xp, n_symbols=1000)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.lms(
-            rx, training_symbols=train, num_taps=7, step_size=0.05,
-            modulation="psk", order=4, backend="numba", num_train_symbols=30,
+        result = equalization.lms(
+            rx,
+            training_symbols=train,
+            num_taps=7,
+            step_size=0.05,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            num_train_symbols=30,
         )
 
         assert result.num_train_symbols <= 30
@@ -1572,8 +1644,11 @@ class TestEdgeCases:
         rx, sig = self._qpsk_rx(xp)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.lms(
-            rx, training_symbols=train, num_taps=7, step_size=0.05,
+        result = equalization.lms(
+            rx,
+            training_symbols=train,
+            num_taps=7,
+            step_size=0.05,
             backend="numba",
             # deliberately no modulation/order
         )
@@ -1584,7 +1659,7 @@ class TestEdgeCases:
     def test_cma_rde_rejects_sps_1(self, backend_device, xp):
         """Both CMA and RDE should reject sps != 2."""
         tx = xp.ones(100, dtype=xp.complex64)
-        for algo in (equalizers.cma, equalizers.rde):
+        for algo in (equalization.cma, equalization.rde):
             with pytest.raises(ValueError, match="2 samples/symbol"):
                 algo(tx, num_taps=5, sps=1)
 
@@ -1593,9 +1668,15 @@ class TestEdgeCases:
         rx, sig = self._qpsk_rx(xp)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.lms(
-            rx, training_symbols=train, num_taps=11, step_size=0.05,
-            modulation="psk", order=4, backend="numba", center_tap=8,
+        result = equalization.lms(
+            rx,
+            training_symbols=train,
+            num_taps=11,
+            step_size=0.05,
+            modulation="psk",
+            order=4,
+            backend="numba",
+            center_tap=8,
         )
 
         assert isinstance(result, EqualizerResult)
@@ -1621,7 +1702,7 @@ class TestZF3x3:
         for i in range(3):
             channel[i, i, 0] = 1.0
 
-        equalized = equalizers.zf_equalizer(symbols, channel)
+        equalized = equalization.zf_equalizer(symbols, channel)
 
         assert equalized.shape == (3, n)
         assert xp.allclose(equalized, symbols, atol=1e-4)
@@ -1634,9 +1715,7 @@ class TestZF3x3:
 
         # Single-tap 3×3 mixing matrix
         H = xp.array(
-            [[[1.0], [0.3], [0.0]],
-             [[0.0], [1.0], [0.2]],
-             [[0.1], [0.0], [1.0]]],
+            [[[1.0], [0.3], [0.0]], [[0.0], [1.0], [0.2]], [[0.1], [0.0], [1.0]]],
             dtype=xp.complex64,
         )
 
@@ -1646,7 +1725,7 @@ class TestZF3x3:
             for j in range(3):
                 rx[i] += H[i, j, 0] * tx[j]
 
-        equalized = equalizers.zf_equalizer(rx, H, noise_variance=0.0)
+        equalized = equalization.zf_equalizer(rx, H, noise_variance=0.0)
 
         assert equalized.shape == (3, n)
         assert xp.allclose(equalized, tx, atol=1e-3)
@@ -1662,7 +1741,7 @@ class TestZF3x3:
         rng = xp.random.RandomState(0)
         rx = (rng.randn(3, n) + 1j * rng.randn(3, n)).astype(xp.complex64)
 
-        equalized = equalizers.zf_equalizer(rx, channel, noise_variance=0.01)
+        equalized = equalization.zf_equalizer(rx, channel, noise_variance=0.01)
 
         assert equalized.shape == (3, n)
 
@@ -1680,20 +1759,33 @@ class TestButterflyMIMOExtended:
         from commstools import Signal
 
         n_symbols = 2000
-        sig = Signal.qam(symbol_rate=1e6, num_symbols=n_symbols, order=16,
-                         pulse_shape="rrc", sps=2, seed=11)
+        sig = Signal.qam(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=16,
+            pulse_shape="rrc",
+            sps=2,
+            seed=11,
+        )
         rx = xp.asarray(sig.samples)
 
         # Simulate polarization mixing: channel mixes two copies of same signal
         mix = xp.array([[0.9, 0.1], [0.1, 0.9]], dtype=xp.complex64)
-        rx_mimo = xp.stack([
-            mix[0, 0] * rx + mix[0, 1] * xp.roll(rx, 3),
-            mix[1, 0] * rx + mix[1, 1] * xp.roll(rx, 5),
-        ], axis=0)
+        rx_mimo = xp.stack(
+            [
+                mix[0, 0] * rx + mix[0, 1] * xp.roll(rx, 3),
+                mix[1, 0] * rx + mix[1, 1] * xp.roll(rx, 5),
+            ],
+            axis=0,
+        )
 
-        result = equalizers.rde(
-            rx_mimo, num_taps=11, step_size=5e-4,
-            modulation="qam", order=16, backend="numba",
+        result = equalization.rde(
+            rx_mimo,
+            num_taps=11,
+            step_size=5e-4,
+            modulation="qam",
+            order=16,
+            backend="numba",
         )
 
         assert result.y_hat.shape == (2, n_symbols)
@@ -1707,8 +1799,14 @@ class TestButterflyMIMOExtended:
         pytest.importorskip("jax")
 
         n_symbols = 2000
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=7)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=7,
+        )
         rx = xp.asarray(sig.samples)
         train = xp.asarray(sig.source_symbols)
 
@@ -1716,9 +1814,14 @@ class TestButterflyMIMOExtended:
         rx_mimo = xp.stack([rx, xp.roll(rx, 2)], axis=0)
         train_mimo = xp.stack([train, train], axis=0)
 
-        result = equalizers.lms(
-            rx_mimo, training_symbols=train_mimo, num_taps=7, step_size=0.05,
-            modulation="psk", order=4, backend="jax",
+        result = equalization.lms(
+            rx_mimo,
+            training_symbols=train_mimo,
+            num_taps=7,
+            step_size=0.05,
+            modulation="psk",
+            order=4,
+            backend="jax",
         )
 
         assert result.y_hat.shape == (2, n_symbols)
@@ -1735,9 +1838,16 @@ class TestNumbaBackendCoverage:
 
     def _make_qpsk_rx(self, xp, n_symbols=1000, seed=0):
         from commstools import Signal
+
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=seed)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=seed,
+        )
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         return xp.ascontiguousarray(rx), sig
 
@@ -1746,7 +1856,7 @@ class TestNumbaBackendCoverage:
         rx, _ = self._make_qpsk_rx(xp, n_symbols=600)
 
         # No training_symbols → _prepare_training_numpy gets None → n_train_aligned=0
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             num_taps=11,
             step_size=0.01,
@@ -1763,7 +1873,7 @@ class TestNumbaBackendCoverage:
         rx, sig = self._make_qpsk_rx(xp, n_symbols=800)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=2,
@@ -1780,14 +1890,21 @@ class TestNumbaBackendCoverage:
     def test_rls_numba_mimo(self, backend_device, xp):
         """RLS numba MIMO path correctly handles (num_channels, n_samples) input shape."""
         from commstools import Signal
+
         n_symbols = 600
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=5)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=5,
+        )
         rx1 = xp.asarray(sig.samples)
         rx_mimo = xp.stack([rx1, xp.roll(rx1, 2)], axis=0)  # (2, N)
         train_mimo = xp.stack([xp.asarray(sig.source_symbols)] * 2, axis=0)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx_mimo,
             training_symbols=train_mimo,
             sps=2,
@@ -1807,7 +1924,7 @@ class TestNumbaBackendCoverage:
         rx, sig = self._make_qpsk_rx(xp, n_symbols=800)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=2,
@@ -1827,7 +1944,7 @@ class TestNumbaBackendCoverage:
         train = xp.asarray(sig.source_symbols)
 
         # Provide training but NOT modulation/order → constellation inferred from train
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=2,
@@ -1843,7 +1960,7 @@ class TestNumbaBackendCoverage:
         rx, sig = self._make_qpsk_rx(xp, n_symbols=400)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=2,
@@ -1859,11 +1976,13 @@ class TestNumbaBackendCoverage:
     def test_cma_numba_store_weights(self, backend_device, xp):
         """CMA numba backend with store_weights=True."""
         from commstools import Signal
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=400, order=4,
-                         pulse_shape="rrc", sps=2, seed=0)
+
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=400, order=4, pulse_shape="rrc", sps=2, seed=0
+        )
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.cma(
+        result = equalization.cma(
             rx,
             num_taps=7,
             step_size=0.005,
@@ -1878,11 +1997,13 @@ class TestNumbaBackendCoverage:
     def test_rde_numba_store_weights(self, backend_device, xp):
         """RDE numba backend with store_weights=True."""
         from commstools import Signal
-        sig = Signal.qam(symbol_rate=1e6, num_symbols=400, order=16,
-                         pulse_shape="rrc", sps=2, seed=0)
+
+        sig = Signal.qam(
+            symbol_rate=1e6, num_symbols=400, order=16, pulse_shape="rrc", sps=2, seed=0
+        )
         rx = xp.asarray(sig.samples)
 
-        result = equalizers.rde(
+        result = equalization.rde(
             rx,
             num_taps=7,
             step_size=5e-4,
@@ -1900,7 +2021,10 @@ class TestNumbaBackendCoverage:
 # ============================================================================
 
 
-@pytest.mark.skipif("jax" not in sys.modules and not pytest.importorskip("jax", reason="skip"), reason="JAX required")
+@pytest.mark.skipif(
+    "jax" not in sys.modules and not pytest.importorskip("jax", reason="skip"),
+    reason="JAX required",
+)
 class TestRLSJAXConstellationFromTraining:
     """RLS JAX derives constellation from training symbols when no modulation is given."""
 
@@ -1908,15 +2032,22 @@ class TestRLSJAXConstellationFromTraining:
         """RLS JAX with training only (no modulation) infers constellation from training."""
         pytest.importorskip("jax")
         from commstools import Signal
+
         n_symbols = 800
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=9)
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=9,
+        )
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
         rx = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
         rx = xp.ascontiguousarray(rx)
         train = xp.asarray(sig.source_symbols)
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=train,
             sps=2,
@@ -1939,27 +2070,36 @@ class TestImportErrorBranches:
 
     def _make_rx(self, xp, n_symbols=400):
         from commstools import Signal
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=n_symbols, order=4,
-                         pulse_shape="rrc", sps=2, seed=0)
+
+        sig = Signal.psk(
+            symbol_rate=1e6,
+            num_symbols=n_symbols,
+            order=4,
+            pulse_shape="rrc",
+            sps=2,
+            seed=0,
+        )
         return xp.ascontiguousarray(xp.asarray(sig.samples)), sig
 
     def test_lms_jax_not_installed(self, backend_device, xp):
         """LMS raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalizers._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
-                equalizers.lms(
-                    rx, modulation="psk", order=4, backend="jax"
-                )
+                equalization.lms(rx, modulation="psk", order=4, backend="jax")
 
     def test_rls_numba_not_installed(self, backend_device, xp):
         """RLS raises ImportError when backend='numba' but Numba is not available."""
         rx, sig = self._make_rx(xp)
         train = xp.asarray(sig.source_symbols)
-        with patch("commstools.equalizers._get_numba", return_value=None):
+        with patch("commstools.equalization._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
-                equalizers.rls(
-                    rx, training_symbols=train, sps=2, modulation="psk", order=4,
+                equalization.rls(
+                    rx,
+                    training_symbols=train,
+                    sps=2,
+                    modulation="psk",
+                    order=4,
                     backend="numba",
                 )
 
@@ -1967,40 +2107,44 @@ class TestImportErrorBranches:
         """RLS raises ImportError when backend='jax' but JAX is not available."""
         rx, sig = self._make_rx(xp)
         train = xp.asarray(sig.source_symbols)
-        with patch("commstools.equalizers._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
-                equalizers.rls(
-                    rx, training_symbols=train, sps=2, modulation="psk", order=4,
+                equalization.rls(
+                    rx,
+                    training_symbols=train,
+                    sps=2,
+                    modulation="psk",
+                    order=4,
                     backend="jax",
                 )
 
     def test_cma_numba_not_installed(self, backend_device, xp):
         """CMA raises ImportError when backend='numba' but Numba is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalizers._get_numba", return_value=None):
+        with patch("commstools.equalization._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
-                equalizers.cma(rx, modulation="psk", order=4, backend="numba")
+                equalization.cma(rx, modulation="psk", order=4, backend="numba")
 
     def test_cma_jax_not_installed(self, backend_device, xp):
         """CMA raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalizers._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
-                equalizers.cma(rx, modulation="psk", order=4, backend="jax")
+                equalization.cma(rx, modulation="psk", order=4, backend="jax")
 
     def test_rde_numba_not_installed(self, backend_device, xp):
         """RDE raises ImportError when backend='numba' but Numba is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalizers._get_numba", return_value=None):
+        with patch("commstools.equalization._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
-                equalizers.rde(rx, modulation="qam", order=16, backend="numba")
+                equalization.rde(rx, modulation="qam", order=16, backend="numba")
 
     def test_rde_jax_not_installed(self, backend_device, xp):
         """RDE raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalizers._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
-                equalizers.rde(rx, modulation="qam", order=16, backend="jax")
+                equalization.rde(rx, modulation="qam", order=16, backend="jax")
 
 
 # ============================================================================
@@ -2016,12 +2160,13 @@ class TestLMSJAXPureDD:
         pytest.importorskip("jax")
         from commstools import Signal
 
-        sig = Signal.psk(symbol_rate=1e6, num_symbols=800, order=4,
-                         pulse_shape="rrc", sps=2, seed=42)
+        sig = Signal.psk(
+            symbol_rate=1e6, num_symbols=800, order=4, pulse_shape="rrc", sps=2, seed=42
+        )
         rx = xp.ascontiguousarray(xp.asarray(sig.samples))
 
         # No training_symbols → _prepare_training_jax receives None → else branch
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             num_taps=11,
             step_size=0.01,
@@ -2067,7 +2212,7 @@ class TestWInit:
         w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.lms(
+        result = equalization.lms(
             rx,
             training_symbols=None,
             modulation="qam",
@@ -2082,14 +2227,15 @@ class TestWInit:
         """rls() accepts w_init array with correct shape."""
         from commstools import Signal
 
-        sig = Signal.qam(symbol_rate=1e6, num_symbols=1000, order=4,
-                         pulse_shape="rrc", sps=2, seed=1)
+        sig = Signal.qam(
+            symbol_rate=1e6, num_symbols=1000, order=4, pulse_shape="rrc", sps=2, seed=1
+        )
         rx = xp.asarray(sig.samples)
         num_taps, num_ch = 11, 1
         w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.rls(
+        result = equalization.rls(
             rx,
             training_symbols=xp.asarray(sig.source_symbols),
             modulation="qam",
@@ -2107,7 +2253,9 @@ class TestWInit:
         w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.cma(rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0)
+        result = equalization.cma(
+            rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0
+        )
         assert isinstance(result, EqualizerResult)
 
     def test_rde_accepts_w_init(self, backend_device, xp):
@@ -2117,7 +2265,9 @@ class TestWInit:
         w0 = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.rde(rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0)
+        result = equalization.rde(
+            rx, modulation="qam", order=16, num_taps=num_taps, w_init=w0
+        )
         assert isinstance(result, EqualizerResult)
 
     def test_w_init_shape_mismatch_raises(self, backend_device, xp):
@@ -2126,10 +2276,10 @@ class TestWInit:
         bad_w = np.zeros((1, 1, 99), dtype=np.complex64)  # wrong num_taps
 
         with pytest.raises(ValueError, match="w_init shape"):
-            equalizers.cma(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
+            equalization.cma(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
 
         with pytest.raises(ValueError, match="w_init shape"):
-            equalizers.rde(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
+            equalization.rde(rx, modulation="qam", order=16, num_taps=21, w_init=bad_w)
 
     def test_lms_to_rde_handoff_output_shape(self, backend_device, xp):
         """LMS weights can be handed off to RDE via w_init; output shape is correct."""
@@ -2139,7 +2289,7 @@ class TestWInit:
         pre_rx = rx[..., :half]
         payload_rx = rx[..., half:]
 
-        pre = equalizers.lms(
+        pre = equalization.lms(
             pre_rx,
             modulation="qam",
             order=16,
@@ -2150,7 +2300,7 @@ class TestWInit:
         if w0.ndim == 1:
             w0 = w0[np.newaxis, np.newaxis, :]
 
-        result = equalizers.rde(
+        result = equalization.rde(
             payload_rx,
             modulation="qam",
             order=16,
@@ -2166,15 +2316,23 @@ class TestWInit:
         from commstools import Signal
         from commstools.impairments import apply_awgn
 
-        sig = Signal.qam(symbol_rate=1e6, num_symbols=4000, order=16,
-                         pulse_shape="rrc", sps=2, seed=42)
+        sig = Signal.qam(
+            symbol_rate=1e6,
+            num_symbols=4000,
+            order=16,
+            pulse_shape="rrc",
+            sps=2,
+            seed=42,
+        )
         rx_np = apply_awgn(sig.samples, esn0_db=25.0, sps=2)
         rx = xp.asarray(rx_np)
 
         # Cold-start RDE
-        cold = equalizers.rde(rx, modulation="qam", order=16, num_taps=21, step_size=5e-4)
+        cold = equalization.rde(
+            rx, modulation="qam", order=16, num_taps=21, step_size=5e-4
+        )
         # LMS pre-convergence
-        pre = equalizers.lms(
+        pre = equalization.lms(
             rx,
             training_symbols=xp.asarray(sig.source_symbols),
             modulation="qam",
@@ -2188,8 +2346,9 @@ class TestWInit:
             w0 = w0[np.newaxis, np.newaxis, :]
 
         # Warm RDE
-        warm = equalizers.rde(rx, modulation="qam", order=16, num_taps=21,
-                               step_size=5e-4, w_init=w0)
+        warm = equalization.rde(
+            rx, modulation="qam", order=16, num_taps=21, step_size=5e-4, w_init=w0
+        )
 
         tail = slice(-500, None)
         ref = _to_np(sig.source_symbols)
@@ -2235,9 +2394,13 @@ class TestEqualizerWInitBackend:
         w0 = np.zeros((1, 1, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.cma(
-            rx, modulation="qam", order=16, num_taps=num_taps,
-            w_init=w0, backend="jax",
+        result = equalization.cma(
+            rx,
+            modulation="qam",
+            order=16,
+            num_taps=num_taps,
+            w_init=w0,
+            backend="jax",
         )
         assert isinstance(result, EqualizerResult)
 
@@ -2249,9 +2412,13 @@ class TestEqualizerWInitBackend:
         w0 = np.zeros((1, 1, num_taps), dtype=np.complex64)
         w0[0, 0, num_taps // 2] = 1.0 + 0j
 
-        result = equalizers.rde(
-            rx, modulation="qam", order=16, num_taps=num_taps,
-            w_init=w0, backend="jax",
+        result = equalization.rde(
+            rx,
+            modulation="qam",
+            order=16,
+            num_taps=num_taps,
+            w_init=w0,
+            backend="jax",
         )
         assert isinstance(result, EqualizerResult)
 
@@ -2261,14 +2428,15 @@ class TestEqualizationFrame:
 
     def test_equalize_frame_no_pilots_output_shape(self, backend_device, xp):
         """equalize_frame() with no pilots returns payload-length output."""
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         frame = _make_sc_frame_no_pilots()
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
         samples = xp.asarray(sig.samples)
 
         result = equalize_frame(
-            samples, frame,
+            samples,
+            frame,
             num_taps=13,
             lms_step_size=0.05,
             blind_step_size=5e-4,
@@ -2297,14 +2465,15 @@ class TestEqualizationFrame:
 
     def test_equalize_frame_num_train_symbols(self, backend_device, xp):
         """num_train_symbols in result equals preamble length when no pilots."""
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         frame = _make_sc_frame_no_pilots()
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
         samples = xp.asarray(sig.samples)
 
         result = equalize_frame(
-            samples, frame,
+            samples,
+            frame,
             num_taps=13,
             modulation="qam",
             order=16,
@@ -2314,7 +2483,7 @@ class TestEqualizationFrame:
 
     def test_equalize_frame_external_w_init(self, backend_device, xp):
         """equalize_frame() accepts w_init and uses it for warm-start."""
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         frame = _make_sc_frame_no_pilots()
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
@@ -2324,7 +2493,8 @@ class TestEqualizationFrame:
         w0[0, 0, 6] = 1.0 + 0j
 
         result = equalize_frame(
-            samples, frame,
+            samples,
+            frame,
             num_taps=13,
             modulation="qam",
             order=16,
@@ -2335,7 +2505,7 @@ class TestEqualizationFrame:
 
     def test_equalize_frame_wrong_frame_type_raises(self, backend_device, xp):
         """equalize_frame() raises TypeError when frame is not SingleCarrierFrame."""
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         samples = xp.zeros(200, dtype=xp.complex64)
         with pytest.raises(TypeError, match="SingleCarrierFrame"):
@@ -2344,14 +2514,15 @@ class TestEqualizationFrame:
     def test_equalize_frame_jax_backend_no_pilots(self, backend_device, xp):
         """equalize_frame() with backend='jax' and no pilots runs without error."""
         pytest.importorskip("jax")
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         frame = _make_sc_frame_no_pilots()
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
         samples = xp.asarray(sig.samples)
 
         result = equalize_frame(
-            samples, frame,
+            samples,
+            frame,
             num_taps=13,
             modulation="qam",
             order=16,
@@ -2365,7 +2536,7 @@ class TestEqualizationFrame:
         """equalize_frame() with backend='jax' and comb pilots uses PA hybrid kernel."""
         pytest.importorskip("jax")
         from commstools.core import Preamble, SingleCarrierFrame
-        from commstools.equalizers import equalize_frame
+        from commstools.equalization import equalize_frame
 
         preamble = Preamble(sequence_type="barker", length=13)
         frame = SingleCarrierFrame(
@@ -2383,7 +2554,8 @@ class TestEqualizationFrame:
         samples = xp.asarray(sig.samples)
 
         result = equalize_frame(
-            samples, frame,
+            samples,
+            frame,
             num_taps=13,
             modulation="qam",
             order=16,

@@ -1232,7 +1232,7 @@ class Signal(BaseModel):
     def equalize(
         self,
         method: str = "lms",
-        # ── common to all adaptive equalizers ─────────────────────────────
+        # ── common to all adaptive equalization ─────────────────────────────
         num_taps: int = 21,
         step_size: float = 0.01,
         store_weights: bool = False,
@@ -1260,7 +1260,7 @@ class Signal(BaseModel):
         - ``signal.samples`` contains the equalized complex symbols at symbol
           rate (1 SPS for adaptive methods).
         - ``signal._equalizer_result`` holds the full
-          :class:`~commstools.equalizers.EqualizerResult` (adaptive methods only).
+          :class:`~commstools.equalization.EqualizerResult` (adaptive methods only).
 
         Algorithm overview
         ------------------
@@ -1297,14 +1297,14 @@ class Signal(BaseModel):
             Equalization algorithm. See the table above for a summary.
         num_taps : int, default 21
             Number of FIR taps in the equalizer filter (per polyphase arm for
-            fractionally-spaced equalizers). Use at least ``4 * sps`` taps.
+            fractionally-spaced equalization). Use at least ``4 * sps`` taps.
             More taps allow deeper ISI compensation but slow convergence.
             *Applies to: lms, rls, cma.*
         step_size : float, default 0.01
             NLMS step size (mu) for LMS, or fixed gradient step for CMA.
 
             - **LMS**: normalized step in ``(0, 2)``; see
-              :func:`~commstools.equalizers.lms` for the stability derivation.
+              :func:`~commstools.equalization.lms` for the stability derivation.
               Larger values converge faster but increase steady-state
               misadjustment. Typical: 0.01-0.1.
             - **CMA / RDE**: fixed step on the non-convex Godard surface; must
@@ -1385,7 +1385,7 @@ class Signal(BaseModel):
             - ``signal.samples`` — equalized symbols (1 SPS after adaptive
               methods; unchanged rate for ZF).
             - ``signal._equalizer_result`` — full
-              :class:`~commstools.equalizers.EqualizerResult` including
+              :class:`~commstools.equalization.EqualizerResult` including
               ``y_hat``, ``weights``, ``error``, and optionally
               ``weights_history``. *Not set for ZF.*
             - ``signal._num_train_symbols`` — actual number of training
@@ -1426,23 +1426,22 @@ class Signal(BaseModel):
         >>> sig.equalize(method="zf", channel_estimate=h,
         ...              noise_variance=1e-2)
         """
-        from . import equalizers
+        from . import equalization
 
         sps = int(self.sps)
 
         if method not in ["zf", "rls"] and sps != 2:
             raise ValueError(
-                f"Signal is at {sps} SPS. Adaptive equalizers require 2 SPS "
+                f"Signal is at {sps} SPS. Adaptive equalization require 2 SPS "
                 f"(T/2-spaced input) — resample first."
             )
-
 
         train = (
             training_symbols if training_symbols is not None else self.source_symbols
         )
 
         if method == "lms":
-            result = equalizers.lms(
+            result = equalization.lms(
                 self.samples,
                 training_symbols=train,
                 sps=sps,
@@ -1458,7 +1457,7 @@ class Signal(BaseModel):
                 backend=backend,
             )
         elif method == "rls":
-            result = equalizers.rls(
+            result = equalization.rls(
                 self.samples,
                 training_symbols=train,
                 sps=sps,
@@ -1476,7 +1475,7 @@ class Signal(BaseModel):
                 backend=backend,
             )
         elif method == "cma":
-            result = equalizers.cma(
+            result = equalization.cma(
                 self.samples,
                 sps=sps,
                 num_taps=num_taps,
@@ -1490,7 +1489,7 @@ class Signal(BaseModel):
                 backend=backend,
             )
         elif method == "rde":
-            result = equalizers.rde(
+            result = equalization.rde(
                 self.samples,
                 sps=sps,
                 num_taps=num_taps,
@@ -1508,7 +1507,7 @@ class Signal(BaseModel):
                 raise ValueError(
                     "method='zf' requires channel_estimate to be provided."
                 )
-            self.samples = equalizers.zf_equalizer(
+            self.samples = equalization.zf_equalizer(
                 self.samples,
                 channel_estimate=channel_estimate,
                 noise_variance=noise_variance,
@@ -1585,9 +1584,9 @@ class Signal(BaseModel):
             ``self`` with ``samples`` replaced by the equalized payload symbols
             (1 SPS) and ``_equalizer_result`` populated.
         """
-        from . import equalizers  # noqa: PLC0415
+        from . import equalization  # noqa: PLC0415
 
-        result = equalizers.equalize_frame(
+        result = equalization.equalize_frame(
             self.samples,
             frame,
             num_taps=num_taps,
