@@ -18,7 +18,7 @@ Adaptive algorithms (LMS, RLS, CMA) support two execution backends:
 Block algorithms (ZF/MMSE) use NumPy/CuPy dispatch for vectorized
 frequency-domain Overlap-Save processing.
 
-All adaptive equalizers support a **butterfly MIMO** topology: for an input
+All adaptive equalization support a **butterfly MIMO** topology: for an input
 of shape ``(C, N)``, the equalizer maintains a ``(C, C, num_taps)`` weight
 matrix so that each output stream is a filtered combination of *all* input
 streams. This enables cross-channel interference cancellation (e.g.
@@ -26,7 +26,7 @@ dual-polarization demultiplexing in coherent optical, spatial MIMO demux).
 
 Input SPS Convention
 --------------------
-Adaptive equalizers require T/2-spaced input (2 samples/symbol), the
+Adaptive equalization require T/2-spaced input (2 samples/symbol), the
 industry standard for coherent optical and many wireless systems. The
 equalizer outputs one symbol per 2 input samples, decimating to symbol rate.
 A ``ValueError`` is raised if ``sps != 2``.
@@ -971,7 +971,7 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
 def _normalize_inputs_jax(samples, training_symbols, sps, xp):
     """Scale samples and training symbols to a common unit-power reference.
 
-    For fractionally-spaced equalizers (sps=2) the fractional timing phase
+    For fractionally-spaced equalization (sps=2) the fractional timing phase
     is unknown.  Strided power measurement ``samples[..., ::sps]`` is unsafe
     because it can land on zero-crossings of the Nyquist pulse, severely
     underestimating signal power and destabilising adaptation.
@@ -1358,7 +1358,7 @@ def _validate_sps(sps, num_taps):
     """Raise if sps != 2 (T/2-spaced only); warn if num_taps is too small."""
     if sps != 2:
         raise ValueError(
-            f"Adaptive equalizers require 2 samples/symbol "
+            f"Adaptive equalization require 2 samples/symbol "
             f"(T/2-spaced input). Got sps={sps}."
         )
     if num_taps < 2 * sps:
@@ -1369,7 +1369,7 @@ def _validate_sps(sps, num_taps):
 
 
 # ============================================================================
-# ADAPTIVE EQUALIZERS
+# ADAPTIVE equalization
 # ============================================================================
 
 
@@ -1467,7 +1467,7 @@ def lms(
 
     Warnings
     --------
-    **JAX GPU mode is typically slower than CPU for adaptive equalizers.**
+    **JAX GPU mode is typically slower than CPU for adaptive equalization.**
     LMS is inherently sequential: each symbol's weight update depends on the
     previous weights, so ``lax.scan`` serializes execution even on GPU.
     The per-step arithmetic (a ``num_taps``-length dot product) is far too
@@ -1763,7 +1763,7 @@ def rls(
         noise-only frequency bands that arise in T/2-spaced (sps=2) signals —
         without inflating ``P``'s eigenvalues.
         A value of ``0.0`` (default) gives standard RLS.
-        For fractionally-spaced equalizers start with ``leakage=1e-4`` and
+        For fractionally-spaced equalization start with ``leakage=1e-4`` and
         increase if steady-state EVM remains high.
     modulation : str, optional
         Modulation scheme (e.g., 'psk', 'qam', 'pam') for DD slicing.
@@ -2128,7 +2128,7 @@ def cma(
 
     Warnings
     --------
-    **JAX GPU mode is typically slower than CPU for adaptive equalizers.**
+    **JAX GPU mode is typically slower than CPU for adaptive equalization.**
     CMA is inherently sequential: each weight update depends on the previous
     weights, so ``lax.scan`` serializes execution even on GPU.  Use
     ``device='cpu'`` for typical SISO sequences, or ``backend='numba'`` for
@@ -2987,7 +2987,7 @@ def equalize_frame(
     If no preamble is present, the blind stage starts from ``w_init`` (or the
     center-tap identity when ``w_init=None``).
     """
-    # Local import to avoid circular dependency (core imports from equalizers)
+    # Local import to avoid circular dependency (core imports from equalization)
     from .core import SingleCarrierFrame  # noqa: PLC0415
 
     if not isinstance(frame, SingleCarrierFrame):
@@ -3335,7 +3335,7 @@ def equalize_frame(
 
 
 # ============================================================================
-# BLOCK EQUALIZERS
+# BLOCK equalization
 # ============================================================================
 
 

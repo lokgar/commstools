@@ -23,7 +23,7 @@ ideal_constellation :
 filter_response :
     Analyzes FIR filters in both time and frequency domains.
 equalizer_result :
-    Convergence curve and tap weight diagnostics for adaptive equalizers.
+    Convergence curve and tap weight diagnostics for adaptive equalization.
 """
 
 from typing import Any, Optional, Tuple, Union
