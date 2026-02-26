@@ -153,7 +153,7 @@ def test_dispatch_list(xp):
     assert x in (np, getattr(multirate, "cp", None))  # generic check
 
 
-def test_jax_conversions(backend_device, xp):
+def test_jax_conversions(backend_device, xp, xpt):
     """Test JAX conversion utilities with real JAX if available."""
     try:
         import jax.numpy as jnp
@@ -179,10 +179,7 @@ def test_jax_conversions(backend_device, xp):
 
     sig.update_samples_from_jax(jax_sig)
     assert isinstance(sig.samples, xp.ndarray)
-    if backend_device == "cpu":
-        assert np.allclose(sig.samples, arr_np)
-    else:
-        assert xp.allclose(sig.samples, xp.asarray(arr_np))
+    xpt.assert_allclose(sig.samples, xp.asarray(arr_np))
 
 
 def test_to_device_list_input(xp):

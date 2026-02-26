@@ -4,12 +4,6 @@ import numpy as np
 from commstools import mapping
 
 
-def _to_np(arr):
-    """Convert any array (NumPy, CuPy, JAX) to a plain NumPy array."""
-    if hasattr(arr, "get"):  # CuPy
-        return arr.get()
-    return np.asarray(arr)
-
 
 def test_qam_mapping(xp):
     """Verify QAM mapping produces the correct number of symbols."""
@@ -32,7 +26,7 @@ def test_psk_mapping(xp):
     assert len(syms) == 2
 
 
-def test_demap_dimensions_mimo(xp):
+def test_demap_dimensions_mimo(xp, xpt):
     """Test that demap_symbols_hard preserves multidimensional structure."""
     modulation = "qam"
     order = 4
@@ -57,10 +51,10 @@ def test_demap_dimensions_mimo(xp):
     expected_shape = (2, 8)
     assert bits_out.shape == expected_shape
     # Flatten both to compare content (bits_out is flat if reshape logic failed, but shape check guards it)
-    assert xp.array_equal(bits_out.flatten(), bits_in)
+    xpt.assert_array_equal(bits_out.flatten(), bits_in)
 
 
-def test_compute_llr_sign_correctness(xp):
+def test_compute_llr_sign_correctness(xp, xpt):
     """LLR sign should match hard decision at high SNR (noiseless symbols)."""
     modulation = "qam"
     order = 16
@@ -73,12 +67,10 @@ def test_compute_llr_sign_correctness(xp):
     )
 
     hard_from_llr = (np.asarray(llrs) < 0).astype("int32")
-    assert np.array_equal(hard_from_llr, _to_np(bits)), (
-        "LLR signs don't match original bits"
-    )
+    xpt.assert_array_equal(hard_from_llr, bits)
 
 
-def test_compute_llr_roundtrip(xp):
+def test_compute_llr_roundtrip(xp, xpt):
     """Hard decision from LLR should match direct hard demapping at high SNR."""
     modulation = "psk"
     order = 8
@@ -88,9 +80,9 @@ def test_compute_llr_roundtrip(xp):
 
     llrs = mapping.compute_llr(symbols, modulation, order, noise_var=1e-6)
     hard_from_llr = (np.asarray(llrs) < 0).astype("int32")
-    hard_direct = _to_np(mapping.demap_symbols_hard(symbols, modulation, order))
+    hard_direct = mapping.demap_symbols_hard(symbols, modulation, order)
 
-    assert np.array_equal(hard_from_llr, hard_direct)
+    xpt.assert_array_equal(hard_from_llr, hard_direct)
 
 
 def test_compute_llr_exact_vs_maxlog(xp):
@@ -148,17 +140,17 @@ def test_gray_code_edge_cases():
         mapping.gray_to_binary(-1)
 
 
-def test_8qam_mapping(xp):
+def test_8qam_mapping(xp, xpt):
     """Verify 8-QAM (rectangular) mapping and round-trip."""
     bits = xp.array([0, 0, 0, 1, 1, 1], dtype="int32")
     syms = mapping.map_bits(bits, modulation="qam", order=8)
     assert len(syms) == 2
 
     bits_out = mapping.demap_symbols_hard(syms, modulation="qam", order=8)
-    assert xp.array_equal(bits, bits_out)
+    xpt.assert_array_equal(bits, bits_out)
 
 
-def test_cross_qam_32_mapping(xp):
+def test_cross_qam_32_mapping(xp, xpt):
     """Verify 32-QAM (Cross) mapping and round-trip."""
     # 5 bits per symbol. 2 symbols = 10 bits.
     bits = xp.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0], dtype="int32")
@@ -166,7 +158,7 @@ def test_cross_qam_32_mapping(xp):
     assert len(syms) == 2
 
     bits_out = mapping.demap_symbols_hard(syms, modulation="qam", order=32)
-    assert xp.array_equal(bits, bits_out)
+    xpt.assert_array_equal(bits, bits_out)
 
 
 def test_compute_llr_methods_agree(xp):
@@ -216,7 +208,7 @@ def test_gray_constellation_advanced(xp):
         mapping.gray_constellation("unknown", 4)
 
 
-def test_map_demap_unipolar(xp):
+def test_map_demap_unipolar(xp, xpt):
     """Verify bit mapping and demapping with unipolar ASK/PAM."""
     bits = xp.array([0, 1, 1, 0])
     # Map to unipolar
@@ -225,12 +217,12 @@ def test_map_demap_unipolar(xp):
 
     # Demap from unipolar
     bits_rx = mapping.demap_symbols_hard(syms, "ask", 4, unipolar=True)
-    assert xp.array_equal(bits, bits_rx)
+    xpt.assert_array_equal(bits, bits_rx)
 
     # LLR signs should recover the same bits
     llrs = mapping.compute_llr(syms, "ask", 4, noise_var=0.1, unipolar=True)
     bits_soft = (np.asarray(llrs) < 0).astype("int32")
-    assert np.array_equal(bits_soft, _to_np(bits))
+    xpt.assert_array_equal(bits_soft, bits)
 
 
 def test_mapping_more(xp):

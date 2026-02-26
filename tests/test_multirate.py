@@ -69,7 +69,7 @@ def test_resample_errors(backend_device, xp):
         multirate.resample(data)
 
 
-def test_decimate_to_symbol_rate(backend_device, xp):
+def test_decimate_to_symbol_rate(backend_device, xp, xpt):
     """Verify downsampling (picking) symbols from an upsampled stream."""
     sps = 4
     # 4 symbols, each repeated sps times
@@ -77,16 +77,16 @@ def test_decimate_to_symbol_rate(backend_device, xp):
 
     # Sample at center of first symbol (offset 2)
     syms = multirate.decimate_to_symbol_rate(data, sps=sps, offset=0)
-    assert xp.array_equal(syms, xp.array([1, 2, 3, 4]))
+    xpt.assert_array_equal(syms, xp.array([1, 2, 3, 4]))
 
     # MIMO case
     data_mimo = xp.stack([data, data * 10])
     syms_mimo = multirate.decimate_to_symbol_rate(data_mimo, sps=sps, axis=-1)
     assert syms_mimo.shape == (2, 4)
-    assert xp.array_equal(syms_mimo[1], xp.array([10, 20, 30, 40]))
+    xpt.assert_array_equal(syms_mimo[1], xp.array([10, 20, 30, 40]))
 
 
-def test_expand(backend_device, xp):
+def test_expand(backend_device, xp, xpt):
     """Verify up-sampling by zero-stuffing correctly inserts zeros."""
     data = xp.array([1, 2, 3], dtype="float32")
     factor = 3
@@ -94,7 +94,7 @@ def test_expand(backend_device, xp):
 
     # Expected: 1, 0, 0, 2, 0, 0, 3, 0, 0
     expected = xp.array([1, 0, 0, 2, 0, 0, 3, 0, 0])
-    assert xp.array_equal(expanded, expected)
+    xpt.assert_array_equal(expanded, expected)
 
 
 def test_decimate_polyphase(backend_device, xp):
@@ -110,14 +110,8 @@ def test_decimate_polyphase(backend_device, xp):
         multirate.decimate(data, factor, method="unknown")
 
 
-def test_resample_cupy_multidim(backend_device, xp):
-    """
-    Cover proper execution of resample_poly for CuPy
-    when input has >1 dimensions.
-    """
-    if backend_device != "gpu":
-        pytest.skip("Test specifically targets CuPy path")
-
+def test_resample_multidim(backend_device, xp):
+    """Verify resample handles multi-dimensional input correctly on any backend."""
     # 2 channels, 10 samples
     samples = xp.ones((2, 10))
     # Resample by 2/1

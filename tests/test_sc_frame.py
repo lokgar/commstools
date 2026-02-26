@@ -70,7 +70,7 @@ def test_sc_frame_guard_zero(backend_device, xp):
     assert sig.signal_info.guard_type == "zero"
 
 
-def test_sc_frame_guard_cp(backend_device, xp):
+def test_sc_frame_guard_cp(backend_device, xp, xpt):
     """Verify cyclic prefix (CP) guard interval generation."""
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, guard_type="cp", guard_len=20
@@ -79,11 +79,11 @@ def test_sc_frame_guard_cp(backend_device, xp):
     assert len(sig.samples) == 120
     # CP should match the last 20 samples of the *original* body
     # New structure: [CP (20), Body (100)]
-    assert xp.allclose(sig.samples[:20], sig.samples[-20:])
+    xpt.assert_allclose(sig.samples[:20], sig.samples[-20:])
     assert sig.signal_info.guard_type == "cp"
 
 
-def test_sc_frame_preamble(backend_device, xp):
+def test_sc_frame_preamble(backend_device, xp, xpt):
     """Verify that auto-generated preambles are correctly prepended to the frame."""
     # Create Barker-13 preamble
     preamble = Preamble(sequence_type="barker", length=13)
@@ -91,7 +91,7 @@ def test_sc_frame_preamble(backend_device, xp):
     sig = frame.to_signal(sps=1, pulse_shape="none")
     assert len(sig.samples) == 113  # 13 preamble + 100 payload
     # Verify preamble symbols match
-    assert xp.allclose(sig.samples[:13], preamble.symbols)
+    xpt.assert_allclose(sig.samples[:13], preamble.symbols)
     # Verify SignalInfo
     assert sig.signal_info.preamble_seq_len == 13
 

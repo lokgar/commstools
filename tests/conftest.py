@@ -108,3 +108,26 @@ def xp(backend_device):
     elif backend_device == "gpu":
         return cp
     return np
+
+
+@pytest.fixture
+def xpt(backend_device):
+    """
+    Fixture that returns the testing module for the current backend.
+
+    Provides backend-aware assertion functions like ``assert_allclose`` and
+    ``assert_array_equal``.  Using this fixture instead of bare
+    ``assert xp.allclose(...)`` gives rich failure messages (mismatched
+    elements, max diff, shapes) and avoids implicit device-to-host transfers
+    when running on GPU.
+
+    Returns
+    -------
+    module
+        Either ``numpy.testing`` (CPU) or ``cupy.testing`` (GPU).
+    """
+    if backend_device == "gpu":
+        import cupy.testing as cpt
+        return cpt
+    import numpy.testing as npt
+    return npt

@@ -18,7 +18,7 @@ def test_rrc_taps():
     assert len(taps) == 10 * 4 + 1
 
 
-def test_rrc_taps_rolloff_zero(backend_device, xp):
+def test_rrc_taps_rolloff_zero(backend_device, xp, xpt):
     """Verify zero-rolloff RRC taps match a normalised sinc function."""
     taps = filtering.rrc_taps(sps=4, rolloff=0, span=8)
     assert len(taps) > 0
@@ -26,7 +26,7 @@ def test_rrc_taps_rolloff_zero(backend_device, xp):
     t = xp.linspace(-4, 4, len(taps))
     expected = xp.sinc(t)
     expected = expected / xp.sqrt(xp.sum(expected**2))
-    assert xp.allclose(xp.asarray(taps), expected, atol=1e-3)
+    xpt.assert_allclose(xp.asarray(taps), expected, atol=1e-3)
 
 
 def test_rc_taps():
@@ -137,7 +137,7 @@ def test_bandstop_taps():
 # ============================================================================
 
 
-def test_fir_filter(backend_device, xp):
+def test_fir_filter(backend_device, xp, xpt):
     """Verify FIR filtering output device, shape, and moving-average correctness."""
     data = xp.ones(100)
     taps = xp.ones(5) / 5.0  # Moving average
@@ -147,7 +147,7 @@ def test_fir_filter(backend_device, xp):
     assert isinstance(filtered, xp.ndarray)
     assert len(filtered) == len(data)
     # Interior samples of a DC signal through a moving average must stay at 1
-    assert xp.allclose(filtered[5:-5], xp.ones(90))
+    xpt.assert_allclose(filtered[5:-5], xp.ones(90))
 
 
 def test_matched_filter_normalization(backend_device, xp):

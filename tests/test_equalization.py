@@ -431,7 +431,7 @@ class TestCMA:
             f"CMA output modulus not constant: std = {modulus_std:.4f}"
         )
 
-    def test_r2_from_modulation(self, backend_device, xp):
+    def test_r2_from_modulation(self, backend_device, xp, xpt):
         """R2 should be correctly auto-computed from constellation."""
         # QPSK: all points on unit circle -> R2 = 1.0
         # This test checks the logic inside CMA, but here we can just verify the property
@@ -443,7 +443,7 @@ class TestCMA:
 
         r2 = float(r2)
 
-        np.testing.assert_allclose(r2, 1.0, atol=1e-6)
+        xpt.assert_allclose(r2, 1.0, atol=1e-6)
 
     def test_r2_default(self, backend_device, xp):
         """CMA should work with default R2=1.0."""
@@ -626,7 +626,7 @@ class TestRDE:
 class TestZFEqualizer:
     """Tests for the Zero-Forcing / MMSE block equalizer."""
 
-    def test_identity_channel(self, backend_device, xp):
+    def test_identity_channel(self, backend_device, xp, xpt):
         """ZF should be a no-op for a unit impulse channel."""
         n = 128
         channel = xp.array([1.0 + 0j], dtype=xp.complex64)
@@ -636,11 +636,9 @@ class TestZFEqualizer:
 
         equalized = equalization.zf_equalizer(symbols, channel)
 
-        # Check equality
-        # xp.allclose works for both numpy and cupy
-        assert xp.allclose(equalized, symbols, atol=1e-5)
+        xpt.assert_allclose(equalized, symbols, atol=1e-5)
 
-    def test_simple_channel_inversion(self, backend_device, xp):
+    def test_simple_channel_inversion(self, backend_device, xp, xpt):
         """ZF should invert a simple 2-tap channel."""
         n = 256
         channel = xp.array([1.0, 0.5], dtype=xp.complex64)
@@ -654,7 +652,7 @@ class TestZFEqualizer:
 
         equalized = equalization.zf_equalizer(rx, channel)
 
-        assert xp.allclose(equalized, tx, atol=1e-4)
+        xpt.assert_allclose(equalized, tx, atol=1e-4)
 
     def test_mmse_better_than_zf_in_noise(self, backend_device, xp):
         """MMSE should have lower MSE than ZF with a noisy spectral null."""
@@ -839,7 +837,7 @@ class TestButterflyMIMO:
 
             assert std_dev < 0.35, f"CMA MIMO ch{ch} modulus std = {std_dev:.4f}"
 
-    def test_zf_mimo_channel_matrix(self, backend_device, xp):
+    def test_zf_mimo_channel_matrix(self, backend_device, xp, xpt):
         """ZF with full (C, C, L) channel matrix should invert MIMO channel."""
         n = 128
         rng = xp.random.RandomState(42)
@@ -883,7 +881,7 @@ class TestButterflyMIMO:
 
         equalized = equalization.zf_equalizer(rx, H)
 
-        assert xp.allclose(equalized, tx, atol=1e-3)
+        xpt.assert_allclose(equalized, tx, atol=1e-3)
 
 
 # ============================================================================
@@ -1691,7 +1689,7 @@ class TestEdgeCases:
 class TestZF3x3:
     """Tests for the ZF/MMSE equalizer with 3+ channel MIMO (uses linalg.inv)."""
 
-    def test_zf_3x3_identity(self, backend_device, xp):
+    def test_zf_3x3_identity(self, backend_device, xp, xpt):
         """ZF on 3×3 identity channel should be a no-op (linalg.inv path)."""
         n = 256
         rng = xp.random.RandomState(0)
@@ -1705,9 +1703,9 @@ class TestZF3x3:
         equalized = equalization.zf_equalizer(symbols, channel)
 
         assert equalized.shape == (3, n)
-        assert xp.allclose(equalized, symbols, atol=1e-4)
+        xpt.assert_allclose(equalized, symbols, atol=1e-4)
 
-    def test_zf_3x3_inversion(self, backend_device, xp):
+    def test_zf_3x3_inversion(self, backend_device, xp, xpt):
         """ZF should invert a non-trivial 3×3 single-tap MIMO channel."""
         n = 256
         rng = xp.random.RandomState(42)
@@ -1728,7 +1726,7 @@ class TestZF3x3:
         equalized = equalization.zf_equalizer(rx, H, noise_variance=0.0)
 
         assert equalized.shape == (3, n)
-        assert xp.allclose(equalized, tx, atol=1e-3)
+        xpt.assert_allclose(equalized, tx, atol=1e-3)
 
     def test_mmse_3x3_with_noise(self, backend_device, xp):
         """MMSE 3×3 should run without error and return correct shape."""
