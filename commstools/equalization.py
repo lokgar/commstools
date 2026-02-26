@@ -3375,8 +3375,6 @@ def zf_equalizer(
     samples, xp, _ = dispatch(samples)
     channel_estimate = xp.asarray(channel_estimate)
 
-    import math
-
     # Capture BEFORE any reshape so the later frequency-domain branch
     # can still take the efficient scalar path for SISO channels.
     siso_channel = channel_estimate.ndim == 1
@@ -3393,12 +3391,10 @@ def zf_equalizer(
 
     # N_fft must satisfy discard = N_fft//4 >= L so the IIR filter's causal
     # and anti-causal tails both decay within the discarded guard regions.
-    N_fft = max(1024, 2 ** math.ceil(math.log2(max(1, 4 * L))))
-    while N_fft < 4 * L:
-        N_fft *= 2
+    N_fft = max(1024, 1 << (max(1, 4 * L) - 1).bit_length())
     B = N_fft // 2  # 50% overlap hop
     discard = N_fft // 4  # symmetric guard: reject causal and anti-causal transients
-    num_blocks = math.ceil(N / B)
+    num_blocks = (N + B - 1) // B
 
     logger.debug(
         f"ZF/MMSE internals: N={N}, L={L}, num_ch={num_ch}, "

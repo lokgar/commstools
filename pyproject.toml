@@ -31,9 +31,9 @@ packages = ["commstools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q --device=all"
+addopts = "--device=all"
 filterwarnings = [
-    "ignore::UserWarning:cupyx",
+    "ignore::FutureWarning:cupyx",
 ]
 markers = [
     "gpu: marks tests as requiring a GPU (skipped automatically when CuPy is unavailable)",
