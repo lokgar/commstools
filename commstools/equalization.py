@@ -50,6 +50,7 @@ from typing import Optional
 import numpy as np
 
 from .backend import ArrayType, _get_jax, dispatch, from_jax, to_jax, to_device
+from .filtering import _ols_backward, _ols_forward
 from .logger import logger
 
 
@@ -3392,42 +3393,26 @@ def zf_equalizer(
     # N_fft must satisfy discard = N_fft//4 >= L so the IIR filter's causal
     # and anti-causal tails both decay within the discarded guard regions.
     N_fft = max(1024, 1 << (max(1, 4 * L) - 1).bit_length())
-    B = N_fft // 2  # 50% overlap hop
-    discard = N_fft // 4  # symmetric guard: reject causal and anti-causal transients
-    num_blocks = (N + B - 1) // B
 
     logger.debug(
-        f"ZF/MMSE internals: N={N}, L={L}, num_ch={num_ch}, "
-        f"N_fft={N_fft}, B={B}, discard={discard}, num_blocks={num_blocks}"
+        f"ZF/MMSE internals: N={N}, L={L}, num_ch={num_ch}, N_fft={N_fft}"
     )
 
-    # Pre-pad by discard: shifts the first valid output to align with sample 0.
-    # Post-pad by (num_blocks*B - N + discard): fills the last block window.
-    pad_left = discard
-    pad_right = num_blocks * B - N + discard
-    samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
-
-    # Vectorize window extraction using as_strided to avoid memory copies
-    stride = samples_padded.strides
-    windows = xp.lib.stride_tricks.as_strided(
-        samples_padded,
-        shape=(num_ch, num_blocks, N_fft),
-        strides=(stride[0], B * stride[1], stride[1]),
-    )
-
-    Y = xp.fft.fft(windows, n=N_fft, axis=-1)
+    # --- Shared OLS forward pass: pad → stride_tricks → batch FFT ---
+    Y, meta = _ols_forward(samples, N_fft)  # Y: (num_ch, num_blocks, N_fft)
 
     if siso_channel:
-        # channel_estimate is (L,) for MIMO input or (1,1,L) for SISO input
-        # after the was_1d reshape; flatten to 1D for scalar frequency-domain division.
+        # SISO: scalar frequency-domain ZF/MMSE inversion.
+        # channel_estimate was reshaped to (1,1,L) for was_1d; flatten to 1D.
         H = xp.fft.fft(channel_estimate.reshape(-1), n=N_fft)
         W = xp.conj(H) / (xp.abs(H) ** 2 + reg)
         X_hat_f = Y * W
     else:
+        # MIMO: per-bin (C×C) matrix inversion — cannot reduce to scalar multiply.
         H_f = xp.fft.fft(channel_estimate, n=N_fft, axis=-1)
-        Hk = xp.transpose(H_f, (2, 0, 1))
-        Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))
-        HHh = Hk @ Hk_H
+        Hk = xp.transpose(H_f, (2, 0, 1))          # (N_fft, C_rx, C_tx)
+        Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))  # (N_fft, C_tx, C_rx)
+        HHh = Hk @ Hk_H                              # (N_fft, C_rx, C_rx)
 
         eye = xp.eye(num_ch, dtype=samples.dtype)[None, :, :]
         if num_ch == 2:
@@ -3448,23 +3433,14 @@ def zf_equalizer(
         else:
             inv_term = xp.linalg.inv(HHh + reg * eye)
 
-        Wk = Hk_H @ inv_term
+        Wk = Hk_H @ inv_term  # (N_fft, C_tx, C_rx)
 
-        # Wk: (N_fft, num_ch, num_ch), Y: (num_ch, num_blocks, N_fft)
-        # Vectorized batch matrix multiplication across frequency bins and blocks
-        # using explicit batched GEMM instead of einsum for better GPU utilization
-        Y_t = xp.transpose(Y, (2, 0, 1))  # (N_fft, num_ch, num_blocks)
-        X_hat_k = (
-            Wk @ Y_t
-        )  # (N_fft, num_ch, num_ch) @ (N_fft, num_ch, num_blocks) -> (N_fft, num_ch, num_blocks)
-        X_hat_f = xp.transpose(X_hat_k, (1, 2, 0))  # -> (num_ch, num_blocks, N_fft)
+        # Vectorized batch matrix multiplication across frequency bins and blocks.
+        # Uses explicit batched GEMM instead of einsum for better GPU utilization.
+        Y_t = xp.transpose(Y, (2, 0, 1))   # (N_fft, num_ch, num_blocks)
+        X_hat_k = Wk @ Y_t                  # (N_fft, C_tx, C_rx) @ (N_fft, C_rx, num_blocks)
+        X_hat_f = xp.transpose(X_hat_k, (1, 2, 0))  # (num_ch, num_blocks, N_fft)
 
-    # IFFT back to time domain
-    x_hat = xp.fft.ifft(X_hat_f, n=N_fft, axis=-1)
-
-    # Symmetric discard: keep the center N_fft//2 samples of each block.
-    # The first discard samples contain causal circular transient; the last
-    # discard samples contain anti-causal (IIR precursor) circular transient.
-    valid = x_hat[:, :, discard : discard + B]
-    out = valid.reshape(num_ch, -1)[:, :N]
+    # --- Shared OLS backward pass: batch IFFT → symmetric discard → reshape ---
+    out = _ols_backward(X_hat_f, meta)
     return out[0] if was_1d else out

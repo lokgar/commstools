@@ -386,8 +386,11 @@ def fft_fractional_delay(
     freqs = xp.fft.fftfreq(N, d=1.0)
 
     # Phase shift: exp(-j * 2 * pi * f * delay)
-    # Positive delay -> phase ramp that shifts signal to the right
+    # Positive delay -> phase ramp that shifts signal to the right.
+    # Computed at float64 accuracy, then cast to match spec's dtype to prevent
+    # -2j * xp.pi (complex128) from promoting complex64 spectra.
     phase_shift = xp.exp(-2j * xp.pi * freqs[None, :] * delay_arr[:, None])
+    phase_shift = phase_shift.astype(spec.dtype)
 
     # Apply phase shift
     spec_delayed = spec * phase_shift
@@ -395,9 +398,13 @@ def fft_fractional_delay(
     # IFFT
     result = xp.fft.ifft(spec_delayed, axis=-1)
 
-    # For real-valued input, ensure output is real
+    # Dtype restoration: mirrors the impairments.py pattern.
     if not xp.iscomplexobj(signal):
+        # Real input: fractional delay is a real-valued operation
         result = result.real
+    elif result.dtype != signal.dtype:
+        # Complex input: ifft may return complex128 from complex64 input
+        result = result.astype(signal.dtype)
 
     if was_1d:
         return result[0]

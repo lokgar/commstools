@@ -447,9 +447,201 @@ def bandstop_taps(
 # ============================================================================
 # FILTERING OPERATIONS
 # ============================================================================
-# fir_filter: Generic FIR filtering operation
+# _ols_forward:  OLS block windowing + batch FFT (shared scaffold)
+# _ols_backward: OLS batch IFFT + symmetric discard + reshape (shared scaffold)
+# ols_fir_filter: Public OLS FIR convolution (long-tap / memory-bounded)
+# fir_filter: Generic FIR filtering operation (short-to-medium taps)
 # matched_filter: Apply matched filter (time-reversed conjugate of pulse shape)
 # shape_pulse: Apply pulse shaping to symbols
+
+
+def _ols_forward(samples: ArrayType, N_fft: int):
+    """
+    Overlap-and-save forward pass: block windowing and batch FFT.
+
+    This is the shared OLS scaffolding used by both ``ols_fir_filter`` (SISO
+    scalar convolution) and ``zf_equalizer`` (MIMO per-bin matrix multiply).
+    It should be called on samples that have already been dispatched to the
+    correct backend and shaped as ``(num_ch, N)``.
+
+    Parameters
+    ----------
+    samples : array_like
+        Input samples. Shape: ``(num_ch, N)``. Must be 2-D.
+    N_fft : int
+        FFT block size. Must be a power of 2 and satisfy
+        ``N_fft // 4 >= filter_length`` so the causal/anti-causal guard
+        regions fully contain the filter transients.
+
+    Returns
+    -------
+    Y : array_like
+        Batch FFT of all OLS windows. Shape: ``(num_ch, num_blocks, N_fft)``.
+    meta : dict
+        Scaffold parameters required by ``_ols_backward``:
+        ``{'N': int, 'B': int, 'discard': int, 'num_blocks': int}``.
+    """
+    _, xp, _ = dispatch(samples)
+    num_ch, N = samples.shape
+    B = N_fft // 2        # 50 % hop — maximises block reuse
+    discard = N_fft // 4  # symmetric guard: absorbs causal & anti-causal transients
+    num_blocks = (N + B - 1) // B
+
+    # Pre-pad by discard so the first valid output aligns with sample 0.
+    # Post-pad to fill the last block window completely.
+    pad_left = discard
+    pad_right = num_blocks * B - N + discard
+    samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+
+    # Zero-copy window extraction via as_strided (view, not copy).
+    stride = samples_padded.strides
+    windows = xp.lib.stride_tricks.as_strided(
+        samples_padded,
+        shape=(num_ch, num_blocks, N_fft),
+        strides=(stride[0], B * stride[1], stride[1]),
+    )
+
+    Y = xp.fft.fft(windows, n=N_fft, axis=-1)  # (num_ch, num_blocks, N_fft)
+    meta = {"N": N, "B": B, "discard": discard, "num_blocks": num_blocks}
+    return Y, meta
+
+
+def _ols_backward(X_hat_f: ArrayType, meta: dict) -> ArrayType:
+    """
+    Overlap-and-save backward pass: batch IFFT, symmetric discard, reshape.
+
+    Parameters
+    ----------
+    X_hat_f : array_like
+        Frequency-domain blocks after per-bin processing.
+        Shape: ``(num_ch, num_blocks, N_fft)``.
+    meta : dict
+        Scaffold parameters returned by ``_ols_forward``.
+
+    Returns
+    -------
+    array_like
+        Time-domain output trimmed to the original signal length ``N``.
+        Shape: ``(num_ch, N)``.
+    """
+    _, xp, _ = dispatch(X_hat_f)
+    N = meta["N"]
+    B = meta["B"]
+    discard = meta["discard"]
+    N_fft = X_hat_f.shape[-1]
+    num_ch = X_hat_f.shape[0]
+
+    x_hat = xp.fft.ifft(X_hat_f, n=N_fft, axis=-1)
+    # Keep the center B samples of each block (symmetric discard of guard regions).
+    valid = x_hat[:, :, discard : discard + B]
+    out = valid.reshape(num_ch, -1)[:, :N]
+    return out
+
+
+def ols_fir_filter(
+    samples: ArrayType, taps: ArrayType, N_fft: int = None, center: bool = True
+) -> ArrayType:
+    """
+    Overlap-and-save FIR filter for long-tap or large-signal convolution.
+
+    Implements the overlap-and-save (OLS) block-processing algorithm, which
+    processes the signal in fixed-size FFT blocks. This makes it suitable
+    for filters with long impulse responses (e.g., chromatic dispersion
+    compensation, group-delay equalizers) where a single full-signal FFT
+    would be memory-prohibitive on GPU.
+
+    For short filters on moderate-length signals, ``fir_filter`` (which
+    uses scipy's FFT convolution) is equally efficient and simpler.
+
+    Parameters
+    ----------
+    samples : array_like
+        Input signal. Shape: ``(N,)`` for SISO or ``(C, N)`` for
+        multi-channel.
+    taps : array_like
+        FIR filter coefficients. Shape: ``(L,)``.
+    N_fft : int, optional
+        FFT block size. Must be a power of 2. Defaults to
+        ``max(1024, next_power_of_2(4 * L))`` so that the 25 % guard
+        region is at least ``L`` samples long.
+    center : bool, default True
+        When ``True`` (default), the output alignment matches
+        ``fir_filter`` (scipy ``mode='same'``, center-aligned at tap
+        ``L // 2``).  The output at position ``n`` equals
+        ``sum_k x[n + L//2 - k] * taps[k]``, which is correct for
+        pulse-shaped signals where the filter group delay must be
+        compensated before symbol sampling.
+
+        When ``False``, the output is the causal linear convolution
+        ``y[n] = sum_k x[n-k] * taps[k]`` (equivalent to
+        ``numpy.convolve(x, taps, mode='full')[:N]``).  Use this when
+        you need the raw causal impulse response (e.g. measuring filter
+        step response) or when writing CD/dispersion compensation where
+        the two-sided inverse filter alignment is handled externally.
+
+    Returns
+    -------
+    array_like
+        Filtered signal, same shape as ``samples``.
+
+    Notes
+    -----
+    A symmetric guard of ``N_fft // 4`` samples is discarded from each
+    block edge, so ``N_fft // 4 >= len(taps)`` must hold.
+
+    The ``center=True`` path post-pads the input by ``L // 2`` zeros
+    before OLS processing and trims the same number of leading output
+    samples — a zero-copy shift that costs one extra OLS block at most.
+    """
+    samples, xp, _ = dispatch(samples)
+    taps = xp.asarray(taps)
+    is_real = not xp.iscomplexobj(samples) and not xp.iscomplexobj(taps)
+    out_dtype = samples.dtype  # capture before any reshape
+
+    # Signal drives precision: cast taps to match signal so float64 tap
+    # generators do not silently upcast complex64 signals via FFT multiply.
+    target_tap_dtype = samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    if taps.dtype != target_tap_dtype:
+        taps = taps.astype(target_tap_dtype)
+
+    L = len(taps)
+    half = L // 2
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[None, :]
+
+    N = samples.shape[-1]
+
+    if N_fft is None:
+        N_fft = max(1024, 1 << (max(1, 4 * L) - 1).bit_length())
+
+    logger.debug(
+        f"ols_fir_filter: L={L}, N={N}, N_fft={N_fft}, "
+        f"num_ch={samples.shape[0]}, center={center}"
+    )
+
+    H = xp.fft.fft(taps, n=N_fft)  # frequency response of the filter
+
+    if center:
+        # Post-pad by half so the OLS can compute full_conv[half : half+N].
+        # This matches scipy's mode='same' (center-aligned, group-delay compensated),
+        # which is required for correct eye-opening after pulse-shaped filtering.
+        samples_ext = xp.pad(samples, ((0, 0), (0, half)))
+        Y, meta = _ols_forward(samples_ext, N_fft)
+        X_hat_f = Y * H
+        out_ext = _ols_backward(X_hat_f, meta)  # shape: (num_ch, N + half)
+        out = out_ext[:, half:]                 # trim leading half → shape: (num_ch, N)
+    else:
+        Y, meta = _ols_forward(samples, N_fft)
+        X_hat_f = Y * H
+        out = _ols_backward(X_hat_f, meta)
+
+    if is_real:
+        out = out.real  # strip IFFT imaginary noise for real inputs
+    elif out.dtype != out_dtype:
+        out = out.astype(out_dtype)  # guard complex inputs (e.g. complex64 → complex128)
+    return out[0] if was_1d else out
 
 
 def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType:
@@ -481,6 +673,12 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
     # Ensure taps are on the correct backend
     taps = xp.asarray(taps)
 
+    # Signal drives precision: cast taps to match signal dtype so numpy/scipy
+    # type-promotion rules do not silently upcast float32/complex64 signals.
+    target_tap_dtype = samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    if taps.dtype != target_tap_dtype:
+        taps = taps.astype(target_tap_dtype)
+
     if samples.ndim > 1:
         # Ensure axis is positive
         axis = axis % samples.ndim
@@ -489,10 +687,15 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
         new_shape[axis] = len(taps)
         taps_nd = taps.reshape(new_shape)
 
-        return sp.signal.convolve(samples, taps_nd, mode="same", method="fft")
+        result = sp.signal.convolve(samples, taps_nd, mode="same", method="fft")
     else:
         # 1D case
-        return sp.signal.convolve(samples, taps, mode="same", method="fft")
+        result = sp.signal.convolve(samples, taps, mode="same", method="fft")
+
+    # Belt-and-suspenders: scipy may still promote internally (version-dependent)
+    if result.dtype != samples.dtype:
+        result = result.astype(samples.dtype)
+    return result
 
 
 def shape_pulse(
@@ -572,11 +775,15 @@ def shape_pulse(
     else:
         raise ValueError(f"Not implemented pulse shape: {pulse_shape}")
 
-    # Ensure h is on the correct backend
-    h = xp.asarray(h)
+    # Ensure h is on the correct backend and matches symbol precision.
+    # Tap generators return float64; casting here prevents scipy's resample_poly
+    # from promoting complex64 symbols to complex128.
+    h = xp.asarray(h).astype(symbols.real.dtype)
 
     # Apply Pulse Shaping via Polyphase Resampling
     res = sp.signal.resample_poly(symbols, int(sps), 1, window=h, axis=-1)
+    if res.dtype != symbols.dtype:
+        res = res.astype(symbols.dtype)
 
     return normalize(res, "peak")
 

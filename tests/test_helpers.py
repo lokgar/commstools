@@ -200,3 +200,31 @@ def test_expand_preamble_mimo_unknown_mode(backend_device, xp, xpt):
     assert result.shape == (2, 2)
     xpt.assert_allclose(result[0], base)
     xpt.assert_allclose(result[1], base)
+
+
+# ============================================================================
+# DTYPE PRESERVATION TESTS
+# ============================================================================
+
+
+def test_normalize_preserves_float32_dtype(backend_device, xp):
+    """normalize: float32 input → float32 output across all modes."""
+    x = xp.asarray(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    for mode in ("unity_gain", "unit_energy", "peak", "average_power"):
+        out = helpers.normalize(x, mode=mode)
+        assert out.dtype == xp.float32, f"mode={mode!r}: expected float32, got {out.dtype}"
+
+
+def test_rms_preserves_float32_dtype(backend_device, xp):
+    """rms: float32 input → float32 output."""
+    x = xp.asarray(np.ones(64, dtype=np.float32))
+    out = helpers.rms(x)
+    assert out.dtype == xp.float32, f"Expected float32, got {out.dtype}"
+
+
+def test_normalize_preserves_complex64_dtype(backend_device, xp):
+    """normalize: complex64 input → complex64 output."""
+    x = xp.asarray(np.array([1 + 1j, 2 + 2j], dtype=np.complex64))
+    for mode in ("unit_energy", "peak", "average_power"):
+        out = helpers.normalize(x, mode=mode)
+        assert out.dtype == xp.complex64, f"mode={mode!r}: expected complex64, got {out.dtype}"

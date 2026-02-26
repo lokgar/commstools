@@ -2487,8 +2487,41 @@ class SingleCarrierFrame(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         """
         Post-initialization hook.
+
+        Validates that payload_len is evenly divisible by the per-period or
+        per-block data count implied by the pilot parameters.  If not, snaps
+        payload_len up to the next valid multiple and emits a warning so the
+        frame structure always satisfies:
+            num_pilot_periods == num_data_periods  (comb)
+            num_pilot_blocks  == num_data_blocks   (block)
         """
-        pass
+        import math
+
+        if self.pilot_pattern == "comb" and self.pilot_period > 1:
+            data_per_period = self.pilot_period - 1
+            if self.payload_len % data_per_period != 0:
+                snapped = math.ceil(self.payload_len / data_per_period) * data_per_period
+                logger.warning(
+                    f"SingleCarrierFrame (comb): payload_len={self.payload_len} is not "
+                    f"divisible by data_per_period={data_per_period} "
+                    f"(pilot_period={self.pilot_period}). "
+                    f"Snapping payload_len {self.payload_len} → {snapped} so that "
+                    f"num_pilot_periods == num_data_periods == {snapped // data_per_period}."
+                )
+                self.payload_len = snapped
+
+        elif self.pilot_pattern == "block" and self.pilot_period > self.pilot_block_len > 0:
+            data_per_block = self.pilot_period - self.pilot_block_len
+            if self.payload_len % data_per_block != 0:
+                snapped = math.ceil(self.payload_len / data_per_block) * data_per_block
+                logger.warning(
+                    f"SingleCarrierFrame (block): payload_len={self.payload_len} is not "
+                    f"divisible by data_per_block={data_per_block} "
+                    f"(pilot_period={self.pilot_period}, pilot_block_len={self.pilot_block_len}). "
+                    f"Snapping payload_len {self.payload_len} → {snapped} so that "
+                    f"num_pilot_blocks == num_data_blocks == {snapped // data_per_block}."
+                )
+                self.payload_len = snapped
 
     # =========================================================================
     # Mask Generation and Internal Data Preparation Methods

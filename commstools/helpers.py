@@ -133,7 +133,11 @@ def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> Arr
     # RMS = ||x||₂ / √N  →  linalg.norm routes through BLAS (DZNRM2/SNRM2),
     # eliminating the abs(x)**2 and mean() intermediate allocations.
     n = x.size if axis is None else x.shape[axis]
-    return xp.linalg.norm(x, axis=axis, keepdims=keepdims) / xp.sqrt(n)
+    # xp.sqrt(Python int) returns float64; cast n to x's real dtype so that
+    # float32 norms are not silently promoted to float64.
+    return xp.linalg.norm(x, axis=axis, keepdims=keepdims) / xp.sqrt(
+        xp.asarray(n, dtype=x.real.dtype)
+    )
 
 
 def normalize(
@@ -204,9 +208,10 @@ def normalize(
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
 
-    # Handle division by zero safely for both NumPy and CuPy
+    # Handle division by zero safely for both NumPy and CuPy.
     # Avoid control flow based on data values to prevent host-device synchronization.
-    safe_norm = xp.where(norm_factor == 0, 1.0, norm_factor)
+    # Use ones_like instead of the literal 1.0 (float64) to preserve float32 dtype.
+    safe_norm = xp.where(norm_factor == 0, xp.ones_like(norm_factor), norm_factor)
     result = x / safe_norm
 
     # If norm_factor is 0, the input was all zeros → output should also be zeros

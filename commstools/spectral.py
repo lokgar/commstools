@@ -80,8 +80,16 @@ def shift_frequency(
 
     # Apply mixing
     # exp(j * 2 * pi * f * t)
+    # Phase is computed at float64 accuracy (xp.pi is float64), then the mixer
+    # is cast to the signal's complex precision to prevent silent promotion of
+    # complex64/float32 signals to complex128/float64.
     phase = 2 * xp.pi * actual_offset * t
-    mixer = xp.exp(1j * phase)
+    mixer = xp.exp(1j * phase)  # complex128
+    if xp.iscomplexobj(samples):
+        target_cdtype = samples.dtype
+    else:
+        target_cdtype = xp.complex64 if samples.dtype == xp.float32 else xp.complex128
+    mixer = mixer.astype(target_cdtype)
 
     # Broadcast mixer to match samples shape: (1, ..., 1, N)
     if samples.ndim > 1:
