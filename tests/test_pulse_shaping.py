@@ -66,7 +66,7 @@ def test_rzpam_pulse_params(backend_device, xp):
     assert len(taps) > 0
 
 
-def test_rz_rect_taps_length(backend_device, xp):
+def test_rz_rect_taps_length(backend_device, xp, xpt):
     """Verify that RZ rectangular pulse taps have the correct half-symbol length."""
     # RZ rect with sps=4 should have length 2 (sps * 0.5)
     sig = Signal.pam(
@@ -80,7 +80,7 @@ def test_rz_rect_taps_length(backend_device, xp):
     )
     taps = sig.shaping_filter_taps()
     assert len(taps) == 2
-    assert xp.allclose(taps, xp.ones(2))
+    xpt.assert_allclose(taps, xp.ones(2))
 
 
 def test_unknown_pulse_shape(backend_device, xp):
@@ -95,7 +95,7 @@ def test_unknown_pulse_shape(backend_device, xp):
         sig.shaping_filter_taps()
 
 
-def test_rect_pulse_taps(backend_device, xp):
+def test_rect_pulse_taps(backend_device, xp, xpt):
     """Verify that standard rectangular pulse shaping produces all-ones taps."""
     # Rect pulse should return ones
     sig = Signal.pam(
@@ -107,7 +107,7 @@ def test_rect_pulse_taps(backend_device, xp):
         pulse_shape="rect",
     )
     taps = sig.shaping_filter_taps()
-    assert xp.allclose(taps, xp.ones(4))
+    xpt.assert_allclose(taps, xp.ones(4))
 
 
 def test_gaussian_shaping_filter_taps(backend_device, xp):

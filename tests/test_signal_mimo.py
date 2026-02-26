@@ -68,7 +68,7 @@ def test_frame_mimo_pilots(backend_device, xp):
     assert xp.sum(mask) == 10
 
 
-def test_frame_mimo_preamble_broadcasting(backend_device, xp):
+def test_frame_mimo_preamble_broadcasting(backend_device, xp, xpt):
     """Verify that a 1D preamble is correctly broadcasted across all MIMO streams."""
     # Create Barker-13 preamble
     preamble = Preamble(sequence_type="barker", length=13)
@@ -82,8 +82,8 @@ def test_frame_mimo_preamble_broadcasting(backend_device, xp):
 
     # Check preamble on both streams (should be broadcast)
     # (Channels, Time)
-    assert xp.allclose(sig.samples[0, :13], preamble.symbols)
-    assert xp.allclose(sig.samples[1, :13], preamble.symbols)
+    xpt.assert_allclose(sig.samples[0, :13], preamble.symbols)
+    xpt.assert_allclose(sig.samples[1, :13], preamble.symbols)
 
 
 def test_frame_mimo_waveform(backend_device, xp):
@@ -160,7 +160,7 @@ def test_dual_pol_resample(backend_device, xp):
     assert sig.sampling_rate == 1.5
 
 
-def test_dual_pol_frequency_shift(backend_device, xp):
+def test_dual_pol_frequency_shift(backend_device, xp, xpt):
     """Verify that frequency shifting results in consistent phase rotation across channels."""
     samples = xp.ones((2, 100), dtype=complex)
     sig = Signal(samples=samples, sampling_rate=100.0, symbol_rate=100.0)
@@ -170,9 +170,9 @@ def test_dual_pol_frequency_shift(backend_device, xp):
 
     expected_sample_1 = xp.exp(1j * xp.pi / 2)
 
-    assert xp.allclose(sig.samples[0, 0], 1.0, atol=1e-6)
-    assert xp.allclose(sig.samples[0, 1], expected_sample_1, atol=1e-6)
-    assert xp.allclose(sig.samples[1, 1], expected_sample_1, atol=1e-6)
+    xpt.assert_allclose(sig.samples[0, 0], 1.0, atol=1e-6)
+    xpt.assert_allclose(sig.samples[0, 1], expected_sample_1, atol=1e-6)
+    xpt.assert_allclose(sig.samples[1, 1], expected_sample_1, atol=1e-6)
 
 
 def test_dual_pol_fir_filter(backend_device, xp):

@@ -118,7 +118,7 @@ def test_signal_ber_method(backend_device, xp):
     assert ber_val == 0.0  # Perfect signal, no errors
 
 
-def test_signal_demap_hard(backend_device, xp):
+def test_signal_demap_hard(backend_device, xp, xpt):
     """Test Signal.demap_symbols_hard() hard decision."""
     from commstools.core import Signal
 
@@ -132,7 +132,7 @@ def test_signal_demap_hard(backend_device, xp):
     bits = sig.demap_symbols_hard()
 
     # Should match source_bits
-    assert xp.array_equal(bits.flatten(), sig.source_bits.flatten())
+    xpt.assert_array_equal(bits.flatten(), sig.source_bits.flatten())
 
 
 def test_metrics_more(backend_device, xp):

@@ -47,16 +47,16 @@ def test_barker_autocorrelation(backend_device, xp):
     assert sidelobes_max <= 1.0 + 1e-5  # Barker property (with float tolerance)
 
 
-def test_zadoff_chu_cazac(backend_device, xp):
+def test_zadoff_chu_cazac(backend_device, xp, xpt):
     """Verify that ZC sequences have constant amplitude (CAZAC property)."""
     zc = sync.zadoff_chu_sequence(63, root=25)
 
     # All magnitudes should be 1
     magnitudes = xp.abs(zc)
-    assert xp.allclose(magnitudes, 1.0, atol=1e-5)
+    xpt.assert_allclose(magnitudes, 1.0, atol=1e-5)
 
 
-def test_zadoff_chu_length(backend_device, xp):
+def test_zadoff_chu_length(backend_device, xp, xpt):
     """Verify that ZC sequences are generated with the requested length."""
     for length in [31, 63, 127]:
         zc = sync.zadoff_chu_sequence(length, root=1)
@@ -65,7 +65,7 @@ def test_zadoff_chu_length(backend_device, xp):
     # Test even length
     zc_even = sync.zadoff_chu_sequence(10, root=1)
     assert len(zc_even) == 10
-    assert xp.allclose(xp.abs(zc_even), 1.0)
+    xpt.assert_allclose(xp.abs(zc_even), 1.0)
 
 
 def test_zadoff_chu_errors(backend_device, xp):
@@ -323,11 +323,8 @@ def test_estimate_timing_infer_error(backend_device, xp):
         sync.estimate_timing(sig, pre)
 
 
-def test_sequences_gpu(backend_device, xp):
-    """Cover the to_device branch in sequence generators on GPU."""
-    if backend_device != "gpu":
-        pytest.skip("Test targets GPU branch")
-
+def test_sequences_device(backend_device, xp):
+    """Verify sequence generators return arrays on the active device."""
     barker = sync.barker_sequence(13)
     assert isinstance(barker, xp.ndarray)
 
@@ -396,7 +393,7 @@ def test_estimate_fractional_delay_mimo(backend_device, xp):
 # ============================================================================
 
 
-def test_fft_fractional_delay_zero_delay(backend_device, xp):
+def test_fft_fractional_delay_zero_delay(backend_device, xp, xpt):
     """Verify delay=0 is a perfect passthrough (identity operation)."""
     import numpy as np
 
@@ -405,10 +402,10 @@ def test_fft_fractional_delay_zero_delay(backend_device, xp):
 
     out = sync.fft_fractional_delay(signal, 0.0)
     # Should be identical (FFT is exact for delay=0)
-    assert xp.allclose(out, signal, atol=1e-6)
+    xpt.assert_allclose(out, signal, atol=1e-6)
 
 
-def test_fft_fractional_delay_known_sine(backend_device, xp):
+def test_fft_fractional_delay_known_sine(backend_device, xp, xpt):
     """Verify fractional delay of a sinusoid against ground truth."""
     import numpy as np
 
@@ -422,13 +419,12 @@ def test_fft_fractional_delay_known_sine(backend_device, xp):
     truth = np.exp(2j * np.pi * f * (n - delay)).astype("complex64")
 
     out = sync.fft_fractional_delay(xp.asarray(original), delay)
-    out_np = out if backend_device == "cpu" else out.get()
 
     # FFT-based delay should be nearly perfect for bandlimited signals
-    assert np.allclose(out_np, truth, atol=1e-5)
+    xpt.assert_allclose(out, truth, atol=1e-5)
 
 
-def test_fft_fractional_delay_mimo(backend_device, xp):
+def test_fft_fractional_delay_mimo(backend_device, xp, xpt):
     """Verify per-channel fractional delays for 2-channel signal."""
     import numpy as np
 
@@ -446,9 +442,8 @@ def test_fft_fractional_delay_mimo(backend_device, xp):
     truth0 = np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64")
     truth1 = np.exp(2j * np.pi * f * (n + 0.2)).astype("complex64")
 
-    out_np = out if backend_device == "cpu" else out.get()
-    assert np.allclose(out_np[0], truth0, atol=1e-5)
-    assert np.allclose(out_np[1], truth1, atol=1e-5)
+    xpt.assert_allclose(out[0], truth0, atol=1e-5)
+    xpt.assert_allclose(out[1], truth1, atol=1e-5)
 
 
 def test_fft_fractional_delay_power_conservation(backend_device, xp):
@@ -472,7 +467,7 @@ def test_fft_fractional_delay_power_conservation(backend_device, xp):
     assert abs(power_out / power_in - 1.0) < 1e-5
 
 
-def test_fft_fractional_delay_roundtrip(backend_device, xp):
+def test_fft_fractional_delay_roundtrip(backend_device, xp, xpt):
     """Verify round-trip (delay + undo) recovers original signal."""
     import numpy as np
 
@@ -487,7 +482,7 @@ def test_fft_fractional_delay_roundtrip(backend_device, xp):
     recovered = sync.fft_fractional_delay(delayed, -delay)
 
     # Should recover original signal to high precision
-    assert xp.allclose(recovered, signal_xp, atol=1e-5)
+    xpt.assert_allclose(recovered, signal_xp, atol=1e-5)
 
 
 # ============================================================================
@@ -505,7 +500,7 @@ def test_correct_timing_coarse_only(backend_device, xp):
     assert int(xp.argmax(xp.abs(corrected))) == 0
 
 
-def test_correct_timing_combined(backend_device, xp):
+def test_correct_timing_combined(backend_device, xp, xpt):
     """Verify coarse + fractional timing correction."""
     import numpy as np
 
@@ -520,9 +515,8 @@ def test_correct_timing_combined(backend_device, xp):
     corrected = sync.correct_timing(
         xp.asarray(delayed), coarse_offset=20, fractional_offset=0.3
     )
-    corrected_np = corrected if backend_device == "cpu" else corrected.get()
 
-    assert np.allclose(corrected_np[25:-25], original[25:-25], atol=0.02)
+    xpt.assert_allclose(corrected[25:-25], original[25:-25], atol=0.02)
 
 
 # ============================================================================
@@ -590,7 +584,7 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
 # ============================================================================
 
 
-def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
+def test_fft_fractional_delay_scalar_ndarray(backend_device, xp, xpt):
     """Verify fft_fractional_delay with 0-d array delay input."""
     import numpy as np
 
@@ -605,8 +599,7 @@ def test_fft_fractional_delay_scalar_ndarray(backend_device, xp):
     assert out.shape == (N,)
 
     truth = np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64")
-    out_np = out if backend_device == "cpu" else out.get()
-    assert np.allclose(out_np, truth, atol=1e-5)
+    xpt.assert_allclose(out, truth, atol=1e-5)
 
 
 def test_estimate_timing_no_preamble_error(backend_device, xp):
@@ -685,7 +678,7 @@ def test_correct_timing_per_channel(backend_device, xp):
     assert int(xp.argmax(xp.abs(corrected[1]))) == 0
 
 
-def test_correct_timing_fractional_array(backend_device, xp):
+def test_correct_timing_fractional_array(backend_device, xp, xpt):
     """Verify fractional offset as array applies per-channel FFT delay and returns 2D output."""
     import numpy as np
 
@@ -708,9 +701,8 @@ def test_correct_timing_fractional_array(backend_device, xp):
 
     # Both channels should now be close to the undelayed signal
     truth = np.exp(2j * np.pi * f * n).astype("complex64")
-    corrected_np = corrected if backend_device == "cpu" else corrected.get()
-    assert np.allclose(corrected_np[0], truth, atol=1e-4)
-    assert np.allclose(corrected_np[1], truth, atol=1e-4)
+    xpt.assert_allclose(corrected[0], truth, atol=1e-4)
+    xpt.assert_allclose(corrected[1], truth, atol=1e-4)
 
 
 def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):

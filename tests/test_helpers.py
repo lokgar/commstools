@@ -26,11 +26,8 @@ def test_random_bits(backend_device, xp):
     assert isinstance(bits, xp.ndarray)
 
 
-def test_random_bits_gpu(backend_device, xp):
-    """Verify random_bits places result on GPU when device is active."""
-    if backend_device != "gpu":
-        pytest.skip("Test targets GPU branch")
-
+def test_random_bits_no_seed(backend_device, xp):
+    """Verify random_bits without a seed produces a result on the active device."""
     bits = helpers.random_bits(100)
     assert isinstance(bits, xp.ndarray)
     assert len(bits) == 100
@@ -136,13 +133,13 @@ def test_validate_array_exception(backend_device, xp):
 # ============================================================================
 
 
-def test_interp1d(backend_device, xp):
+def test_interp1d(backend_device, xp, xpt):
     """Verify linear interpolation and extrapolation for y = 2x."""
     x_p = xp.array([0.0, 1.0, 2.0, 3.0])
     f_p = 2.0 * x_p
 
     result = helpers.interp1d(xp.array([0.5, 1.5, 2.5]), x_p, f_p)
-    assert xp.allclose(result, 2.0 * xp.array([0.5, 1.5, 2.5]))
+    xpt.assert_allclose(result, 2.0 * xp.array([0.5, 1.5, 2.5]))
 
     # Extrapolation clamps to nearest segment
     result_out = helpers.interp1d(xp.array([-0.5, 3.5]), x_p, f_p)
@@ -155,11 +152,11 @@ def test_interp1d(backend_device, xp):
 # ============================================================================
 
 
-def test_rms_axis(backend_device, xp):
+def test_rms_axis(backend_device, xp, xpt):
     """Verify RMS over all elements and per-row."""
     x = xp.array([[1.0, 1.0], [2.0, 2.0]])
-    assert xp.allclose(helpers.rms(x), xp.sqrt(2.5))
-    assert xp.allclose(helpers.rms(x, axis=1), [1.0, 2.0])
+    xpt.assert_allclose(helpers.rms(x), xp.sqrt(2.5))
+    xpt.assert_allclose(helpers.rms(x, axis=1), [1.0, 2.0])
 
 
 # ============================================================================
@@ -167,7 +164,7 @@ def test_rms_axis(backend_device, xp):
 # ============================================================================
 
 
-def test_expand_preamble_mimo_time_orthogonal(backend_device, xp):
+def test_expand_preamble_mimo_time_orthogonal(backend_device, xp, xpt):
     """Verify time-orthogonal MIMO preamble expansion produces block-diagonal structure."""
     from commstools.helpers import expand_preamble_mimo
 
@@ -175,25 +172,25 @@ def test_expand_preamble_mimo_time_orthogonal(backend_device, xp):
     result = expand_preamble_mimo(base, num_streams=3, mode="time_orthogonal")
 
     assert result.shape == (3, 9)  # (num_streams, L * num_streams)
-    assert xp.allclose(result[0, :3], base)
-    assert xp.allclose(result[0, 3:], 0)
-    assert xp.allclose(result[1, :3], 0)
-    assert xp.allclose(result[1, 3:6], base)
-    assert xp.allclose(result[1, 6:], 0)
-    assert xp.allclose(result[2, :6], 0)
-    assert xp.allclose(result[2, 6:], base)
+    xpt.assert_allclose(result[0, :3], base)
+    xpt.assert_allclose(result[0, 3:], 0)
+    xpt.assert_allclose(result[1, :3], 0)
+    xpt.assert_allclose(result[1, 3:6], base)
+    xpt.assert_allclose(result[1, 6:], 0)
+    xpt.assert_allclose(result[2, :6], 0)
+    xpt.assert_allclose(result[2, 6:], base)
 
 
-def test_expand_preamble_mimo_single_stream(backend_device, xp):
+def test_expand_preamble_mimo_single_stream(backend_device, xp, xpt):
     """Verify expand_preamble_mimo returns the base waveform unchanged for 1 stream."""
     from commstools.helpers import expand_preamble_mimo
 
     base = xp.array([1.0, -1.0])
     result = expand_preamble_mimo(base, num_streams=1, mode="same")
-    assert xp.array_equal(result, base)
+    xpt.assert_array_equal(result, base)
 
 
-def test_expand_preamble_mimo_unknown_mode(backend_device, xp):
+def test_expand_preamble_mimo_unknown_mode(backend_device, xp, xpt):
     """Verify expand_preamble_mimo broadcasts the base waveform for an unknown mode."""
     from commstools.helpers import expand_preamble_mimo
 
@@ -201,5 +198,5 @@ def test_expand_preamble_mimo_unknown_mode(backend_device, xp):
     result = expand_preamble_mimo(base, num_streams=2, mode="unknown_mode")
 
     assert result.shape == (2, 2)
-    assert xp.allclose(result[0], base)
-    assert xp.allclose(result[1], base)
+    xpt.assert_allclose(result[0], base)
+    xpt.assert_allclose(result[1], base)

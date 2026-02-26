@@ -140,18 +140,18 @@ def test_shaping_filter_taps_error(backend_device, xp):
         s.shaping_filter_taps()
 
 
-def test_signal_copy(backend_device, xp):
+def test_signal_copy(backend_device, xp, xpt):
     """Verify Signal.copy() performs a deep copy of samples and preserves device context."""
     data = xp.array([1, 2, 3])
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
     s_copy = s.copy()
 
     assert s_copy is not s
-    assert xp.allclose(s.samples, s_copy.samples)
+    xpt.assert_allclose(s.samples, s_copy.samples)
     assert s_copy.backend == s.backend
 
 
-def test_signal_shift_frequency(backend_device, xp):
+def test_signal_shift_frequency(backend_device, xp, xpt):
     """Verify frequency shifting logic and resulting spectral peak positioning."""
     fs = 100.0
     # Simple DC signal (freq 0)
@@ -167,7 +167,7 @@ def test_signal_shift_frequency(backend_device, xp):
     # 2. Check signal content
     t = xp.arange(100) / fs
     expected = xp.exp(1j * 2 * xp.pi * 20.0 * t)
-    assert xp.allclose(s.samples, expected)
+    xpt.assert_allclose(s.samples, expected)
 
     # 3. Check accumulation
     s.shift_frequency(5.0)
@@ -180,7 +180,7 @@ def test_signal_shift_frequency(backend_device, xp):
     assert abs(peak - 25.0) < (fs / 64)
 
 
-def test_signal_resolution_and_demap(backend_device, xp):
+def test_signal_resolution_and_demap(backend_device, xp, xpt):
     """Verify manual symbol resolution and bit demapping with caching."""
     # Generate a simple BPSK signal at 4 SPS
     symbol_rate = 1e6
@@ -212,7 +212,7 @@ def test_signal_resolution_and_demap(backend_device, xp):
     bits = sig.demap_symbols_hard()
     assert sig.resolved_bits is not None
     assert len(sig.resolved_bits) == num_symbols
-    assert xp.array_equal(bits, sig.resolved_bits)
+    xpt.assert_array_equal(bits, sig.resolved_bits)
 
     # Metrics should now work
     evm_pct, evm_db = sig.evm()
@@ -279,7 +279,7 @@ def test_signal_gaussian_coverage(backend_device, xp):
     assert s.gaussian_bt == 0.5
 
 
-def test_signal_jax_interop(backend_device, xp):
+def test_signal_jax_interop(backend_device, xp, xpt):
     """Verify JAX interoperability."""
     try:
         import jax
@@ -295,7 +295,7 @@ def test_signal_jax_interop(backend_device, xp):
     # Update from JAX
     jax_arr = jax_arr * 2.0
     s.update_samples_from_jax(jax_arr)
-    assert xp.allclose(s.samples, 2.0)
+    xpt.assert_allclose(s.samples, 2.0)
 
 
 def test_signal_properties_coverage(backend_device, xp):
@@ -817,7 +817,7 @@ def test_qam_waveform(backend_device, xp):
     assert sig.mod_order == 16
 
 
-def test_psk_waveform(backend_device, xp):
+def test_psk_waveform(backend_device, xp, xpt):
     """Verify PSK signal generation, metadata, and unit-magnitude constellation."""
     sig = Signal.psk(order=8, num_symbols=50, sps=2, symbol_rate=1e6, seed=0)
     assert sig.samples.size > 0
@@ -828,7 +828,7 @@ def test_psk_waveform(backend_device, xp):
     syms = sig.source_symbols
     if syms is not None:
         magnitudes = xp.abs(syms)
-        assert xp.allclose(magnitudes, xp.ones_like(magnitudes), atol=1e-5)
+        xpt.assert_allclose(magnitudes, xp.ones_like(magnitudes), atol=1e-5)
 
 
 def test_signal_generate(backend_device, xp):

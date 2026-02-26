@@ -9,7 +9,7 @@ from commstools.impairments import apply_awgn, apply_pmd
 class TestApplyPMD:
     """Tests for the apply_pmd function."""
 
-    def test_identity_no_dgd_no_rotation(self, backend_device, xp):
+    def test_identity_no_dgd_no_rotation(self, backend_device, xp, xpt):
         """PMD with dgd=0, theta=0 should return the input unchanged."""
         N = 256
         rng = xp.random.RandomState(42)
@@ -18,9 +18,9 @@ class TestApplyPMD:
 
         out = apply_pmd(samples, dgd=0.0, theta=0.0, sampling_rate=fs)
 
-        assert xp.allclose(out, samples, atol=1e-5)
+        xpt.assert_allclose(out, samples, atol=1e-5)
 
-    def test_energy_conservation(self, backend_device, xp):
+    def test_energy_conservation(self, backend_device, xp, xpt):
         """PMD is unitary — output power should equal input power."""
         N = 1024
         rng = xp.random.RandomState(7)
@@ -32,9 +32,9 @@ class TestApplyPMD:
         power_in = float(xp.sum(xp.abs(samples) ** 2))
         power_out = float(xp.sum(xp.abs(out) ** 2))
 
-        np.testing.assert_allclose(power_out, power_in, rtol=1e-4)
+        xpt.assert_allclose(power_out, power_in, rtol=1e-4)
 
-    def test_pure_rotation(self, backend_device, xp):
+    def test_pure_rotation(self, backend_device, xp, xpt):
         """With dgd=0, PMD reduces to a polarization rotation by theta."""
         N = 128
         theta = np.pi / 4
@@ -53,9 +53,9 @@ class TestApplyPMD:
         expected[0, :] = np.cos(theta)
         expected[1, :] = np.sin(theta)
 
-        assert xp.allclose(out, expected, atol=1e-5)
+        xpt.assert_allclose(out, expected, atol=1e-5)
 
-    def test_pure_rotation_with_dgd_zero_coupling(self, backend_device, xp):
+    def test_pure_rotation_with_dgd_zero_coupling(self, backend_device, xp, xpt):
         """With theta=0, DGD applies a phase shift but no polarization coupling."""
         N = 256
         rng = xp.random.RandomState(99)
@@ -70,7 +70,7 @@ class TestApplyPMD:
         power_in = float(xp.sum(xp.abs(samples) ** 2))
         power_out = float(xp.sum(xp.abs(out) ** 2))
 
-        np.testing.assert_allclose(power_out, power_in, rtol=1e-4)
+        xpt.assert_allclose(power_out, power_in, rtol=1e-4)
 
     def test_output_shape(self, backend_device, xp):
         """Output shape should match input shape."""
