@@ -19,20 +19,19 @@ def test_sc_frame_none(backend_device, xp):
 
 def test_sc_frame_comb(backend_device, xp):
     """Verify 'comb' pilot insertion logic and resulting sequence length."""
-    # payload=10, period=4 -> data_per_period=3
-    # 3 periods: 3*3=9 data. remainder=1.
-    # total_length = 3*4 + 1 (data) + 1 (leading pilot) = 14
-    # Mask [T, F, F, F, T, F, F, F, T, F, F, F, T, F] -> 4 pilots, 10 data
+    # payload=9, period=4 -> data_per_period=3, 9 % 3 == 0 (no snapping)
+    # 3 full periods -> total_length = 3*4 = 12
+    # Mask [T, F, F, F, T, F, F, F, T, F, F, F] -> 3 pilots, 9 data
     frame = SingleCarrierFrame(
-        payload_len=10, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
+        payload_len=9, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
     )
     mask, length = frame._generate_pilot_mask()
-    assert length == 14
-    assert xp.sum(mask) == 4
+    assert length == 12
+    assert xp.sum(mask) == 3
 
     sig = frame.to_signal(sps=1, pulse_shape="none")
-    assert len(sig.samples) == 14
-    assert sig.signal_info.pilot_count == 4
+    assert len(sig.samples) == 12
+    assert sig.signal_info.pilot_count == 3
 
 
 def test_sc_frame_block(backend_device, xp):
@@ -435,3 +434,59 @@ def test_pilot_symbols_with_pilots(backend_device, xp):
     syms = frame.pilot_symbols
     assert syms is not None
     assert len(syms) > 0
+
+
+# =========================================================================
+# Pilot divisibility snapping tests
+# =========================================================================
+
+def test_comb_snaps_payload_len(backend_device, xp):
+    """payload_len non-divisible by data_per_period is snapped up (logger.warning)."""
+    # payload=10, period=4 -> data_per_period=3, 10 % 3 != 0 -> snapped to 12
+    frame = SingleCarrierFrame(
+        payload_len=10, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
+    )
+    assert frame.payload_len == 12
+    mask, length = frame._generate_pilot_mask()
+    # 4 full periods of 3 data each = 12 data, 4 pilots, total 16 samples
+    assert length == 16
+    assert int(xp.sum(mask)) == 4
+
+
+def test_block_snaps_payload_len(backend_device, xp):
+    """payload_len non-divisible by data_per_block is snapped up (logger.warning)."""
+    # payload=9, period=4, block_len=2 -> data_per_block=2, 9 % 2 != 0 -> snapped to 10
+    frame = SingleCarrierFrame(
+        payload_len=9,
+        symbol_rate=1e6,
+        pilot_pattern="block",
+        pilot_period=4,
+        pilot_block_len=2,
+    )
+    assert frame.payload_len == 10
+    mask, length = frame._generate_pilot_mask()
+    # 5 blocks of 2 data each = 10 data, 10 pilots, total 20 samples
+    assert length == 20
+    assert int(xp.sum(mask)) == 10
+
+
+def test_comb_no_snap_when_divisible(backend_device, xp):
+    """payload_len already divisible by data_per_period is not modified."""
+    # payload=9, period=4 -> data_per_period=3, 9 % 3 == 0 -> no snap
+    frame = SingleCarrierFrame(
+        payload_len=9, symbol_rate=1e6, pilot_pattern="comb", pilot_period=4
+    )
+    assert frame.payload_len == 9
+
+
+def test_block_no_snap_when_divisible(backend_device, xp):
+    """payload_len already divisible by data_per_block is not modified."""
+    # payload=10, period=4, block_len=2 -> data_per_block=2, 10 % 2 == 0 -> no snap
+    frame = SingleCarrierFrame(
+        payload_len=10,
+        symbol_rate=1e6,
+        pilot_pattern="block",
+        pilot_period=4,
+        pilot_block_len=2,
+    )
+    assert frame.payload_len == 10

@@ -736,3 +736,28 @@ def test_estimate_timing_info_without_sps(backend_device, xp):
     )
     with pytest.raises(ValueError, match="SPS must be provided"):
         sync.estimate_timing(sig, info=info)
+
+
+# ============================================================================
+# DTYPE PRESERVATION TESTS
+# ============================================================================
+
+
+def test_fft_fractional_delay_preserves_complex64_dtype(backend_device, xp):
+    """fft_fractional_delay: complex64 signal → complex64 output."""
+    import numpy as np
+
+    n = np.arange(200)
+    sig = xp.asarray(np.exp(2j * np.pi * 0.05 * n).astype(np.complex64))
+    out = sync.fft_fractional_delay(sig, 0.3)
+    assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
+
+
+def test_fft_fractional_delay_preserves_float32_dtype(backend_device, xp):
+    """fft_fractional_delay: float32 signal → float32 output."""
+    import numpy as np
+
+    n = np.arange(200, dtype=np.float32)
+    sig = xp.asarray(np.sin(2 * np.pi * 0.05 * n))
+    out = sync.fft_fractional_delay(sig, 0.3)
+    assert out.dtype == xp.float32, f"Expected float32, got {out.dtype}"

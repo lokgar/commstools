@@ -97,3 +97,21 @@ def test_shift_frequency(backend_device, xp):
     energy_in = xp.sum(xp.abs(s) ** 2)
     energy_out = xp.sum(xp.abs(shifted_q) ** 2)
     assert xp.isclose(energy_in, energy_out)
+
+
+def test_shift_frequency_preserves_complex64_dtype(backend_device, xp):
+    """shift_frequency: complex64 signal → complex64 output (no float64 promotion)."""
+    import numpy as np
+    rng = np.random.default_rng(20)
+    s = xp.asarray((rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex64))
+    out, _ = spectral.shift_frequency(s, offset=100.0, fs=1000.0)
+    assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
+
+
+def test_shift_frequency_preserves_float32_dtype(backend_device, xp):
+    """shift_frequency: float32 signal → complex64 output (real signal becomes complex after shift)."""
+    import numpy as np
+    rng = np.random.default_rng(21)
+    s = xp.asarray(rng.standard_normal(512).astype(np.float32))
+    out, _ = spectral.shift_frequency(s, offset=100.0, fs=1000.0)
+    assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
