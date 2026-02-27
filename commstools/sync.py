@@ -28,6 +28,8 @@ estimate_frequency_offset_differential :
     Blind or data-aided FOE via differential auto-correlation (Kay's estimator).
 estimate_frequency_offset_data_aided :
     Preamble-based FOE using known training sequence (Kay/Fitz ML estimator).
+estimate_frequency_offset_pilots :
+    Scattered-pilot FOE via least-squares phase slope fitting.
 correct_frequency_offset :
     Applies frequency offset correction via complex mixing.
 recover_carrier_phase_viterbi_viterbi :
@@ -809,7 +811,6 @@ def correct_timing(
 # ============================================================================
 
 
-
 def _modulation_power_m(modulation: str, order: int) -> int:
     """
     Return the exponent M for M-th power spectral methods.
@@ -920,17 +921,18 @@ def estimate_frequency_offset_mth_power(
 
     # Batched FFT across all channels: single kernel call on GPU → (C, nfft)
     X_M = xp.fft.fft(x_M, n=nfft, axis=-1)
-    # Keep two copies: device array for masking, CPU array for scalar peak indexing
-    freqs = xp.fft.fftfreq(nfft, d=1.0 / fs)   # (nfft,) — on device
-    freqs_np = np.fft.fftfreq(nfft, d=1.0 / fs) # (nfft,) — always on CPU
+    # CPU freq array used for parabola scalar indexing; device version only when
+    # search_range masking is needed (avoids a spurious GPU allocation on every call).
+    freqs_np = np.fft.fftfreq(nfft, d=1.0 / fs)  # (nfft,) — always on CPU
 
-    mag = xp.abs(X_M)       # (C, nfft)
-    mag[:, 0] = 0.0          # zero DC for all channels
+    mag = xp.abs(X_M)  # (C, nfft)
+    mag[:, 0] = 0.0  # zero DC for all channels
 
     # Restrict search to [M·f_min, M·f_max] when search_range is given
     if search_range is not None:
         tone_lo = M * min(search_range)
         tone_hi = M * max(search_range)
+        freqs = xp.asarray(freqs_np)  # device version only when mask is needed
         mask = (freqs >= tone_lo) & (freqs <= tone_hi)  # (nfft,)
         if not bool(xp.any(mask)):
             raise ValueError(
@@ -1137,6 +1139,129 @@ def estimate_frequency_offset_data_aided(
     return estimate_frequency_offset_differential(y, fs, weighted=True)
 
 
+def estimate_frequency_offset_pilots(
+    signal: ArrayType,
+    pilot_indices: ArrayType,
+    pilot_values: ArrayType,
+    fs: float,
+) -> float:
+    """
+    Estimates frequency offset from pilot symbols via phase slope fitting.
+
+    Extracts the received phase at each pilot position, demodulates against
+    the known pilot values to obtain the residual phase, unwraps the pilot
+    phase sequence, then fits a least-squares line to the unwrapped phase as
+    a function of pilot sample time.  The slope gives the frequency offset:
+    ``Δf = slope / (2π)``.
+
+    Parameters
+    ----------
+    signal : array_like
+        Received complex samples. Shape: (N,) or (C, N).
+    pilot_indices : array_like of int
+        Sample indices of pilot positions in increasing order. Shape: (P,).
+        Must be unique and sorted.  Supports any pilot arrangement:
+
+        * **Comb (scattered):** uniform grid, e.g. every 16th sample.
+          Lock range determined by comb spacing.
+        * **Block (contiguous cluster):** e.g. ``[0, 1, ..., L-1]``.
+          Equivalent to a preamble; consider
+          :func:`estimate_frequency_offset_data_aided` (Kay ML) instead,
+          which is optimal for contiguous blocks.
+        * **Multi-block:** e.g. a front preamble and a mid-burst pilot
+          cluster.  Lock range is set by the **largest gap** between any
+          two consecutive pilot indices (see Notes).
+    pilot_values : array_like
+        Known transmitted pilot symbols at the corresponding indices.
+        Shape: (P,) for shared pilots (broadcast to all MIMO channels),
+        or (C, P) for per-channel pilots.
+    fs : float
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    float
+        Estimated frequency offset in Hz. For MIMO, per-channel estimates
+        are averaged to a single scalar.
+
+    Notes
+    -----
+    The demodulated pilot phase follows:
+
+    .. math::
+
+        \\hat{\\phi}[k] = 2\\pi \\Delta f \\cdot t_k + \\phi_0 + \\text{noise}
+
+    where :math:`t_k = \\text{pilot\\_indices}[k] / f_s`.  The
+    minimum-variance unbiased estimator for :math:`\\Delta f` is the
+    least-squares slope of the unwrapped phase vs. time, solved via the
+    centered normal equations:
+
+    .. math::
+
+        \\hat{\\Delta f} = \\frac{1}{2\\pi}
+            \\frac{\\sum_k (t_k - \\bar{t})(\\hat{\\phi}[k] - \\bar{\\phi})}
+                  {\\sum_k (t_k - \\bar{t})^2}
+
+    **Lock range:** ``xp.unwrap`` bridges each gap between consecutive
+    pilot indices.  The gap that limits the lock range is the largest one:
+
+    .. math::
+
+        |\\Delta f| < \\frac{f_s}{2 \\cdot \\max_k (t_{k+1} - t_k)^{-1}}
+            = \\frac{f_s}{2 \\cdot \\text{max\\_gap}}
+
+    where ``max_gap`` is the maximum spacing (in samples) between any two
+    consecutive entries of ``pilot_indices``.
+
+    * Comb with period *d*: ``max_gap = d``, lock range ``= fs/(2d)``.
+    * Two-block pilots with front block ``[0..L-1]`` and back block
+      ``[N-L..N-1]``: ``max_gap = N-2L``, lock range ``= fs/(2(N-2L))``.
+      For large *N*, this can be very small.  Use
+      :func:`estimate_frequency_offset_mth_power` as a coarse stage first.
+
+    **Accuracy vs. data-aided:** For the same number of pilots P, widely
+    spaced pilots achieve a lower CRLB than a contiguous block because the
+    long time baseline increases the denominator :math:`\\sum (t_k-\\bar t)^2`.
+
+    References
+    ----------
+    S. A. Tretter, "Estimating the frequency of a noisy sinusoid by linear
+    regression," *IEEE Trans. Inf. Theory*, vol. 31, no. 6, pp. 832–835,
+    Nov. 1985.
+    """
+    signal, xp, _ = dispatch(signal)
+    was_1d = signal.ndim == 1
+    if was_1d:
+        signal = signal[None, :]
+    C, N = signal.shape
+
+    pilot_indices_np = np.asarray(pilot_indices, dtype=np.intp)
+    pilot_values_xp = xp.asarray(pilot_values)
+    P = len(pilot_indices_np)
+
+    if pilot_values_xp.ndim == 1:
+        pilot_values_xp = xp.broadcast_to(pilot_values_xp[None, :], (C, P))
+
+    # Extract and demodulate: phase = angle(r · conj(s)) = 2π·Δf·t + φ₀ + noise
+    r_pilots = signal[:, pilot_indices_np]  # (C, P)
+    phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
+
+    # Unwrap in float64; cp.unwrap preserves input dtype so cast before calling
+    phi_pilots_u = xp.unwrap(phi_pilots.astype(xp.float64), axis=-1)  # (C, P)
+
+    # Centered normal equations on-backend — vectorised across all C channels.
+    # Centering avoids cancellation and matches the MVUE from Tretter (1985).
+    t_xp = xp.asarray(pilot_indices_np.astype(np.float64)) / fs  # (P,)
+    t_c = t_xp - xp.mean(t_xp)                                   # (P,) centred
+    t_var = float(xp.dot(t_c, t_c))                              # scalar Σ(t-t̄)²
+
+    phi_c = phi_pilots_u - xp.mean(phi_pilots_u, axis=-1, keepdims=True)  # (C, P)
+    slopes = xp.sum(phi_c * t_c[None, :], axis=-1) / t_var                # (C,)
+
+    return float(xp.mean(slopes)) / (2.0 * np.pi)
+
+
 def correct_frequency_offset(
     samples: ArrayType,
     offset: float,
@@ -1259,9 +1384,15 @@ def recover_carrier_phase_viterbi_viterbi(
             "Reduce block_size or use a longer symbol sequence."
         )
 
-    # Reshape for block processing: (C, N_blocks, block_size)
+    # Reshape for block processing: (C, N_blocks, block_size).
+    # Promote to complex128 for the M-th power — identical to estimate_frequency_offset_mth_power.
+    # On GPU, complex64^4 loses precision near the ±π/M unwrap boundary, causing
+    # spurious branch flips for high-order QAM with small block sizes.
     blocks = symbols[:, :N_trunc].reshape(C, N_blocks, block_size)
-    S_b = xp.sum(blocks**M, axis=-1)  # (C, N_blocks)
+    blocks_c = blocks.astype(
+        xp.complex128 if blocks.dtype == xp.complex64 else blocks.dtype
+    )
+    S_b = xp.sum(blocks_c**M, axis=-1)  # (C, N_blocks)
 
     # Raw block phase in [-π/M, π/M)
     phi_raw = xp.angle(S_b) / M  # (C, N_blocks)
@@ -1275,22 +1406,13 @@ def recover_carrier_phase_viterbi_viterbi(
     block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
     all_positions = xp.arange(N, dtype=xp.float64)
 
-    # Batched linear interpolation across all channels simultaneously.
-    # xp.interp is 1D-only, so we use searchsorted + vectorised indexing.
-    # block_centers is uniformly spaced, so the segment length is always block_size.
-    idx_right = xp.clip(
-        xp.searchsorted(block_centers, all_positions), 1, N_blocks - 1
-    )  # (N,)
-    idx_left = idx_right - 1
-    t_interp = xp.clip(
-        (all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0
-    )  # (N,) — clamp handles extrapolation at both edges
-
-    phi_u_f64 = phi_u.astype(xp.float64)  # (C, N_blocks)
-    phi_full = (
-        phi_u_f64[:, idx_left] * (1.0 - t_interp)
-        + phi_u_f64[:, idx_right] * t_interp
-    )  # (C, N)
+    # xp.interp is 1D-only; loop over C channels.  C is typically 1–4 so the
+    # overhead is negligible.  A searchsorted-based batched form gives ULP-level
+    # differences at block boundaries that can flip the M-fold branch for
+    # high-order QAM with small block sizes, so xp.interp is preferred here.
+    phi_full = xp.zeros((C, N), dtype=xp.float64)
+    for ch in range(C):
+        phi_full[ch] = xp.interp(all_positions, block_centers, phi_u[ch])
 
     if was_1d:
         return phi_full[0]
@@ -1388,13 +1510,9 @@ def recover_carrier_phase_bps(
     all_positions = xp.arange(N, dtype=xp.float64)
 
     # Pre-compute interpolation indices and weights (identical for every channel)
-    idx_right = xp.clip(
-        xp.searchsorted(block_centers, all_positions), 1, N_blocks - 1
-    )
+    idx_right = xp.clip(xp.searchsorted(block_centers, all_positions), 1, N_blocks - 1)
     idx_left = idx_right - 1
-    t_interp = xp.clip(
-        (all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0
-    )
+    t_interp = xp.clip((all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0)
 
     # Pre-compute phasors for all B candidates once (avoid redundant exp per channel)
     phasors = xp.exp(
@@ -1411,7 +1529,7 @@ def recover_carrier_phase_bps(
     if is_sq_qam:
         # Sorted unique real levels of the constellation (shape: (side,))
         levels = xp.sort(xp.unique(const_xp.real))
-        d_grid = float(levels[1] - levels[0])   # uniform grid spacing
+        d_grid = float(levels[1] - levels[0])  # uniform grid spacing
         lev_min = float(levels[0])
 
     float_dtype = xp.float32 if symbols.dtype == xp.complex64 else xp.float64
@@ -1436,14 +1554,16 @@ def recover_carrier_phase_bps(
                 # O(1) nearest-point: round each component to the nearest grid level
                 r_idx = xp.clip(
                     xp.round((x_rot.real - lev_min) / d_grid).astype(xp.int64),
-                    0, side - 1,
+                    0,
+                    side - 1,
                 )
                 i_idx = xp.clip(
                     xp.round((x_rot.imag - lev_min) / d_grid).astype(xp.int64),
-                    0, side - 1,
+                    0,
+                    side - 1,
                 )
-                r_near = levels[r_idx]   # (CHUNK, B)
-                i_near = levels[i_idx]   # (CHUNK, B)
+                r_near = levels[r_idx]  # (CHUNK, B)
+                i_near = levels[i_idx]  # (CHUNK, B)
                 min_dist[n0:n1] = (
                     (x_rot.real - r_near) ** 2 + (x_rot.imag - i_near) ** 2
                 ).astype(float_dtype)
@@ -1456,8 +1576,8 @@ def recover_carrier_phase_bps(
         metric = xp.sum(min_dist.reshape(N_blocks, block_size, B), axis=1)
 
         # Best candidate index per block and 4-fold unwrap
-        best_k = xp.argmin(metric, axis=-1)               # (N_blocks,)
-        phi_b = candidates[best_k]                         # (N_blocks,)
+        best_k = xp.argmin(metric, axis=-1)  # (N_blocks,)
+        phi_b = candidates[best_k]  # (N_blocks,)
         phi_u = xp.unwrap(phi_b.astype(xp.float64) * 4, axis=-1) / 4
 
         # Interpolate to per-symbol resolution using pre-computed weights
@@ -1492,8 +1612,9 @@ def recover_carrier_phase_pilots(
         Shape: (P,) for shared pilots (broadcast to all MIMO channels),
         or (C, P) for per-channel pilots.
     interpolation : {'linear', 'cubic'}, default 'linear'
-        Interpolation method between pilot positions.  ``'linear'`` is
-        fully vectorised across all channels.  ``'cubic'`` uses
+        Interpolation method between pilot positions.  Both modes loop over
+        MIMO channels (``xp.interp`` and ``CubicSpline`` are 1D-only);
+        C is typically 1–4 so the overhead is negligible.  ``'cubic'`` uses
         :class:`scipy.interpolate.CubicSpline` (CPU) or
         :class:`cupyx.scipy.interpolate.CubicSpline` (GPU).
 
@@ -1540,28 +1661,20 @@ def recover_carrier_phase_pilots(
     r_pilots = symbols[:, pilot_indices_np]  # (C, P)
     phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
 
-    # Unwrap along the pilot axis and promote to float64
-    phi_pilots_u = xp.unwrap(phi_pilots, axis=-1).astype(xp.float64)  # (C, P)
+    # Unwrap along the pilot axis in float64 (cp.unwrap preserves input dtype;
+    # casting before avoids precision loss in the discontinuity test for float32 input)
+    phi_pilots_u = xp.unwrap(phi_pilots.astype(xp.float64), axis=-1)  # (C, P)
 
     all_positions = xp.arange(N, dtype=xp.float64)
 
     if interpolation == "linear":
-        # Fully vectorised across all channels using searchsorted.
-        # Pilot indices may be non-uniformly spaced, so segment lengths vary.
-        idx_right = xp.clip(
-            xp.searchsorted(pilot_indices_xp, all_positions), 1, P - 1
-        )  # (N,)
-        idx_left = idx_right - 1
-        seg_len = pilot_indices_xp[idx_right] - pilot_indices_xp[idx_left]  # (N,)
-        # Guard against degenerate zero-length segments (identical consecutive pilots)
-        safe_len = xp.where(seg_len > 0, seg_len, xp.ones_like(seg_len))
-        t_interp = xp.clip(
-            (all_positions - pilot_indices_xp[idx_left]) / safe_len, 0.0, 1.0
-        )  # (N,)
-        phi_full = (
-            phi_pilots_u[:, idx_left] * (1.0 - t_interp[None, :])
-            + phi_pilots_u[:, idx_right] * t_interp[None, :]
-        )  # (C, N)
+        # xp.interp handles non-uniform pilot spacing natively, is boundary-safe
+        # (extrapolates with first/last pilot value), and avoids the divide-by-zero
+        # guards that the searchsorted form required.  Loop over C channels because
+        # xp.interp is 1D-only; overhead is negligible for typical C = 1–4.
+        phi_full = xp.zeros((C, N), dtype=xp.float64)
+        for ch in range(C):
+            phi_full[ch] = xp.interp(all_positions, pilot_indices_xp, phi_pilots_u[ch])
 
     elif interpolation == "cubic":
         # CubicSpline is inherently per-channel (1D y input); loop is unavoidable.

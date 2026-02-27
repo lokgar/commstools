@@ -221,12 +221,21 @@ class TestFoeDataAided:
 
 
 class TestCprViterbiViterbi:
-    @pytest.mark.parametrize("order,modulation", [(4, "psk"), (16, "qam"), (64, "qam")])
-    @pytest.mark.parametrize("block_size", [16, 32, 64])
+    @pytest.mark.parametrize(
+        "order,modulation,block_size",
+        [
+            # PSK: constant envelope → reliable even with small blocks
+            (4, "psk", 16), (4, "psk", 32), (4, "psk", 64),
+            # QAM-16: moderate amplitude variation → works with block_size ≥ 16
+            (16, "qam", 16), (16, "qam", 32), (16, "qam", 64),
+            # QAM-64: high amplitude variation in s^4 → requires block_size ≥ 32
+            # for the coherent sum to be stable near the ±π/M unwrap boundary
+            (64, "qam", 32), (64, "qam", 64),
+        ],
+    )
     def test_phase_residual(self, backend_device, xp, order, modulation, block_size):
         """VV CPR: RMS phase residual reduced to < 0.1 rad after correction."""
         sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
-        # Apply a known constant phase offset
         phi_true = 0.3  # radians
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
@@ -529,3 +538,89 @@ class TestSignalMethods:
         sig = Signal(samples=samples_np, sampling_rate=FS, symbol_rate=FS)
         with pytest.raises(ValueError, match="mod_scheme and mod_order must be set"):
             sig.correct_frequency_offset(method="mth_power")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FOE — Scattered Pilots (phase slope)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFoePilots:
+    """Tests for estimate_frequency_offset_pilots (least-squares phase slope)."""
+
+    N_SAMPLES = 4096
+    PILOT_PERIOD = 16  # one pilot every 16 samples → lock range ±31.25 kHz
+
+    @staticmethod
+    def _setup(xp, fo_hz, n_samples=4096, pilot_period=16, snr_db=SNR_DB, fs=FS):
+        """
+        Build a QPSK-like signal with BPSK (+1) pilots inserted at a regular
+        grid, apply an exact frequency offset, and return everything needed
+        by the estimator.
+        """
+        rng = np.random.default_rng(seed=7)
+        # Random QPSK-like data (4-point alphabet, unit power)
+        symbols = (
+            rng.choice([-1, 1], size=n_samples)
+            + 1j * rng.choice([-1, 1], size=n_samples)
+        ).astype(np.complex64) / np.sqrt(2)
+
+        pilot_indices = np.arange(0, n_samples, pilot_period, dtype=np.intp)
+        pilot_values = np.ones(len(pilot_indices), dtype=np.complex64)  # BPSK pilots
+        symbols[pilot_indices] = pilot_values  # overwrite data with known pilots
+
+        if snr_db < 100:
+            noise_power = 10 ** (-snr_db / 10)
+            noise = (
+                rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
+            ).astype(np.complex64) * np.sqrt(noise_power / 2)
+            symbols = (symbols + noise).astype(np.complex64)
+
+        samples = xp.asarray(symbols)
+        # Apply exact frequency offset (no bin quantization)
+        t = xp.arange(n_samples, dtype=xp.float64) / fs
+        samples = (samples * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
+        return samples, pilot_indices, pilot_values
+
+    @pytest.mark.parametrize("fo_hz", [1_000.0, 5_000.0, -3_000.0])
+    def test_accuracy(self, backend_device, xp, fo_hz):
+        """Estimated offset within 1 % of true offset at 30 dB SNR."""
+        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
+        est = sync.estimate_frequency_offset_pilots(
+            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, fs=FS
+        )
+        assert abs(est - fo_hz) < 0.01 * abs(fo_hz) + 1.0
+
+    def test_zero_offset(self, backend_device, xp):
+        """Zero frequency offset: estimate is within ±20 Hz."""
+        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz=0.0)
+        est = sync.estimate_frequency_offset_pilots(
+            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, fs=FS
+        )
+        assert abs(est) < 20.0
+
+    def test_mimo_returns_scalar(self, backend_device, xp):
+        """MIMO input: per-channel estimates averaged to a Python float."""
+        fo_hz = 2_000.0
+        s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
+        s1, _, _ = self._setup(xp, fo_hz)
+        samples_mimo = xp.stack([s0, s1], axis=0)  # (2, N)
+        est = sync.estimate_frequency_offset_pilots(
+            samples_mimo,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            fs=FS,
+        )
+        assert isinstance(est, float)
+        assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
+
+    def test_signal_method_pilots(self, backend_device, xp):
+        """Signal.correct_frequency_offset(method='pilots') corrects and returns float."""
+        fo_hz = 3_000.0
+        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
+        sig = Signal(samples=samples, sampling_rate=FS, symbol_rate=FS)
+        est = sig.correct_frequency_offset(
+            method="pilots", pilot_indices=pilot_indices, pilot_values=pilot_values
+        )
+        assert isinstance(est, float)
+        assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0

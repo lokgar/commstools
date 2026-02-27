@@ -1128,7 +1128,7 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        method : {'mth_power', 'differential', 'data_aided'}, default 'mth_power'
+        method : {'mth_power', 'differential', 'data_aided', 'pilots'}, default 'mth_power'
             Frequency offset estimation algorithm.
 
             * ``'mth_power'``: Blind M-th power spectral method. Requires
@@ -1139,6 +1139,8 @@ class Signal(BaseModel):
               Keyword args: ``ref_signal``, ``weighted``.
             * ``'data_aided'``: Preamble-based ML estimator.
               Keyword args: ``preamble_samples``, ``offset``.
+            * ``'pilots'``: Scattered-pilot phase slope estimator.
+              Keyword args: ``pilot_indices``, ``pilot_values``.
 
         **kwargs
             Algorithm-specific parameters forwarded to the underlying
@@ -1186,10 +1188,16 @@ class Signal(BaseModel):
                 fs=self.sampling_rate,
                 **kwargs,
             )
+        elif method == "pilots":
+            offset = sync.estimate_frequency_offset_pilots(
+                self.samples,
+                fs=self.sampling_rate,
+                **kwargs,
+            )
         else:
             raise ValueError(
                 f"Unknown FOE method: {method!r}. "
-                "Choose from 'mth_power', 'differential', 'data_aided'."
+                "Choose from 'mth_power', 'differential', 'data_aided', 'pilots'."
             )
 
         self.samples = sync.correct_frequency_offset(
