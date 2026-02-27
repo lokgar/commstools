@@ -1114,6 +1114,170 @@ class Signal(BaseModel):
         self.digital_frequency_offset += actual_offset
         return self
 
+    def correct_frequency_offset(
+        self,
+        method: str = "mth_power",
+        **kwargs,
+    ) -> float:
+        """
+        Estimates and corrects the carrier frequency offset in-place.
+
+        Estimates the frequency offset using the chosen algorithm, applies the
+        correction to ``self.samples`` via complex mixing, and returns the
+        estimated offset for inspection or logging.
+
+        Parameters
+        ----------
+        method : {'mth_power', 'differential', 'data_aided'}, default 'mth_power'
+            Frequency offset estimation algorithm.
+
+            * ``'mth_power'``: Blind M-th power spectral method. Requires
+              ``mod_scheme`` and ``mod_order`` to be set.
+              Keyword args: ``search_range``, ``nfft``.
+            * ``'differential'``: Differential auto-correlation (Kay's
+              estimator). Blind or data-aided via ``ref_signal`` kwarg.
+              Keyword args: ``ref_signal``, ``weighted``.
+            * ``'data_aided'``: Preamble-based ML estimator.
+              Keyword args: ``preamble_samples``, ``offset``.
+
+        **kwargs
+            Algorithm-specific parameters forwarded to the underlying
+            ``sync.estimate_frequency_offset_*`` function.
+
+        Returns
+        -------
+        float
+            Estimated frequency offset in Hz (positive = signal shifted up).
+            The correction ``-offset`` has already been applied to
+            ``self.samples``.
+
+        Notes
+        -----
+        ``digital_frequency_offset`` is **not** updated — that attribute
+        tracks intentional digital frequency shifts applied by the TX/RX
+        chain, not recovered carrier offsets.
+        """
+        from . import sync
+
+        if method == "mth_power":
+            if self.mod_scheme is None or self.mod_order is None:
+                raise ValueError(
+                    "mod_scheme and mod_order must be set on the Signal for "
+                    "the 'mth_power' method."
+                )
+            offset = sync.estimate_frequency_offset_mth_power(
+                self.samples,
+                fs=self.sampling_rate,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                **kwargs,
+            )
+        elif method == "differential":
+            offset = sync.estimate_frequency_offset_differential(
+                self.samples,
+                fs=self.sampling_rate,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                **kwargs,
+            )
+        elif method == "data_aided":
+            offset = sync.estimate_frequency_offset_data_aided(
+                self.samples,
+                fs=self.sampling_rate,
+                **kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Unknown FOE method: {method!r}. "
+                "Choose from 'mth_power', 'differential', 'data_aided'."
+            )
+
+        self.samples = sync.correct_frequency_offset(
+            self.samples, offset, self.sampling_rate
+        )
+        return offset
+
+    def recover_carrier_phase(
+        self,
+        method: str = "viterbi_viterbi",
+        **kwargs,
+    ) -> "ArrayType":
+        """
+        Estimates and corrects carrier phase in-place.
+
+        Estimates the per-symbol phase using the chosen algorithm, applies the
+        correction to ``self.samples``, and returns the phase vector for
+        inspection or further processing.
+
+        Parameters
+        ----------
+        method : {'viterbi_viterbi', 'bps', 'pilots'}, default 'viterbi_viterbi'
+            Carrier phase recovery algorithm.
+
+            * ``'viterbi_viterbi'``: Blind M-th power block estimator for
+              PSK and QAM. Requires ``mod_scheme`` and ``mod_order``.
+              Keyword args: ``block_size``.
+            * ``'bps'``: Blind Phase Search.
+              Requires ``mod_scheme`` and ``mod_order``.
+              Keyword args: ``num_test_phases``, ``block_size``.
+            * ``'pilots'``: Pilot-aided estimation with interpolation.
+              Keyword args: ``pilot_indices``, ``pilot_values``,
+              ``interpolation``.
+
+        **kwargs
+            Algorithm-specific parameters forwarded to the underlying
+            ``sync.recover_carrier_phase_*`` function.
+
+        Returns
+        -------
+        array_like
+            Per-symbol phase estimate in radians, shape ``(N,)`` or
+            ``(C, N)``.  The correction has already been applied to
+            ``self.samples``.
+
+        Notes
+        -----
+        Assumes ``self.samples`` is already at 1 SPS (e.g. after
+        :meth:`decimate_to_symbol_rate`).  Applying CPR to an oversampled
+        signal will give poor results.
+        """
+        from . import sync
+
+        if method == "viterbi_viterbi":
+            if self.mod_scheme is None or self.mod_order is None:
+                raise ValueError(
+                    "mod_scheme and mod_order must be set on the Signal for "
+                    "the 'viterbi_viterbi' method."
+                )
+            phase = sync.recover_carrier_phase_viterbi_viterbi(
+                self.samples,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                **kwargs,
+            )
+        elif method == "bps":
+            if self.mod_scheme is None or self.mod_order is None:
+                raise ValueError(
+                    "mod_scheme and mod_order must be set on the Signal for "
+                    "the 'bps' method."
+                )
+            phase = sync.recover_carrier_phase_bps(
+                self.samples,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                **kwargs,
+            )
+        elif method == "pilots":
+            phase = sync.recover_carrier_phase_pilots(self.samples, **kwargs)
+        else:
+            raise ValueError(
+                f"Unknown CPR method: {method!r}. "
+                "Choose from 'viterbi_viterbi', 'bps', 'pilots'."
+            )
+
+        self.samples = sync.correct_carrier_phase(self.samples, phase)
+        return phase
+
     def fir_filter(self, taps: ArrayType) -> "Signal":
         """
         Applies a Finite Impulse Response (FIR) filter to the signal.
