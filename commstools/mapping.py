@@ -607,14 +607,38 @@ def demap_symbols_hard(
     constellation = xp.asarray(constellation)
 
     # 1. Find nearest constellation point (Hard Decision)
-    # We expand dimensions to calculate all-to-all distances
-    # symbols: (N,), constellation: (M,)
-    # distances shape: (N, M)
-    distances = xp.abs(symbols_flat[:, xp.newaxis] - constellation[xp.newaxis, :])
-    indices = xp.argmin(distances, axis=1)
+    k = int(np.log2(order))
+    is_sq_qam = (modulation == "qam") and (order != 8) and (k % 2 == 0)
+
+    if is_sq_qam:
+        # O(1) component-wise rounding — no (N, M) distance matrix.
+        # Levels are evenly spaced; round each axis independently.
+        n_ax = k // 2          # bits per axis
+        side = 2 ** n_ax       # points per axis
+        levels = xp.sort(xp.unique(constellation.real))   # (side,)
+        lev_min = float(levels[0])
+        d_grid  = float(levels[1] - levels[0])
+        # Gray LUT: sorted-level index (geometric) → natural-binary symbol index
+        gray_lut = xp.asarray(gray_code(n_ax))            # (side,)
+        g_i = xp.clip(
+            xp.round((symbols_flat.real - lev_min) / d_grid).astype(xp.int64),
+            0, side - 1,
+        )
+        g_q = xp.clip(
+            xp.round((symbols_flat.imag - lev_min) / d_grid).astype(xp.int64),
+            0, side - 1,
+        )
+        indices = (gray_lut[g_i] << n_ax) | gray_lut[g_q]  # (N_flat,)
+    else:
+        # General path: chunk N to bound peak memory at (CHUNK_N, M_const).
+        CHUNK_N = 4096
+        indices = xp.empty(len(symbols_flat), dtype=xp.int64)
+        for n0 in range(0, len(symbols_flat), CHUNK_N):
+            n1 = min(n0 + CHUNK_N, len(symbols_flat))
+            d = xp.abs(symbols_flat[n0:n1, xp.newaxis] - constellation[xp.newaxis, :])
+            indices[n0:n1] = xp.argmin(d, axis=1)
 
     # 2. Convert indices to bits
-    k = int(np.log2(order))
     # Extract bits from indices: (N, k)
     # We use bit shifting: (index >> shift) & 1
     shifts = xp.arange(k - 1, -1, -1, dtype="int32")

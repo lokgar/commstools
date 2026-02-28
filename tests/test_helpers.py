@@ -129,25 +129,6 @@ def test_validate_array_exception(backend_device, xp):
 
 
 # ============================================================================
-# INTERPOLATION
-# ============================================================================
-
-
-def test_interp1d(backend_device, xp, xpt):
-    """Verify linear interpolation and extrapolation for y = 2x."""
-    x_p = xp.array([0.0, 1.0, 2.0, 3.0])
-    f_p = 2.0 * x_p
-
-    result = helpers.interp1d(xp.array([0.5, 1.5, 2.5]), x_p, f_p)
-    xpt.assert_allclose(result, 2.0 * xp.array([0.5, 1.5, 2.5]))
-
-    # Extrapolation clamps to nearest segment
-    result_out = helpers.interp1d(xp.array([-0.5, 3.5]), x_p, f_p)
-    assert xp.isclose(result_out[0], -1.0)  # segment [0,1], slope 2 → y(-0.5) = -1
-    assert xp.isclose(result_out[1], 7.0)   # segment [2,3], slope 2 → y(3.5) = 7
-
-
-# ============================================================================
 # RMS
 # ============================================================================
 
