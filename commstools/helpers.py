@@ -19,8 +19,6 @@ format_si :
     Converts numeric values into human-readable SI-formatted strings.
 validate_array :
     Ensures input data is coerced into a supported backend array type.
-interp1d :
-    High-performance linear interpolation for NumPy and CuPy backends.
 cross_correlate_fft :
     Vectorized FFT-based cross-correlation for 1D and multichannel signals.
 expand_preamble_mimo :
@@ -320,66 +318,6 @@ def validate_array(
     return v
 
 
-def interp1d(x: ArrayType, x_p: ArrayType, f_p: ArrayType, axis: int = -1) -> ArrayType:
-    """
-    Performs 1D linear interpolation across a specified axis.
-
-    This function provides a backend-agnostic (NumPy/CuPy) implementation of
-    linear interpolation, serving as a high-performance replacement for
-    generic interpolation routines.
-
-    Parameters
-    ----------
-    x : array_like
-        Target coordinates (query points).
-    x_p : array_like
-        Original sample coordinates (must be monotonically increasing).
-    f_p : array_like
-        Original sample values at coordinates `x_p`.
-    axis : int, default -1
-        The axis along which to perform interpolation.
-
-    Returns
-    -------
-    array_like
-        Interpolated values at the target coordinates `x`.
-    """
-    logger.debug(f"Performing linear interpolation (axis={axis}).")
-    x, xp, _ = dispatch(x)
-
-    # Ensure other inputs are on the same backend
-    x_p = xp.asarray(x_p)
-    f_p = xp.asarray(f_p)
-
-    # Move axis to end for easier handling
-    f_p = xp.swapaxes(f_p, axis, -1)
-
-    # Find indices such that xp[i-1] <= x < xp[i]
-    idxs = xp.searchsorted(x_p, x)
-    idxs = xp.clip(idxs, 1, len(x_p) - 1)
-
-    # Get the bounding points
-    x0 = x_p[idxs - 1]
-    x1 = x_p[idxs]
-
-    denominator = x1 - x0
-    weights = (x - x0) / xp.where(denominator == 0, 1.0, denominator)
-
-    # Get the bounding values
-    # f_p is (..., T)
-    # idxs is (M,)
-    # We want result (..., M)
-
-    y0 = f_p[..., idxs - 1]
-    y1 = f_p[..., idxs]
-
-    result = y0 * (1 - weights) + y1 * weights
-
-    # Move axis back
-    result = xp.swapaxes(result, axis, -1)
-
-    return result
-
 
 def cross_correlate_fft(
     signal: ArrayType,
@@ -402,11 +340,15 @@ def cross_correlate_fft(
         Reference sequence. Shape: ``(L,)`` or ``(C, L)``.
         If ``(1, L)`` and signal is ``(C, N)``, the template is
         broadcast across all channels.
-    mode : {"full", "same", "valid"}, default "full"
+    mode : {"full", "same", "valid", "positive_lags"}, default "full"
         Output size:
         - ``"full"``: length ``N + L - 1``.
         - ``"same"``: length ``N`` (centered).
         - ``"valid"``: length ``max(N, L) - min(N, L) + 1``.
+        - ``"positive_lags"``: length ``N`` (lags 0 … N-1 only). Returns a
+          zero-copy view of the raw circular-correlation output — no
+          ``concatenate`` and no reordering. Use this when negative lags are
+          not needed (e.g. frame timing search within a bounded window).
 
     Returns
     -------
@@ -446,7 +388,9 @@ def cross_correlate_fft(
     corr = xp.concatenate([neg_lags, pos_lags], axis=-1)  # length N+L-1
 
     # Apply mode trimming
-    if mode == "same":
+    if mode == "positive_lags":
+        corr = corr_circ[..., :N]  # zero-copy view; lags 0 … N-1
+    elif mode == "same":
         start = (L - 1) // 2
         corr = corr[..., start : start + N]
     elif mode == "valid":

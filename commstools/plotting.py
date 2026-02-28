@@ -601,12 +601,7 @@ def _plot_eye_traces(
             x_old = xp.arange(trace_len, dtype=float)
             x_new = xp.linspace(0, trace_len - 1, target_width, dtype=float)
 
-            # Interpolate along the last axis (time)
-            # interp1d expects (x, x_p, f_p, axis), result is interpolated samples
-            # f_p is traces
-            from .helpers import interp1d
-
-            traces = interp1d(x_new, x_old, traces, axis=1)
+            traces = xp.stack([xp.interp(x_new, x_old, row) for row in traces])
             trace_len = target_width
 
         # Create time matrix

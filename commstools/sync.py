@@ -615,11 +615,7 @@ def estimate_timing(
     # === Vectorized Correlation (FFT) via shared helper ===
     L = preamble_waveform.shape[-1]
 
-    corr = cross_correlate_fft(sig_processing, preamble_waveform, mode="full")
-
-    # Extract positive lags only (valid start positions).
-    # In full mode (scipy convention), lag 0 is at index L-1.
-    corr = corr[..., L - 1 :]  # length = sig_processing.shape[-1]
+    corr = cross_correlate_fft(sig_processing, preamble_waveform, mode="positive_lags")
 
     # Magnitude
     corr_mag = xp.abs(corr)
@@ -1543,8 +1539,10 @@ def recover_carrier_phase_bps(
     for ch in range(C):
         sym = symbols[ch, :N_trunc]  # (N_trunc,)
 
-        # Allocate min-distance accumulator once per channel: (N_trunc, B)
-        min_dist = xp.empty((N_trunc, B), dtype=float_dtype)
+        # Accumulate block-average error metric: (N_blocks, B).
+        # CHUNK_N (1024) is an exact multiple of block_size (32), so each chunk
+        # covers a whole number of blocks with no remainder — no edge-case needed.
+        metric = xp.zeros((N_blocks, B), dtype=float_dtype)
 
         for n0 in range(0, N_trunc, CHUNK_N):
             n1 = min(n0 + CHUNK_N, N_trunc)
@@ -1564,16 +1562,17 @@ def recover_carrier_phase_bps(
                 )
                 r_near = levels[r_idx]  # (CHUNK, B)
                 i_near = levels[i_idx]  # (CHUNK, B)
-                min_dist[n0:n1] = (
+                chunk_min_d = (
                     (x_rot.real - r_near) ** 2 + (x_rot.imag - i_near) ** 2
                 ).astype(float_dtype)
             else:
                 # General: (CHUNK, B, M_const) — bounded by CHUNK_N
                 d_sq = xp.abs(x_rot[:, :, None] - const_xp[None, None, :]) ** 2
-                min_dist[n0:n1] = xp.min(d_sq, axis=-1).astype(float_dtype)
+                chunk_min_d = xp.min(d_sq, axis=-1).astype(float_dtype)
 
-        # Block-average error metric: (N_blocks, B)
-        metric = xp.sum(min_dist.reshape(N_blocks, block_size, B), axis=1)
+            b0  = n0 // block_size
+            n_b = (n1 - n0) // block_size
+            metric[b0 : b0 + n_b] = chunk_min_d.reshape(n_b, block_size, B).sum(axis=1)
 
         # Best candidate index per block and 4-fold unwrap
         best_k = xp.argmin(metric, axis=-1)  # (N_blocks,)
