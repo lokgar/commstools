@@ -46,7 +46,7 @@ uv run pytest --cov=commstools
 
 All core classes use **Pydantic BaseModel** for validation.
 
-- **Signal**: Primary container for complex IQ samples + metadata (sampling_rate, symbol_rate, modulation_scheme, modulation_order, pulse_shape, source_bits, source_symbols). Factory methods: `Signal.pam()`, `Signal.psk()`, `Signal.qam()`, `Signal.generate()`. Supports method chaining (e.g., `sig.to("gpu").fir_filter(taps)`).
+- **Signal**: Primary container for complex IQ samples + metadata (sampling_rate, symbol_rate, modulation_scheme, modulation_order, pulse_shape, source_bits, source_symbols). Factory methods: `Signal.pam()`, `Signal.psk()`, `Signal.qam()`, `Signal.generate()`. Supports method chaining (e.g., `sig.to("gpu").fir_filter(taps)`). `matched_filter(taps=None)` accepts optional explicit taps; if omitted, taps are derived from `pulse_shape` metadata.
 - **Preamble**: Synchronization sequences (Barker, Zadoff-Chu). Converts to Signal via `to_signal()`.
 - **SingleCarrierFrame**: Frame structure with preamble, payload, pilots (block/comb), and guard intervals. Supports MIMO. `get_structure_map()` returns indices for receiver parsing.
 
@@ -62,16 +62,17 @@ Generation flows: bits → symbols → samples. `Signal.source_bits` is the grou
 ### Module Roles
 
 | Module | Role |
-|---|---|
+| --- | --- |
 | `mapping.py` | Bits↔symbols, Gray coding, constellation generation, LLR soft demapping |
 | `filtering.py` | Pulse shaping (RRC, RC, Gaussian, smoothrect), FIR filter application |
 | `multirate.py` | Resampling, decimation, polyphase filtering |
-| `sync.py` | Barker/ZC sequences, cross-correlation frame detection |
+| `sync.py` | Barker/ZC sequences, cross-correlation timing; frequency offset estimation (M-th power, Kay, data-aided, pilot-aided); carrier phase recovery (Viterbi-Viterbi, BPS, pilot-aided) |
+| `equalization.py` | LMS/NLMS, RLS, CMA (blind), ZF/MMSE block equalizers; butterfly MIMO topology; Numba + JAX backends |
 | `metrics.py` | EVM, SNR, BER computation |
-| `impairments.py` | AWGN channel (Es/N0 aware with SPS handling) |
+| `impairments.py` | AWGN channel (Es/N0 aware with SPS handling), PMD (differential group delay, Jones matrix) |
 | `spectral.py` | Frequency shifting, Welch PSD |
-| `plotting.py` | Constellation, eye diagram, PSD, symbol plots |
-| `helpers.py` | Random generation, normalization (average_power/peak/unity_gain), interpolation |
+| `plotting.py` | Constellation, eye diagram, PSD, waveform, filter response, equalizer convergence |
+| `helpers.py` | Random generation, normalization (average_power/peak/unity_gain/unit_energy), cross-correlation, SI formatting |
 
 ### Testing Conventions
 
