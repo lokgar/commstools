@@ -1364,19 +1364,23 @@ class Signal(BaseModel):
 
     def matched_filter(
         self,
+        taps=None,
         taps_normalization: str = "unit_energy",
         normalize_output: bool = False,
     ) -> "Signal":
         """
         Applies a matched filter to the signal samples.
 
-        The filter taps are automatically derived from the `pulse_shape`
-        and related parameters stored in the signal metadata.
+        When *taps* is not provided, the filter is derived automatically from
+        the ``pulse_shape`` and related parameters stored in the signal metadata.
 
         Parameters
         ----------
+        taps : array-like or None, default None
+            Explicit filter taps to use as the matched filter.  If ``None``,
+            taps are generated from the signal's ``pulse_shape`` metadata.
         taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
-            Normalization strategy for the matched filter taps.
+            Normalization strategy for the filter taps.
         normalize_output : bool, default False
             If True, normalizes the filtered samples to a peak amplitude of 1.0.
 
@@ -1387,11 +1391,12 @@ class Signal(BaseModel):
         """
         from . import filtering
 
-        try:
-            taps = self.shaping_filter_taps()
-        except ValueError as e:
-            logger.error(f"Cannot apply matched filter: {e}")
-            return self
+        if taps is None:
+            try:
+                taps = self.shaping_filter_taps()
+            except ValueError as e:
+                logger.error(f"Cannot apply matched filter: {e}")
+                return self
         self.samples = filtering.matched_filter(
             self.samples,
             taps,
