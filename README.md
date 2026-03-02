@@ -59,6 +59,12 @@ uv pip install -e .
 
 GPU execution requires CUDA 13.x drivers. The library depends on `cupy-cuda13x` and `jax[cuda13]`, which are listed as standard dependencies. If a CUDA-capable GPU is detected at import time, new Signal objects will default to GPU placement.
 
+On **WSL2**, CUDA libraries installed inside the venv may not be on the dynamic linker path. If CuPy or JAX fails to find `libcuda` / `libnvrtc`, add this to your `~/.bashrc`:
+
+```bash
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/path/to/commstools/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
+```
+
 To force CPU-only mode regardless of hardware:
 
 ```python
