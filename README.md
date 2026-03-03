@@ -2,8 +2,6 @@
 
 **High-performance digital communications research library for Python.**
 
-Unified CPU/GPU/JAX execution · Bit-first signal model · MIMO-ready · Publication-quality visualization
-
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Backends](https://img.shields.io/badge/backend-NumPy%20%7C%20CuPy%20%7C%20JAX-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
