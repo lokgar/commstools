@@ -802,9 +802,9 @@ def correct_timing(
     return signal
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # FOE/CPR helpers
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def _modulation_power_m(modulation: str, order: int) -> int:
@@ -829,9 +829,9 @@ def _modulation_power_m(modulation: str, order: int) -> int:
     return 4  # QAM, PAM — 4th power is the standard choice
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Frequency Offset Estimation (FOE)
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def estimate_frequency_offset_mth_power(
@@ -1249,11 +1249,11 @@ def estimate_frequency_offset_pilots(
     # Centered normal equations on-backend — vectorised across all C channels.
     # Centering avoids cancellation and matches the MVUE from Tretter (1985).
     t_xp = xp.asarray(pilot_indices_np.astype(np.float64)) / fs  # (P,)
-    t_c = t_xp - xp.mean(t_xp)                                   # (P,) centred
-    t_var = float(xp.dot(t_c, t_c))                              # scalar Σ(t-t̄)²
+    t_c = t_xp - xp.mean(t_xp)  # (P,) centred
+    t_var = float(xp.dot(t_c, t_c))  # scalar Σ(t-t̄)²
 
     phi_c = phi_pilots_u - xp.mean(phi_pilots_u, axis=-1, keepdims=True)  # (C, P)
-    slopes = xp.sum(phi_c * t_c[None, :], axis=-1) / t_var                # (C,)
+    slopes = xp.sum(phi_c * t_c[None, :], axis=-1) / t_var  # (C,)
 
     return float(xp.mean(slopes)) / (2.0 * np.pi)
 
@@ -1306,9 +1306,9 @@ def correct_frequency_offset(
     return samples * mixer
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Carrier Phase Recovery (CPR)
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def recover_carrier_phase_viterbi_viterbi(
@@ -1570,7 +1570,7 @@ def recover_carrier_phase_bps(
                 d_sq = xp.abs(x_rot[:, :, None] - const_xp[None, None, :]) ** 2
                 chunk_min_d = xp.min(d_sq, axis=-1).astype(float_dtype)
 
-            b0  = n0 // block_size
+            b0 = n0 // block_size
             n_b = (n1 - n0) // block_size
             metric[b0 : b0 + n_b] = chunk_min_d.reshape(n_b, block_size, B).sum(axis=1)
 

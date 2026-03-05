@@ -123,6 +123,7 @@ class SignalInfo(BaseModel):
     payload_mod_scheme: Optional[str] = None
     payload_mod_order: Optional[int] = Field(default=None, ge=2)
     payload_mod_unipolar: Optional[bool] = None
+    payload_mod_rz: Optional[bool] = None
 
     pilot_count: Optional[int] = Field(default=None, ge=0)
     pilot_pattern: Optional[Literal["none", "block", "comb"]] = None
@@ -131,6 +132,7 @@ class SignalInfo(BaseModel):
     pilot_mod_scheme: Optional[str] = None
     pilot_mod_order: Optional[int] = Field(default=None, ge=2)
     pilot_mod_unipolar: Optional[bool] = None
+    pilot_mod_rz: Optional[bool] = None
     pilot_gain_db: Optional[float] = None
 
     guard_len: Optional[int] = Field(default=None, ge=0)

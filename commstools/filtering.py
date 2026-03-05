@@ -36,9 +36,9 @@ from .logger import logger
 from .multirate import expand
 from .helpers import normalize
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # FILTER DESIGN - TAP GENERATORS
-# ============================================================================
+# -----------------------------------------------------------------------------
 # gaussian_taps: Gaussian filter taps
 # rrc_taps: Root Raised Cosine filter taps
 # rc_taps: Raised Cosine filter taps
@@ -444,9 +444,9 @@ def bandstop_taps(
     return h
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # FILTERING OPERATIONS
-# ============================================================================
+# -----------------------------------------------------------------------------
 # _ols_forward:  OLS block windowing + batch FFT (shared scaffold)
 # _ols_backward: OLS batch IFFT + symmetric discard + reshape (shared scaffold)
 # ols_fir_filter: Public OLS FIR convolution (long-tap / memory-bounded)
@@ -483,7 +483,7 @@ def _ols_forward(samples: ArrayType, N_fft: int):
     """
     _, xp, _ = dispatch(samples)
     num_ch, N = samples.shape
-    B = N_fft // 2        # 50 % hop — maximises block reuse
+    B = N_fft // 2  # 50 % hop — maximises block reuse
     discard = N_fft // 4  # symmetric guard: absorbs causal & anti-causal transients
     num_blocks = (N + B - 1) // B
 
@@ -600,7 +600,9 @@ def ols_fir_filter(
 
     # Signal drives precision: cast taps to match signal so float64 tap
     # generators do not silently upcast complex64 signals via FFT multiply.
-    target_tap_dtype = samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    target_tap_dtype = (
+        samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    )
     if taps.dtype != target_tap_dtype:
         taps = taps.astype(target_tap_dtype)
 
@@ -631,7 +633,7 @@ def ols_fir_filter(
         Y, meta = _ols_forward(samples_ext, N_fft)
         X_hat_f = Y * H
         out_ext = _ols_backward(X_hat_f, meta)  # shape: (num_ch, N + half)
-        out = out_ext[:, half:]                 # trim leading half → shape: (num_ch, N)
+        out = out_ext[:, half:]  # trim leading half → shape: (num_ch, N)
     else:
         Y, meta = _ols_forward(samples, N_fft)
         X_hat_f = Y * H
@@ -640,7 +642,9 @@ def ols_fir_filter(
     if is_real:
         out = out.real  # strip IFFT imaginary noise for real inputs
     elif out.dtype != out_dtype:
-        out = out.astype(out_dtype)  # guard complex inputs (e.g. complex64 → complex128)
+        out = out.astype(
+            out_dtype
+        )  # guard complex inputs (e.g. complex64 → complex128)
     return out[0] if was_1d else out
 
 
@@ -675,7 +679,9 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
 
     # Signal drives precision: cast taps to match signal dtype so numpy/scipy
     # type-promotion rules do not silently upcast float32/complex64 signals.
-    target_tap_dtype = samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    target_tap_dtype = (
+        samples.real.dtype if not xp.iscomplexobj(taps) else samples.dtype
+    )
     if taps.dtype != target_tap_dtype:
         taps = taps.astype(target_tap_dtype)
 
