@@ -13,12 +13,12 @@ File layout
 -----------
 The .npz file contains the following named entries:
 
-  ``samples``          – IQ sample array  (always present)
-  ``source_bits``      – source bit array  (omitted if None)
-  ``source_symbols``   – source symbol array  (omitted if None)
-  ``resolved_symbols`` – cached symbol array  (only with include_cache=True)
-  ``resolved_bits``    – cached bit array     (only with include_cache=True)
-  ``__metadata__``     – zero-d object array holding a YAML string with all
+  ``samples``          - IQ sample array  (always present)
+  ``source_bits``      - source bit array  (omitted if None)
+  ``source_symbols``   - source symbol array  (omitted if None)
+  ``resolved_symbols`` - cached symbol array  (only with include_cache=True)
+  ``resolved_bits``    - cached bit array     (only with include_cache=True)
+  ``__metadata__``     - zero-d object array holding a YAML string with all
                          scalar fields and the serialised SignalInfo dict.
 """
 
@@ -108,7 +108,9 @@ def save_npz(
     # -------------------------------------------------------------------------
     # Collect arrays
     # -------------------------------------------------------------------------
-    arrays: dict[str, np.ndarray] = {"samples": _backend.to_device(signal.samples, "CPU")}
+    arrays: dict[str, np.ndarray] = {
+        "samples": _backend.to_device(signal.samples, "CPU")
+    }
 
     for field in _OPTIONAL_ARRAY_FIELDS:
         arr = getattr(signal, field, None)

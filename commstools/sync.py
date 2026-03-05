@@ -38,6 +38,9 @@ recover_carrier_phase_bps :
     Blind Phase Search CPR for QAM constellations (Pfau et al.).
 recover_carrier_phase_pilots :
     Pilot-aided CPR with phase unwrapping and interpolation across the symbol grid.
+recover_carrier_phase_decision_directed :
+    Streaming CPR via Decision-Directed PLL (1st/2nd-order loop); Numba-compiled
+    inner loop for CPU performance; GPU-transparent via CPU offload.
 correct_carrier_phase :
     Applies per-symbol phase correction by complex rotation.
 """
@@ -299,35 +302,34 @@ def estimate_fractional_delay(
             mu[interior_mask] = offset_samples
 
     # -------------------------------------------------------------------------
-    # Path B: Standard (Fallback or Primary)
+    # Path B: Standard (Primary when M=1, fallback for edge channels when M>1)
     # -------------------------------------------------------------------------
-    if dft_upsample == 1 or xp.any(mu == 0):
-        # We compute this for channels NOT handled by DFT path (or all if M=1)
-        # For simplicity, finding mask of channels needing calculation
-        if dft_upsample > 1:
-            # interior_mask was defined above
-            calc_mask = ~interior_mask
+    # The trigger is determined purely by which channels still need a result:
+    #   - M=1: all channels (Path A was skipped entirely)
+    #   - M>1: only ~interior_mask channels (edges Path A cannot process)
+    # Do NOT use `mu == 0` as a proxy — zero is a valid fractional offset and
+    # would wrongly overwrite DFT results for on-centre correlation peaks.
+    if dft_upsample == 1:
+        calc_mask = xp.ones(C, dtype=bool)
+    else:
+        calc_mask = ~interior_mask  # only edge channels need the fallback
+
+    if xp.any(calc_mask):
+        interior_all = (k >= 1) & (k < N - 1)
+        k_all_safe = xp.clip(k, 1, N - 2)
+
+        r_prev = correlation[ch_idx, k_all_safe - 1]
+        r_curr = correlation[ch_idx, k_all_safe]
+        r_next = correlation[ch_idx, k_all_safe + 1]
+
+        mu_std = _calculate_mu(r_prev, r_curr, r_next, xp, method)
+        mu_std = xp.where(interior_all, mu_std, xp.zeros_like(mu_std))
+
+        if dft_upsample == 1:
+            mu = mu_std
         else:
-            calc_mask = xp.ones(C, dtype=bool)
-
-        if xp.any(calc_mask):
-            # We calculate for ALL safe indices, then blend.
-
-            interior_all = (k >= 1) & (k < N - 1)
-            k_all_safe = xp.clip(k, 1, N - 2)
-
-            r_prev = correlation[ch_idx, k_all_safe - 1]
-            r_curr = correlation[ch_idx, k_all_safe]
-            r_next = correlation[ch_idx, k_all_safe + 1]
-
-            mu_std = _calculate_mu(r_prev, r_curr, r_next, xp, method)
-            mu_std = xp.where(interior_all, mu_std, xp.zeros_like(mu_std))
-
-            if dft_upsample == 1:
-                mu = mu_std
-            else:
-                # Merge: DFT result for interior channels, standard for edge channels
-                mu = xp.where(interior_mask, mu, mu_std)
+            # Merge: DFT result for interior channels, standard for edge channels
+            mu = xp.where(interior_mask, mu, mu_std)
 
     if scalar_input:
         return mu[0]
@@ -736,6 +738,7 @@ def correct_timing(
     signal: ArrayType,
     coarse_offset: Union[int, ArrayType],
     fractional_offset: Union[float, ArrayType] = 0.0,
+    mode: str = "circular",
 ) -> ArrayType:
     """
     Combined coarse and fine timing correction.
@@ -754,11 +757,27 @@ def correct_timing(
     fractional_offset : float or array_like, default 0.0
         Fractional sample delay(s) in [-0.5, 0.5) to correct via
         FFT-based interpolation. Scalar or shape (C,).
+    mode : {'circular', 'zero', 'slice'}, default 'circular'
+        How to handle boundary samples after the coarse shift:
+
+        - ``'circular'``: Wrap-around (``xp.roll``). Output has the
+          same length as input.  Correct for periodic signals or
+          unit tests; **not** suitable for burst frames.
+        - ``'zero'``: Shift left, fill trailing samples with zeros.
+          Same output shape as input.  Correct for burst reception
+          where tail wrapping would corrupt the payload.
+        - ``'slice'``: Discard leading samples; no tail artifact.
+          For a scalar offset the output length is ``N - offset``.
+          For per-channel offsets the output length is
+          ``N - max(offset)`` so all channels are aligned to the
+          same common overlap region — the correct approach for
+          offline MIMO timing-skew correction.
 
     Returns
     -------
     array_like
-        Timing-corrected signal with the same shape as input.
+        Timing-corrected signal.  Same shape as input for
+        ``'circular'`` and ``'zero'``; shorter for ``'slice'``.
 
     Notes
     -----
@@ -776,15 +795,54 @@ def correct_timing(
 
     # === Coarse correction (integer shift) ===
     coarse_offset = xp.asarray(coarse_offset)
+
     if coarse_offset.ndim == 0:
-        # Scalar: same shift for all channels
-        signal = xp.roll(signal, -int(coarse_offset), axis=-1)
+        # --- Scalar: same shift for all channels ---
+        shift = int(coarse_offset)
+        if mode == "circular":
+            signal = xp.roll(signal, -shift, axis=-1)
+        elif mode == "zero":
+            result = xp.zeros_like(signal)
+            if shift > 0:
+                result[..., : N - shift] = signal[..., shift:]
+            elif shift < 0:
+                result[..., -shift:] = signal[..., : N + shift]
+            signal = result
+        elif mode == "slice":
+            signal = signal[..., shift:]
+        else:
+            raise ValueError(
+                f"Unknown mode {mode!r}. Choose 'circular', 'zero', or 'slice'."
+            )
+
     else:
-        # Per-channel shift via vectorized index gathering
-        shifts = xp.asarray([-int(coarse_offset[ch]) for ch in range(num_ch)])
-        col_idx = (xp.arange(N)[None, :] - shifts[:, None]) % N  # (C, N)
-        row_idx = xp.arange(num_ch)[:, None]  # (C, 1)
-        signal = signal[row_idx, col_idx]
+        # --- Per-channel: vectorized gather (avoids one GPU→CPU sync per channel) ---
+        coarse_int = coarse_offset.astype(xp.int64)          # (C,) on device
+        col_base   = xp.arange(N, dtype=xp.int64)[None, :]   # (1, N)
+        row_idx    = xp.arange(num_ch)[:, None]               # (C, 1)
+
+        if mode == "circular":
+            col_idx = (col_base + coarse_int[:, None]) % N    # (C, N)
+            signal  = signal[row_idx, col_idx]
+
+        elif mode == "zero":
+            col_raw  = col_base + coarse_int[:, None]          # (C, N)
+            gathered = signal[row_idx, xp.clip(col_raw, 0, N - 1)]
+            signal   = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
+
+        elif mode == "slice":
+            # Align all channels to common overlap: N - max(offset) samples
+            max_shift  = int(xp.max(coarse_int))               # one GPU sync
+            common_len = N - max_shift
+            col_idx_s  = (
+                xp.arange(common_len, dtype=xp.int64)[None, :] + coarse_int[:, None]
+            )  # (C, common_len)
+            signal = signal[row_idx, col_idx_s]
+
+        else:
+            raise ValueError(
+                f"Unknown mode {mode!r}. Choose 'circular', 'zero', or 'slice'."
+            )
 
     # === Fine correction (fractional via FFT) ===
     # Correction removes the delay: negate the fractional offset
@@ -822,11 +880,37 @@ def _modulation_power_m(modulation: str, order: int) -> int:
     -------
     int
         M = ``order`` for PSK; M = 4 for QAM and other schemes.
+
+    Notes
+    -----
+    M=4 is exact only for **square** QAM constellations (4, 16, 64, 256, …)
+    which have perfect 4-fold rotational symmetry.  For cross-QAM (32, 128,
+    512-QAM) the 4th power leaves residual modulation spurs; a warning is
+    emitted.  For PAM/ASK the M-th power law does not apply; prefer
+    pilot-aided or data-aided estimators.
     """
     mod = modulation.lower()
-    if "psk" in mod or "bpsk" in mod:
-        return order
-    return 4  # QAM, PAM — 4th power is the standard choice
+    if "psk" in mod:
+        return order  # M-th power exactly removes M-PSK modulation
+
+    if "qam" in mod:
+        side = int(order**0.5)
+        if side * side == order:
+            return 4  # Square QAM: 4-fold rotational symmetry, 4th power is exact
+        # Cross-QAM (32, 128, 512-QAM): 4-fold symmetry is only approximate
+        logger.warning(
+            f"{order}-QAM is not square — 4th-power FOE/CPR will have residual "
+            "modulation spurs. Prefer pilot-aided or data-aided estimation."
+        )
+        return 4
+
+    # PAM, ASK, or unrecognised scheme
+    logger.warning(
+        f"Modulation '{modulation}' (order {order}): M=4 is a heuristic. "
+        "4th-power methods are unreliable for non-QAM/PSK formats. "
+        "Prefer pilot-aided or data-aided estimation."
+    )
+    return 4
 
 
 # -----------------------------------------------------------------------------
@@ -1128,11 +1212,11 @@ def estimate_frequency_offset_data_aided(
     L = preamble_samples.shape[-1]
     r_p = signal[..., offset : offset + L]  # (C, L)
 
-    # Demodulate against known preamble → complex tone at Δf
-    y = r_p * xp.conj(preamble_samples)
-
-    # Apply Kay's estimator (data-aided: no M-th power, M=1)
-    return estimate_frequency_offset_differential(y, fs, weighted=True)
+    # Delegate demodulation to the ref_signal path of estimate_frequency_offset_differential,
+    # which computes y = r_p * conj(preamble_samples) internally before Kay's estimator.
+    return estimate_frequency_offset_differential(
+        r_p, fs, ref_signal=preamble_samples, weighted=True
+    )
 
 
 def estimate_frequency_offset_pilots(
@@ -1309,6 +1393,118 @@ def correct_frequency_offset(
 # -----------------------------------------------------------------------------
 # Carrier Phase Recovery (CPR)
 # -----------------------------------------------------------------------------
+
+# Lazy-compiled Numba kernels for sequential CPR algorithms.
+_NUMBA_PLL: dict = {}
+
+
+def _get_numba_dd_pll():
+    """JIT-compile and cache the Numba DD-PLL sample-wise loop kernel.
+
+    Returns
+    -------
+    callable or None
+        Numba-compiled ``_dd_pll_loop``, or ``None`` if Numba is not installed.
+    """
+    if "dd_pll" not in _NUMBA_PLL:
+        try:
+            import numba  # noqa: PLC0415
+        except ImportError:
+            _NUMBA_PLL["dd_pll"] = None
+            return None
+
+        @numba.njit(cache=True, fastmath=True, nogil=True)
+        def _dd_pll_loop(sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0):
+            """Inner DD-PLL loop compiled to machine code by Numba.
+
+            Parameters
+            ----------
+            sym_r, sym_i : (N,) float64
+                Real and imaginary parts of received symbols.
+            const_r, const_i : (M,) float64
+                Real and imaginary parts of reference constellation.
+            mu : float64
+                Proportional (phase) gain — corrects the instantaneous phase error.
+            beta : float64
+                Integral (frequency) gain — tracks residual frequency drift.
+                Set to 0.0 for a 1st-order loop.
+            phi0 : float64
+                Initial phase state in radians.
+            freq0 : float64
+                Initial frequency correction state in radians/symbol.
+
+            Returns
+            -------
+            phase_est : (N,) float64
+                Per-symbol phase trajectory φ[n].
+            """
+            N = len(sym_r)
+            M = len(const_r)
+            phase_est = np.empty(N, dtype=np.float64)
+            phi = phi0
+            freq = freq0
+
+            for n in range(N):
+                # Rotate received symbol by current phase estimate:
+                # y[n] = s[n] · exp(−jφ[n])
+                cos_phi = np.cos(phi)
+                sin_phi = np.sin(phi)
+                yr = sym_r[n] * cos_phi + sym_i[n] * sin_phi
+                yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
+
+                # Hard decision: argmin_{c ∈ C} |y − c|²
+                min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                d_r = const_r[0]
+                d_i = const_i[0]
+                for k in range(1, M):
+                    d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                    if d2 < min_d2:
+                        min_d2 = d2
+                        d_r = const_r[k]
+                        d_i = const_i[k]
+
+                # Cross-product phase error:  e = Im(y · d*) = yi·d_r − yr·d_i
+                e = yi * d_r - yr * d_i
+
+                # 2nd-order loop filter (reduces to 1st order when beta=0):
+                #   φ[n+1] = φ[n] + μ·e[n] + ν[n]
+                #   ν[n]   = ν[n−1] + β·e[n]
+                phi = phi + mu * e + freq
+                freq = freq + beta * e
+
+                phase_est[n] = phi
+
+            return phase_est
+
+        _NUMBA_PLL["dd_pll"] = _dd_pll_loop
+
+    return _NUMBA_PLL["dd_pll"]
+
+
+def _dd_pll_numpy(sym, const, mu, beta, phi0, freq0):
+    """Pure-NumPy DD-PLL fallback (sequential Python loop over N samples).
+
+    Used when Numba is not installed.  Correct but slow for large N.
+    """
+    logger.warning(
+        "DD-PLL: Numba not installed — running a sequential Python loop. "
+        "Install numba for a 10–100× speedup: `uv add numba`."
+    )
+    N = len(sym)
+    phase_est = np.empty(N, dtype=np.float64)
+    phi = float(phi0)
+    freq = float(freq0)
+    const_np = np.asarray(const)
+
+    for n in range(N):
+        y = sym[n] * np.exp(-1j * phi)
+        d = const_np[np.argmin(np.abs(y - const_np) ** 2)]
+        e = float(np.imag(y * np.conj(d)))
+        phi = phi + mu * e + freq
+        freq = freq + beta * e
+        phase_est[n] = phi
+
+    return phase_est
 
 
 def recover_carrier_phase_viterbi_viterbi(
@@ -1502,20 +1698,26 @@ def recover_carrier_phase_bps(
             "Reduce block_size or use a longer symbol sequence."
         )
 
-    block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
+    # block_centers[b] = b * block_size + half_bs  (integer-aligned float64)
+    half_bs = block_size // 2
+    block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + half_bs
     all_positions = xp.arange(N, dtype=xp.float64)
 
-    # Pre-compute interpolation indices and weights (identical for every channel)
-    idx_right = xp.clip(xp.searchsorted(block_centers, all_positions), 1, N_blocks - 1)
-    idx_left = idx_right - 1
-    t_interp = xp.clip((all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0)
+    # Pre-compute interpolation indices and weights (identical for every channel).
+    # Integer floor division is bitwise-exact for integer positions, avoiding the
+    # ambiguous side='left'/'right' behaviour of searchsorted at block boundaries.
+    #   block b is "to the left" of position n when b*bs + half_bs <= n
+    #   => b <= (n - half_bs) / bs  => idx_left = floor((n - half_bs) / bs)
+    pos_int   = all_positions.astype(xp.int64)                                  # (N,)
+    idx_left  = xp.clip((pos_int - half_bs) // block_size, 0, N_blocks - 2)    # (N,)
+    idx_right = idx_left + 1                                                     # (N,)
+    t_interp  = xp.clip(
+        (all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0
+    )                                                                            # (N,)
 
     # Pre-compute phasors for all B candidates once (avoid redundant exp per channel)
-    phasors = xp.exp(
-        (-1j * candidates.astype(xp.float64)).astype(
-            xp.complex64 if symbols.dtype == xp.complex64 else xp.complex128
-        )
-    )  # (B,)
+    dtype_c = xp.complex64 if symbols.dtype == xp.complex64 else xp.complex128
+    phasors = xp.exp(-1j * candidates.astype(xp.float64)).astype(dtype_c)  # (B,)
 
     # For square QAM (order a perfect square): the nearest constellation point
     # can be found in O(1) per symbol via per-component rounding, eliminating
@@ -1694,6 +1896,150 @@ def recover_carrier_phase_pilots(
             f"Unknown interpolation method: {interpolation!r}. "
             "Choose 'linear' or 'cubic'."
         )
+
+    if was_1d:
+        return phi_full[0]
+    return phi_full
+
+
+def recover_carrier_phase_decision_directed(
+    symbols: ArrayType,
+    modulation: str,
+    order: int,
+    mu: float = 1e-2,
+    beta: float = 0.0,
+    phase_init: float = 0.0,
+) -> ArrayType:
+    r"""
+    Carrier phase recovery via a Decision-Directed Phase-Locked Loop (DD-PLL).
+
+    Tracks the carrier phase symbol-by-symbol using hard decisions as phase
+    references.  A 1st-order loop (``beta=0``) corrects static or slowly
+    varying phase noise; a 2nd-order loop (``beta > 0``) additionally tracks
+    a residual frequency offset left over after coarse FOE.
+
+    This is the standard streaming CPR for hardware implementations: it is
+    modulation-format agnostic (works for any QAM/PSK order) and converges
+    much faster than block-based methods (VV, BPS) after equalizer pull-in.
+
+    .. warning::
+        The DD-PLL requires reliable decisions at the input.  For a cold
+        start the first ``~1/mu`` symbols may show slow convergence.
+        A common strategy is to pre-converge with BPS or a short preamble
+        and feed the resulting phase as ``phase_init``.
+
+    Parameters
+    ----------
+    symbols : array_like
+        1-SPS complex symbols after matched filtering and FOE.
+        Shape: ``(N,)`` or ``(C, N)``.
+    modulation : str
+        Modulation scheme (case-insensitive): ``'qam'``, ``'psk'``, etc.
+        Used to fetch the reference constellation via
+        :func:`~commstools.mapping.gray_constellation`.
+    order : int
+        Modulation order (4, 16, 64, …).
+    mu : float, default 1e-2
+        Proportional gain — controls convergence speed and steady-state
+        jitter.  Larger ``mu`` converges faster but amplifies noise.
+        Typical range: ``1e-3`` (high-SNR, high-order QAM) to ``5e-2``
+        (QPSK, low latency).
+    beta : float, default 0.0
+        Integral gain — enables 2nd-order frequency tracking.
+        Set ``beta > 0`` when a residual frequency offset remains after
+        FOE (e.g. ``beta ≈ mu² / 4``).  Zero gives a 1st-order loop.
+    phase_init : float, default 0.0
+        Initial phase state in radians.  Use the last sample of a
+        preceding BPS or pilot-aided estimate to warm-start the loop.
+
+    Returns
+    -------
+    array_like
+        Per-symbol phase estimate φ[n] in radians.
+        Shape matches ``symbols``.  Same backend as input.
+
+    Notes
+    -----
+    **Algorithm** (per sample n):
+
+    .. math::
+
+        y[n]       &= s[n] \cdot e^{-j\hat{\phi}[n]} \\
+        \hat{d}[n] &= \operatorname{argmin}_{c \in \mathcal{C}}
+                       \lvert y[n] - c \rvert^2 \\
+        e[n]       &= \operatorname{Im}\!\bigl(y[n]\,\hat{d}^*[n]\bigr) \\
+        \hat{\phi}[n+1] &= \hat{\phi}[n] + \mu e[n] + \nu[n] \\
+        \nu[n]     &= \nu[n-1] + \beta e[n]
+
+    where :math:`\nu` is the integral (frequency) state of the loop.
+
+    **Backend notes:** The inner loop is inherently sequential (each sample
+    depends on the previous phase state) and is compiled with Numba
+    (``@njit``) for CPU performance.  When the input lives on a GPU
+    (CuPy), samples are transparently moved to CPU for processing and
+    the result is moved back — acceptable because the CPR loop is not
+    the throughput bottleneck.  Install ``numba`` for a 10–100× speedup
+    over the pure-Python fallback.
+
+    **M-fold phase ambiguity:** Like VV and BPS, the DD-PLL may converge
+    to any of the M constellation-symmetry-equivalent phases.  Resolve
+    via a pilot symbol or known reference after CPR.
+
+    References
+    ----------
+    I. Fatadin, D. Ives, and S. J. Savory, "Blind equalization and
+    carrier phase recovery in a 16-QAM optical coherent system," *J.
+    Lightw. Technol.*, vol. 27, no. 15, pp. 3042–3049, Aug. 2009.
+
+    Md. S. Faruk and S. J. Savory, "Digital signal processing for coherent
+    transceivers employing multilevel formats," *J. Lightw. Technol.*,
+    vol. 35, no. 5, pp. 1125–1141, Mar. 2017, Sec. VIII.A, refs [65, 108].
+
+    J. G. Proakis, *Digital Communications*, 4th ed., McGraw-Hill, 2001,
+    ch. 6 (carrier phase synchronisation).
+    """
+    from .mapping import gray_constellation
+
+    symbols, xp, _ = dispatch(symbols)
+    was_1d = symbols.ndim == 1
+    if was_1d:
+        symbols = symbols[None, :]
+    C, N = symbols.shape
+
+    # Constellation on CPU (decisions are scalar operations in the loop)
+    const_np = gray_constellation(modulation, order).astype(np.complex128)
+    const_r = const_np.real.copy()
+    const_i = const_np.imag.copy()
+
+    # Move to CPU for sequential processing
+    if xp is not np:
+        symbols_cpu = to_device(symbols, "cpu")
+    else:
+        symbols_cpu = symbols
+
+    # Select kernel: Numba (fast) or pure-NumPy fallback (correct but slow)
+    numba_kernel = _get_numba_dd_pll()
+
+    phi_full = np.zeros((C, N), dtype=np.float64)
+
+    for ch in range(C):
+        sym = symbols_cpu[ch].astype(np.complex128)  # (N,)
+        sym_r = sym.real.copy()
+        sym_i = sym.imag.copy()
+
+        if numba_kernel is not None:
+            phi_full[ch] = numba_kernel(
+                sym_r, sym_i, const_r, const_i,
+                float(mu), float(beta), float(phase_init), 0.0,
+            )
+        else:
+            phi_full[ch] = _dd_pll_numpy(
+                sym, const_np, float(mu), float(beta), float(phase_init), 0.0,
+            )
+
+    # Move result back to original device
+    if xp is not np:
+        phi_full = xp.asarray(phi_full)
 
     if was_1d:
         return phi_full[0]
