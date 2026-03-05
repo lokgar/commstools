@@ -265,8 +265,6 @@ def test_estimate_timing_returns_tuple(backend_device, xp):
     assert abs(float(frac[0])) < 0.5
 
 
-
-
 def test_estimate_timing_debug_plot(backend_device, xp):
     """Trigger the debug plot code path in estimate_timing."""
     # Create a signal with a preamble
@@ -332,9 +330,9 @@ def test_sequences_device(backend_device, xp):
     assert isinstance(zc, xp.ndarray)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Fine Timing Estimation Tests
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_estimate_fractional_delay_known_shift(backend_device, xp):
@@ -383,14 +381,14 @@ def test_estimate_fractional_delay_mimo(backend_device, xp):
     assert abs(float(mu[1]) - (-0.1)) < 0.15
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Farrow Interpolator Tests
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # FFT-based Fractional Delay Tests
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_fft_fractional_delay_zero_delay(backend_device, xp, xpt):
@@ -485,9 +483,9 @@ def test_fft_fractional_delay_roundtrip(backend_device, xp, xpt):
     xpt.assert_allclose(recovered, signal_xp, atol=1e-5)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Combined Timing Correction Tests
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_correct_timing_coarse_only(backend_device, xp):
@@ -519,9 +517,9 @@ def test_correct_timing_combined(backend_device, xp, xpt):
     xpt.assert_allclose(corrected[25:-25], original[25:-25], atol=0.02)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # estimate_timing with fractional timing
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_estimate_timing_fractional(backend_device, xp):
@@ -579,9 +577,9 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
     assert err_sinc_8x < 0.01
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # Coverage Tests for Uncovered Lines
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_fft_fractional_delay_scalar_ndarray(backend_device, xp, xpt):
@@ -738,9 +736,9 @@ def test_estimate_timing_info_without_sps(backend_device, xp):
         sync.estimate_timing(sig, info=info)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # DTYPE PRESERVATION TESTS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_fft_fractional_delay_preserves_complex64_dtype(backend_device, xp):

@@ -40,6 +40,7 @@ __version__ = "0.1.0"
 
 from . import equalization, impairments, metrics, sync
 from .core import Preamble, Signal, SingleCarrierFrame
+from .io import load_npz, save_npz
 from .logger import set_log_level
 from .plotting import apply_default_theme
 
@@ -53,7 +54,9 @@ __all__ = [
     "SingleCarrierFrame",
     "equalization",
     "impairments",
+    "load_npz",
     "metrics",
+    "save_npz",
     "set_log_level",
     "sync",
 ]

@@ -13,9 +13,9 @@ class Unconvertible:
         raise TypeError("Cannot convert to array")
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # RANDOM GENERATION
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_random_bits(backend_device, xp):
@@ -39,9 +39,9 @@ def test_random_symbols_unipolar(backend_device, xp):
     assert xp.all(syms >= 0)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # NORMALIZATION
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_normalize(backend_device, xp):
@@ -76,9 +76,9 @@ def test_normalize_invalid_mode(backend_device, xp):
         helpers.normalize(xp.ones(5), mode="invalid")
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # SI FORMATTING
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_format_si(backend_device, xp):
@@ -90,9 +90,9 @@ def test_format_si(backend_device, xp):
     assert "Hz" in helpers.format_si(100)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # ARRAY VALIDATION
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_validate_array(backend_device, xp):
@@ -128,9 +128,9 @@ def test_validate_array_exception(backend_device, xp):
         helpers.validate_array(obj)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # RMS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_rms_axis(backend_device, xp, xpt):
@@ -140,9 +140,9 @@ def test_rms_axis(backend_device, xp, xpt):
     xpt.assert_allclose(helpers.rms(x, axis=1), [1.0, 2.0])
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # MIMO PREAMBLE EXPANSION
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_expand_preamble_mimo_time_orthogonal(backend_device, xp, xpt):
@@ -183,9 +183,9 @@ def test_expand_preamble_mimo_unknown_mode(backend_device, xp, xpt):
     xpt.assert_allclose(result[1], base)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # DTYPE PRESERVATION TESTS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_normalize_preserves_float32_dtype(backend_device, xp):
@@ -193,7 +193,9 @@ def test_normalize_preserves_float32_dtype(backend_device, xp):
     x = xp.asarray(np.array([1.0, 2.0, 3.0], dtype=np.float32))
     for mode in ("unity_gain", "unit_energy", "peak", "average_power"):
         out = helpers.normalize(x, mode=mode)
-        assert out.dtype == xp.float32, f"mode={mode!r}: expected float32, got {out.dtype}"
+        assert out.dtype == xp.float32, (
+            f"mode={mode!r}: expected float32, got {out.dtype}"
+        )
 
 
 def test_rms_preserves_float32_dtype(backend_device, xp):
@@ -208,4 +210,6 @@ def test_normalize_preserves_complex64_dtype(backend_device, xp):
     x = xp.asarray(np.array([1 + 1j, 2 + 2j], dtype=np.complex64))
     for mode in ("unit_energy", "peak", "average_power"):
         out = helpers.normalize(x, mode=mode)
-        assert out.dtype == xp.complex64, f"mode={mode!r}: expected complex64, got {out.dtype}"
+        assert out.dtype == xp.complex64, (
+            f"mode={mode!r}: expected complex64, got {out.dtype}"
+        )

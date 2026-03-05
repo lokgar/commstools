@@ -54,9 +54,9 @@ from .filtering import _ols_backward, _ols_forward
 from .logger import logger
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # RESULT CONTAINER
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 @dataclass
@@ -89,9 +89,9 @@ class EqualizerResult:
     num_train_symbols: int = 0
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # NUMBA LAZY LOADER
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 _NUMBA_CACHE: dict = {}
 
@@ -111,9 +111,9 @@ def _get_numba():
     return _NUMBA_CACHE.get("numba")
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # NUMBA KERNELS — ADAPTIVE EQUALIZER LOOPS
-# ============================================================================
+# -----------------------------------------------------------------------------
 #
 # Each factory lazily compiles a @njit kernel on first call and caches it in
 # _NUMBA_KERNELS.  Numba specialises over argument *types* (all complex64/
@@ -579,9 +579,9 @@ def _get_numba_rde():
     return _NUMBA_KERNELS["rde"]
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # JAX KERNELS — ADAPTIVE EQUALIZER SCANS
-# ============================================================================
+# -----------------------------------------------------------------------------
 #
 # Each factory JIT-compiles a jax.lax.scan kernel on first call and caches
 # it in _JITTED_EQ.  Static closure variables are baked into the compiled XLA
@@ -964,9 +964,9 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
     return _JITTED_EQ[key]
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # SHARED HELPERS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def _normalize_inputs_jax(samples, training_symbols, sps, xp):
@@ -1369,9 +1369,9 @@ def _validate_sps(sps, num_taps):
         )
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # ADAPTIVE equalization
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def lms(
@@ -2537,9 +2537,9 @@ def rde(
     )
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # HYBRID DA / BLIND KERNELS  (internal — used only by equalize_frame)
-# ============================================================================
+# -----------------------------------------------------------------------------
 #
 # These kernels process every symbol with a per-step error-function switch:
 #
@@ -2869,9 +2869,9 @@ def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
     return _JITTED_EQ[key]
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # FRAME EQUALIZATION HELPERS & PUBLIC API
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def _build_pilot_ref(
@@ -3335,9 +3335,9 @@ def equalize_frame(
         return _res
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # BLOCK equalization
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def zf_equalizer(
@@ -3394,9 +3394,7 @@ def zf_equalizer(
     # and anti-causal tails both decay within the discarded guard regions.
     N_fft = max(1024, 1 << (max(1, 4 * L) - 1).bit_length())
 
-    logger.debug(
-        f"ZF/MMSE internals: N={N}, L={L}, num_ch={num_ch}, N_fft={N_fft}"
-    )
+    logger.debug(f"ZF/MMSE internals: N={N}, L={L}, num_ch={num_ch}, N_fft={N_fft}")
 
     # --- Shared OLS forward pass: pad → stride_tricks → batch FFT ---
     Y, meta = _ols_forward(samples, N_fft)  # Y: (num_ch, num_blocks, N_fft)
@@ -3410,9 +3408,9 @@ def zf_equalizer(
     else:
         # MIMO: per-bin (C×C) matrix inversion — cannot reduce to scalar multiply.
         H_f = xp.fft.fft(channel_estimate, n=N_fft, axis=-1)
-        Hk = xp.transpose(H_f, (2, 0, 1))          # (N_fft, C_rx, C_tx)
+        Hk = xp.transpose(H_f, (2, 0, 1))  # (N_fft, C_rx, C_tx)
         Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))  # (N_fft, C_tx, C_rx)
-        HHh = Hk @ Hk_H                              # (N_fft, C_rx, C_rx)
+        HHh = Hk @ Hk_H  # (N_fft, C_rx, C_rx)
 
         eye = xp.eye(num_ch, dtype=samples.dtype)[None, :, :]
         if num_ch == 2:
@@ -3437,8 +3435,8 @@ def zf_equalizer(
 
         # Vectorized batch matrix multiplication across frequency bins and blocks.
         # Uses explicit batched GEMM instead of einsum for better GPU utilization.
-        Y_t = xp.transpose(Y, (2, 0, 1))   # (N_fft, num_ch, num_blocks)
-        X_hat_k = Wk @ Y_t                  # (N_fft, C_tx, C_rx) @ (N_fft, C_rx, num_blocks)
+        Y_t = xp.transpose(Y, (2, 0, 1))  # (N_fft, num_ch, num_blocks)
+        X_hat_k = Wk @ Y_t  # (N_fft, C_tx, C_rx) @ (N_fft, C_rx, num_blocks)
         X_hat_f = xp.transpose(X_hat_k, (1, 2, 0))  # (num_ch, num_blocks, N_fft)
 
     # --- Shared OLS backward pass: batch IFFT → symmetric discard → reshape ---

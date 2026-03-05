@@ -5,10 +5,10 @@ import pytest
 
 from commstools import filtering
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # TAP GENERATOR TESTS — these functions always return NumPy arrays regardless
 # of backend, so no backend parametrisation is needed.
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_rrc_taps():
@@ -131,10 +131,10 @@ def test_bandstop_taps():
     assert H[nyquist_idx] > 0.95, f"Nyquist gain too low: {H[nyquist_idx]:.4f}"
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # DISPATCHING FILTER TESTS — these functions operate on the active backend,
 # so they require backend parametrisation.
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_fir_filter(backend_device, xp, xpt):
@@ -202,9 +202,9 @@ def test_shape_pulse_none_with_rz(backend_device, xp):
     assert len(result) > 0
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # OLS FIR FILTER TESTS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_ols_fir_filter_center_matches_fir_filter_siso(backend_device, xp, xpt):
@@ -247,7 +247,7 @@ def test_ols_fir_filter_causal_siso(backend_device, xp, xpt):
     x = xp.asarray(x_np)
     taps = xp.asarray(taps_np)
 
-    ref = xp.asarray(np.convolve(x_np, taps_np, mode='full')[:len(x_np)])
+    ref = xp.asarray(np.convolve(x_np, taps_np, mode="full")[: len(x_np)])
     out = filtering.ols_fir_filter(x, taps, center=False)
 
     assert out.shape == (len(x_np),)
@@ -285,15 +285,17 @@ def test_ols_fir_filter_preserves_real_dtype(backend_device, xp):
 def test_ols_fir_filter_complex_input_stays_complex(backend_device, xp):
     """ols_fir_filter returns complex when input is complex."""
     rng = np.random.default_rng(4)
-    x = xp.asarray((rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex128))
+    x = xp.asarray(
+        (rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex128)
+    )
     taps = xp.asarray(np.hanning(32).astype(np.float64))
     out = filtering.ols_fir_filter(x, taps)
     assert xp.iscomplexobj(out), f"Expected complex output, got dtype={out.dtype}"
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # DTYPE PRESERVATION TESTS
-# ============================================================================
+# -----------------------------------------------------------------------------
 
 
 def test_fir_filter_preserves_real_dtype(backend_device, xp):
@@ -307,7 +309,9 @@ def test_fir_filter_preserves_real_dtype(backend_device, xp):
 def test_fir_filter_preserves_complex_dtype(backend_device, xp):
     """fir_filter: complex64 signal + float64 taps → complex64 output."""
     rng = np.random.default_rng(10)
-    x = xp.asarray((rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex64))
+    x = xp.asarray(
+        (rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex64)
+    )
     taps = np.hanning(32)  # float64
     out = filtering.fir_filter(x, taps)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
@@ -316,8 +320,13 @@ def test_fir_filter_preserves_complex_dtype(backend_device, xp):
 def test_matched_filter_preserves_dtype(backend_device, xp):
     """matched_filter with rrc_taps (float64) on complex64 signal → complex64."""
     from commstools.filtering import rrc_taps, matched_filter
+
     rng = np.random.default_rng(11)
-    sig = xp.asarray((rng.standard_normal(1000) + 1j * rng.standard_normal(1000)).astype(np.complex64))
+    sig = xp.asarray(
+        (rng.standard_normal(1000) + 1j * rng.standard_normal(1000)).astype(
+            np.complex64
+        )
+    )
     taps = rrc_taps(4)  # returns float64
     out = matched_filter(sig, taps)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
@@ -326,7 +335,9 @@ def test_matched_filter_preserves_dtype(backend_device, xp):
 def test_shape_pulse_preserves_complex64_dtype(backend_device, xp):
     """shape_pulse: complex64 symbols → complex64 waveform."""
     rng = np.random.default_rng(12)
-    syms = xp.asarray((rng.standard_normal(100) + 1j * rng.standard_normal(100)).astype(np.complex64))
+    syms = xp.asarray(
+        (rng.standard_normal(100) + 1j * rng.standard_normal(100)).astype(np.complex64)
+    )
     out = filtering.shape_pulse(syms, sps=4, pulse_shape="rrc")
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
 
@@ -334,7 +345,11 @@ def test_shape_pulse_preserves_complex64_dtype(backend_device, xp):
 def test_ols_fir_filter_preserves_complex64_dtype(backend_device, xp):
     """ols_fir_filter: complex64 signal + float64 taps → complex64 output."""
     rng = np.random.default_rng(13)
-    x = xp.asarray((rng.standard_normal(1024) + 1j * rng.standard_normal(1024)).astype(np.complex64))
+    x = xp.asarray(
+        (rng.standard_normal(1024) + 1j * rng.standard_normal(1024)).astype(
+            np.complex64
+        )
+    )
     taps = np.hanning(64)  # float64
     out = filtering.ols_fir_filter(x, taps)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
