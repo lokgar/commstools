@@ -89,6 +89,39 @@ class EqualizerResult:
     num_train_symbols: int = 0
 
 
+def _log_equalizer_exit(
+    result: "EqualizerResult",
+    name: str,
+    debug_plot: bool = False,
+    check_convergence: bool = False,
+) -> "EqualizerResult":
+    """Log exit MSE and optionally show a debug plot for an EqualizerResult."""
+    if result.error is not None:
+        err = to_device(result.error, "cpu")
+        window = max(1, min(100, err.size))
+        mse_final = float(np.mean(np.abs(err.flat[-window:]) ** 2))
+        mse_db = 10.0 * np.log10(mse_final + 1e-30)
+        logger.info(f"{name}: exit MSE={mse_db:.1f} dB (final {window} symbols)")
+
+        if check_convergence and err.size >= 20:
+            init_window = max(1, min(100, err.size // 10))
+            mse_init = float(np.mean(np.abs(err.flat[:init_window]) ** 2))
+            if mse_init > 0 and mse_final > mse_init * 0.9:
+                logger.warning(
+                    f"{name}: convergence may be poor — "
+                    f"final MSE ({mse_db:.1f} dB) not significantly below "
+                    f"initial MSE ({10.0 * np.log10(mse_init + 1e-30):.1f} dB). "
+                    "Consider reducing step_size or increasing signal length."
+                )
+
+    if debug_plot:
+        from . import plotting as _plotting  # lazy import avoids circular dep
+
+        _plotting.equalizer_result(result)
+
+    return result
+
+
 # -----------------------------------------------------------------------------
 # NUMBA LAZY LOADER
 # -----------------------------------------------------------------------------
@@ -1191,7 +1224,7 @@ def _prepare_training_numpy(
 
     Pure NumPy implementation — no JAX, CuPy, or ``dispatch`` dependencies.
     The caller must ensure ``training_symbols`` is already a NumPy array
-    (or any object accepted by ``np.asarray``).
+    (use ``to_device(training_symbols, "cpu")`` before calling).
 
     Callers should pre-slice ``training_symbols`` to ``num_train_symbols``
     *before* calling this function; the argument here is a secondary safety cap.
@@ -1389,6 +1422,7 @@ def lms(
     center_tap: Optional[int] = None,
     backend: str = "jax",
     w_init: Optional[ArrayType] = None,
+    debug_plot: bool = False,
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
@@ -1507,17 +1541,9 @@ def lms(
 
     if backend == "numba":
         # Convert to plain NumPy (no-op for CPU NumPy; downloads for CuPy)
-        samples_np = np.ascontiguousarray(
-            samples.get() if hasattr(samples, "get") else np.asarray(samples),
-            dtype=np.complex64,
-        )
+        samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         training_np = (
-            np.asarray(
-                training_symbols.get()
-                if hasattr(training_symbols, "get")
-                else training_symbols,
-                dtype=np.complex64,
-            )
+            to_device(training_symbols, "cpu").astype(np.complex64)
             if training_symbols is not None
             else None
         )
@@ -1535,7 +1561,7 @@ def lms(
                 modulation, order, unipolar=unipolar
             )
             constellation_np = (
-                np.asarray(reference_constellation).flatten().astype(np.complex64)
+                to_device(reference_constellation, "cpu").flatten().astype(np.complex64)
             )
         elif training_np is not None:
             train_flat = training_np.reshape(-1)
@@ -1549,7 +1575,7 @@ def lms(
             num_train_symbols=num_train_symbols,
         )
         if w_init is not None:
-            w_arr = np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64)
+            w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
@@ -1574,16 +1600,20 @@ def lms(
             e_out,
             w_hist_buf,
         )
-        return _unpack_result_numpy(
-            y_out,
-            e_out,
-            W,
-            w_hist_buf,
-            was_1d,
-            store_weights,
-            n_sym=None,
-            xp=xp,
-            num_train_symbols=int(n_train_aligned),
+        return _log_equalizer_exit(
+            _unpack_result_numpy(
+                y_out,
+                e_out,
+                W,
+                w_hist_buf,
+                was_1d,
+                store_weights,
+                n_sym=None,
+                xp=xp,
+                num_train_symbols=int(n_train_aligned),
+            ),
+            name="LMS",
+            debug_plot=debug_plot,
         )
 
     # JAX backend
@@ -1614,9 +1644,7 @@ def lms(
     else:
         raise ValueError("modulation and order must be provided for DD mode.")
     constellation_np = (
-        np.asarray(to_device(reference_constellation, "cpu"))
-        .flatten()
-        .astype("complex64")
+        to_device(reference_constellation, "cpu").flatten().astype("complex64")
     )
     train_full, n_train_aligned = _prepare_training_jax(
         training_symbols,
@@ -1645,10 +1673,10 @@ def lms(
     const_jax = to_jax(constellation_np, device=platform)
     if w_init is not None:
         W_jax = to_jax(
-            np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64),
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(np.asarray(w_init, dtype=np.complex64), num_ch, num_taps)
+        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -1661,16 +1689,20 @@ def lms(
     y_jax, e_jax, W_jax, wh_jax = scan_fn(
         x_jax, train_jax, const_jax, W_jax, mu_jax, n_train_jax
     )
-    return _unpack_result_jax(
-        y_jax,
-        e_jax,
-        W_jax,
-        wh_jax,
-        was_1d,
-        store_weights,
-        n_sym=None,
-        xp=xp,
-        num_train_symbols=int(n_train_aligned),
+    return _log_equalizer_exit(
+        _unpack_result_jax(
+            y_jax,
+            e_jax,
+            W_jax,
+            wh_jax,
+            was_1d,
+            store_weights,
+            n_sym=None,
+            xp=xp,
+            num_train_symbols=int(n_train_aligned),
+        ),
+        name="LMS",
+        debug_plot=debug_plot,
     )
 
 
@@ -1691,6 +1723,7 @@ def rls(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    debug_plot: bool = False,
 ) -> EqualizerResult:
     """
     Recursive Least Squares adaptive equalizer with butterfly MIMO support.
@@ -1853,17 +1886,9 @@ def rls(
         if numba is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        samples_np = np.ascontiguousarray(
-            samples.get() if hasattr(samples, "get") else np.asarray(samples),
-            dtype=np.complex64,
-        )
+        samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         training_np = (
-            np.asarray(
-                training_symbols.get()
-                if hasattr(training_symbols, "get")
-                else training_symbols,
-                dtype=np.complex64,
-            )
+            to_device(training_symbols, "cpu").astype(np.complex64)
             if training_symbols is not None
             else None
         )
@@ -1885,7 +1910,7 @@ def rls(
                 modulation, order, unipolar=unipolar
             )
             constellation_np = (
-                np.asarray(reference_constellation).flatten().astype("complex64")
+                to_device(reference_constellation, "cpu").flatten().astype(np.complex64)
             )
         elif training_np is not None:
             train_flat = training_np.reshape(-1)
@@ -1902,7 +1927,7 @@ def rls(
             num_train_symbols=num_train_symbols,
         )
         if w_init is not None:
-            w_arr = np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64)
+            w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
@@ -1935,16 +1960,20 @@ def rls(
         # Truncate last num_taps//2 symbols: those windows overlap the right
         # zero-padding, producing near-zero y that the slicer maps to ~1.0
         # magnitude, creating a spurious MSE/EVM spike.
-        return _unpack_result_numpy(
-            y_out,
-            e_out,
-            W,
-            w_hist_buf,
-            was_1d,
-            store_weights,
-            n_sym=n_update_halt,
-            xp=xp,
-            num_train_symbols=int(n_train_aligned),
+        return _log_equalizer_exit(
+            _unpack_result_numpy(
+                y_out,
+                e_out,
+                W,
+                w_hist_buf,
+                was_1d,
+                store_weights,
+                n_sym=n_update_halt,
+                xp=xp,
+                num_train_symbols=int(n_train_aligned),
+            ),
+            name="RLS",
+            debug_plot=debug_plot,
         )
 
     # JAX backend
@@ -1976,9 +2005,7 @@ def rls(
         raise ValueError("modulation and order must be provided for DD mode.")
 
     constellation_np = (
-        np.asarray(to_device(reference_constellation, "cpu"))
-        .flatten()
-        .astype("complex64")
+        to_device(reference_constellation, "cpu").flatten().astype("complex64")
     )
 
     logger.debug(
@@ -2013,10 +2040,10 @@ def rls(
     const_jax = to_jax(constellation_np, device=platform)
     if w_init is not None:
         W_jax = to_jax(
-            np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64),
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(np.asarray(w_init, dtype=np.complex64), num_ch, num_taps)
+        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2044,16 +2071,20 @@ def rls(
         n_update_halt_jax,
     )
     # Truncate last num_taps//2 symbols (zero-padding contamination).
-    return _unpack_result_jax(
-        y_jax,
-        e_jax,
-        W_jax,
-        wh_jax,
-        was_1d,
-        store_weights,
-        n_sym=n_update_halt,
-        xp=xp,
-        num_train_symbols=int(n_train_aligned),
+    return _log_equalizer_exit(
+        _unpack_result_jax(
+            y_jax,
+            e_jax,
+            W_jax,
+            wh_jax,
+            was_1d,
+            store_weights,
+            n_sym=n_update_halt,
+            xp=xp,
+            num_train_symbols=int(n_train_aligned),
+        ),
+        name="RLS",
+        debug_plot=debug_plot,
     )
 
 
@@ -2070,6 +2101,7 @@ def cma(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    debug_plot: bool = False,
 ) -> EqualizerResult:
     """
     Constant Modulus Algorithm blind equalizer with butterfly MIMO support.
@@ -2172,10 +2204,7 @@ def cma(
         if numba is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        samples_np = np.ascontiguousarray(
-            samples.get() if hasattr(samples, "get") else np.asarray(samples),
-            dtype=np.complex64,
-        )
+        samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         # RMS-normalize samples to unit symbol-rate power (CMA has no training)
         samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
 
@@ -2189,7 +2218,7 @@ def cma(
             x_np = x_np[np.newaxis, :]
 
         if w_init is not None:
-            w_arr = np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64)
+            w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
@@ -2212,15 +2241,20 @@ def cma(
             e_out,
             w_hist_buf,
         )
-        return _unpack_result_numpy(
-            y_out,
-            e_out,
-            W,
-            w_hist_buf,
-            was_1d,
-            store_weights,
-            n_sym=None,
-            xp=xp,
+        return _log_equalizer_exit(
+            _unpack_result_numpy(
+                y_out,
+                e_out,
+                W,
+                w_hist_buf,
+                was_1d,
+                store_weights,
+                n_sym=None,
+                xp=xp,
+            ),
+            name="CMA",
+            debug_plot=debug_plot,
+            check_convergence=True,
         )
 
     # JAX backend
@@ -2256,10 +2290,10 @@ def cma(
 
     if w_init is not None:
         W_jax = to_jax(
-            np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64),
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(np.asarray(w_init, dtype=np.complex64), num_ch, num_taps)
+        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2270,15 +2304,20 @@ def cma(
 
     scan_fn = _get_jax_cma(num_taps, stride, num_ch)
     y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, r2_jax, n_sym)
-    return _unpack_result_jax(
-        y_jax,
-        e_jax,
-        W_jax,
-        wh_jax,
-        was_1d,
-        store_weights,
-        n_sym=None,
-        xp=xp,
+    return _log_equalizer_exit(
+        _unpack_result_jax(
+            y_jax,
+            e_jax,
+            W_jax,
+            wh_jax,
+            was_1d,
+            store_weights,
+            n_sym=None,
+            xp=xp,
+        ),
+        name="CMA",
+        debug_plot=debug_plot,
+        check_convergence=True,
     )
 
 
@@ -2295,6 +2334,7 @@ def rde(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    debug_plot: bool = False,
 ) -> EqualizerResult:
     """
     Radius Directed Equalizer (RDE) — blind equalizer for multi-ring constellations.
@@ -2425,10 +2465,7 @@ def rde(
         if numba is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        samples_np = np.ascontiguousarray(
-            samples.get() if hasattr(samples, "get") else np.asarray(samples),
-            dtype=np.complex64,
-        )
+        samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
 
         x_np = (
@@ -2445,7 +2482,7 @@ def rde(
         radii_np = np.ascontiguousarray(radii, dtype=np.float32)
 
         if w_init is not None:
-            w_arr = np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64)
+            w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
@@ -2468,15 +2505,20 @@ def rde(
             e_out,
             w_hist_buf,
         )
-        return _unpack_result_numpy(
-            y_out,
-            e_out,
-            W,
-            w_hist_buf,
-            was_1d,
-            store_weights,
-            n_sym=None,
-            xp=xp,
+        return _log_equalizer_exit(
+            _unpack_result_numpy(
+                y_out,
+                e_out,
+                W,
+                w_hist_buf,
+                was_1d,
+                store_weights,
+                n_sym=None,
+                xp=xp,
+            ),
+            name="RDE",
+            debug_plot=debug_plot,
+            check_convergence=True,
         )
 
     # JAX backend
@@ -2511,10 +2553,10 @@ def rde(
 
     if w_init is not None:
         W_jax = to_jax(
-            np.ascontiguousarray(np.asarray(w_init), dtype=np.complex64),
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(np.asarray(w_init, dtype=np.complex64), num_ch, num_taps)
+        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2525,15 +2567,20 @@ def rde(
 
     scan_fn = _get_jax_rde(num_taps, stride, num_radii, num_ch)
     y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, radii_jax, n_sym)
-    return _unpack_result_jax(
-        y_jax,
-        e_jax,
-        W_jax,
-        wh_jax,
-        was_1d,
-        store_weights,
-        n_sym=None,
-        xp=xp,
+    return _log_equalizer_exit(
+        _unpack_result_jax(
+            y_jax,
+            e_jax,
+            W_jax,
+            wh_jax,
+            was_1d,
+            store_weights,
+            n_sym=None,
+            xp=xp,
+        ),
+        name="RDE",
+        debug_plot=debug_plot,
+        check_convergence=True,
     )
 
 
@@ -2931,6 +2978,7 @@ def equalize_frame(
     backend: str = "numba",
     store_weights: bool = False,
     w_init: Optional[ArrayType] = None,
+    debug_plot: bool = False,
 ) -> "EqualizerResult":
     """Frame-aware multi-stage equalizer pipeline.
 
@@ -3000,19 +3048,24 @@ def equalize_frame(
     was_1d = samples.ndim == 1
     num_ch = 1 if was_1d else samples.shape[0]
 
+    logger.info(
+        f"equalize_frame: num_taps={num_taps}, blind={blind_algorithm}, "
+        f"lms_mu={lms_step_size}, blind_mu={blind_step_size}, "
+        f"sps={sps}, backend={backend}, num_ch={num_ch}"
+    )
+
     # ── Structure map (symbol domain) ────────────────────────────────────────
     # get_structure_map() may return CuPy arrays (uses cp when available).
     # Convert all masks to plain NumPy immediately — they are frame metadata,
     # not signal data, and must stay on CPU for indexing and control flow.
-    def _to_np(arr):
-        if arr is None:
-            return None
-        return arr.get() if hasattr(arr, "get") else np.asarray(arr)
-
     struct = frame.get_structure_map(unit="symbols", sps=1)
-    preamble_mask = _to_np(struct.get("preamble", None))
-    pilot_mask_full = _to_np(struct.get("pilots", None))
-    payload_mask = _to_np(struct.get("payload", None))
+    _m = struct.get("preamble")
+    preamble_mask = to_device(_m, "cpu") if _m is not None else None
+    _m = struct.get("pilots")
+    pilot_mask_full = to_device(_m, "cpu") if _m is not None else None
+    _m = struct.get("payload")
+    payload_mask = to_device(_m, "cpu") if _m is not None else None
+    del _m
 
     has_preamble = (
         frame.preamble is not None
@@ -3033,7 +3086,7 @@ def equalize_frame(
     n_preamble_syms = 0
 
     if has_preamble:
-        preamble_mask_np = np.asarray(preamble_mask, dtype=bool)
+        preamble_mask_np = preamble_mask.astype(bool)
         preamble_sym_indices = np.where(preamble_mask_np)[0]
         n_preamble_syms = len(preamble_sym_indices)
 
@@ -3045,10 +3098,7 @@ def equalize_frame(
         else:
             preamble_samples = samples[:, preamble_start_samp:preamble_end_samp]
 
-        _syms_raw = frame.preamble.symbols
-        if hasattr(_syms_raw, "get"):
-            _syms_raw = _syms_raw.get()
-        preamble_syms = np.asarray(_syms_raw, dtype=np.complex64)
+        preamble_syms = to_device(frame.preamble.symbols, "cpu").astype(np.complex64)
         if preamble_syms.ndim == 1 and num_ch > 1:
             preamble_syms = np.broadcast_to(
                 preamble_syms[np.newaxis, :], (num_ch, len(preamble_syms))
@@ -3064,14 +3114,14 @@ def equalize_frame(
             backend=backend,
         )
         _w = pre_result.weights
-        w_0 = np.asarray(_w.get() if hasattr(_w, "get") else _w)
+        w_0 = to_device(_w, "cpu")
         if w_0.ndim == 1:
             # SISO: lms squeezes weights to (num_taps,) — expand to (1, 1, num_taps)
             w_0 = w_0[np.newaxis, np.newaxis, :]
 
     # ── Step 2: Payload equalization ─────────────────────────────────────────
     if payload_mask is not None:
-        payload_mask_np = np.asarray(payload_mask, dtype=bool)
+        payload_mask_np = payload_mask.astype(bool)
     else:
         # No explicit payload mask: everything after preamble
         total_syms = samples.shape[-1] // stride
@@ -3081,7 +3131,7 @@ def equalize_frame(
 
     # Include pilot positions in payload region (they alternate with data)
     if has_pilots and pilot_mask_full is not None:
-        pilot_mask_np = np.asarray(pilot_mask_full, dtype=bool)
+        pilot_mask_np = pilot_mask_full.astype(bool)
         combined_mask = payload_mask_np | pilot_mask_np
     else:
         combined_mask = payload_mask_np
@@ -3121,13 +3171,11 @@ def equalize_frame(
         pilot_syms_raw = None
         if hasattr(frame, "_payload_symbols") and frame._payload_symbols is not None:
             _ps = frame._payload_symbols
-            payload_syms_arr = np.asarray(
-                _ps.get() if hasattr(_ps, "get") else _ps, dtype=np.complex64
-            )
+            payload_syms_arr = to_device(_ps, "cpu").astype(np.complex64)
             if payload_syms_arr.ndim == 1:
                 payload_syms_arr = payload_syms_arr[np.newaxis, :]
             # pilot positions in payload-only domain
-            payload_only_mask = np.asarray(payload_mask_np, dtype=bool)
+            payload_only_mask = payload_mask_np
             if payload_syms_arr.shape[-1] == int(np.sum(payload_only_mask)):
                 # Map local combined-region pilot positions → payload-only indices
                 combined_is_pilot = payload_pilot_mask
@@ -3162,14 +3210,7 @@ def equalize_frame(
         )
 
         # Normalize payload samples
-        samples_np = np.ascontiguousarray(
-            np.asarray(
-                payload_samples.get()
-                if hasattr(payload_samples, "get")
-                else payload_samples
-            ),
-            dtype=np.complex64,
-        )
+        samples_np = np.ascontiguousarray(to_device(payload_samples, "cpu"), dtype=np.complex64)
         if samples_np.ndim == 1:
             samples_np = samples_np[np.newaxis, :]
         samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
@@ -3183,7 +3224,7 @@ def equalize_frame(
         x_np = np.ascontiguousarray(x_np)
 
         if w_0 is not None:
-            w_arr = np.ascontiguousarray(np.asarray(w_0), dtype=np.complex64)
+            w_arr = np.ascontiguousarray(to_device(w_0, "cpu"), dtype=np.complex64)
             _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
@@ -3247,16 +3288,20 @@ def equalize_frame(
                     n_payload_sym,
                 )
 
-            return _unpack_result_jax(
-                y_jax,
-                e_jax,
-                W_out,
-                wh_jax,
-                was_1d,
-                store_weights,
-                n_sym=None,
-                xp=xp,
-                num_train_symbols=n_preamble_syms,
+            return _log_equalizer_exit(
+                _unpack_result_jax(
+                    y_jax,
+                    e_jax,
+                    W_out,
+                    wh_jax,
+                    was_1d,
+                    store_weights,
+                    n_sym=None,
+                    xp=xp,
+                    num_train_symbols=n_preamble_syms,
+                ),
+                name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, JAX)",
+                debug_plot=debug_plot,
             )
 
         # Numba path
@@ -3297,16 +3342,20 @@ def equalize_frame(
                 pilot_mask_u8,
             )
 
-        return _unpack_result_numpy(
-            y_out,
-            e_out,
-            W,
-            w_hist_buf,
-            was_1d,
-            store_weights,
-            n_sym=None,
-            xp=xp,
-            num_train_symbols=n_preamble_syms,
+        return _log_equalizer_exit(
+            _unpack_result_numpy(
+                y_out,
+                e_out,
+                W,
+                w_hist_buf,
+                was_1d,
+                store_weights,
+                n_sym=None,
+                xp=xp,
+                num_train_symbols=n_preamble_syms,
+            ),
+            name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, Numba)",
+            debug_plot=debug_plot,
         )
 
     else:
@@ -3325,14 +3374,18 @@ def equalize_frame(
         )
         # Propagate preamble training symbol count into the final result
         if n_preamble_syms > 0:
-            return EqualizerResult(
+            _res = EqualizerResult(
                 y_hat=_res.y_hat,
                 weights=_res.weights,
                 error=_res.error,
                 weights_history=_res.weights_history,
                 num_train_symbols=n_preamble_syms,
             )
-        return _res
+        return _log_equalizer_exit(
+            _res,
+            name=f"equalize_frame(blind-{blind_algorithm.upper()})",
+            debug_plot=debug_plot,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -3344,6 +3397,7 @@ def zf_equalizer(
     samples: ArrayType,
     channel_estimate: ArrayType,
     noise_variance: float = 0.0,
+    debug_plot: bool = False,
 ) -> ArrayType:
     """
     Zero-Forcing / MMSE frequency-domain block equalizer.
@@ -3441,4 +3495,14 @@ def zf_equalizer(
 
     # --- Shared OLS backward pass: batch IFFT → symmetric discard → reshape ---
     out = _ols_backward(X_hat_f, meta)
+
+    if debug_plot:
+        from . import plotting as _plotting  # lazy import avoids circular dep
+
+        _plotting.zf_equalizer_response(
+            channel_estimate=to_device(channel_estimate, "cpu"),
+            noise_variance=noise_variance,
+            show=True,
+        )
+
     return out[0] if was_1d else out

@@ -24,6 +24,18 @@ filter_response :
     Analyzes FIR filters in both time and frequency domains.
 equalizer_result :
     Convergence curve and tap weight diagnostics for adaptive equalization.
+timing_correlation :
+    Cross-correlation magnitude with peak and threshold for timing diagnostics.
+differential_phase_trajectory :
+    Per-sample differential phase and Kay reference line for FOE diagnostics.
+frequency_offset_spectrum :
+    M-th power spectrum with detected tone for blind FOE diagnostics.
+carrier_phase_trajectory :
+    Per-symbol carrier phase trajectory for CPR algorithm diagnostics.
+pilot_phase_estimate :
+    Pilot phase scatter, linear fit, and interpolated phase trajectory.
+zf_equalizer_response :
+    Channel, equalizer, and combined frequency responses for ZF/MMSE.
 """
 
 from typing import Any, Optional, Tuple, Union
@@ -1347,8 +1359,8 @@ def equalizer_result(
     (fig, axes) or None
         Figure and axes array when ``show=False``, None otherwise.
     """
-    error = np.asarray(to_device(result.error, "cpu"))
-    weights = np.asarray(to_device(result.weights, "cpu"))
+    error = to_device(result.error, "cpu")
+    weights = to_device(result.weights, "cpu")
 
     is_mimo = error.ndim == 2
 
@@ -1382,6 +1394,17 @@ def equalizer_result(
             mse_smooth = mse
         mse_db = 10 * np.log10(mse_smooth + 1e-30)
         ax_conv.plot(mse_db)
+
+    n_train = getattr(result, "num_train_symbols", 0)
+    if n_train and n_train > 0:
+        ax_conv.axvline(
+            n_train,
+            color="black",
+            linestyle="--",
+            linewidth=1,
+            label=f"DD start ({n_train})",
+        )
+        ax_conv.legend(fontsize="small")
 
     ax_conv.set_xlabel("Symbol Index")
     ax_conv.set_ylabel("MSE (dB)")
@@ -1418,6 +1441,635 @@ def equalizer_result(
     ax_taps.set_ylabel("|w|")
     ax_taps.set_title("Tap Weights")
 
+    if show:
+        plt.show()
+        return None
+    return fig, axes
+
+
+# -----------------------------------------------------------------------------
+# SYNCHRONIZATION DIAGNOSTICS
+# -----------------------------------------------------------------------------
+
+
+def timing_correlation(
+    corr_mag,
+    peak_indices,
+    norm_factors,
+    threshold: float,
+    offset: int = 0,
+    ax=None,
+    show: bool = False,
+    title: str = "Timing Correlation",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots cross-correlation magnitude for timing estimation diagnostics.
+
+    For each channel, two panels are drawn: an overall view of the
+    correlation and a zoomed view around the detected peak.
+
+    Parameters
+    ----------
+    corr_mag : array_like
+        Correlation magnitude. Shape: ``(C, N)`` or ``(N,)``.
+    peak_indices : array_like
+        Integer peak positions per channel. Shape: ``(C,)`` or scalar.
+    norm_factors : array_like
+        Per-channel normalization factors. The displayed threshold line is
+        ``threshold * norm_factors[c]``. Shape: ``(C,)``.
+    threshold : float
+        Detection threshold (normalized 0–1).
+    offset : int, default 0
+        Search-range start sample added to sample indices for correct labels.
+    ax : array_like of Axes, optional
+        Pre-existing axes of shape ``(C, 2)`` — overall and zoom per channel.
+        If ``None``, a new figure is created.
+    show : bool, default False
+        If ``True``, calls ``plt.show()`` and returns ``None``.
+    title : str, default "Timing Correlation"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    corr_mag = to_device(corr_mag, "cpu")
+    peak_indices = to_device(peak_indices, "cpu").flatten()
+    norm_factors = to_device(norm_factors, "cpu").flatten()
+
+    if corr_mag.ndim == 1:
+        corr_mag = corr_mag[None, :]
+    C = corr_mag.shape[0]
+
+    if ax is None:
+        fig, axes = plt.subplots(C, 2, figsize=(10, 3.5 * C), squeeze=False)
+    else:
+        axes = ax
+        fig = axes[0][0].figure
+
+    for i in range(C):
+        ax1 = axes[i][0]
+        ax2 = axes[i][1]
+
+        c_ch = corr_mag[i]
+        pk_idx = int(peak_indices[i]) if i < len(peak_indices) else 0
+        norm_val = float(norm_factors[i]) if i < len(norm_factors) else 1.0
+        abs_thresh = threshold * norm_val
+        metric_val = float(c_ch[pk_idx] / norm_val) if norm_val > 0 else 0.0
+        ch_suffix = f" — Ch {i}" if C > 1 else ""
+
+        x_all = np.arange(len(c_ch)) + offset
+        ax1.plot(x_all, c_ch, label=f"Ch {i}  metric={metric_val:.2f}")
+        ax1.axhline(
+            float(c_ch[pk_idx]), color="r", linestyle="--", alpha=0.4, label="Peak"
+        )
+        ax1.axvline(pk_idx + offset, color="r", linestyle="--", alpha=0.5)
+        if abs_thresh > 0:
+            ax1.axhline(abs_thresh, color="g", linestyle=":", label="Thresh")
+        ax1.set_title(f"{title}{ch_suffix}")
+        ax1.set_xlabel("Sample Index")
+        ax1.set_ylabel("|R|")
+        ax1.legend(loc="upper right", fontsize="small")
+        ax1.grid(True, alpha=0.3)
+
+        zoom_w = 40
+        s_z = max(0, pk_idx - zoom_w)
+        e_z = min(len(c_ch), pk_idx + zoom_w)
+        x_zoom = np.arange(s_z, e_z) + offset
+        ax2.plot(x_zoom, c_ch[s_z:e_z], label="Peak area")
+        ax2.axvline(
+            pk_idx + offset, color="r", linestyle="--", label=f"Pk @ {pk_idx + offset}"
+        )
+        if abs_thresh > 0:
+            ax2.axhline(abs_thresh, color="g", linestyle=":", label="Thresh")
+        ax2.set_title(f"{title}{ch_suffix} — Detail")
+        ax2.set_xlabel("Sample Index")
+        ax2.set_ylabel("|R|")
+        ax2.legend(loc="upper right", fontsize="small")
+        ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axes
+
+
+def differential_phase_trajectory(
+    y_diff,
+    f_est: float,
+    fs: float,
+    M: int = 1,
+    ax=None,
+    show: bool = False,
+    title: str = "FOE — Differential Phase",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots per-sample differential phase for Kay's estimator diagnostics.
+
+    Displays the instantaneous differential phase ``angle(y[n+1]·y*[n])``
+    for each channel alongside the estimated frequency offset (horizontal
+    reference line at ``2π·Δf/fs`` rad/sample), making it easy to spot
+    non-stationarity, outliers, or insufficient SNR.
+
+    Parameters
+    ----------
+    y_diff : array_like
+        Differential product ``y[n+1]·y*[n]``. Shape: ``(C, N-1)`` or ``(N-1,)``.
+    f_est : float
+        Scalar frequency offset estimate in Hz.
+    fs : float
+        Sampling rate in Hz.
+    M : int, default 1
+        Pre-processing exponent applied before differential (M>1 for blind
+        M-th power mode). The displayed reference line is scaled by ``1/M``.
+    ax : Axes, optional
+        Pre-existing Axes. A new figure is created when ``None``.
+    show : bool, default False
+        If ``True``, calls ``plt.show()`` and returns ``None``.
+    title : str, default "FOE — Differential Phase"
+
+    Returns
+    -------
+    (fig, ax) or None
+    """
+    _y, xp, _ = dispatch(y_diff)
+    if _y.ndim == 1:
+        _y = _y[None, :]
+    C = _y.shape[0]
+    # Compute angle on-device (GPU if available), then bring small result to CPU
+    phi_all = to_device(xp.angle(_y), "cpu")
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 3.5))
+    else:
+        fig = ax.figure
+
+    ref_rad = 2.0 * np.pi * f_est / fs  # rad/sample (scaled by M internally)
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    for ch in range(C):
+        phi = phi_all[ch]
+        ax.plot(
+            phi,
+            linewidth=0.5,
+            alpha=0.7,
+            color=colors[ch % len(colors)],
+            label=f"Ch {ch}" if C > 1 else "Diff phase",
+        )
+
+    ax.axhline(
+        ref_rad * M,
+        color="red",
+        linestyle="--",
+        linewidth=1.4,
+        label=f"Ref 2π·Δf/fs·M = {ref_rad * M:.4f} rad",
+    )
+    ax.set_title(f"{title}  (Δf={f_est:.2f} Hz, M={M})")
+    ax.set_xlabel("Sample index")
+    ax.set_ylabel("Phase (rad)")
+    ax.legend(fontsize="small")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, ax
+
+
+def frequency_offset_spectrum(
+    mag_spectrum,
+    freqs,
+    M: int,
+    k_peaks,
+    f_estimates,
+    search_range=None,
+    ax=None,
+    show: bool = False,
+    title: str = "FOE — M-th Power Spectrum",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the M-th power spectrum used for blind frequency offset estimation.
+
+    The spectrum has a tone at ``M·Δf``; this function maps the x-axis back
+    to ``Δf`` by dividing by ``M`` so the detected peak aligns with the
+    reported frequency estimate.
+
+    Parameters
+    ----------
+    mag_spectrum : array_like
+        Magnitude spectrum ``|X^M(f)|``. Shape: ``(C, nfft)`` or ``(nfft,)``.
+    freqs : array_like
+        Frequency axis in Hz (``np.fft.fftfreq(nfft) * fs``).
+        Shape: ``(nfft,)``.
+    M : int
+        M-th power used to remove modulation.
+    k_peaks : array_like
+        Peak bin index per channel. Shape: ``(C,)`` or scalar.
+    f_estimates : list of float
+        Per-channel frequency estimates in Hz (before multi-channel averaging).
+    search_range : tuple of float, optional
+        ``(f_min, f_max)`` in Hz that restricted the search. Shown as a
+        shaded region.
+    ax : array_like of Axes, optional
+        One Axes per channel. If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "FOE — M-th Power Spectrum"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    mag_spectrum = to_device(mag_spectrum, "cpu")
+    freqs = to_device(freqs, "cpu")
+    k_peaks = to_device(k_peaks, "cpu").flatten()
+    f_estimates = list(f_estimates)
+
+    if mag_spectrum.ndim == 1:
+        mag_spectrum = mag_spectrum[None, :]
+    C = mag_spectrum.shape[0]
+
+    if ax is None:
+        fig, raw_axes = plt.subplots(1, C, figsize=(5 * C, 3.5), squeeze=False)
+        axes_list = list(raw_axes[0])
+    else:
+        axes_list = list(ax) if hasattr(ax, "__len__") else [ax]
+        fig = axes_list[0].figure
+
+    sort_idx = np.argsort(freqs)
+    f_sorted = freqs[sort_idx]
+    f_delta = f_sorted / M  # map M·Δf → Δf
+
+    for i in range(C):
+        axi = axes_list[i]
+        mag = mag_spectrum[i][sort_idx]
+        f_est = float(f_estimates[i]) if i < len(f_estimates) else 0.0
+        ch_suffix = f" — Ch {i}" if C > 1 else ""
+
+        axi.plot(f_delta, mag, color="C0")
+        axi.axvline(
+            f_est,
+            color="r",
+            linestyle="--",
+            linewidth=1,
+            label=f"f̂ = {f_est:.2f} Hz",
+        )
+        if search_range is not None:
+            axi.axvspan(
+                search_range[0],
+                search_range[1],
+                alpha=0.12,
+                color="green",
+                label="Search range",
+            )
+        axi.set_title(f"{title}{ch_suffix}")
+        axi.set_xlabel(f"Δf [Hz]  (÷M={M} applied)")
+        axi.set_ylabel(f"|X^{M}(f)|")
+        axi.legend(fontsize="small")
+        axi.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, (axes_list[0] if C == 1 else axes_list)
+
+
+def carrier_phase_trajectory(
+    phi_full,
+    block_centers=None,
+    phi_blocks=None,
+    n_train: int = 0,
+    ax=None,
+    show: bool = False,
+    title: str = "Carrier Phase Trajectory",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots per-symbol carrier phase trajectory for CPR algorithm diagnostics.
+
+    Supports all CPR methods — Viterbi-Viterbi, BPS, pilot-aided, and
+    decision-directed.  Block-based methods can overlay block estimates as
+    scatter points via ``block_centers`` / ``phi_blocks``.
+
+    Parameters
+    ----------
+    phi_full : array_like
+        Per-symbol phase estimate in radians. Shape: ``(C, N)`` or ``(N,)``.
+    block_centers : array_like, optional
+        Block centre positions in symbols (VV, BPS). Shape: ``(N_blocks,)``.
+    phi_blocks : array_like, optional
+        Per-block phase values in radians. Overlaid as scatter points.
+        Shape: ``(C, N_blocks)`` or ``(N_blocks,)``.
+    n_train : int, default 0
+        Training/DD boundary symbol index (DD-PLL). Draws a vertical marker.
+    ax : array_like of Axes, optional
+        One Axes per channel. If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "Carrier Phase Trajectory"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    phi_full = to_device(phi_full, "cpu")
+    if phi_full.ndim == 1:
+        phi_full = phi_full[None, :]
+    C, N = phi_full.shape
+
+    if phi_blocks is not None:
+        phi_blocks = to_device(phi_blocks, "cpu")
+        if phi_blocks.ndim == 1:
+            phi_blocks = phi_blocks[None, :]
+
+    if ax is None:
+        fig, raw_axes = plt.subplots(C, 1, figsize=(9, 3.0 * C), squeeze=False)
+        axes_list = [raw_axes[i][0] for i in range(C)]
+    else:
+        axes_list = list(ax) if hasattr(ax, "__len__") else [ax]
+        fig = axes_list[0].figure
+
+    sym_idx = np.arange(N)
+    for i in range(C):
+        axi = axes_list[i]
+        phi_deg = np.degrees(phi_full[i])
+        phi_mean = float(np.mean(phi_deg))
+        phi_std = float(np.std(phi_deg))
+        ch_suffix = f" — Ch {i}" if C > 1 else ""
+
+        axi.plot(sym_idx, phi_deg, alpha=0.85, label="φ̂[n]")
+
+        if block_centers is not None and phi_blocks is not None:
+            bc = to_device(block_centers, "cpu")
+            pb_idx = min(i, phi_blocks.shape[0] - 1)
+            pb_deg = np.degrees(phi_blocks[pb_idx])
+            axi.scatter(bc, pb_deg, s=10, color="r", zorder=5, label="Block est.")
+
+        if n_train > 0:
+            axi.axvline(
+                n_train,
+                color="black",
+                linestyle="--",
+                linewidth=1,
+                label=f"DD start ({n_train})",
+            )
+
+        axi.set_title(f"{title}{ch_suffix}  [μ={phi_mean:.1f}°,  σ={phi_std:.2f}°]")
+        axi.set_xlabel("Symbol Index")
+        axi.set_ylabel("Phase [deg]")
+        axi.legend(fontsize="small", loc="upper right")
+        axi.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, (axes_list[0] if C == 1 else axes_list)
+
+
+def pilot_phase_estimate(
+    pilot_indices,
+    phi_pilots_u,
+    phi_full=None,
+    f_est: float = 0.0,
+    fs: float = 1.0,
+    ax=None,
+    show: bool = False,
+    title: str = "Pilot Phase Estimate",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots pilot phase scatter, linear fit, and the full interpolated trajectory.
+
+    Used as a diagnostic for both pilot-based frequency offset estimation
+    (:func:`~commstools.sync.estimate_frequency_offset_pilots`) and
+    pilot-aided carrier phase recovery
+    (:func:`~commstools.sync.recover_carrier_phase_pilots`).
+
+    Parameters
+    ----------
+    pilot_indices : array_like
+        Sample indices of pilot positions. Shape: ``(P,)``.
+    phi_pilots_u : array_like
+        Unwrapped pilot phases in radians. Shape: ``(C, P)`` or ``(P,)``.
+    phi_full : array_like, optional
+        Interpolated per-symbol phase in radians. Shape: ``(C, N)`` or ``(N,)``.
+        If provided, a second panel shows the full trajectory per channel.
+    f_est : float, default 0.0
+        Estimated frequency offset in Hz (annotation on the fit line).
+    fs : float, default 1.0
+        Sampling rate in Hz.
+    ax : array_like of Axes, optional
+        Shape ``(C, 1)`` when ``phi_full`` is ``None``, else ``(C, 2)``.
+        If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "Pilot Phase Estimate"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    pilot_indices = to_device(pilot_indices, "cpu").astype(float)
+    phi_pilots_u = to_device(phi_pilots_u, "cpu")
+    if phi_pilots_u.ndim == 1:
+        phi_pilots_u = phi_pilots_u[None, :]
+    C, P = phi_pilots_u.shape
+
+    has_full = phi_full is not None
+    if has_full:
+        phi_full = to_device(phi_full, "cpu")
+        if phi_full.ndim == 1:
+            phi_full = phi_full[None, :]
+        N = phi_full.shape[1]
+
+    n_cols = 2 if has_full else 1
+    if ax is None:
+        fig, axes = plt.subplots(
+            C, n_cols, figsize=(5 * n_cols, 3.5 * C), squeeze=False
+        )
+    else:
+        # ax expected as (C, n_cols) sequence — use list of lists to avoid
+        # np.reshape() which fails when ax contains non-array objects
+        if hasattr(ax, "__len__") and hasattr(ax[0], "__len__"):
+            axes = ax  # already 2-D list
+        elif hasattr(ax, "__len__"):
+            axes = [[a] for a in ax]  # 1-D list → wrap each in a row
+        else:
+            axes = [[ax]]
+        fig = axes[0][0].figure
+
+    t_pilots = pilot_indices / fs
+    for i in range(C):
+        phi_p = phi_pilots_u[i]
+        ch_suffix = f" — Ch {i}" if C > 1 else ""
+
+        # Linear fit: φ(t) = 2π·Δf·t + φ₀
+        if P > 1:
+            t_c = t_pilots - np.mean(t_pilots)
+            t_var = float(np.dot(t_c, t_c))
+            slope = (
+                float(np.dot(t_c, phi_p - np.mean(phi_p)) / t_var) if t_var > 0 else 0.0
+            )
+            phi_fit = slope * t_pilots + (np.mean(phi_p) - slope * np.mean(t_pilots))
+        else:
+            phi_fit = phi_p.copy()
+
+        ax1 = axes[i][0]
+        ax1.scatter(
+            pilot_indices,
+            np.degrees(phi_p),
+            s=14,
+            zorder=5,
+            label="Pilot φ (unwrapped)",
+        )
+        ax1.plot(
+            pilot_indices, np.degrees(phi_fit), "r--", label=f"Fit  Δf={f_est:.3f} Hz"
+        )
+        ax1.set_title(f"{title}{ch_suffix} — Pilots")
+        ax1.set_xlabel("Sample Index")
+        ax1.set_ylabel("Phase [deg]")
+        ax1.legend(fontsize="small")
+        ax1.grid(True, alpha=0.3)
+
+        if has_full:
+            ax2 = axes[i][1]
+            sym_idx = np.arange(N)
+            ax2.plot(
+                sym_idx,
+                np.degrees(phi_full[i]),
+                alpha=0.85,
+                label="φ̂ (interpolated)",
+            )
+            ax2.scatter(
+                pilot_indices,
+                np.degrees(phi_p),
+                s=10,
+                color="r",
+                zorder=5,
+                label="Pilots",
+            )
+            ax2.set_title(f"{title}{ch_suffix} — Full Trajectory")
+            ax2.set_xlabel("Symbol Index")
+            ax2.set_ylabel("Phase [deg]")
+            ax2.legend(fontsize="small")
+            ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axes
+
+
+def zf_equalizer_response(
+    channel_estimate,
+    noise_variance: float = 0.0,
+    nfft: int = 1024,
+    fs: float = 1.0,
+    ax=None,
+    show: bool = False,
+    title: str = "ZF/MMSE Equalizer Response",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots channel, equalizer, and combined frequency responses for ZF/MMSE.
+
+    For each channel path, three panels show:
+
+    * ``|H(f)|`` — channel response in dB.
+    * ``|W(f)|`` — equalizer response (``W = H* / (|H|² + σ²)``) in dB.
+    * ``|H(f)·W(f)|`` — combined response (≈ 0 dB for ZF, soft mask for MMSE).
+
+    Parameters
+    ----------
+    channel_estimate : array_like
+        Channel impulse response. Shape: ``(L,)`` for SISO or
+        ``(C_rx, C_tx, L)`` for MIMO.
+    noise_variance : float, default 0.0
+        Noise variance ``σ²`` for MMSE regularization. ``0.0`` gives pure ZF.
+    nfft : int, default 1024
+        FFT size for the frequency response computation.
+    fs : float, default 1.0
+        Sampling rate in Hz for frequency-axis scaling.
+    ax : array_like of Axes, optional
+        For SISO: 3 Axes. For MIMO: ``(C_rx * C_tx, 3)`` Axes.
+        If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "ZF/MMSE Equalizer Response"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    h = to_device(channel_estimate, "cpu")
+    reg = max(noise_variance, 1e-12)
+    siso = h.ndim == 1
+
+    freqs = np.fft.fftfreq(nfft, d=1.0 / fs)
+    sort_idx = np.argsort(freqs)
+    f_sorted = freqs[sort_idx]
+
+    max_f = float(np.max(np.abs(f_sorted)))
+    if max_f >= 1e9:
+        scale, unit = 1e9, "GHz"
+    elif max_f >= 1e6:
+        scale, unit = 1e6, "MHz"
+    elif max_f >= 1e3:
+        scale, unit = 1e3, "kHz"
+    else:
+        scale, unit = 1.0, "Hz"
+    f_disp = f_sorted / scale
+
+    def _draw_triplet(H_f, ax_row, row_label=""):
+        H_s = H_f[sort_idx]
+        W_s = np.conj(H_s) / (np.abs(H_s) ** 2 + reg)
+        HW_s = H_s * W_s
+        for axi, data, lbl, col in zip(
+            ax_row,
+            [H_s, W_s, HW_s],
+            ["Channel |H(f)|", "Equalizer |W(f)|", "Combined |H·W(f)|"],
+            ["C0", "C1", "C2"],
+        ):
+            axi.plot(f_disp, 20 * np.log10(np.abs(data) + 1e-12), color=col)
+            prefix = f"{row_label} " if row_label else ""
+            axi.set_title(f"{prefix}{lbl}")
+            axi.set_xlabel(f"Frequency [{unit}]")
+            axi.set_ylabel("Magnitude [dB]")
+            axi.grid(True, alpha=0.3)
+
+    if siso:
+        H_f = np.fft.fft(h, n=nfft)
+        if ax is None:
+            fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+        else:
+            axes = list(ax) if hasattr(ax, "__len__") else [ax]
+            fig = axes[0].figure
+        _draw_triplet(H_f, axes)
+        fig.suptitle(title, fontweight="bold", y=1.02)
+        plt.tight_layout()
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    C_rx, C_tx = h.shape[0], h.shape[1]
+    n_rows = C_rx * C_tx
+    if ax is None:
+        fig, raw_axes = plt.subplots(n_rows, 3, figsize=(13, 3.5 * n_rows), squeeze=False)
+        axes = [list(raw_axes[r]) for r in range(n_rows)]
+    else:
+        if hasattr(ax, "__len__") and hasattr(ax[0], "__len__"):
+            axes = [list(row) for row in ax]
+        else:
+            flat = list(ax)
+            axes = [flat[r * 3 : (r + 1) * 3] for r in range(n_rows)]
+        fig = axes[0][0].figure
+
+    for i in range(C_rx):
+        for j in range(C_tx):
+            row = i * C_tx + j
+            H_f = np.fft.fft(h[i, j], n=nfft)
+            _draw_triplet(H_f, axes[row], row_label=f"[rx{i}→tx{j}]")
+
+    fig.suptitle(title, fontweight="bold")
+    plt.tight_layout()
     if show:
         plt.show()
         return None
