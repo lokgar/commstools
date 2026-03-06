@@ -269,10 +269,12 @@ def validate_array(
     v: Any, name: str = "array", complex_only: bool = False
 ) -> ArrayType:
     """
-    Validates and coerces input data into a backend-compatible array.
+    Validates and coerces input data into a numeric array.
 
-    Handles conversion from Python scalars, lists, and tuples into NumPy
-    or CuPy arrays. Can optionally enforce complex-valued data types.
+    Existing NumPy or CuPy arrays are passed through unchanged (preserving
+    device placement). All other inputs (Python scalars, lists, tuples) are
+    coerced to NumPy via ``np.asarray``; there is no automatic promotion to
+    CuPy for non-array inputs. Optionally enforces complex-valued dtype.
 
     Parameters
     ----------
@@ -286,7 +288,7 @@ def validate_array(
     Returns
     -------
     array_like
-        A backend-native array (NumPy/CuPy).
+        NumPy or CuPy array (CuPy only when ``v`` was already a CuPy array).
 
     Raises
     ------

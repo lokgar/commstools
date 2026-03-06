@@ -239,6 +239,11 @@ class Signal(BaseModel):
     # zero-padding, producing spurious errors — those symbols are stripped from y_hat).
     # Metric methods must trim the same count from the reference tail before comparing.
     _num_tail_trim: int = PrivateAttr(default=0)
+    # Back-reference to the SingleCarrierFrame that generated this signal (set by
+    # SingleCarrierFrame.to_signal()). Enables frame-aware convenience methods
+    # (correct_timing, equalize_frame) without requiring the caller to re-supply
+    # the frame object.
+    _frame: Any = PrivateAttr(default=None)
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
@@ -1116,9 +1121,84 @@ class Signal(BaseModel):
         self.digital_frequency_offset += actual_offset
         return self
 
+    def correct_timing(
+        self,
+        preamble=None,
+        info=None,
+        mode: str = "slice",
+        debug_plot: bool = False,
+        **kwargs,
+    ) -> Tuple["ArrayType", "ArrayType"]:
+        """
+        Estimates and corrects timing offset in-place.
+
+        Wraps :func:`~commstools.sync.estimate_timing` +
+        :func:`~commstools.sync.correct_timing`. If neither ``preamble``
+        nor ``info`` is provided and the signal was generated from a
+        :class:`SingleCarrierFrame` (via :meth:`SingleCarrierFrame.to_signal`),
+        the preamble is resolved automatically from the attached frame.
+
+        Parameters
+        ----------
+        preamble : Preamble or array_like, optional
+            Known preamble sequence. Forwarded to
+            :func:`~commstools.sync.estimate_timing`.
+            Falls back to ``self._frame.preamble`` when ``None`` and a
+            frame is attached.
+        info : SignalInfo, optional
+            Pre-computed correlation metadata. Skips preamble extraction
+            when provided.
+        mode : {'slice', 'zero', 'circular'}, default 'slice'
+            Boundary handling after coarse correction.
+
+            * ``'slice'``: Discard leading samples; output is shorter.
+            * ``'zero'``: Shift left, fill tail with zeros.
+            * ``'circular'``: Roll (wrap-around).
+
+        debug_plot : bool, default False
+            Forwarded to :func:`~commstools.sync.estimate_timing`.
+        **kwargs
+            Additional keyword arguments forwarded to
+            :func:`~commstools.sync.estimate_timing`.
+
+        Returns
+        -------
+        tuple of (coarse_offsets, fractional_offsets)
+            Per-channel integer and fractional timing estimates (before
+            correction is applied).
+
+        Raises
+        ------
+        ValueError
+            If no preamble can be resolved and ``info`` is also ``None``.
+        """
+        from . import sync
+
+        resolved_preamble = preamble
+        if resolved_preamble is None and info is None:
+            if self._frame is not None and self._frame.preamble is not None:
+                resolved_preamble = self._frame.preamble
+            else:
+                raise ValueError(
+                    "A preamble or pre-computed info is required for timing "
+                    "estimation. Pass preamble=..., info=..., or generate the "
+                    "signal via SingleCarrierFrame.to_signal() with a preamble."
+                )
+
+        coarse, fractional = sync.estimate_timing(
+            self.samples,
+            preamble=resolved_preamble,
+            info=info,
+            debug_plot=debug_plot,
+            **kwargs,
+        )
+        self.samples = sync.correct_timing(self.samples, coarse, fractional, mode=mode)
+        return coarse, fractional
+
     def correct_frequency_offset(
         self,
         method: str = "mth_power",
+        debug_plot: bool = False,
         **kwargs,
     ) -> float:
         """
@@ -1174,6 +1254,7 @@ class Signal(BaseModel):
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         elif method == "differential":
@@ -1182,18 +1263,21 @@ class Signal(BaseModel):
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         elif method == "data_aided":
             offset = sync.estimate_frequency_offset_data_aided(
                 self.samples,
                 fs=self.sampling_rate,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         elif method == "pilots":
             offset = sync.estimate_frequency_offset_pilots(
                 self.samples,
                 fs=self.sampling_rate,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         else:
@@ -1210,6 +1294,7 @@ class Signal(BaseModel):
     def recover_carrier_phase(
         self,
         method: str = "viterbi_viterbi",
+        debug_plot: bool = False,
         **kwargs,
     ) -> "ArrayType":
         """
@@ -1263,6 +1348,7 @@ class Signal(BaseModel):
                 self.samples,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         elif method == "bps":
@@ -1275,10 +1361,13 @@ class Signal(BaseModel):
                 self.samples,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
+                debug_plot=debug_plot,
                 **kwargs,
             )
         elif method == "pilots":
-            phase = sync.recover_carrier_phase_pilots(self.samples, **kwargs)
+            phase = sync.recover_carrier_phase_pilots(
+                self.samples, debug_plot=debug_plot, **kwargs
+            )
         else:
             raise ValueError(
                 f"Unknown CPR method: {method!r}. "
@@ -1428,6 +1517,7 @@ class Signal(BaseModel):
         # ── ZF/MMSE-specific ───────────────────────────────────────────────
         channel_estimate: Optional[ArrayType] = None,
         noise_variance: float = 0.0,
+        debug_plot: bool = False,
     ) -> "Signal":
         """
         Apply adaptive or block equalization to the signal samples in-place.
@@ -1634,6 +1724,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                debug_plot=debug_plot,
             )
         elif method == "rls":
             result = equalization.rls(
@@ -1652,6 +1743,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                debug_plot=debug_plot,
             )
         elif method == "cma":
             result = equalization.cma(
@@ -1666,6 +1758,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                debug_plot=debug_plot,
             )
         elif method == "rde":
             result = equalization.rde(
@@ -1680,6 +1773,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                debug_plot=debug_plot,
             )
         elif method == "zf":
             if channel_estimate is None:
@@ -1690,6 +1784,7 @@ class Signal(BaseModel):
                 self.samples,
                 channel_estimate=channel_estimate,
                 noise_variance=noise_variance,
+                debug_plot=debug_plot,
             )
             return self
         else:
@@ -1711,7 +1806,7 @@ class Signal(BaseModel):
 
     def equalize_frame(
         self,
-        frame: "SingleCarrierFrame",
+        frame: Optional["SingleCarrierFrame"] = None,
         num_taps: int = 21,
         lms_step_size: float = 0.01,
         blind_step_size: float = 1e-4,
@@ -1721,6 +1816,7 @@ class Signal(BaseModel):
         backend: str = "numba",
         store_weights: bool = False,
         w_init: Optional["ArrayType"] = None,
+        debug_plot: bool = False,
     ) -> "Signal":
         """Frame-aware multi-stage equalization with automatic weight handoff.
 
@@ -1734,8 +1830,10 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        frame : SingleCarrierFrame
-            Frame structure that generated this signal.
+        frame : SingleCarrierFrame, optional
+            Frame structure that generated this signal. When ``None``, the
+            frame attached by :meth:`SingleCarrierFrame.to_signal` is used
+            automatically.
         num_taps : int, default 21
             FIR tap count for all equalizer stages.
         lms_step_size : float, default 0.01
@@ -1765,6 +1863,15 @@ class Signal(BaseModel):
         """
         from . import equalization  # noqa: PLC0415
 
+        if frame is None:
+            frame = self._frame
+        if frame is None:
+            raise ValueError(
+                "No frame provided. Either pass frame=<SingleCarrierFrame> or "
+                "generate the signal via SingleCarrierFrame.to_signal() to "
+                "attach the frame automatically."
+            )
+
         result = equalization.equalize_frame(
             self.samples,
             frame,
@@ -1778,6 +1885,7 @@ class Signal(BaseModel):
             backend=backend,
             store_weights=store_weights,
             w_init=w_init,
+            debug_plot=debug_plot,
         )
         self.samples = result.y_hat
         self._equalizer_result = result
@@ -3192,7 +3300,7 @@ class SingleCarrierFrame(BaseModel):
             num_streams=self.num_streams,
         )
 
-        return Signal(
+        sig = Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
@@ -3211,3 +3319,5 @@ class SingleCarrierFrame(BaseModel):
             signal_info=signal_info,
             **kwargs,
         )
+        sig._frame = self
+        return sig

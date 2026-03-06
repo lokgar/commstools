@@ -671,54 +671,16 @@ def estimate_timing(
     coarse_offsets = xp.maximum(0, coarse_offsets)
 
     if debug_plot:
-        import matplotlib.pyplot as plt
+        from . import plotting as _plotting
 
-        # Layout: N rows for channels (No Combined)
-        n_rows = num_sig_ch
-        fig, axes = plt.subplots(n_rows, 2, figsize=(10, 3.5 * n_rows), squeeze=False)
-
-        # Plot Per-Channel
-        for i in range(num_sig_ch):
-            ax1 = axes[i][0]
-            ax2 = axes[i][1]
-
-            c_ch = to_device(corr_mag[i], "cpu")
-            pk_idx = int(peak_indices[i])
-            pk_val = float(c_ch[pk_idx])
-            metric_val = float(metrics[i])
-
-            norm_val_i = float(norm_factors[i])
-            abs_thresh = threshold * norm_val_i
-
-            # Ax1: Overall
-            ax1.plot(c_ch, label=f"Ch {i} (Metric: {metric_val:.2f})")
-            ax1.axhline(pk_val, color="r", linestyle="--", alpha=0.3, label="Max")
-            if abs_thresh > 0:
-                ax1.axhline(
-                    y=abs_thresh,
-                    color="g",
-                    linestyle=":",
-                    label=f"Thresh ({abs_thresh:.1f})",
-                )
-            ax1.set_title(f"Channel {i} - Overall")
-            ax1.legend(loc="upper right", fontsize="small")
-            ax1.grid(True, alpha=0.3)
-
-            # Ax2: Zoom
-            zoom_w = 40
-            s_z = max(0, pk_idx - zoom_w)
-            e_z = min(len(c_ch), pk_idx + zoom_w)
-
-            ax2.plot(np.arange(s_z, e_z), c_ch[s_z:e_z], label="Peak Area")
-            ax2.axvline(pk_idx, color="r", linestyle="--", label=f"Pk {pk_idx}")
-            if abs_thresh > 0:
-                ax2.axhline(y=abs_thresh, color="g", linestyle=":", label="Thresh")
-            ax2.set_title(f"Channel {i} - Detail")
-            ax2.legend(loc="upper right", fontsize="small")
-            ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.show()
+        _plotting.timing_correlation(
+            corr_mag=to_device(corr_mag, "cpu"),
+            peak_indices=to_device(peak_indices, "cpu"),
+            norm_factors=to_device(norm_factors, "cpu"),
+            threshold=threshold,
+            offset=offset,
+            show=True,
+        )
 
     # === Fine Timing (Parabolic Interpolation) ===
     fractional_offsets = estimate_fractional_delay(
@@ -817,24 +779,24 @@ def correct_timing(
 
     else:
         # --- Per-channel: vectorized gather (avoids one GPU→CPU sync per channel) ---
-        coarse_int = coarse_offset.astype(xp.int64)          # (C,) on device
-        col_base   = xp.arange(N, dtype=xp.int64)[None, :]   # (1, N)
-        row_idx    = xp.arange(num_ch)[:, None]               # (C, 1)
+        coarse_int = coarse_offset.astype(xp.int64)  # (C,) on device
+        col_base = xp.arange(N, dtype=xp.int64)[None, :]  # (1, N)
+        row_idx = xp.arange(num_ch)[:, None]  # (C, 1)
 
         if mode == "circular":
-            col_idx = (col_base + coarse_int[:, None]) % N    # (C, N)
-            signal  = signal[row_idx, col_idx]
+            col_idx = (col_base + coarse_int[:, None]) % N  # (C, N)
+            signal = signal[row_idx, col_idx]
 
         elif mode == "zero":
-            col_raw  = col_base + coarse_int[:, None]          # (C, N)
+            col_raw = col_base + coarse_int[:, None]  # (C, N)
             gathered = signal[row_idx, xp.clip(col_raw, 0, N - 1)]
-            signal   = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
+            signal = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
 
         elif mode == "slice":
             # Align all channels to common overlap: N - max(offset) samples
-            max_shift  = int(xp.max(coarse_int))               # one GPU sync
+            max_shift = int(xp.max(coarse_int))  # one GPU sync
             common_len = N - max_shift
-            col_idx_s  = (
+            col_idx_s = (
                 xp.arange(common_len, dtype=xp.int64)[None, :] + coarse_int[:, None]
             )  # (C, common_len)
             signal = signal[row_idx, col_idx_s]
@@ -854,6 +816,11 @@ def correct_timing(
 
     if apply_frac:
         signal = fft_fractional_delay(signal, -fractional_offset)
+
+    logger.info(
+        f"Timing corrected: coarse={coarse_offset.tolist() if hasattr(coarse_offset, 'tolist') else coarse_offset}, "
+        f"fractional={'applied' if apply_frac else 'skipped'}, mode={mode!r}."
+    )
 
     if was_1d:
         return signal[0]
@@ -925,6 +892,7 @@ def estimate_frequency_offset_mth_power(
     order: int,
     search_range: Optional[Tuple[float, float]] = None,
     nfft: Optional[int] = None,
+    debug_plot: bool = False,
 ) -> float:
     """
     Estimates frequency offset using the M-th power law (nonlinear spectral method).
@@ -1038,7 +1006,26 @@ def estimate_frequency_offset_mth_power(
         f_tone = freqs_np[k_peak] + mu * (fs / nfft)
         estimates.append(f_tone / M)
 
-    return float(np.mean(estimates))
+    f_est = float(np.mean(estimates))
+    logger.info(
+        f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
+        f"[nfft={nfft}, search_range={search_range}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.frequency_offset_spectrum(
+            mag_spectrum=to_device(mag, "cpu"),
+            freqs=freqs_np,
+            M=M,
+            k_peaks=to_device(k_peaks, "cpu"),
+            f_estimates=estimates,
+            search_range=search_range,
+            show=True,
+        )
+
+    return f_est
 
 
 def estimate_frequency_offset_differential(
@@ -1048,6 +1035,7 @@ def estimate_frequency_offset_differential(
     order: Optional[int] = None,
     ref_signal: Optional[ArrayType] = None,
     weighted: bool = True,
+    debug_plot: bool = False,
 ) -> float:
     """
     Estimates frequency offset via differential phase (auto-correlation).
@@ -1147,8 +1135,22 @@ def estimate_frequency_offset_differential(
     else:
         f_per_ch = xp.angle(xp.sum(y_diff, axis=-1)) * (fs / (2 * np.pi))
 
-    f_est = float(xp.mean(f_per_ch))
-    return f_est / M
+    f_est = float(xp.mean(f_per_ch)) / M
+    mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
+    logger.info(f"FOE (differential, {mode_str}): {f_est:.2f} Hz")
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.differential_phase_trajectory(
+            y_diff=to_device(y_diff, "cpu"),
+            f_est=f_est,
+            fs=fs,
+            M=M,
+            show=True,
+        )
+
+    return f_est
 
 
 def estimate_frequency_offset_data_aided(
@@ -1156,6 +1158,7 @@ def estimate_frequency_offset_data_aided(
     preamble_samples: ArrayType,
     fs: float,
     offset: int = 0,
+    debug_plot: bool = False,
 ) -> float:
     """
     Estimates frequency offset using a known preamble (data-aided).
@@ -1212,10 +1215,11 @@ def estimate_frequency_offset_data_aided(
     L = preamble_samples.shape[-1]
     r_p = signal[..., offset : offset + L]  # (C, L)
 
+    logger.debug(f"FOE (data-aided): preamble L={L} samples, signal offset={offset}")
     # Delegate demodulation to the ref_signal path of estimate_frequency_offset_differential,
     # which computes y = r_p * conj(preamble_samples) internally before Kay's estimator.
     return estimate_frequency_offset_differential(
-        r_p, fs, ref_signal=preamble_samples, weighted=True
+        r_p, fs, ref_signal=preamble_samples, weighted=True, debug_plot=debug_plot
     )
 
 
@@ -1224,6 +1228,7 @@ def estimate_frequency_offset_pilots(
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
     fs: float,
+    debug_plot: bool = False,
 ) -> float:
     """
     Estimates frequency offset from pilot symbols via phase slope fitting.
@@ -1316,7 +1321,7 @@ def estimate_frequency_offset_pilots(
         signal = signal[None, :]
     C, N = signal.shape
 
-    pilot_indices_np = np.asarray(pilot_indices, dtype=np.intp)
+    pilot_indices_np = to_device(pilot_indices, "cpu").astype(np.intp)
     pilot_values_xp = xp.asarray(pilot_values)
     P = len(pilot_indices_np)
 
@@ -1339,7 +1344,26 @@ def estimate_frequency_offset_pilots(
     phi_c = phi_pilots_u - xp.mean(phi_pilots_u, axis=-1, keepdims=True)  # (C, P)
     slopes = xp.sum(phi_c * t_c[None, :], axis=-1) / t_var  # (C,)
 
-    return float(xp.mean(slopes)) / (2.0 * np.pi)
+    f_est = float(xp.mean(slopes)) / (2.0 * np.pi)
+    max_gap = int(np.max(np.diff(pilot_indices_np))) if P > 1 else 0
+    lock_range = fs / (2 * max_gap) if max_gap > 0 else float("inf")
+    logger.info(
+        f"FOE (pilots): {f_est:.2f} Hz "
+        f"[P={P} pilots, max_gap={max_gap} samples, lock_range=±{lock_range:.1f} Hz]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.pilot_phase_estimate(
+            pilot_indices=pilot_indices_np,
+            phi_pilots_u=to_device(phi_pilots_u, "cpu"),
+            f_est=f_est,
+            fs=fs,
+            show=True,
+        )
+
+    return f_est
 
 
 def correct_frequency_offset(
@@ -1371,6 +1395,9 @@ def correct_frequency_offset(
         Frequency-corrected samples, same shape and dtype as input.
     """
     samples, xp, _ = dispatch(samples)
+    logger.debug(
+        f"Applying frequency offset correction: {offset:.4f} Hz (fs={fs:.0f} Hz)"
+    )
     n = samples.shape[-1]
     t = xp.arange(n) / fs
 
@@ -1494,7 +1521,7 @@ def _dd_pll_numpy(sym, const, mu, beta, phi0, freq0):
     phase_est = np.empty(N, dtype=np.float64)
     phi = float(phi0)
     freq = float(freq0)
-    const_np = np.asarray(const)
+    const_np = to_device(const, "cpu")
 
     for n in range(N):
         y = sym[n] * np.exp(-1j * phi)
@@ -1512,6 +1539,7 @@ def recover_carrier_phase_viterbi_viterbi(
     modulation: str,
     order: int,
     block_size: int = 32,
+    debug_plot: bool = False,
 ) -> ArrayType:
     """
     Carrier phase recovery via the Viterbi-Viterbi (M-th power) algorithm.
@@ -1606,6 +1634,25 @@ def recover_carrier_phase_viterbi_viterbi(
     for ch in range(C):
         phi_full[ch] = xp.interp(all_positions, block_centers, phi_u[ch])
 
+    phi_full_np = to_device(phi_full, "cpu")
+    phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
+    phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    logger.info(
+        f"CPR (Viterbi-Viterbi, M={M}): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [{N_blocks} blocks × {block_size} symbols, C={C}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.carrier_phase_trajectory(
+            phi_full=phi_full_np,
+            block_centers=to_device(block_centers, "cpu"),
+            phi_blocks=to_device(phi_u, "cpu"),
+            show=True,
+            title="CPR — Viterbi-Viterbi",
+        )
+
     if was_1d:
         return phi_full[0]
     return phi_full
@@ -1617,6 +1664,7 @@ def recover_carrier_phase_bps(
     order: int,
     num_test_phases: int = 64,
     block_size: int = 32,
+    debug_plot: bool = False,
 ) -> ArrayType:
     """
     Carrier phase recovery via Blind Phase Search (BPS).
@@ -1708,12 +1756,12 @@ def recover_carrier_phase_bps(
     # ambiguous side='left'/'right' behaviour of searchsorted at block boundaries.
     #   block b is "to the left" of position n when b*bs + half_bs <= n
     #   => b <= (n - half_bs) / bs  => idx_left = floor((n - half_bs) / bs)
-    pos_int   = all_positions.astype(xp.int64)                                  # (N,)
-    idx_left  = xp.clip((pos_int - half_bs) // block_size, 0, N_blocks - 2)    # (N,)
-    idx_right = idx_left + 1                                                     # (N,)
-    t_interp  = xp.clip(
+    pos_int = all_positions.astype(xp.int64)  # (N,)
+    idx_left = xp.clip((pos_int - half_bs) // block_size, 0, N_blocks - 2)  # (N,)
+    idx_right = idx_left + 1  # (N,)
+    t_interp = xp.clip(
         (all_positions - block_centers[idx_left]) / block_size, 0.0, 1.0
-    )                                                                            # (N,)
+    )  # (N,)
 
     # Pre-compute phasors for all B candidates once (avoid redundant exp per channel)
     dtype_c = xp.complex64 if symbols.dtype == xp.complex64 else xp.complex128
@@ -1784,6 +1832,23 @@ def recover_carrier_phase_bps(
         # Interpolate to per-symbol resolution using pre-computed weights
         phi_full[ch] = phi_u[idx_left] * (1.0 - t_interp) + phi_u[idx_right] * t_interp
 
+    phi_full_np = to_device(phi_full, "cpu")
+    phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
+    phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    logger.info(
+        f"CPR (BPS, B={B}): phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
+        f"[{N_blocks} blocks × {block_size} symbols, C={C}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.carrier_phase_trajectory(
+            phi_full=phi_full_np,
+            show=True,
+            title="CPR — Blind Phase Search",
+        )
+
     if was_1d:
         return phi_full[0]
     return phi_full
@@ -1794,6 +1859,7 @@ def recover_carrier_phase_pilots(
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
     interpolation: str = "linear",
+    debug_plot: bool = False,
 ) -> ArrayType:
     """
     Carrier phase recovery using known pilot symbols.
@@ -1849,7 +1915,7 @@ def recover_carrier_phase_pilots(
         symbols = symbols[None, :]
     C, N = symbols.shape
 
-    pilot_indices_np = np.asarray(pilot_indices, dtype=np.intp)
+    pilot_indices_np = to_device(pilot_indices, "cpu").astype(np.intp)
     pilot_indices_xp = xp.asarray(pilot_indices, dtype=xp.float64)
     pilot_values_xp = xp.asarray(pilot_values)
     P = len(pilot_indices_np)
@@ -1897,6 +1963,26 @@ def recover_carrier_phase_pilots(
             "Choose 'linear' or 'cubic'."
         )
 
+    phi_full_np = to_device(phi_full, "cpu")
+    phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
+    phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    logger.info(
+        f"CPR (pilot-aided, {interpolation}): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [P={P} pilots, C={C}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        phi_pilots_u_np = to_device(phi_pilots_u, "cpu")
+        _plotting.pilot_phase_estimate(
+            pilot_indices=pilot_indices_np,
+            phi_pilots_u=phi_pilots_u_np,
+            phi_full=phi_full_np,
+            show=True,
+            title="CPR — Pilot-Aided Phase",
+        )
+
     if was_1d:
         return phi_full[0]
     return phi_full
@@ -1909,6 +1995,7 @@ def recover_carrier_phase_decision_directed(
     mu: float = 1e-2,
     beta: float = 0.0,
     phase_init: float = 0.0,
+    debug_plot: bool = False,
 ) -> ArrayType:
     r"""
     Carrier phase recovery via a Decision-Directed Phase-Locked Loop (DD-PLL).
@@ -2029,17 +2116,45 @@ def recover_carrier_phase_decision_directed(
 
         if numba_kernel is not None:
             phi_full[ch] = numba_kernel(
-                sym_r, sym_i, const_r, const_i,
-                float(mu), float(beta), float(phase_init), 0.0,
+                sym_r,
+                sym_i,
+                const_r,
+                const_i,
+                float(mu),
+                float(beta),
+                float(phase_init),
+                0.0,
             )
         else:
             phi_full[ch] = _dd_pll_numpy(
-                sym, const_np, float(mu), float(beta), float(phase_init), 0.0,
+                sym,
+                const_np,
+                float(mu),
+                float(beta),
+                float(phase_init),
+                0.0,
             )
 
     # Move result back to original device
     if xp is not np:
         phi_full = xp.asarray(phi_full)
+
+    phi_mean_deg = float(np.mean(phi_full)) * 180.0 / np.pi
+    phi_std_deg = float(np.std(phi_full)) * 180.0 / np.pi
+    loop_order = "2nd" if beta > 0.0 else "1st"
+    logger.info(
+        f"CPR (DD-PLL, {loop_order}-order): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [mu={mu}, beta={beta}, C={C}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.carrier_phase_trajectory(
+            phi_full=phi_full if xp is np else to_device(phi_full, "cpu"),
+            show=True,
+            title=f"CPR — DD-PLL ({loop_order}-order)",
+        )
 
     if was_1d:
         return phi_full[0]
@@ -2073,6 +2188,7 @@ def correct_carrier_phase(
         Phase-corrected symbols, same shape and dtype as ``symbols``.
     """
     symbols, xp, _ = dispatch(symbols)
+    logger.debug(f"Applying carrier phase correction: shape={symbols.shape}")
     phase_vector_xp = xp.asarray(phase_vector)
     phasor = xp.exp(-1j * phase_vector_xp)
     if phasor.dtype != symbols.dtype:
