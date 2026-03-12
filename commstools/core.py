@@ -1457,7 +1457,6 @@ class Signal(BaseModel):
         self,
         taps=None,
         taps_normalization: str = "unit_energy",
-        normalize_output: bool = False,
     ) -> "Signal":
         """
         Applies a matched filter to the signal samples.
@@ -1472,8 +1471,6 @@ class Signal(BaseModel):
             taps are generated from the signal's ``pulse_shape`` metadata.
         taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
             Normalization strategy for the filter taps.
-        normalize_output : bool, default False
-            If True, normalizes the filtered samples to a peak amplitude of 1.0.
 
         Returns
         -------
@@ -1492,7 +1489,6 @@ class Signal(BaseModel):
             self.samples,
             taps,
             taps_normalization=taps_normalization,
-            normalize_output=normalize_output,
             axis=-1,
         )
         return self
@@ -1953,12 +1949,12 @@ class Signal(BaseModel):
         Notes
         -----
         Symbols are ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
-        The generated samples are automatically normalized to **peak amplitude (1.0)**
-        via `filtering.shape_pulse`.
-        However, the underlying bit mapping uses **unit average power (E_s=1)**
-        by default to maintain mathematical consistency. Calling `resolve_symbols()`
-        will restore the symbols to unit average power for consistent metric
-        calculation and demapping.
+        The generated samples are automatically normalized to **unit average power
+        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
+        symbol mapping share the same power baseline, so Es/N0 relationships,
+        PAPR measurements, and metric calculations (EVM, BER) are all consistent
+        without any re-normalization. Calling `resolve_symbols()` returns the
+        symbols at the same unit average power for demapping.
         """
         from . import filtering, mapping
 
@@ -2056,12 +2052,12 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **peak amplitude (1.0)**
-        via `filtering.shape_pulse`.
-        However, the underlying bit mapping uses **unit average power (E_s=1)**
-        by default to maintain mathematical consistency. Calling `resolve_symbols()`
-        will restore the symbols to unit average power for consistent metric
-        calculation and demapping.
+        The generated samples are automatically normalized to **unit average power
+        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
+        symbol mapping share the same power baseline, so Es/N0 relationships,
+        PAPR measurements, and metric calculations (EVM, BER) are all consistent
+        without any re-normalization. Calling `resolve_symbols()` returns the
+        symbols at the same unit average power for demapping.
         """
         if rz:
             if sps % 2 != 0:
@@ -2135,12 +2131,12 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **peak amplitude (1.0)**
-        via `filtering.shape_pulse`.
-        However, the underlying bit mapping uses **unit average power (E_s=1)**
-        by default to maintain mathematical consistency. Calling `resolve_symbols()`
-        will restore the symbols to unit average power for consistent metric
-        calculation and demapping.
+        The generated samples are automatically normalized to **unit average power
+        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
+        symbol mapping share the same power baseline, so Es/N0 relationships,
+        PAPR measurements, and metric calculations (EVM, BER) are all consistent
+        without any re-normalization. Calling `resolve_symbols()` returns the
+        symbols at the same unit average power for demapping.
         """
         return cls.generate(
             modulation="psk",
@@ -2203,12 +2199,12 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **peak amplitude (1.0)**
-        via `filtering.shape_pulse`.
-        However, the underlying bit mapping uses **unit average power (E_s=1)**
-        by default to maintain mathematical consistency. Calling `resolve_symbols()`
-        will restore the symbols to unit average power for consistent metric
-        calculation and demapping.
+        The generated samples are automatically normalized to **unit average power
+        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
+        symbol mapping share the same power baseline, so Es/N0 relationships,
+        PAPR measurements, and metric calculations (EVM, BER) are all consistent
+        without any re-normalization. Calling `resolve_symbols()` returns the
+        symbols at the same unit average power for demapping.
         """
         return cls.generate(
             modulation="qam",
@@ -2248,11 +2244,11 @@ class Signal(BaseModel):
 
         Notes
         -----
-        This method automatically normalizes the decimated samples to **unit
-        average power ($E_s=1$)**. This is critical because physical waveforms
-        are often peak-normalized for transmission, which would skew Euclidean
-        distance-based demapping and metrics (like EVM) relative to the ideal
-        reference constellations.
+        This method normalizes the decimated samples to **unit average power
+        ($E_s=1$)** to ensure consistency with the reference constellation
+        (which also uses $E_s=1$). Although the sps waveform already carries
+        $E_s=1$ after pulse shaping, re-normalizing here is a safety measure
+        that absorbs any gain introduced by the channel or equalizer.
         """
         sps = self.sps
         if sps is None:
@@ -2649,11 +2645,6 @@ class Preamble(BaseModel):
         -------
         Signal
             A `Signal` object with the shaped preamble.
-
-        Notes
-        -----
-        Like all waveform generation methods in `commstools`, this output is
-        normalized to **peak amplitude (1.0)**.
         """
         from .filtering import shape_pulse
 
@@ -2787,7 +2778,9 @@ class SingleCarrierFrame(BaseModel):
         if self.pilot_pattern == "comb" and self.pilot_period > 1:
             data_per_period = self.pilot_period - 1
             if self.payload_len % data_per_period != 0:
-                snapped = math.ceil(self.payload_len / data_per_period) * data_per_period
+                snapped = (
+                    math.ceil(self.payload_len / data_per_period) * data_per_period
+                )
                 logger.warning(
                     f"SingleCarrierFrame (comb): payload_len={self.payload_len} is not "
                     f"divisible by data_per_period={data_per_period} "
@@ -2797,7 +2790,10 @@ class SingleCarrierFrame(BaseModel):
                 )
                 self.payload_len = snapped
 
-        elif self.pilot_pattern == "block" and self.pilot_period > self.pilot_block_len > 0:
+        elif (
+            self.pilot_pattern == "block"
+            and self.pilot_period > self.pilot_block_len > 0
+        ):
             data_per_block = self.pilot_period - self.pilot_block_len
             if self.payload_len % data_per_block != 0:
                 snapped = math.ceil(self.payload_len / data_per_block) * data_per_block
@@ -3200,7 +3196,10 @@ class SingleCarrierFrame(BaseModel):
 
         Notes
         -----
-        The resulting waveform samples are normalized to **peak amplitude (1.0)**.
+        Each section (preamble and body) is independently I/Q component peak-normalised
+        so both occupy the full DAC range regardless of their modulation format.
+        After concatenation the full frame is normalised to **unit average power (Es = 1)**.
+        Pilot/payload power ratios set by `pilot_gain_db` are preserved throughout.
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
@@ -3284,7 +3283,25 @@ class SingleCarrierFrame(BaseModel):
                 cp_slice = samples[..., -guard_len_samples:]
                 samples = xp.concatenate([cp_slice, samples], axis=-1)
 
-        # 4. Build SignalInfo metadata
+        # 4. Normalize assembled frame to unit average power.
+        # Each section (preamble, body) was independently I/Q peak-normalised so
+        # that both use the full DAC range irrespective of their modulation format.
+        # After concatenation the sections may differ in average power, so a final
+        # global normalization brings the overall frame to Es = 1.  Pilot/payload
+        # power ratios within the body are preserved because every section's samples
+        # are scaled by the same factor.
+        # Guard zeros are excluded from the mean-power computation so they do not
+        # dilute the normalization factor; they remain zero after scaling anyway.
+        if self.guard_len > 0 and self.guard_type == "zero":
+            guard_len_samples = int(self.guard_len * sps)
+            active = samples[..., :-guard_len_samples]
+        else:
+            active = samples
+        norm_factor = helpers.rms(active, axis=-1, keepdims=True)
+        norm_factor = xp.where(norm_factor == 0, xp.ones_like(norm_factor), norm_factor)
+        samples = samples / norm_factor
+
+        # 5. Build SignalInfo metadata
         mask, _ = self._generate_pilot_mask()
         pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
 

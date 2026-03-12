@@ -730,13 +730,19 @@ def shape_pulse(
     Returns
     -------
     array_like
-        The pulse-shaped waveform at rate `sps * symbol_rate`. The peak
-        absolute amplitude is normalized to 1.0.
+        The pulse-shaped waveform at rate `sps * symbol_rate`, normalized to
+        unit average power (RMS = 1).
 
     Notes
     -----
     This method implements pulse shaping via polyphase resampling, which is
     computationally more efficient than zero-stuffing followed by convolution.
+
+    The output is normalized to **unit average power** (not peak), so that
+    Es/N0 relationships, PAPR measurements, and pilot/payload power ratios
+    are all preserved correctly. Callers that need peak-normalized samples
+    for display (e.g., eye diagrams) should apply ``normalize(..., "peak")``
+    themselves.
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
@@ -760,7 +766,9 @@ def shape_pulse(
             pulse_shape = "rect"
         else:
             logger.debug("Pulse shaping disabled, expanding symbols by sps")
-            return normalize(expand(symbols, int(sps), axis=-1), "peak", axis=-1)
+            return normalize(
+                expand(symbols, int(sps), axis=-1), "average_power", axis=-1
+            )
 
     if pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
@@ -791,14 +799,13 @@ def shape_pulse(
     if res.dtype != symbols.dtype:
         res = res.astype(symbols.dtype)
 
-    return normalize(res, "peak", axis=-1)
+    return normalize(res, "average_power", axis=-1)
 
 
 def matched_filter(
     samples: ArrayType,
     pulse_taps: ArrayType,
     taps_normalization: str = "unit_energy",
-    normalize_output: bool = False,
     axis: int = -1,
 ) -> ArrayType:
     """
@@ -817,8 +824,6 @@ def matched_filter(
         Shape: (N_taps,).
     taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
         Designates how the matched filter taps are normalized.
-    normalize_output : bool, default False
-        Whether to normalize the output amplitude to 1.0.
     axis : int, default -1
         The axis along which to apply the filter.
 
@@ -845,10 +850,4 @@ def matched_filter(
             "Use 'unity_gain' or 'unit_energy'."
         )
 
-    # Apply filter
-    output = fir_filter(samples, matched_taps, axis=axis)
-
-    if normalize_output:
-        output = normalize(output, mode="peak", axis=-1)
-
-    return output
+    return fir_filter(samples, matched_taps, axis=axis)
