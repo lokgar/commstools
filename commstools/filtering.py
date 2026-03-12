@@ -760,7 +760,7 @@ def shape_pulse(
             pulse_shape = "rect"
         else:
             logger.debug("Pulse shaping disabled, expanding symbols by sps")
-            return normalize(expand(symbols, int(sps), axis=-1), "peak")
+            return normalize(expand(symbols, int(sps), axis=-1), "peak", axis=-1)
 
     if pulse_shape == "rect":
         h = xp.ones(int(sps * pulse_width))
@@ -791,7 +791,7 @@ def shape_pulse(
     if res.dtype != symbols.dtype:
         res = res.astype(symbols.dtype)
 
-    return normalize(res, "peak")
+    return normalize(res, "peak", axis=-1)
 
 
 def matched_filter(
@@ -849,6 +849,6 @@ def matched_filter(
     output = fir_filter(samples, matched_taps, axis=axis)
 
     if normalize_output:
-        output = normalize(output, mode="peak")
+        output = normalize(output, mode="peak", axis=-1)
 
     return output

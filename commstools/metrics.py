@@ -74,7 +74,7 @@ def evm(
     if rx.shape != tx.shape:
         raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
 
-    # Determine axis for time/symbols (assumed last)
+    # Determine axis for time/symbols
     axis = -1
 
     # helper to check normalization

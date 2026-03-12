@@ -3219,8 +3219,8 @@ class SingleCarrierFrame(BaseModel):
             **kwargs,
         )
 
-        # Normalize Body to Peak 1.0
-        body_samples = helpers.normalize(body_samples, mode="peak")
+        # Normalize Body to Peak 1.0 per stream
+        body_samples = helpers.normalize(body_samples, mode="peak", axis=-1)
 
         # 2. Shape Preamble (if present)
         if self.preamble is not None:
@@ -3240,8 +3240,8 @@ class SingleCarrierFrame(BaseModel):
             )
             preamble_samples = preamble_signal.samples
 
-            # Normalize Preamble to Peak 1.0
-            preamble_samples = helpers.normalize(preamble_samples, mode="peak")
+            # Normalize Preamble to Peak 1.0 (1D at this point; axis=-1 == global)
+            preamble_samples = helpers.normalize(preamble_samples, mode="peak", axis=-1)
 
             # Handle MIMO preamble structure
             preamble_samples = helpers.expand_preamble_mimo(
