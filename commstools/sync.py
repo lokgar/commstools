@@ -1723,11 +1723,19 @@ def recover_carrier_phase_bps(
     """
     from .mapping import gray_constellation
 
+    from .helpers import normalize
+
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
     if was_1d:
         symbols = symbols[None, :]
     C, N = symbols.shape
+
+    # Normalise each channel to unit average power so the metric is computed at
+    # the same scale as the reference constellation (gray_constellation returns
+    # unit-average-power points).  BPS is a phase estimator; it must be
+    # amplitude-agnostic.
+    symbols = normalize(symbols, mode="average_power", axis=-1)
 
     # Reference constellation on the same device
     const_np = gray_constellation(modulation, order)
@@ -2085,6 +2093,7 @@ def recover_carrier_phase_decision_directed(
     J. G. Proakis, *Digital Communications*, 4th ed., McGraw-Hill, 2001,
     ch. 6 (carrier phase synchronisation).
     """
+    from .helpers import normalize
     from .mapping import gray_constellation
 
     symbols, xp, _ = dispatch(symbols)
@@ -2092,6 +2101,12 @@ def recover_carrier_phase_decision_directed(
     if was_1d:
         symbols = symbols[None, :]
     C, N = symbols.shape
+
+    # Normalise to unit average power so the effective loop gain is mu regardless
+    # of input amplitude.  The error signal is e[n] = Im(y[n]*d_hat*), which
+    # scales with signal amplitude; without this, the effective gain is mu*A
+    # (where A is the RMS amplitude), making loop bandwidth input-dependent.
+    symbols = normalize(symbols, mode="average_power", axis=-1)
 
     # Constellation on CPU (decisions are scalar operations in the loop)
     const_np = gray_constellation(modulation, order).astype(np.complex128)

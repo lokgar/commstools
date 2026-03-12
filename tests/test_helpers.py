@@ -55,6 +55,32 @@ def test_normalize(backend_device, xp):
     assert xp.isclose(float(xp.mean(xp.abs(norm_power) ** 2)), 1.0)
 
 
+def test_normalize_peak_complex_envelope(backend_device, xp):
+    """peak mode normalizes by complex envelope, not per-component I/Q.
+
+    After normalization max(|x[n]|) == 1.0. A subsequent frequency rotation
+    must not push real or imaginary parts outside [-1, 1].
+    """
+    # Sample with large imaginary relative to real: envelope = sqrt(0.6^2 + 0.8^2) = 1.0
+    # Before fix: per-component max was 0.8, so norm_factor=0.8 → envelope after = 1.25
+    data = xp.array([0.6 + 0.8j, -0.3 + 0.4j, 0.1 - 0.2j])
+    norm = helpers.normalize(data, mode="peak")
+
+    # Complex envelope peak must be exactly 1.0
+    assert xp.isclose(xp.max(xp.abs(norm)), 1.0)
+
+    # Neither component may exceed 1.0 (would violate the envelope bound)
+    assert float(xp.max(xp.abs(norm.real))) <= 1.0 + 1e-6
+    assert float(xp.max(xp.abs(norm.imag))) <= 1.0 + 1e-6
+
+    # After a 45-degree rotation (worst case for per-component spread),
+    # both components must still be within [-1, 1].
+    import numpy as _np
+    rotated = norm * _np.exp(1j * _np.pi / 4)
+    assert float(xp.max(xp.abs(rotated.real))) <= 1.0 + 1e-6
+    assert float(xp.max(xp.abs(rotated.imag))) <= 1.0 + 1e-6
+
+
 def test_normalize_unity_gain(backend_device, xp):
     """Verify unity-gain normalization (sum of elements = 1)."""
     data = xp.array([1.0, 2.0, 3.0, 4.0])

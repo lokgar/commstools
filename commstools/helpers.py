@@ -154,10 +154,12 @@ def normalize(
           Preserves signal levels (e.g., 5V -> 5V). Used for general filters.
         - "unit_energy": L2-norm is 1.0 ($\\sum |x|^2 = 1$).
           Preserves total energy/noise power. Used for pulse shaping and matched filters.
-        - "peak": Peak absolute value is 1.0.
-          **Crucially**: For complex signals, normalizes Real and Imaginary components
-          independently to fit within DAC limits ($|I| \\le 1, |Q| \\le 1$).
-          This maximizes dynamic range without clipping either independent channel.
+        - "peak": Peak complex envelope is 1.0 ($\\max_n |x[n]| = 1$).
+          For complex signals this normalizes by the maximum instantaneous magnitude,
+          so $|x[n]| \\le 1$ for all $n$. This bound is invariant under any
+          unit-magnitude operation (frequency shifts, phase rotations, equalization),
+          making it the correct choice for DSP chains. For real signals the behavior
+          is identical: $\\max_n |x[n]| = 1$.
         - "average_power" or "rms": Mean power (RMS) is 1.0 ($E[|x|^2] = 1$).
           Normalizes the composite complex signal power. Used for symbol constellations.
     axis : int, optional
@@ -188,15 +190,12 @@ def normalize(
         norm_factor = xp.linalg.norm(x, axis=axis, keepdims=keepdims)
 
     elif mode == "peak":
-        # Peak normalization: max of any channel = 1
-        # For complex: max(max(|I|), max(|Q|)) to prevent DAC/ADC clipping
-        # For real: max(|x|) = 1
-        if xp.iscomplexobj(x):
-            max_real = xp.max(xp.abs(x.real), axis=axis, keepdims=keepdims)
-            max_imag = xp.max(xp.abs(x.imag), axis=axis, keepdims=keepdims)
-            norm_factor = xp.maximum(max_real, max_imag)
-        else:
-            norm_factor = xp.max(xp.abs(x), axis=axis, keepdims=keepdims)
+        # Complex envelope peak: max(|x[n]|) = 1.
+        # For complex signals this is the instantaneous magnitude, not the
+        # per-component max. The bound is invariant under frequency shifts and
+        # phase rotations, unlike per-component (I/Q) normalization which can
+        # allow |x[n]| up to sqrt(2) and therefore violate bounds after rotation.
+        norm_factor = xp.max(xp.abs(x), axis=axis, keepdims=keepdims)
 
     elif mode == "average_power":
         # RMS = 1: sqrt(mean(|x|²)) = 1, so mean(|x|²) = 1
