@@ -186,10 +186,11 @@ def test_signal_info_minimal():
 def test_independent_preamble_normalization(backend_device, xp):
     """
     Verify frame normalization contract:
-    1. The assembled frame has unit average power (Es = 1).
+    1. The assembled frame has unit symbol power: mean(|x|²) * sps ≈ 1,
+       i.e. average sample power ≈ 1/sps.
     2. Preamble and body sections have equal I/Q peaks, confirming that neither
        silences the other (each was independently I/Q peak-normalised before the
-       final global average-power normalization, so the same global scale factor
+       final global symbol-power normalization, so the same global scale factor
        applies to both).
 
     Guards against the old global-normalisation bug where a high-PAPR body
@@ -211,9 +212,12 @@ def test_independent_preamble_normalization(backend_device, xp):
     def iq_peak(s):
         return float(xp.maximum(xp.max(xp.abs(s.real)), xp.max(xp.abs(s.imag))))
 
-    # Overall frame must have unit average power.
-    avg_power = float(xp.mean(xp.abs(sig.samples) ** 2))
-    assert abs(avg_power - 1.0) < 1e-2, f"Frame average power {avg_power:.4f} != 1.0"
+    # Unit symbol power: mean(|x|²) * sps = 1  →  avg sample power = 1/sps.
+    avg_sample_power = float(xp.mean(xp.abs(sig.samples) ** 2))
+    expected = 1.0 / sps
+    assert abs(avg_sample_power - expected) < 1e-2, (
+        f"Frame avg sample power {avg_sample_power:.4f} != 1/sps={expected:.4f}"
+    )
 
     # Both sections were independently I/Q peak-normalised before the global
     # normalization, so their I/Q peaks must be equal after it.

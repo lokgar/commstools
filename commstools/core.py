@@ -1949,12 +1949,13 @@ class Signal(BaseModel):
         Notes
         -----
         Symbols are ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
-        The generated samples are automatically normalized to **unit average power
-        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
-        symbol mapping share the same power baseline, so Es/N0 relationships,
-        PAPR measurements, and metric calculations (EVM, BER) are all consistent
-        without any re-normalization. Calling `resolve_symbols()` returns the
-        symbols at the same unit average power for demapping.
+        The generated samples are normalized to **unit symbol power (Es = 1)**
+        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        This matches the convention expected by ``apply_awgn``:
+        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        all pulse shapes without any per-pulse offset.
+        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
+        at 1 sps) for demapping.
         """
         from . import filtering, mapping
 
@@ -2052,12 +2053,13 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **unit average power
-        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
-        symbol mapping share the same power baseline, so Es/N0 relationships,
-        PAPR measurements, and metric calculations (EVM, BER) are all consistent
-        without any re-normalization. Calling `resolve_symbols()` returns the
-        symbols at the same unit average power for demapping.
+        The generated samples are normalized to **unit symbol power (Es = 1)**
+        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        This matches the convention expected by ``apply_awgn``:
+        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        all pulse shapes without any per-pulse offset.
+        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
+        at 1 sps) for demapping.
         """
         if rz:
             if sps % 2 != 0:
@@ -2131,12 +2133,13 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **unit average power
-        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
-        symbol mapping share the same power baseline, so Es/N0 relationships,
-        PAPR measurements, and metric calculations (EVM, BER) are all consistent
-        without any re-normalization. Calling `resolve_symbols()` returns the
-        symbols at the same unit average power for demapping.
+        The generated samples are normalized to **unit symbol power (Es = 1)**
+        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        This matches the convention expected by ``apply_awgn``:
+        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        all pulse shapes without any per-pulse offset.
+        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
+        at 1 sps) for demapping.
         """
         return cls.generate(
             modulation="psk",
@@ -2199,12 +2202,13 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are automatically normalized to **unit average power
-        (E_s = 1)** via `filtering.shape_pulse`. Both samples and the underlying
-        symbol mapping share the same power baseline, so Es/N0 relationships,
-        PAPR measurements, and metric calculations (EVM, BER) are all consistent
-        without any re-normalization. Calling `resolve_symbols()` returns the
-        symbols at the same unit average power for demapping.
+        The generated samples are normalized to **unit symbol power (Es = 1)**
+        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        This matches the convention expected by ``apply_awgn``:
+        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        all pulse shapes without any per-pulse offset.
+        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
+        at 1 sps) for demapping.
         """
         return cls.generate(
             modulation="qam",
@@ -2244,11 +2248,11 @@ class Signal(BaseModel):
 
         Notes
         -----
-        This method normalizes the decimated samples to **unit average power
-        ($E_s=1$)** to ensure consistency with the reference constellation
-        (which also uses $E_s=1$). Although the sps waveform already carries
-        $E_s=1$ after pulse shaping, re-normalizing here is a safety measure
-        that absorbs any gain introduced by the channel or equalizer.
+        The decimated 1-sps samples are normalized to **unit average power
+        ($E_s=1$)**.  At 1 sps this is equivalent to symbol-power normalization.
+        The upstream sps waveform already carries unit symbol power, so this
+        step is a safety guard that absorbs any gain introduced by the channel,
+        equalizer, or matched filter before decimation.
         """
         sps = self.sps
         if sps is None:
@@ -3198,7 +3202,9 @@ class SingleCarrierFrame(BaseModel):
         -----
         Each section (preamble and body) is independently I/Q component peak-normalised
         so both occupy the full DAC range regardless of their modulation format.
-        After concatenation the full frame is normalised to **unit average power (Es = 1)**.
+        After concatenation the full frame is normalised to **unit symbol power
+        (Es = 1)**, meaning average sample power = 1/sps.  This matches the
+        convention used by ``shape_pulse`` and ``apply_awgn``.
         Pilot/payload power ratios set by `pilot_gain_db` are preserved throughout.
         """
         xp = cp if is_cupy_available() else np
@@ -3287,19 +3293,11 @@ class SingleCarrierFrame(BaseModel):
         # Each section (preamble, body) was independently I/Q peak-normalised so
         # that both use the full DAC range irrespective of their modulation format.
         # After concatenation the sections may differ in average power, so a final
-        # global normalization brings the overall frame to Es = 1.  Pilot/payload
-        # power ratios within the body are preserved because every section's samples
-        # are scaled by the same factor.
-        # Guard zeros are excluded from the mean-power computation so they do not
-        # dilute the normalization factor; they remain zero after scaling anyway.
-        if self.guard_len > 0 and self.guard_type == "zero":
-            guard_len_samples = int(self.guard_len * sps)
-            active = samples[..., :-guard_len_samples]
-        else:
-            active = samples
-        norm_factor = helpers.rms(active, axis=-1, keepdims=True)
-        norm_factor = xp.where(norm_factor == 0, xp.ones_like(norm_factor), norm_factor)
-        samples = samples / norm_factor
+        # global normalization brings the frame to unit symbol power (Es = 1),
+        # i.e. average sample power = 1/sps.  Pilot/payload power ratios within
+        # the body are preserved because every section's samples are scaled by the
+        # same factor.  Guard zeros remain zero after scaling.
+        samples = helpers.normalize(samples, "symbol_power", sps=sps, axis=-1)
 
         # 5. Build SignalInfo metadata
         mask, _ = self._generate_pilot_mask()

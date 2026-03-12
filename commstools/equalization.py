@@ -1002,82 +1002,38 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
 # -----------------------------------------------------------------------------
 
 
-def _normalize_inputs_jax(samples, training_symbols, sps, xp):
-    """Scale samples and training symbols to a common unit-power reference.
+def _normalize_inputs(samples, training_symbols, sps):
+    """Scale samples and training symbols to a common unit symbol-power reference.
 
-    For fractionally-spaced equalization (sps=2) the fractional timing phase
+    For fractionally-spaced equalization (sps > 1) the fractional timing phase
     is unknown.  Strided power measurement ``samples[..., ::sps]`` is unsafe
     because it can land on zero-crossings of the Nyquist pulse, severely
     underestimating signal power and destabilising adaptation.
 
-    Instead we use the *wideband* power.  For a unit-energy Nyquist pulse
-    the total discrete power is ``E[|s|²] / sps``, so the symbol-rate RMS
-    is ``global_rms * sqrt(sps)``.  This estimate is phase-invariant.
+    Instead the *wideband* (all-sample) power is used via
+    ``normalize(..., "symbol_power", sps=sps)``, which divides by
+    ``rms(samples) * √sps``.  This estimate is phase-invariant and gives
+    unit symbol energy (Es = 1) for any pulse shape with unit-energy taps.
+    Works transparently on NumPy and CuPy arrays via the helper dispatch.
 
     Parameters
     ----------
-    samples         : (C, N) or (N,)  complex on any backend (NumPy / CuPy)
-    training_symbols: (C, K) or (K,)  or None
-    sps             : int — samples per symbol (stride)
-    xp              : array module (np or cp)
+    samples          : (C, N) or (N,)  complex, any backend (NumPy / CuPy)
+    training_symbols : (C, K) or (K,)  or None — always at 1 sps
+    sps              : int — samples per symbol
 
     Returns
     -------
     samples          : unit symbol-power, same shape/backend
     training_symbols : unit average-power, same shape/backend (or None)
     """
-    from commstools.helpers import normalize as c_normalize, rms
+    from commstools.helpers import normalize as c_normalize
 
-    # Robust symbol-power estimate invariant to arbitrary fractional delays.
-    # Python float literal doesn't upcast NumPy/CuPy float32 arrays (unlike a
-    # 0-d NumPy array), so no asarray() needed to preserve precision.
-    global_rms = rms(samples, axis=-1, keepdims=True)
-    sym_rms = global_rms * float(sps) ** 0.5
-
-    # Avoid div by 0 just in case
-    sym_rms = xp.where(sym_rms == 0, 1.0, sym_rms)
-    samples = samples / sym_rms
+    samples = c_normalize(samples, "symbol_power", sps=sps, axis=-1)
 
     if training_symbols is not None:
+        # Training symbols are at 1 sps; "average_power" == "symbol_power" at sps=1.
         training_symbols = c_normalize(training_symbols, "average_power", axis=-1)
-
-    return samples, training_symbols
-
-
-def _normalize_inputs_numpy(samples, training_symbols, sps):
-    """Scale samples and training symbols to unit power using plain NumPy.
-
-    NumPy counterpart of ``_normalize_inputs_jax`` for use with the Numba
-    backend.  No ``xp`` dispatch, no helper imports — operates strictly on
-    NumPy arrays.  Uses the same wideband-power estimate as the JAX variant
-    to ensure both backends produce identical normalization results.
-
-    Parameters
-    ----------
-    samples          : (C, N) or (N,)  complex64 NumPy array
-    training_symbols : (C, K) or (K,)  complex64 NumPy array, or None
-    sps              : int — samples per symbol (stride)
-
-    Returns
-    -------
-    samples          : unit symbol-power NumPy array, same shape
-    training_symbols : unit average-power NumPy array (or None)
-    """
-    # Robust symbol-power estimate: global RMS * sqrt(sps) — phase-invariant.
-    # rms(axis=-1) = linalg.norm / sqrt(N), so rms * sqrt(sps) = norm * sqrt(sps/N).
-    # Collapsed into one norm call to avoid abs()**2 and mean() intermediates.
-    n = samples.shape[-1]
-    sym_rms = np.linalg.norm(samples, axis=-1, keepdims=True) * (float(sps) / n) ** 0.5
-    sym_rms = np.where(sym_rms == 0, np.float32(1.0), sym_rms)
-    samples = samples / sym_rms
-
-    if training_symbols is not None:
-        k = training_symbols.shape[-1]
-        scale = (
-            np.linalg.norm(training_symbols, axis=-1, keepdims=True) / float(k) ** 0.5
-        )
-        scale = np.where(scale == 0, np.float32(1.0), scale)
-        training_symbols = training_symbols / scale
 
     return samples, training_symbols
 
@@ -1547,7 +1503,7 @@ def lms(
             if training_symbols is not None
             else None
         )
-        samples_np, training_np = _normalize_inputs_numpy(samples_np, training_np, sps)
+        samples_np, training_np = _normalize_inputs(samples_np, training_np, sps)
         # Pad (NumPy)
         if was_1d:
             samples_padded = np.pad(samples_np, (pad_left, pad_right))[np.newaxis, :]
@@ -1621,9 +1577,7 @@ def lms(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, training_symbols = _normalize_inputs_jax(
-        samples, training_symbols, sps, xp
-    )
+    samples, training_symbols = _normalize_inputs(samples, training_symbols, sps)
     # Pad (backend-agnostic via xp)
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -1892,7 +1846,7 @@ def rls(
             if training_symbols is not None
             else None
         )
-        samples_np, training_np = _normalize_inputs_numpy(samples_np, training_np, sps)
+        samples_np, training_np = _normalize_inputs(samples_np, training_np, sps)
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -1981,9 +1935,7 @@ def rls(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, training_symbols = _normalize_inputs_jax(
-        samples, training_symbols, sps, xp
-    )
+    samples, training_symbols = _normalize_inputs(samples, training_symbols, sps)
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -2206,7 +2158,7 @@ def cma(
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-        samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
+        samples_np, _ = _normalize_inputs(samples_np, None, sps)
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -2263,7 +2215,7 @@ def cma(
         raise ImportError("JAX is required for backend='jax'.")
 
     # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-    samples, _ = _normalize_inputs_jax(samples, None, sps, xp)
+    samples, _ = _normalize_inputs(samples, None, sps)
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -2466,7 +2418,7 @@ def rde(
             raise ImportError("Numba is required for backend='numba'.")
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
-        samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
+        samples_np, _ = _normalize_inputs(samples_np, None, sps)
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -2526,7 +2478,7 @@ def rde(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, _ = _normalize_inputs_jax(samples, None, sps, xp)
+    samples, _ = _normalize_inputs(samples, None, sps)
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -3213,7 +3165,7 @@ def equalize_frame(
         samples_np = np.ascontiguousarray(to_device(payload_samples, "cpu"), dtype=np.complex64)
         if samples_np.ndim == 1:
             samples_np = samples_np[np.newaxis, :]
-        samples_np, _ = _normalize_inputs_numpy(samples_np, None, sps)
+        samples_np, _ = _normalize_inputs(samples_np, None, sps)
 
         c_tap = num_taps // 2
         pad_left = c_tap
