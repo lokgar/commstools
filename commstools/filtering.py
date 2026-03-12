@@ -731,18 +731,23 @@ def shape_pulse(
     -------
     array_like
         The pulse-shaped waveform at rate `sps * symbol_rate`, normalized to
-        unit average power (RMS = 1).
+        **unit symbol power** (Es = 1). Average sample power = 1/sps.
 
     Notes
     -----
     This method implements pulse shaping via polyphase resampling, which is
     computationally more efficient than zero-stuffing followed by convolution.
 
-    The output is normalized to **unit average power** (not peak), so that
-    Es/N0 relationships, PAPR measurements, and pilot/payload power ratios
-    are all preserved correctly. Callers that need peak-normalized samples
-    for display (e.g., eye diagrams) should apply ``normalize(..., "peak")``
-    themselves.
+    **Normalization convention.** All pulse types — zero-stuffed (``"none"``),
+    rect, and unit-energy Nyquist filters (RRC, RC, Gaussian, SmoothRect) —
+    produce an output where ``E[|x|²] · sps = 1``, i.e. average sample power
+    equals 1/sps. This is the **symbol-power** convention and is what
+    ``apply_awgn`` expects: it computes ``Es = mean_sample_power × sps``, so
+    Es = 1 is preserved and Es/N0 calibration is correct for all pulse shapes
+    without any per-pulse offset.
+
+    Callers that need peak-normalized samples for display (e.g., eye diagrams)
+    should apply ``normalize(..., "peak")`` after the fact.
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
@@ -767,11 +772,14 @@ def shape_pulse(
         else:
             logger.debug("Pulse shaping disabled, expanding symbols by sps")
             return normalize(
-                expand(symbols, int(sps), axis=-1), "average_power", axis=-1
+                expand(symbols, int(sps), axis=-1), "symbol_power", sps=int(sps), axis=-1
             )
 
     if pulse_shape == "rect":
-        h = xp.ones(int(sps * pulse_width))
+        # Normalize to unit energy so rect has the same power behaviour as all
+        # other pulse generators (‖h‖₂ = 1).  Without this, the rect output
+        # sits at average sample power ≈ 1 instead of 1/sps.
+        h = normalize(xp.ones(int(sps * pulse_width)), "unit_energy")
     elif pulse_shape == "smoothrect":
         # Note: Tap generators return NumPy arrays
         h = smoothrect_taps(
@@ -799,7 +807,7 @@ def shape_pulse(
     if res.dtype != symbols.dtype:
         res = res.astype(symbols.dtype)
 
-    return normalize(res, "average_power", axis=-1)
+    return normalize(res, "symbol_power", sps=int(sps), axis=-1)
 
 
 def matched_filter(

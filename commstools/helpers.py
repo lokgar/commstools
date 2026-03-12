@@ -139,7 +139,7 @@ def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> Arr
 
 
 def normalize(
-    x: ArrayType, mode: str = "unity_gain", axis: Optional[int] = None
+    x: ArrayType, mode: str = "unity_gain", axis: Optional[int] = None, sps: int = 1
 ) -> ArrayType:
     """
     Normalizes an array according to the specified strategy.
@@ -148,7 +148,7 @@ def normalize(
     ----------
     x : array_like
         Input signal or filter taps.
-    mode : {"unity_gain", "unit_energy", "peak", "average_power", "rms"}, default "unity_gain"
+    mode : {"unity_gain", "unit_energy", "peak", "average_power", "symbol_power"}, default "unity_gain"
         Normalization strategy:
         - "unity_gain": Sum of elements is 1.0 (DC gain normalization).
           Preserves signal levels (e.g., 5V -> 5V). Used for general filters.
@@ -160,18 +160,33 @@ def normalize(
           unit-magnitude operation (frequency shifts, phase rotations, equalization),
           making it the correct choice for DSP chains. For real signals the behavior
           is identical: $\\max_n |x[n]| = 1$.
-        - "average_power" or "rms": Mean power (RMS) is 1.0 ($E[|x|^2] = 1$).
-          Normalizes the composite complex signal power. Used for symbol constellations.
+        - "average_power": Mean sample power is 1.0 ($E[|x|^2] = 1$ per sample).
+          Normalizes the composite complex signal power at the sample level.
+          Used for symbol constellations at 1 sps and for display/plotting.
+          **Not suitable for oversampled waveforms**: for a Nyquist pulse with
+          unit-energy taps at ``sps`` samples/symbol the natural average sample
+          power is ``Es/sps``, so ``"average_power"`` would inflate all samples
+          by ``√sps`` and break Es/N0 calibration.
+        - "symbol_power": Unit symbol energy regardless of oversampling factor.
+          Norm factor is ``rms(x) * √sps``, so the output satisfies
+          ``E[|x|²] * sps = 1`` (i.e. average sample power = 1/sps).
+          This is the correct mode for pulse-shaped waveforms: all pulse types
+          (zero-stuffed, rect, RRC, Gaussian, …) end up at the same power level
+          and ``apply_awgn`` can use ``Es = signal_power * sps = 1`` directly.
+          Requires ``sps`` parameter. At ``sps=1`` it is identical to
+          ``"average_power"``.
     axis : int, optional
         The axis along which to compute the normalization factor.
         If `None`, normalizes the entire array globally.
+    sps : int, default 1
+        Samples per symbol. Only used by the ``"symbol_power"`` mode.
 
     Returns
     -------
     array_like
         The normalized array.
     """
-    logger.debug(f"Normalizing array (mode: {mode}, axis={axis}).")
+    logger.debug(f"Normalizing array (mode: {mode}, axis={axis}, sps={sps}).")
     x, xp, _ = dispatch(x)
 
     # keepdims for proper broadcasting when axis is specified
@@ -199,8 +214,19 @@ def normalize(
 
     elif mode == "average_power":
         # RMS = 1: sqrt(mean(|x|²)) = 1, so mean(|x|²) = 1
-        # Use case: signals where average power should be normalized
+        # Use case: 1-sps symbol sequences and constellation normalization.
         norm_factor = rms(x, axis=axis, keepdims=keepdims)
+
+    elif mode == "symbol_power":
+        # Symbol-power norm: rms(x) * √sps = 1  →  mean(|x|²) * sps = 1
+        # Equivalent to average_power at 1 sps; at higher sps it accounts for
+        # the 1/sps dilution produced by Nyquist pulse shaping with unit-energy
+        # taps, leaving Es = 1 per symbol for all pulse shapes.
+        # This is the same correction used in the equalizer's _normalize_inputs:
+        #   sym_rms = global_rms * √sps
+        norm_factor = rms(x, axis=axis, keepdims=keepdims) * xp.asarray(
+            sps**0.5, dtype=x.real.dtype
+        )
 
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
