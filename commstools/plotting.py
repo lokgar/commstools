@@ -147,7 +147,7 @@ def psd(
     ax: Optional[Any] = None,
     xlim: Optional[Tuple[float, float]] = None,
     ylim: Optional[Tuple[float, float]] = None,
-    title: Optional[str] = "Spectrum",
+    title: Optional[str] = "Power Spectral Density",
     show: bool = False,
     **kwargs: Any,
 ) -> Optional[Tuple[Any, Any]]:
@@ -182,7 +182,7 @@ def psd(
     xlim, ylim : tuple of float, optional
         Axis limits for the plot.
     title : str, optional
-        Plot title. Defaults to "Spectrum".
+        Plot title. Defaults to "Power Spectral Density".
     show : bool, default False
         If True, calls `plt.show()` immediately.
     **kwargs : Any
@@ -2052,7 +2052,9 @@ def zf_equalizer_response(
     C_rx, C_tx = h.shape[0], h.shape[1]
     n_rows = C_rx * C_tx
     if ax is None:
-        fig, raw_axes = plt.subplots(n_rows, 3, figsize=(13, 3.5 * n_rows), squeeze=False)
+        fig, raw_axes = plt.subplots(
+            n_rows, 3, figsize=(13, 3.5 * n_rows), squeeze=False
+        )
         axes = [list(raw_axes[r]) for r in range(n_rows)]
     else:
         if hasattr(ax, "__len__") and hasattr(ax[0], "__len__"):
