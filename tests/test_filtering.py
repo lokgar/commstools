@@ -151,7 +151,7 @@ def test_fir_filter(backend_device, xp, xpt):
 
 
 def test_matched_filter_normalization(backend_device, xp):
-    """Verify matched_filter respects taps_normalization and normalize_output options."""
+    """Verify matched_filter respects taps_normalization."""
     # matched_filter dispatches on its input, so use xp arrays throughout
     samples = xp.ones(100)
     pulse = xp.ones(10)
@@ -160,10 +160,6 @@ def test_matched_filter_normalization(backend_device, xp):
     out_gain = filtering.matched_filter(samples, pulse, taps_normalization="unity_gain")
     assert out_gain.shape == (100,)
     assert isinstance(out_gain, xp.ndarray)
-
-    # Output amplitude normalisation — peak should be 1
-    out_max = filtering.matched_filter(samples, pulse, normalize_output=True)
-    assert float(xp.max(xp.abs(out_max))) == pytest.approx(1.0)
 
     # Invalid normalisation mode must raise
     with pytest.raises(

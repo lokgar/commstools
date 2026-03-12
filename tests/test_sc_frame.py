@@ -185,16 +185,14 @@ def test_signal_info_minimal():
 
 def test_independent_preamble_normalization(backend_device, xp):
     """
-    Verify preamble and body are each independently normalised to per-component
-    (I/Q) max = 1.0 after pulse shaping.
+    Verify frame normalization contract:
+    1. The assembled frame has unit average power (Es = 1).
+    2. Preamble and body sections have equal I/Q peaks, confirming that neither
+       silences the other (each was independently I/Q peak-normalised before the
+       final global average-power normalization, so the same global scale factor
+       applies to both).
 
-    The invariant is max(|I|, |Q|) = 1.0 per section, not complex-envelope peak.
-    Square-QAM/PSK constellations have their peak-envelope samples at 45°, so
-    complex-envelope normalisation leaves I and Q at ≤ 1/√2 ≈ 0.707.  Per-component
-    normalisation ensures both preamble (ZC/Barker, arbitrary phase) and body (QAM,
-    45°-constrained) each use the full DAC dynamic range independently.
-
-    Also guards against the old global-normalisation bug where a high-PAPR body
+    Guards against the old global-normalisation bug where a high-PAPR body
     would silence a low-PAPR preamble or vice versa.
     """
     preamble = Preamble(sequence_type="barker", length=13)
@@ -211,16 +209,19 @@ def test_independent_preamble_normalization(backend_device, xp):
     body_section = sig.samples[preamble_len_samples:]
 
     def iq_peak(s):
-        return float(
-            xp.maximum(xp.max(xp.abs(s.real)), xp.max(xp.abs(s.imag)))
-        )
+        return float(xp.maximum(xp.max(xp.abs(s.real)), xp.max(xp.abs(s.imag))))
 
-    # Per-component max must be 1.0 for each section independently.
-    assert abs(iq_peak(preamble_section) - 1.0) < 1e-2, (
-        f"Preamble I/Q peak {iq_peak(preamble_section):.4f} != 1.0"
-    )
-    assert abs(iq_peak(body_section) - 1.0) < 1e-2, (
-        f"Body I/Q peak {iq_peak(body_section):.4f} != 1.0"
+    # Overall frame must have unit average power.
+    avg_power = float(xp.mean(xp.abs(sig.samples) ** 2))
+    assert abs(avg_power - 1.0) < 1e-2, f"Frame average power {avg_power:.4f} != 1.0"
+
+    # Both sections were independently I/Q peak-normalised before the global
+    # normalization, so their I/Q peaks must be equal after it.
+    pp = iq_peak(preamble_section)
+    bp = iq_peak(body_section)
+    assert abs(pp - bp) < 0.05, (
+        f"Preamble I/Q peak {pp:.4f} != body I/Q peak {bp:.4f} — "
+        "sections were not independently normalized before global norm"
     )
 
 
