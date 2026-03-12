@@ -3219,8 +3219,19 @@ class SingleCarrierFrame(BaseModel):
             **kwargs,
         )
 
-        # Normalize Body to Peak 1.0 per stream
-        body_samples = helpers.normalize(body_samples, mode="peak", axis=-1)
+        # Normalise body per-channel by max(peak_|I|, peak_|Q|) — a single scale
+        # factor that brings the dominant component to 1.0 while preserving the I/Q
+        # ratio.  Complex-envelope peak normalisation (used in the DSP chain) divides
+        # by max(|sample|) instead, leaving components at ≤ 1/√2 ≈ 0.707 for square
+        # QAM/PSK whose envelope peak sits at 45°.  Applied per-section (body and
+        # preamble separately) so each segment uses the full DAC range regardless of
+        # modulation type or constellation phase geometry.
+        max_iq = xp.maximum(
+            xp.max(xp.abs(body_samples.real), axis=-1, keepdims=True),
+            xp.max(xp.abs(body_samples.imag), axis=-1, keepdims=True),
+        )
+        max_iq = xp.where(max_iq == 0, xp.ones_like(max_iq), max_iq)
+        body_samples = body_samples / max_iq
 
         # 2. Shape Preamble (if present)
         if self.preamble is not None:
@@ -3240,8 +3251,13 @@ class SingleCarrierFrame(BaseModel):
             )
             preamble_samples = preamble_signal.samples
 
-            # Normalize Preamble to Peak 1.0 (1D at this point; axis=-1 == global)
-            preamble_samples = helpers.normalize(preamble_samples, mode="peak", axis=-1)
+            # Same single-scale normalisation for preamble (1D here; axis=-1 == global).
+            max_iq_p = xp.maximum(
+                xp.max(xp.abs(preamble_samples.real), axis=-1, keepdims=True),
+                xp.max(xp.abs(preamble_samples.imag), axis=-1, keepdims=True),
+            )
+            max_iq_p = xp.where(max_iq_p == 0, xp.ones_like(max_iq_p), max_iq_p)
+            preamble_samples = preamble_samples / max_iq_p
 
             # Handle MIMO preamble structure
             preamble_samples = helpers.expand_preamble_mimo(
