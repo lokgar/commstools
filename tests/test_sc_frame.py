@@ -185,50 +185,43 @@ def test_signal_info_minimal():
 
 def test_independent_preamble_normalization(backend_device, xp):
     """
-    Verify that preamble and body are independently normalized to peak 1.0
-    after pulse shaping.
+    Verify preamble and body are each independently normalised to per-component
+    (I/Q) max = 1.0 after pulse shaping.
 
-    This ensures that a high-PAPR body doesn't suppress the preamble, or vice versa.
+    The invariant is max(|I|, |Q|) = 1.0 per section, not complex-envelope peak.
+    Square-QAM/PSK constellations have their peak-envelope samples at 45°, so
+    complex-envelope normalisation leaves I and Q at ≤ 1/√2 ≈ 0.707.  Per-component
+    normalisation ensures both preamble (ZC/Barker, arbitrary phase) and body (QAM,
+    45°-constrained) each use the full DAC dynamic range independently.
+
+    Also guards against the old global-normalisation bug where a high-PAPR body
+    would silence a low-PAPR preamble or vice versa.
     """
-    # 1. Create a Preamble
-    # Barker-13 has relatively low PAPR
     preamble = Preamble(sequence_type="barker", length=13)
-
-    # 2. Create a Body with High Difference in Energy
-    # We use a single pilot in a field of zeros to create a high peak-to-average scenario
-    # or simply random data.
-    # Actually, to demonstrate the issue, we want ensures that even if body has
-    # different scaling inherent in its symbols, the output body waveform peaks at 1.0.
-    # And preamble waveform peaks at 1.0.
 
     frame = SingleCarrierFrame(
         payload_len=100, symbol_rate=1e6, preamble=preamble, pilot_pattern="none"
     )
 
-    # 3. Generate Waveform
     sps = 4
     sig = frame.to_signal(sps=sps, pulse_shape="rrc", rrc_rolloff=0.5)
 
-    # 4. Extract Sections
-    # Preamble is 13 symbols
     preamble_len_samples = 13 * sps
     preamble_section = sig.samples[:preamble_len_samples]
     body_section = sig.samples[preamble_len_samples:]
 
-    # 5. Measure Peaks
-    # We accept a small tolerance due to float precision / shape artifacts at edges
-    peak_preamble = xp.max(xp.abs(preamble_section))
-    peak_body = xp.max(xp.abs(body_section))
+    def iq_peak(s):
+        return float(
+            xp.maximum(xp.max(xp.abs(s.real)), xp.max(xp.abs(s.imag)))
+        )
 
-    assert xp.isclose(peak_preamble, 1.0, atol=1e-2), (
-        f"Preamble peak {peak_preamble} != 1.0"
+    # Per-component max must be 1.0 for each section independently.
+    assert abs(iq_peak(preamble_section) - 1.0) < 1e-2, (
+        f"Preamble I/Q peak {iq_peak(preamble_section):.4f} != 1.0"
     )
-    assert xp.isclose(peak_body, 1.0, atol=1e-2), f"Body peak {peak_body} != 1.0"
-
-    # Also verifying that they are not just 1.0 because the whole signal is 1.0
-    # (which `normalize(..., "peak")` at end of old to_signal would do).
-    # In the OLD implementation, if body was huge, preamble would be tiny.
-    # Here both should be ~1.0.
+    assert abs(iq_peak(body_section) - 1.0) < 1e-2, (
+        f"Body I/Q peak {iq_peak(body_section):.4f} != 1.0"
+    )
 
 
 def test_structure_map_default_no_preamble_no_guard():
