@@ -791,6 +791,14 @@ def correct_timing(
 
     Notes
     -----
+    **Preamble is not removed.**  After correction, ``signal[..., 0]``
+    corresponds to the first sample of the preamble (the frame start).
+    All three modes align the frame start to index 0 — they do not strip
+    the preamble from the output.  Use :func:`~commstools.equalization.equalize_frame`
+    (which uses :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
+    to locate preamble and payload regions) or manually slice using the
+    structure map if you need to process the body in isolation.
+
     The fractional correction uses FFT-based frequency-domain delay, which
     is mathematically ideal for bandlimited signals and perfectly preserves
     signal power (unlike polynomial interpolators).

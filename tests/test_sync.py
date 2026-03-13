@@ -621,7 +621,7 @@ def test_estimate_timing_with_info(backend_device, xp):
     sig[40:47] = barker
 
     info = SignalInfo(
-        signal_type="single_carrier_frame",
+        signal_type="Single-Carrier Frame",
         preamble_type="barker",
         preamble_seq_len=7,
         preamble_mode="same",

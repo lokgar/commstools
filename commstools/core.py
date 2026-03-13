@@ -60,8 +60,11 @@ class SignalInfo(BaseModel):
 
     Attributes
     ----------
-    signal_type : {"single_carrier_frame", "ofdm_frame", "preamble", "generic"}
-        The type of the signal structure.
+    signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}
+        Human-readable label for the signal structure.  Informational only —
+        no library logic dispatches on this field.  Frame reconstruction
+        during save/load uses the ``_frame_type`` key embedded in the frame
+        YAML, not this field.
     preamble_seq_len : int
         Number of symbols in the preamble/training sequence.
     preamble_type : Literal["barker", "zc"], optional
@@ -110,9 +113,7 @@ class SignalInfo(BaseModel):
     The structure typically refers to: [Guard] + [Preamble] + [Body].
     """
 
-    signal_type: Literal[
-        "single_carrier_frame", "ofdm_frame", "preamble", "generic"
-    ] = "generic"
+    signal_type: Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]
 
     preamble_seq_len: Optional[int] = Field(default=None, ge=0)
     preamble_type: Optional[Literal["barker", "zc"]] = None
@@ -211,6 +212,9 @@ class Signal(BaseModel):
 
     source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
+    payload_symbols: Optional[Any] = None  # payload only, 1 SPS — BER/EVM reference
+    pilot_symbols: Optional[Any] = None  # pilots only,  1 SPS — pilot-aided CPR
+    payload_bits: Optional[Any] = None  # payload bits  — BER reference
 
     pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
@@ -287,13 +291,6 @@ class Signal(BaseModel):
         # This aligns better with C-contiguous operations on the time axis (last axis)
         # which is critical for CuPy performance/stability.
 
-        if is_cupy_available() and isinstance(arr, np.ndarray):
-            logger.warning(
-                "Signal.samples assigned a CPU (NumPy) array while a GPU is available. "
-                "Other library objects (preambles, filters) may be on GPU by default, "
-                "causing device-mismatch errors. Use sig.to('gpu') or load via CuPy."
-            )
-
         if arr.ndim > 2:
             raise ValueError(
                 f"Samples array has {arr.ndim} dimensions. "
@@ -359,54 +356,139 @@ class Signal(BaseModel):
         Prints a formatted summary of the signal's physical and digital properties.
 
         In Jupyter/IPython environments, this renders as an HTML table. In standard
-        shells, it outputs a clean logarithmic log message.
+        shells, it outputs a plain-text table via the logger.
+
+        Sections
+        --------
+        **Signal** — always shown: type, waveform, rate, shape, backend.
+        **Frame structure** — shown when ``signal_info`` carries frame metadata
+        (preamble, payload, pilots, guard).
+        **Reference data** — shows which symbol/bit arrays and frame object are
+        attached (determines which of ``ber()``, ``evm()``, ``equalize_frame()``
+        can be called without extra arguments).
         """
         import pandas as pd
         from IPython import get_ipython
         from IPython.display import display
 
-        data = {
-            "Property": [
-                "Spectral Domain",
-                "Physical Domain",
-                "Modulation (Scheme/Order)",
-                "Symbol Rate",
-                "Bit Rate",
-                "Sampling Rate",
-                "Samples Per Symbol",
-                "Pulse Shape",
-                "Duration",
-                "Center Frequency",
-                "Digital Freq. Offset",
-                "Backend",
+        info = self.signal_info
+
+        # ── helpers ──────────────────────────────────────────────────────────
+        def _yn(v) -> str:
+            return "yes" if v is not None else "no"
+
+        # Modulation: frame signals store it in signal_info, not on the Signal.
+        mod_scheme = self.mod_scheme or (info.payload_mod_scheme if info else None)
+        mod_order = self.mod_order or (info.payload_mod_order if info else None)
+        mod_unipolar = self.mod_unipolar or (
+            info.payload_mod_unipolar if info else False
+        )
+        mod_str = (
+            f"{mod_scheme or 'None'} / {mod_order or 'None'}"
+            f"{' (UNIPOL)' if mod_unipolar else ''}"
+            f"{' (RZ)' if self.mod_rz else ''}"
+        )
+        bit_rate = (
+            helpers.format_si(self.symbol_rate * np.log2(mod_order), "bps")
+            if mod_order
+            else "None"
+        )
+
+        # ── Section 1: Signal ─────────────────────────────────────────────
+        if info is None:
+            sig_type_label = "Signal"
+        elif info.signal_type == "Preamble":
+            sig_type_label = "Preamble"
+        else:
+            sig_type_label = info.signal_type  # "Single-Carrier Frame", "OFDM Frame", …
+
+        rows: list[tuple[str, str]] = [
+            ("Signal type", sig_type_label),
+            ("Spectral domain", self.spectral_domain),
+            ("Physical domain", self.physical_domain),
+            ("Modulation", mod_str),
+            ("Symbol rate", helpers.format_si(self.symbol_rate, "Baud")),
+            ("Bit rate", bit_rate),
+            ("Sampling rate", helpers.format_si(self.sampling_rate, "Hz")),
+            ("Samples per symbol", f"{self.sps:.2f}"),
+            ("Pulse shape", self.pulse_shape.upper() if self.pulse_shape else "None"),
+            ("Duration", helpers.format_si(self.duration, "s")),
+            ("Center frequency", helpers.format_si(self.center_frequency, "Hz")),
+            ("Freq. offset", helpers.format_si(self.digital_frequency_offset, "Hz")),
+            ("Backend", self.backend.upper()),
+            (
                 "Configuration",
-                "Samples Shape",
-            ],
-            "Value": [
-                self.spectral_domain,
-                self.physical_domain,
-                f"{self.mod_scheme or 'None'} / {self.mod_order or 'None'}{' (UNIPOL)' if self.mod_unipolar else ''}{' (RZ)' if self.mod_rz else ''}",
-                helpers.format_si(self.symbol_rate, "Baud"),
-                helpers.format_si(self.symbol_rate * np.log2(self.mod_order), "bps")
-                if self.mod_order
-                else "None",
-                helpers.format_si(self.sampling_rate, "Hz"),
-                f"{self.sps:.2f}",
-                self.pulse_shape.upper() if self.pulse_shape else "None",
-                helpers.format_si(self.duration, "s"),
-                helpers.format_si(self.center_frequency, "Hz"),
-                helpers.format_si(self.digital_frequency_offset, "Hz"),
-                self.backend.upper(),
                 "SISO" if self.num_streams == 1 else f"MIMO ({self.num_streams}x)",
-                str(self.samples.shape),
-            ],
-        }
-        df = pd.DataFrame(data)
+            ),
+            ("Samples shape", str(self.samples.shape)),
+        ]
+
+        # ── Section 2: Structure info (content varies by signal_type) ───────
+        if info is not None and info.signal_type == "Preamble":
+            rows.append(("─── Preamble info", ""))
+            if info.preamble_type is not None:
+                preamble_str = (
+                    f"{info.preamble_type.upper()}  len={info.preamble_seq_len}"
+                    + (
+                        f"  kwargs={info.preamble_kwargs}"
+                        if info.preamble_kwargs
+                        else ""
+                    )
+                )
+                rows.append(("Sequence", preamble_str))
+
+        elif info is not None:
+            rows.append(("─── Frame structure", ""))
+
+            if info.preamble_type is not None:
+                preamble_str = (
+                    f"{info.preamble_type.upper()}  len={info.preamble_seq_len}"
+                    + (f"  mode={info.preamble_mode}" if info.preamble_mode else "")
+                    + (
+                        f"  kwargs={info.preamble_kwargs}"
+                        if info.preamble_kwargs
+                        else ""
+                    )
+                )
+                rows.append(("Preamble", preamble_str))
+            else:
+                rows.append(("Preamble", "none"))
+
+            if info.payload_len is not None:
+                rows.append(("Payload length", f"{info.payload_len} symbols"))
+
+            pilot_pattern = info.pilot_pattern or "none"
+            if pilot_pattern != "none":
+                pilot_str = (
+                    f"{pilot_pattern}"
+                    + (f"  count={info.pilot_count}" if info.pilot_count else "")
+                    + (f"  period={info.pilot_period}" if info.pilot_period else "")
+                    + (f"  gain={info.pilot_gain_db} dB" if info.pilot_gain_db else "")
+                )
+                rows.append(("Pilots", pilot_str))
+            else:
+                rows.append(("Pilots", "none"))
+
+            if info.guard_len:
+                rows.append(("Guard", f"{info.guard_type}  len={info.guard_len}"))
+            else:
+                rows.append(("Guard", "none"))
+
+        # ── Section 3: Reference data ─────────────────────────────────────
+        rows.append(("─── Reference data", ""))
+        rows.append(("payload_symbols", _yn(self.payload_symbols)))
+        rows.append(("payload_bits", _yn(self.payload_bits)))
+        rows.append(("source_symbols", _yn(self.source_symbols)))
+        rows.append(("source_bits", _yn(self.source_bits)))
+        rows.append(("frame attached", _yn(self._frame)))
+
+        # ── Render ────────────────────────────────────────────────────────
+        df = pd.DataFrame(rows, columns=["Property", "Value"])
 
         if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
-            display(df)
+            display(df.style.hide(axis="index"))
         else:
-            logger.info("\n" + str(df))
+            logger.info("\n" + df.to_string(index=False))
 
     def copy(self) -> "Signal":
         """
@@ -581,11 +663,12 @@ class Signal(BaseModel):
         Set automatically by :meth:`SingleCarrierFrame.to_signal`.  ``None``
         for signals not originating from a frame (e.g. loaded from file).
 
-        Use this to access the known transmitted symbols when the receiver
-        has the Tx-side frame available (e.g. back-to-back simulation)::
+        For equalization training the frame symbols are directly available on
+        the signal itself and survive save/load round-trips::
 
-            sig.equalize(method="lms", training_symbols=sig.frame.payload_symbols)
-            sig.equalize(method="lms", training_symbols=sig.frame.pilot_symbols)
+            sig.source_symbols   # body_symbols in wire order — use for LMS/RLS training
+            sig.payload_symbols  # payload only — use for BER/EVM after pilot extraction
+            sig.pilot_symbols    # pilots only  — use for pilot-aided CPR
         """
         return self._frame
 
@@ -1912,9 +1995,13 @@ class Signal(BaseModel):
             frame = self._frame
         if frame is None:
             raise ValueError(
-                "No frame provided. Either pass frame=<SingleCarrierFrame> or "
-                "generate the signal via SingleCarrierFrame.to_signal() to "
-                "attach the frame automatically."
+                "No frame available. "
+                "Signals saved with commstools.io.save_npz() and loaded with "
+                "load_npz() have their frame restored automatically. "
+                "For signals loaded from raw .npy files, pass frame=<SingleCarrierFrame> "
+                "explicitly, or use sig.equalize(training_symbols=sig.payload_symbols) "
+                "as a frame-free alternative (DA-LMS on payload symbols only, "
+                "no preamble pre-convergence)."
             )
 
         result = equalization.equalize_frame(
@@ -2418,13 +2505,21 @@ class Signal(BaseModel):
         """
         from . import metrics
 
+        # Prefer payload_symbols (no preamble, no pilot-gain bias) over
+        # source_symbols (body in wire order, may include boosted pilots).
         ref = (
-            reference_symbols if reference_symbols is not None else self.source_symbols
+            reference_symbols
+            if reference_symbols is not None
+            else (
+                self.payload_symbols
+                if self.payload_symbols is not None
+                else self.source_symbols
+            )
         )
         if ref is None:
             raise ValueError(
-                "No reference available. Either set source_symbols or provide "
-                "reference_symbols argument."
+                "No reference available. Provide reference_symbols or ensure "
+                "payload_symbols / source_symbols is set."
             )
 
         if self.resolved_symbols is None:
@@ -2482,12 +2577,18 @@ class Signal(BaseModel):
         from . import metrics
 
         ref = (
-            reference_symbols if reference_symbols is not None else self.source_symbols
+            reference_symbols
+            if reference_symbols is not None
+            else (
+                self.payload_symbols
+                if self.payload_symbols is not None
+                else self.source_symbols
+            )
         )
         if ref is None:
             raise ValueError(
-                "No reference available. Either set source_symbols or provide "
-                "reference_symbols argument."
+                "No reference available. Provide reference_symbols or ensure "
+                "payload_symbols / source_symbols is set."
             )
 
         if self.resolved_symbols is None:
@@ -2545,11 +2646,17 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        ref = reference_bits if reference_bits is not None else self.source_bits
+        ref = (
+            reference_bits
+            if reference_bits is not None
+            else (
+                self.payload_bits if self.payload_bits is not None else self.source_bits
+            )
+        )
         if ref is None:
             raise ValueError(
-                "No reference bits available. Either set source_bits or provide "
-                "reference_bits argument."
+                "No reference bits available. Provide reference_bits or ensure "
+                "payload_bits / source_bits is set."
             )
 
         if self.resolved_bits is None:
@@ -2715,7 +2822,7 @@ class Preamble(BaseModel):
 
         # Create minimal SignalInfo for the Preamble
         signal_info = SignalInfo(
-            signal_type="preamble",
+            signal_type="Preamble",
             preamble_seq_len=self.length,
             preamble_type=self.sequence_type,
             preamble_kwargs=self.kwargs,
@@ -2725,9 +2832,9 @@ class Preamble(BaseModel):
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            mod_scheme=None,  # No single modulation for "preamble" frame
+            mod_scheme=None,
             mod_order=None,
-            source_symbols=None,  # Avoid redundancy per user request
+            source_symbols=None,
             pulse_shape=pulse_shape,
             signal_info=signal_info,
             **kwargs,
@@ -3358,7 +3465,7 @@ class SingleCarrierFrame(BaseModel):
             preamble_base_len = None
 
         signal_info = SignalInfo(
-            signal_type="single_carrier_frame",
+            signal_type="Single-Carrier Frame",
             payload_mod_scheme=self.payload_mod_scheme,
             payload_mod_order=self.payload_mod_order,
             payload_mod_unipolar=self.payload_mod_unipolar,
@@ -3388,8 +3495,13 @@ class SingleCarrierFrame(BaseModel):
             mod_order=None,  # Moved to SignalInfo
             mod_unipolar=None,
             mod_rz=None,
-            source_bits=None,  # Avoid redundancy per user request; access via Frame
-            source_symbols=None,  # Avoid redundancy; access via Frame
+            source_bits=None,  # access via sig.frame.payload_bits
+            source_symbols=None,  # body_symbols misaligns: samples start at
+            # preamble but body starts after it.
+            # Use sig.frame.body_symbols explicitly.
+            payload_symbols=self.payload_symbols,  # payload only, no preamble, no pilots
+            pilot_symbols=self.pilot_symbols,  # pilots only, or None
+            payload_bits=self.payload_bits,  # payload bits for sig.ber()
             pulse_shape=pulse_shape,
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
