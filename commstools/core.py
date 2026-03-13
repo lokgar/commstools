@@ -1005,7 +1005,9 @@ class Signal(BaseModel):
         self.sampling_rate = self.sampling_rate / factor
         return self
 
-    def decimate_to_symbol_rate(self, offset: int = 0) -> "Signal":
+    def decimate_to_symbol_rate(
+        self, offset: int = 0, normalize: bool = True
+    ) -> "Signal":
         """
         Extracts symbols from an oversampled signal via direct slicing.
 
@@ -1018,6 +1020,14 @@ class Signal(BaseModel):
         offset : int, default 0
             The sampling phase offset in samples. Adjust this to sample
             at the peak of the impulse response or the maximum eye opening.
+        normalize : bool, default True
+            If ``True``, normalizes the output to unit average power
+            (``mean(|x|²) = 1``) after slicing.  This is almost always
+            desirable because practical channels introduce gain uncertainty,
+            timing residuals, and filter mismatch that shift symbol power
+            away from the theoretical unit value, even after matched
+            filtering.  Set to ``False`` only if you need to observe or
+            measure the raw channel gain.
 
         Returns
         -------
@@ -1040,6 +1050,8 @@ class Signal(BaseModel):
             self.samples, sps=sps, offset=offset, axis=-1
         )
         self.sampling_rate = self.symbol_rate
+        if normalize:
+            self.samples = helpers.normalize(self.samples, "average_power", axis=-1)
         return self
 
     def resample(
