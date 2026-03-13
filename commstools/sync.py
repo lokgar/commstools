@@ -617,7 +617,43 @@ def estimate_timing(
     # === Vectorized Correlation (FFT) via shared helper ===
     L = preamble_waveform.shape[-1]
 
-    corr = cross_correlate_fft(sig_processing, preamble_waveform, mode="positive_lags")
+    _is_time_orthogonal = (
+        info is not None
+        and getattr(info, "preamble_mode", None) == "time_orthogonal"
+        and preamble_waveform.shape[0] > 1
+    )
+
+    if _is_time_orthogonal:
+        # For time-orthogonal MIMO preambles the Rx polarization assignment is
+        # unknown a priori: Rx channel 0 may carry Tx stream 1's preamble slot
+        # and vice versa.  Row-wise correlation (rx[i] vs template[i]) would
+        # produce near-zero output for all channels if the assignment is swapped.
+        #
+        # Fix: compute the full C_rx × C_tx correlation tensor, then for each
+        # Rx channel select the template that gave the strongest peak.  This is
+        # immune to any polarization permutation (or even partial mixing).
+        C_tx = preamble_waveform.shape[0]
+        # corr_all[c_rx, c_tx, lag] — shape (C_rx, C_tx, N_lag)
+        corr_all = xp.stack(
+            [
+                cross_correlate_fft(
+                    sig_processing, preamble_waveform[t : t + 1], mode="positive_lags"
+                )
+                for t in range(C_tx)
+            ],
+            axis=1,
+        )
+        # Best-matching template per Rx channel: argmax over peak magnitude
+        best_t = xp.argmax(xp.max(xp.abs(corr_all), axis=-1), axis=1)  # (C_rx,)
+        logger.info(
+            f"Time-orthogonal sync: best template per Rx channel: {best_t.tolist()}"
+        )
+        rx_idx = xp.arange(num_sig_ch)
+        corr = corr_all[rx_idx, best_t, :]  # (C_rx, N_lag)
+    else:
+        corr = cross_correlate_fft(
+            sig_processing, preamble_waveform, mode="positive_lags"
+        )
 
     # Magnitude
     corr_mag = xp.abs(corr)
