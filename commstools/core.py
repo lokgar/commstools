@@ -1150,7 +1150,7 @@ class Signal(BaseModel):
     # Signal Processing Methods
     # -------------------------------------------------------------------------
 
-    def upsample(self, factor: int) -> "Signal":
+    def upsample(self, factor: int, correct_power: bool = True) -> "Signal":
         """
         Upsamples the signal by an integer factor using polyphase filtering.
 
@@ -1161,6 +1161,20 @@ class Signal(BaseModel):
         ----------
         factor : int
             Upsampling factor (interpolation).
+        correct_power : bool, default True
+            If True, applies a deterministic amplitude gain of
+            ``1 / sqrt(factor)`` after upsampling to restore the
+            ``"symbol_power"`` invariant (``E[|x|²] = 1 / sps``).
+
+            **Why this is needed**: ``resample_poly`` has unity DC gain, so
+            for a bandlimited pulse-shaped signal it preserves average sample
+            power.  After upsampling by *factor*, ``sps`` grows by *factor*
+            but ``E[|x|²]`` stays at ``1 / sps_old``, violating
+            ``E[|x|²] = 1 / sps_new``.  The correction factor restores the
+            invariant without measuring signal statistics.
+
+            Set to False when chaining custom gain stages or when the signal
+            is not ``"symbol_power"`` normalized.
 
         Returns
         -------
@@ -1171,10 +1185,12 @@ class Signal(BaseModel):
 
         self.samples = multirate.upsample(self.samples, factor, axis=-1)
         self.sampling_rate = self.sampling_rate * factor
+        if correct_power:
+            self.samples = self.samples * (factor ** -0.5)
         return self
 
     def decimate(
-        self, factor: int, filter_type: str = "fir", **kwargs: Any
+        self, factor: int, filter_type: str = "fir", correct_power: bool = True, **kwargs: Any
     ) -> "Signal":
         """
         Decimates the signal by an integer factor using anti-aliasing filtering.
@@ -1185,6 +1201,21 @@ class Signal(BaseModel):
             Decimation factor (e.g., 2 to reduce sample rate by half).
         filter_type : {"fir", "polyphase"}, default "fir"
             The type of decimation filter to use.
+        correct_power : bool, default True
+            If True, applies a deterministic amplitude gain of
+            ``sqrt(factor)`` after decimation to restore the
+            ``"symbol_power"`` invariant (``E[|x|²] = 1 / sps``).
+
+            **Why this is needed**: ``resample_poly`` has unity DC gain, so
+            for a bandlimited pulse-shaped signal it preserves average sample
+            power.  After decimating by *factor*, ``sps`` shrinks by *factor*
+            but ``E[|x|²]`` stays at ``1 / sps_old``, violating
+            ``E[|x|²] = 1 / sps_new``.  The correction factor restores the
+            invariant without measuring signal statistics.
+
+            Set to False when chaining custom gain stages or when the signal
+            is not ``"symbol_power"`` normalized.
+
         **kwargs : Any
             Additional parameters passed to the decimation algorithm.
 
@@ -1205,6 +1236,8 @@ class Signal(BaseModel):
             self.samples, factor, filter_type=filter_type, axis=-1, **kwargs
         )
         self.sampling_rate = self.sampling_rate / factor
+        if correct_power:
+            self.samples = self.samples * (factor ** 0.5)
         return self
 
     def decimate_to_symbol_rate(
@@ -1261,6 +1294,7 @@ class Signal(BaseModel):
         up: Optional[int] = None,
         down: Optional[int] = None,
         sps_out: Optional[float] = None,
+        correct_power: bool = True,
     ) -> "Signal":
         """
         Resamples the signal by a rational factor using polyphase filtering.
@@ -1279,6 +1313,20 @@ class Signal(BaseModel):
             Desired samples per symbol in the output signal. If provided,
             the required `up/down` factors are calculated automatically
             relative to the current `sps`.
+        correct_power : bool, default True
+            If True, applies a deterministic amplitude gain of
+            ``sqrt(sps_before / sps_after)`` after resampling to restore the
+            ``"symbol_power"`` invariant (``E[|x|²] = 1 / sps``).
+
+            **Why this is needed**: ``resample_poly`` has unity DC gain, so
+            for a bandlimited pulse-shaped signal it preserves average sample
+            power.  After any rational rate change, ``sps`` changes but
+            ``E[|x|²]`` stays at ``1 / sps_old``, violating
+            ``E[|x|²] = 1 / sps_new``.  The correction factor is exact
+            (not statistical) because signal power is known at creation.
+
+            Set to False when chaining custom gain stages or when the signal
+            is not ``"symbol_power"`` normalized.
 
         Returns
         -------
@@ -1289,11 +1337,13 @@ class Signal(BaseModel):
         -----
         .. warning::
             Do NOT use this method on a signal that has already been
-            matched-filtered if the goal is to extract symbols at $1\text{ sps}$.
+            matched-filtered if the goal is to extract symbols at $1\\text{ sps}$.
             The polyphase filter's transition band will distort the
             optimally filtered pulse shape. Use `decimate_to_symbol_rate` instead.
         """
         from . import multirate
+
+        sps_before = self.sps
 
         # If sps_out is provided, we use the current signal's sps as input sps
         sps_in = self.sps if sps_out is not None else None
@@ -1307,6 +1357,9 @@ class Signal(BaseModel):
             self.sampling_rate = sps_out * self.symbol_rate
         elif up is not None and down is not None:
             self.sampling_rate = self.sampling_rate * up / down
+
+        if correct_power:
+            self.samples = self.samples * (sps_before / self.sps) ** 0.5
 
         return self
 
