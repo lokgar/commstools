@@ -650,8 +650,15 @@ def estimate_timing(
         )
         # Best-matching template per Rx channel: argmax over peak magnitude
         best_t = xp.argmax(xp.max(xp.abs(corr_all), axis=-1), axis=1)  # (C_rx,)
+        _best_t_list = best_t.tolist()
+        _repeated = len(set(_best_t_list)) < len(_best_t_list)
         logger.info(
-            f"Time-orthogonal sync: best template per Rx channel: {best_t.tolist()}"
+            f"Time-orthogonal sync: dominant Tx template per Rx channel: {_best_t_list}"
+            + (
+                " (repeated indices indicate channel mixing — normal for a rotated Jones matrix)"
+                if _repeated
+                else ""
+            )
         )
         rx_idx = xp.arange(num_sig_ch)
         corr = corr_all[rx_idx, best_t, :]  # (C_rx, N_lag)
