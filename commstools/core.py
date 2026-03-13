@@ -1186,8 +1186,10 @@ class Signal(BaseModel):
         """
         from . import sync
 
+        resolved_info = info if info is not None else self.signal_info
+
         resolved_preamble = preamble
-        if resolved_preamble is None and info is None:
+        if resolved_preamble is None and resolved_info is None:
             if self._frame is not None and self._frame.preamble is not None:
                 resolved_preamble = self._frame.preamble
             else:
@@ -1198,9 +1200,9 @@ class Signal(BaseModel):
                 )
 
         coarse, fractional = sync.estimate_timing(
-            self.samples,
+            self,
             preamble=resolved_preamble,
-            info=info,
+            info=resolved_info,
             debug_plot=debug_plot,
             **kwargs,
         )
