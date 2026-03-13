@@ -1726,6 +1726,14 @@ class Signal(BaseModel):
             training_symbols if training_symbols is not None else self.source_symbols
         )
 
+        if train is None and method in ("lms", "rls"):
+            logger.warning(
+                f"{method.upper()}: no training_symbols provided and signal has no "
+                "source_symbols — running in pure decision-directed (DD) mode from "
+                "symbol 0. Pass training_symbols=... to equalize() or set "
+                "sig.source_symbols for data-aided convergence."
+            )
+
         if method == "lms":
             result = equalization.lms(
                 self.samples,
