@@ -179,7 +179,7 @@ def test_sc_frame_structure_map_cp():
 
 def test_signal_info_minimal():
     """Verify minimal SignalInfo creation."""
-    si = SignalInfo()
+    si = SignalInfo(signal_type="Preamble")
     assert si.preamble_seq_len is None
 
 
