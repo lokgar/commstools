@@ -574,6 +574,22 @@ class Signal(BaseModel):
         return get_scipy_module(self.xp)
 
     @property
+    def frame(self) -> Optional["SingleCarrierFrame"]:
+        """
+        The ``SingleCarrierFrame`` that generated this signal, if any.
+
+        Set automatically by :meth:`SingleCarrierFrame.to_signal`.  ``None``
+        for signals not originating from a frame (e.g. loaded from file).
+
+        Use this to access the known transmitted symbols when the receiver
+        has the Tx-side frame available (e.g. back-to-back simulation)::
+
+            sig.equalize(method="lms", training_symbols=sig.frame.payload_symbols)
+            sig.equalize(method="lms", training_symbols=sig.frame.pilot_symbols)
+        """
+        return self._frame
+
+    @property
     def backend(self) -> str:
         """
         Returns the current computational backend name.
@@ -1727,11 +1743,15 @@ class Signal(BaseModel):
         )
 
         if train is None and method in ("lms", "rls"):
+            hint = (
+                " Use sig.frame.payload_symbols or sig.frame.pilot_symbols."
+                if self._frame is not None
+                else ""
+            )
             logger.warning(
                 f"{method.upper()}: no training_symbols provided and signal has no "
                 "source_symbols — running in pure decision-directed (DD) mode from "
-                "symbol 0. Pass training_symbols=... to equalize() or set "
-                "sig.source_symbols for data-aided convergence."
+                f"symbol 0. Pass training_symbols=... to equalize() for data-aided convergence.{hint}"
             )
 
         if method == "lms":
