@@ -1397,8 +1397,13 @@ def equalizer_result(
 
     n_train = getattr(result, "num_train_symbols", 0)
     if n_train and n_train > 0:
+        # mode="valid" convolution shifts the x-axis: index k of mse_smooth
+        # represents the mean over raw symbols [k … k+smoothing-1], so the
+        # training boundary at raw symbol n_train maps to smoothed index
+        # max(0, n_train - smoothing + 1).
+        vline_x = max(0, n_train - smoothing + 1)
         ax_conv.axvline(
-            n_train,
+            vline_x,
             color="black",
             linestyle="--",
             linewidth=1,
