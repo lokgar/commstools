@@ -215,6 +215,7 @@ class Signal(BaseModel):
     payload_symbols: Optional[Any] = None  # payload only, 1 SPS — BER/EVM reference
     pilot_symbols: Optional[Any] = None  # pilots only,  1 SPS — pilot-aided CPR
     payload_bits: Optional[Any] = None  # payload bits  — BER reference
+    equalized_pilot_symbols: Optional[Any] = None  # pilot symbols after equalization — EVM/constellation analysis
 
     pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
@@ -478,6 +479,8 @@ class Signal(BaseModel):
         rows.append(("─── Reference data", ""))
         rows.append(("payload_symbols", _yn(self.payload_symbols)))
         rows.append(("payload_bits", _yn(self.payload_bits)))
+        rows.append(("pilot_symbols", _yn(self.pilot_symbols)))
+        rows.append(("equalized_pilot_symbols", _yn(self.equalized_pilot_symbols)))
         rows.append(("source_symbols", _yn(self.source_symbols)))
         rows.append(("source_bits", _yn(self.source_bits)))
         rows.append(("frame attached", _yn(self._frame)))
@@ -2004,6 +2007,13 @@ class Signal(BaseModel):
                 "no preamble pre-convergence)."
             )
 
+        _info = self.signal_info
+        _mod = modulation or self.mod_scheme or (
+            _info.payload_mod_scheme if _info else None
+        )
+        _order = order or self.mod_order or (
+            _info.payload_mod_order if _info else None
+        )
         result = equalization.equalize_frame(
             self.samples,
             frame,
@@ -2011,15 +2021,23 @@ class Signal(BaseModel):
             lms_step_size=lms_step_size,
             blind_step_size=blind_step_size,
             blind_algorithm=blind_algorithm,
-            modulation=modulation or self.mod_scheme,
-            order=order or self.mod_order,
+            modulation=_mod,
+            order=_order,
             sps=int(round(self.sps)),
             backend=backend,
             store_weights=store_weights,
             w_init=w_init,
             debug_plot=debug_plot,
         )
-        self.samples = result.y_hat
+        # Use payload-only output for samples so that evm()/ber() against
+        # self.payload_symbols is a valid comparison.  When pilots are absent
+        # payload_symbols_eq is None and y_hat is already payload-only.
+        self.samples = (
+            result.payload_symbols_eq
+            if result.payload_symbols_eq is not None
+            else result.y_hat
+        )
+        self.equalized_pilot_symbols = result.pilot_symbols_eq
         self._equalizer_result = result
         self._num_train_symbols = getattr(result, "num_train_symbols", 0)
         self._num_tail_trim = 0

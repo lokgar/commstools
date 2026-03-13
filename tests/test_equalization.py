@@ -2462,7 +2462,9 @@ class TestEqualizationFrame:
         assert sig.samples.shape[-1] > 0
 
     def test_equalize_frame_num_train_symbols(self, backend_device, xp):
-        """num_train_symbols in result equals preamble length when no pilots."""
+        """num_train_symbols is 0 for equalize_frame: preamble pre-convergence runs
+        in a separate stage and its symbols are not included in y_hat, so there is
+        no transient to discard from the payload output."""
         from commstools.equalization import equalize_frame
 
         frame = _make_sc_frame_no_pilots()
@@ -2477,7 +2479,7 @@ class TestEqualizationFrame:
             order=16,
             sps=2,
         )
-        assert result.num_train_symbols == 13
+        assert result.num_train_symbols == 0
 
     def test_equalize_frame_external_w_init(self, backend_device, xp):
         """equalize_frame() accepts w_init and uses it for warm-start."""
@@ -2563,4 +2565,4 @@ class TestEqualizationFrame:
         )
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[-1] > 0
-        assert result.num_train_symbols == 13  # preamble symbols
+        assert result.num_train_symbols == 0  # preamble runs separately; payload output has no transient to discard

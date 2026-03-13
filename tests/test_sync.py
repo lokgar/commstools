@@ -728,6 +728,7 @@ def test_estimate_timing_info_without_sps(backend_device, xp):
 
     sig = xp.zeros(100, dtype="complex64")
     info = SignalInfo(
+        signal_type="Preamble",
         preamble_type="barker",
         preamble_seq_len=7,
         num_streams=1,

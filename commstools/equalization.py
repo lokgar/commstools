@@ -67,6 +67,9 @@ class EqualizerResult:
     ----------
     y_hat : ArrayType
         Equalized output symbols. Shape: ``(N_sym,)`` or ``(C, N_sym)``.
+        For frame-aware equalization with pilots this is the full combined
+        payload+pilot output; use ``payload_symbols_eq`` / ``pilot_symbols_eq``
+        to access each region separately.
     weights : ArrayType
         Final tap weight vector. Shape: ``(num_taps,)`` for SISO
         or ``(C, C, num_taps)`` for MIMO butterfly.
@@ -80,6 +83,13 @@ class EqualizerResult:
         This value is used to discard transients (the training portion) before
         computing steady-state metrics like EVM, SNR, and BER on the blind
         decision-directed portion of the output.
+    payload_symbols_eq : ArrayType or None
+        Payload-only equalized symbols extracted from ``y_hat``.  Populated by
+        :func:`equalize_frame` when pilots are present; ``None`` otherwise
+        (in which case ``y_hat`` is already payload-only).
+    pilot_symbols_eq : ArrayType or None
+        Pilot-only equalized symbols extracted from ``y_hat``.  Populated by
+        :func:`equalize_frame` when pilots are present; ``None`` otherwise.
     """
 
     y_hat: ArrayType
@@ -87,6 +97,8 @@ class EqualizerResult:
     error: ArrayType
     weights_history: Optional[ArrayType] = None
     num_train_symbols: int = 0
+    payload_symbols_eq: Optional[ArrayType] = None
+    pilot_symbols_eq: Optional[ArrayType] = None
 
 
 def _log_equalizer_exit(
@@ -120,6 +132,47 @@ def _log_equalizer_exit(
         _plotting.equalizer_result(result)
 
     return result
+
+
+def _split_hybrid_result(
+    result: "EqualizerResult",
+    payload_pilot_mask: np.ndarray,
+) -> "EqualizerResult":
+    """Split a hybrid-pass result into payload-only and pilot-only arrays.
+
+    Parameters
+    ----------
+    result : EqualizerResult
+        Output from a hybrid DA/blind pass.  ``y_hat`` shape is
+        ``(N_combined,)`` for SISO or ``(C, N_combined)`` for MIMO, where
+        ``N_combined = N_payload + N_pilots``.
+    payload_pilot_mask : (N_combined,) bool ndarray
+        ``True`` at pilot positions, ``False`` at payload positions.
+
+    Returns
+    -------
+    EqualizerResult
+        Same as *result* but with ``payload_symbols_eq`` and
+        ``pilot_symbols_eq`` populated.
+    """
+    pilot_idx = np.where(payload_pilot_mask)[0]
+    payload_idx = np.where(~payload_pilot_mask)[0]
+    y = result.y_hat
+    if y.ndim == 1:
+        payload_eq = y[payload_idx]
+        pilot_eq = y[pilot_idx]
+    else:
+        payload_eq = y[:, payload_idx]
+        pilot_eq = y[:, pilot_idx]
+    return EqualizerResult(
+        y_hat=result.y_hat,
+        weights=result.weights,
+        error=result.error,
+        weights_history=result.weights_history,
+        num_train_symbols=result.num_train_symbols,
+        payload_symbols_eq=payload_eq,
+        pilot_symbols_eq=pilot_eq,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -3241,16 +3294,19 @@ def equalize_frame(
                 )
 
             return _log_equalizer_exit(
-                _unpack_result_jax(
-                    y_jax,
-                    e_jax,
-                    W_out,
-                    wh_jax,
-                    was_1d,
-                    store_weights,
-                    n_sym=None,
-                    xp=xp,
-                    num_train_symbols=n_preamble_syms,
+                _split_hybrid_result(
+                    _unpack_result_jax(
+                        y_jax,
+                        e_jax,
+                        W_out,
+                        wh_jax,
+                        was_1d,
+                        store_weights,
+                        n_sym=None,
+                        xp=xp,
+                        num_train_symbols=0,
+                    ),
+                    payload_pilot_mask,
                 ),
                 name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, JAX)",
                 debug_plot=debug_plot,
@@ -3295,16 +3351,19 @@ def equalize_frame(
             )
 
         return _log_equalizer_exit(
-            _unpack_result_numpy(
-                y_out,
-                e_out,
-                W,
-                w_hist_buf,
-                was_1d,
-                store_weights,
-                n_sym=None,
-                xp=xp,
-                num_train_symbols=n_preamble_syms,
+            _split_hybrid_result(
+                _unpack_result_numpy(
+                    y_out,
+                    e_out,
+                    W,
+                    w_hist_buf,
+                    was_1d,
+                    store_weights,
+                    n_sym=None,
+                    xp=xp,
+                    num_train_symbols=0,
+                ),
+                payload_pilot_mask,
             ),
             name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, Numba)",
             debug_plot=debug_plot,
@@ -3324,15 +3383,6 @@ def equalize_frame(
             store_weights=store_weights,
             w_init=w_0,
         )
-        # Propagate preamble training symbol count into the final result
-        if n_preamble_syms > 0:
-            _res = EqualizerResult(
-                y_hat=_res.y_hat,
-                weights=_res.weights,
-                error=_res.error,
-                weights_history=_res.weights_history,
-                num_train_symbols=n_preamble_syms,
-            )
         return _log_equalizer_exit(
             _res,
             name=f"equalize_frame(blind-{blind_algorithm.upper()})",
