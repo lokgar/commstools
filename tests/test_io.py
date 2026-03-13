@@ -221,14 +221,14 @@ def test_compressed_smaller_than_uncompressed(tmp_path):
 def test_roundtrip_frame_signal_info(tmp_path):
     sig = _frame_signal()
     assert sig.signal_info is not None
-    assert sig.signal_info.signal_type == "single_carrier_frame"
+    assert sig.signal_info.signal_type == "Single-Carrier Frame"
 
     p = tmp_path / "frame.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
 
     assert sig2.signal_info is not None
-    assert sig2.signal_info.signal_type == "single_carrier_frame"
+    assert sig2.signal_info.signal_type == "Single-Carrier Frame"
     assert sig2.signal_info.payload_len == sig.signal_info.payload_len
     assert sig2.signal_info.payload_mod_scheme == sig.signal_info.payload_mod_scheme
     assert sig2.signal_info.payload_mod_order == sig.signal_info.payload_mod_order
@@ -302,5 +302,3 @@ def test_auto_device_uses_gpu_when_available(tmp_path):
     save_npz(sig, p)
     sig2 = load_npz(p)  # device="auto"
     assert sig2.backend == "GPU"
-
-
