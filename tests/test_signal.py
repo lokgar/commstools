@@ -209,10 +209,9 @@ def test_signal_resolution_and_demap(backend_device, xp, xpt):
     assert isinstance(sig.resolved_symbols, xp.ndarray)
 
     # Demap
-    bits = sig.demap_symbols_hard()
+    sig.demap_symbols_hard()
     assert sig.resolved_bits is not None
     assert len(sig.resolved_bits) == num_symbols
-    xpt.assert_array_equal(bits, sig.resolved_bits)
 
     # Metrics should now work
     evm_pct, evm_db = sig.evm()
