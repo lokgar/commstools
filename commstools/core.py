@@ -287,6 +287,13 @@ class Signal(BaseModel):
         # This aligns better with C-contiguous operations on the time axis (last axis)
         # which is critical for CuPy performance/stability.
 
+        if is_cupy_available() and isinstance(arr, np.ndarray):
+            logger.warning(
+                "Signal.samples assigned a CPU (NumPy) array while a GPU is available. "
+                "Other library objects (preambles, filters) may be on GPU by default, "
+                "causing device-mismatch errors. Use sig.to('gpu') or load via CuPy."
+            )
+
         if arr.ndim > 2:
             raise ValueError(
                 f"Samples array has {arr.ndim} dimensions. "

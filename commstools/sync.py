@@ -595,6 +595,11 @@ def estimate_timing(
     if preamble_waveform.ndim == 1:
         preamble_waveform = preamble_waveform[None, :]  # Treat as 1 template
 
+    # Ensure preamble is on the same device as the signal.  The preamble can be
+    # constructed on GPU (e.g. via Preamble.to_signal() with GPU default) while
+    # the received signal was loaded from a .npy file and lives on CPU.
+    preamble_waveform = to_device(preamble_waveform, "cpu" if xp is np else "gpu")
+
     # If signal has C channels, we expect preamble to be compatible.
     # Case 1: Signal (C, N), Preamble (C, L) -> Correlate row-by-row, sum magnitudes.
     # Case 2: Signal (C, N), Preamble (1, L) -> Broadcast preamble to all?
