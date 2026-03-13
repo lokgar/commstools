@@ -129,10 +129,10 @@ def test_signal_demap_hard(backend_device, xp, xpt):
     # Must resolve symbols before demapping
     sig.resolve_symbols()
     # Demap to bits
-    bits = sig.demap_symbols_hard()
+    sig.demap_symbols_hard()
 
     # Should match source_bits
-    xpt.assert_array_equal(bits.flatten(), sig.source_bits.flatten())
+    xpt.assert_array_equal(sig.resolved_bits.flatten(), sig.source_bits.flatten())
 
 
 def test_metrics_more(backend_device, xp):

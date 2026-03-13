@@ -23,7 +23,10 @@ SignalInfo :
 """
 
 import types
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    from .equalization import EqualizerResult
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
@@ -163,18 +166,44 @@ class Signal(BaseModel):
         Symbol frequency (Baud rate) in Hertz (Hz). Must be > 0.
     mod_scheme : str, optional
         Identifier for the modulation format (e.g., 'QPSK', '16QAM').
+        For frame-generated signals this is ``None``; modulation is carried by
+        ``signal_info.payload_mod_scheme`` instead.
     mod_order : int, optional
         The size of the symbol constellation (e.g., 4, 16).
-    mod_unipolar : bool, default False
+        For frame-generated signals this is ``None``; use
+        ``signal_info.payload_mod_order``.
+    mod_unipolar : bool, optional
         If True, uses a unipolar constellation (e.g., 0 to M-1).
-    mod_rz : bool, default False
+    mod_rz : bool, optional
         If True, uses Return-to-Zero (RZ) signaling.
     source_bits : array_like, optional
-        The original binary data that generated the signal.
+        The original binary data that generated the signal (full wire order,
+        including preamble and pilots when present).  Populated by
+        :meth:`Signal.generate` and the ``Signal.pam/psk/qam`` factories.
+        Frame signals use ``payload_bits`` / ``pilot_bits`` instead.
     source_symbols : array_like, optional
-        The mapped constellation symbols before pulse shaping.
+        The mapped constellation symbols before pulse shaping (full wire
+        order).  Same scoping note as ``source_bits``.
+    payload_symbols : array_like, optional
+        Payload symbols only (no preamble, no pilots), at 1 SPS.
+        Populated by :meth:`SingleCarrierFrame.to_signal`.  Used as the
+        reference for :meth:`evm` and :meth:`snr`.
+    pilot_symbols : array_like, optional
+        Pilot symbols only, at 1 SPS, **before** any gain boost.
+        Populated by :meth:`SingleCarrierFrame.to_signal` when
+        ``pilot_pattern != "none"``.  Used for pilot-aided carrier phase
+        recovery.
+    payload_bits : array_like, optional
+        Payload bits (int8) corresponding to ``payload_symbols``.
+        Populated by :meth:`SingleCarrierFrame.to_signal`.  Used as the
+        reference for :meth:`ber`.
+    pilot_bits : array_like, optional
+        Pilot bits (int8) corresponding to ``pilot_symbols``.
+        Populated by :meth:`SingleCarrierFrame.to_signal` when
+        ``pilot_pattern != "none"``.
     pulse_shape : str, optional
-        Name of the pulse shaping filter (e.g., 'rrc', 'rect', 'gaussian').
+        Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
+        ``'gaussian'``).
     filter_span : int
         Span of the pulse-shaping filter in symbols.
     rrc_rolloff : float
@@ -188,13 +217,29 @@ class Signal(BaseModel):
     spectral_domain : {"BASEBAND", "PASSBAND", "INTERMEDIATE"}
         The signal's current placement in the frequency spectrum.
     physical_domain : {"DIG", "RF", "OPT"}
-        The physical transmission domain: 'DIG' (Digital), 'RF' (Radio), 'OPT' (Optical).
+        The physical transmission domain: ``'DIG'`` (Digital), ``'RF'``
+        (Radio), ``'OPT'`` (Optical).
     center_frequency : float
         The carrier or center frequency in Hz.
     digital_frequency_offset : float
         Cumulative digital frequency shift applied to the signal in Hz.
     signal_info : SignalInfo, optional
-        Metadata describing the frame structure if this signal is part of a frame.
+        Structural metadata (frame type, payload/pilot/guard dimensions,
+        modulation per segment) populated when the signal is generated from
+        a :class:`SingleCarrierFrame` or :class:`Preamble`.
+    resolved_symbols : array_like, optional
+        Payload symbols at 1 SPS, normalised to unit average power.
+        Populated by :meth:`resolve_symbols`.  When a frame with pilots is
+        attached this contains **payload only**; pilot symbols are in
+        ``resolved_pilot_symbols``.
+    resolved_pilot_symbols : array_like, optional
+        Pilot symbols at 1 SPS, normalised to unit average power.
+        Populated by :meth:`resolve_symbols` when a frame with pilots is
+        attached and ``sps == 1`` (i.e. after :meth:`equalize_frame`).
+        ``None`` otherwise.
+    resolved_bits : array_like, optional
+        Hard-decision bits demapped from ``resolved_symbols``.
+        Populated by :meth:`demap_symbols_hard`.
     """
 
     model_config = ConfigDict(
@@ -212,10 +257,11 @@ class Signal(BaseModel):
 
     source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
+
     payload_symbols: Optional[Any] = None  # payload only, 1 SPS — BER/EVM reference
     pilot_symbols: Optional[Any] = None  # pilots only,  1 SPS — pilot-aided CPR
     payload_bits: Optional[Any] = None  # payload bits  — BER reference
-    equalized_pilot_symbols: Optional[Any] = None  # pilot symbols after equalization — EVM/constellation analysis
+    pilot_bits: Optional[Any] = None  # pilot bits
 
     pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
@@ -233,8 +279,9 @@ class Signal(BaseModel):
     # Signal structure info (populated when Signal is generated from Frame/Preamble)
     signal_info: Optional[SignalInfo] = None
 
-    # Resolved data from processing
+    # Resolved data from processing (1 SPS, normalized — populated by resolve_symbols())
     resolved_symbols: Optional[Any] = Field(default=None, repr=False)
+    resolved_pilot_symbols: Optional[Any] = Field(default=None, repr=False)
     resolved_bits: Optional[Any] = Field(default=None, repr=False)
 
     # Private: cached equalizer result for post-hoc inspection
@@ -480,10 +527,16 @@ class Signal(BaseModel):
         rows.append(("payload_symbols", _yn(self.payload_symbols)))
         rows.append(("payload_bits", _yn(self.payload_bits)))
         rows.append(("pilot_symbols", _yn(self.pilot_symbols)))
-        rows.append(("equalized_pilot_symbols", _yn(self.equalized_pilot_symbols)))
+        rows.append(("pilot_bits", _yn(self.pilot_bits)))
         rows.append(("source_symbols", _yn(self.source_symbols)))
         rows.append(("source_bits", _yn(self.source_bits)))
         rows.append(("frame attached", _yn(self._frame)))
+
+        # ── Section 4: Resolved data ──────────────────────────────────────
+        rows.append(("─── Resolved data", ""))
+        rows.append(("resolved_symbols", _yn(self.resolved_symbols)))
+        rows.append(("resolved_pilot_symbols", _yn(self.resolved_pilot_symbols)))
+        rows.append(("resolved_bits", _yn(self.resolved_bits)))
 
         # ── Render ────────────────────────────────────────────────────────
         df = pd.DataFrame(rows, columns=["Property", "Value"])
@@ -674,6 +727,25 @@ class Signal(BaseModel):
             sig.pilot_symbols    # pilots only  — use for pilot-aided CPR
         """
         return self._frame
+
+    @property
+    def equalizer_result(self) -> Optional["EqualizerResult"]:
+        """The result of the most recent equalizer call, or ``None``.
+
+        Populated by :meth:`equalize` and :meth:`equalize_frame`.  Gives
+        access to all equalizer outputs after the fact::
+
+            sig.equalize_frame()
+            taps   = sig.equalizer_result.weights          # final FIR taps
+            error  = sig.equalizer_result.error            # complex error per symbol
+            w_hist = sig.equalizer_result.weights_history  # tap trajectory (store_weights=True)
+
+        Returns
+        -------
+        EqualizerResult or None
+            ``None`` when no equalizer has been run yet.
+        """
+        return self._equalizer_result
 
     @property
     def backend(self) -> str:
@@ -903,7 +975,7 @@ class Signal(BaseModel):
 
     def plot_constellation(
         self,
-        data: Literal["samples", "resolved"] = "samples",
+        data: Literal["samples", "resolved", "resolved_pilots"] = "samples",
         bins: int = 100,
         cmap: str = "inferno",
         overlay_ideal: bool = False,
@@ -962,8 +1034,29 @@ class Signal(BaseModel):
                     "No resolved_symbols available. Call resolve_symbols() first."
                 )
             plot_data = self.resolved_symbols
+            _mod = self.mod_scheme or (
+                self.signal_info.payload_mod_scheme if self.signal_info else None
+            )
+            _order = self.mod_order or (
+                self.signal_info.payload_mod_order if self.signal_info else None
+            )
+        elif data == "resolved_pilots":
+            if self.resolved_pilot_symbols is None:
+                raise ValueError(
+                    "No resolved_pilot_symbols available. "
+                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
+                )
+            plot_data = self.resolved_pilot_symbols
+            _mod = self.mod_scheme or (
+                self.signal_info.pilot_mod_scheme if self.signal_info else None
+            )
+            _order = self.mod_order or (
+                self.signal_info.pilot_mod_order if self.signal_info else None
+            )
         else:
             plot_data = self.samples
+            _mod = self.mod_scheme
+            _order = self.mod_order
 
         result = plotting.constellation(
             plot_data,
@@ -971,8 +1064,8 @@ class Signal(BaseModel):
             cmap=cmap,
             ax=ax,
             overlay_ideal=overlay_ideal,
-            modulation=self.mod_scheme,
-            order=self.mod_order,
+            modulation=_mod,
+            order=_order,
             unipolar=self.mod_unipolar,
             title=title,
             vmin=vmin,
@@ -1647,7 +1740,7 @@ class Signal(BaseModel):
 
         - ``signal.samples`` contains the equalized complex symbols at symbol
           rate (1 SPS for adaptive methods).
-        - ``signal._equalizer_result`` holds the full
+        - ``signal.equalizer_result`` holds the full
           :class:`~commstools.equalization.EqualizerResult` (adaptive methods only).
 
         Algorithm overview
@@ -1702,7 +1795,7 @@ class Signal(BaseModel):
             *Applies to: lms, cma, rde.*
         store_weights : bool, default False
             If ``True``, the full tap-weight trajectory is stored in
-            ``signal._equalizer_result.weights_history``, enabling
+            ``signal.equalizer_result.weights_history``, enabling
             convergence analysis and debugging. Incurs extra memory cost
             proportional to ``num_symbols x num_taps``.
             *Applies to: lms, rls, cma, rde.*
@@ -1772,7 +1865,7 @@ class Signal(BaseModel):
 
             - ``signal.samples`` — equalized symbols (1 SPS after adaptive
               methods; unchanged rate for ZF).
-            - ``signal._equalizer_result`` — full
+            - ``signal.equalizer_result`` — full
               :class:`~commstools.equalization.EqualizerResult` including
               ``y_hat``, ``weights``, ``error``, and optionally
               ``weights_history``. *Not set for ZF.*
@@ -1990,7 +2083,7 @@ class Signal(BaseModel):
         -------
         Signal
             ``self`` with ``samples`` replaced by the equalized payload symbols
-            (1 SPS) and ``_equalizer_result`` populated.
+            (1 SPS) and ``equalizer_result`` populated.
         """
         from . import equalization  # noqa: PLC0415
 
@@ -2008,12 +2101,12 @@ class Signal(BaseModel):
             )
 
         _info = self.signal_info
-        _mod = modulation or self.mod_scheme or (
-            _info.payload_mod_scheme if _info else None
+        _mod = (
+            modulation
+            or self.mod_scheme
+            or (_info.payload_mod_scheme if _info else None)
         )
-        _order = order or self.mod_order or (
-            _info.payload_mod_order if _info else None
-        )
+        _order = order or self.mod_order or (_info.payload_mod_order if _info else None)
         result = equalization.equalize_frame(
             self.samples,
             frame,
@@ -2029,15 +2122,13 @@ class Signal(BaseModel):
             w_init=w_init,
             debug_plot=debug_plot,
         )
-        # Use payload-only output for samples so that evm()/ber() against
-        # self.payload_symbols is a valid comparison.  When pilots are absent
-        # payload_symbols_eq is None and y_hat is already payload-only.
-        self.samples = (
-            result.payload_symbols_eq
-            if result.payload_symbols_eq is not None
-            else result.y_hat
-        )
-        self.equalized_pilot_symbols = result.pilot_symbols_eq
+        # Keep the full combined (payload+pilots interleaved) equalizer output
+        # in self.samples.  Subsequent DSP steps (CPR, freq correction, …)
+        # operate on this stream without needing to know the frame structure.
+        # resolve_symbols() later recomputes the pilot/payload mask from the
+        # attached frame and writes both resolved_symbols (payload) and
+        # resolved_pilot_symbols (pilots).
+        self.samples = result.y_hat
         self._equalizer_result = result
         self._num_train_symbols = getattr(result, "num_train_symbols", 0)
         self._num_tail_trim = 0
@@ -2108,8 +2199,9 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
-        at 1 sps) for demapping.
+        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
+        ``resolved_pilot_symbols`` when pilots are present) at unit average
+        power (Es = 1, 1 sps) before demapping or computing metrics.
         """
         from . import filtering, mapping
 
@@ -2212,8 +2304,9 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
-        at 1 sps) for demapping.
+        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
+        ``resolved_pilot_symbols`` when pilots are present) at unit average
+        power (Es = 1, 1 sps) before demapping or computing metrics.
         """
         if rz:
             if sps % 2 != 0:
@@ -2292,8 +2385,9 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
-        at 1 sps) for demapping.
+        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
+        ``resolved_pilot_symbols`` when pilots are present) at unit average
+        power (Es = 1, 1 sps) before demapping or computing metrics.
         """
         return cls.generate(
             modulation="psk",
@@ -2361,8 +2455,9 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Calling `resolve_symbols()` returns symbols at unit average power (Es = 1
-        at 1 sps) for demapping.
+        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
+        ``resolved_pilot_symbols`` when pilots are present) at unit average
+        power (Es = 1, 1 sps) before demapping or computing metrics.
         """
         return cls.generate(
             modulation="qam",
@@ -2382,31 +2477,41 @@ class Signal(BaseModel):
     # Resolving and Demapping Methods
     # -------------------------------------------------------------------------
 
-    def resolve_symbols(self, offset: int = 0) -> ArrayType:
-        """
-        Retrieves samples decimated to the symbol rate ($1\\text{ sps}$) and
-        caches them in `self.resolved_symbols`.
+    def resolve_symbols(self, offset: int = 0) -> None:
+        """Decimate to symbol rate and populate resolved symbol fields.
 
-        WARNING: Only integer offsets are supported. Use after timing correction.
+        Decimates ``self.samples`` to 1 SPS and normalises to unit average
+        power ($E_s = 1$).  Results are written to fields rather than
+        returned so that the complete resolved state is always in one place.
+
+        **Frame-aware splitting** — when a :class:`SingleCarrierFrame` is
+        attached (``self._frame``) and its ``pilot_pattern`` is not ``"none"``,
+        *and* the signal is already at 1 SPS (i.e. after :meth:`equalize_frame`
+        and any subsequent DSP), the interleaved payload+pilot stream is split
+        using the frame's structure map:
+
+        * ``resolved_symbols`` — payload symbols only, normalised.
+        * ``resolved_pilot_symbols`` — pilot symbols only, normalised.
+
+        Without pilots (or when the signal has not yet been equalised to 1 SPS),
+        only ``resolved_symbols`` is populated and ``resolved_pilot_symbols`` is
+        set to ``None``.
 
         Parameters
         ----------
         offset : int, default 0
-            Timing offset in samples to apply before decimation. This allows
-            for choosing the optimal sampling point within the symbol period.
-
-        Returns
-        -------
-        array_like
-            Decimated samples at $1\\text{ sps}$.
+            Sample offset applied before decimation (integer only).
+            Use after timing correction to select the optimal sampling instant.
 
         Notes
         -----
-        The decimated 1-sps samples are normalized to **unit average power
-        ($E_s=1$)**.  At 1 sps this is equivalent to symbol-power normalization.
-        The upstream sps waveform already carries unit symbol power, so this
-        step is a safety guard that absorbs any gain introduced by the channel,
-        equalizer, or matched filter before decimation.
+        The normalisation step is a safety guard that absorbs any gain
+        introduced by the channel, equaliser, or matched filter.  It does not
+        change the constellation shape, only the scale.
+
+        Warning
+        -------
+        Only integer offsets are supported.  Use after timing correction.
         """
         sps = self.sps
         if sps is None:
@@ -2431,37 +2536,75 @@ class Signal(BaseModel):
                 self.samples, sps=int(sps), offset=int(offset), axis=-1
             )
 
-        # Normalize symbols to unit average power (E_s = 1) for consistent
-        # demapping and metric calculation.
-        # For MIMO, we normalize per-stream (axis=-1). Each resolved stream
-        # is independently scaled to unit power.
+        # When a frame with pilots is attached and the signal is at 1 SPS
+        # (post-equalization), split the interleaved payload+pilot stream into
+        # separate resolved fields.  The pilot/payload mask is recomputed from
+        # the frame structure — it is a pure function of frame parameters, so
+        # no additional state needs to be stored between equalize_frame() and
+        # resolve_symbols().
+        if (
+            self._frame is not None
+            and getattr(self._frame, "pilot_pattern", "none") != "none"
+            and sps == 1
+        ):
+            from .backend import to_device as _to_device  # noqa: PLC0415
+
+            struct = self._frame.get_structure_map(
+                unit="symbols", sps=1, include_preamble=False
+            )
+            pilot_m = struct.get("pilots")
+            payload_m = struct.get("payload")
+            if pilot_m is not None and payload_m is not None:
+                n = res.shape[-1]
+                pilot_idx = np.where(_to_device(pilot_m, "cpu").astype(bool))[0]
+                payload_idx = np.where(_to_device(payload_m, "cpu").astype(bool))[0]
+                # Only split when indices fit within res (they may not if the
+                # signal was trimmed or if this is a pre-equalization call).
+                if (
+                    len(pilot_idx) > 0
+                    and len(payload_idx) > 0
+                    and int(pilot_idx.max()) < n
+                    and int(payload_idx.max()) < n
+                ):
+                    if res.ndim == 1:
+                        pilot_res = res[pilot_idx]
+                        payload_res = res[payload_idx]
+                    else:
+                        pilot_res = res[:, pilot_idx]
+                        payload_res = res[:, payload_idx]
+                    self.resolved_symbols = helpers.normalize(
+                        payload_res, "average_power", axis=-1
+                    )
+                    self.resolved_pilot_symbols = helpers.normalize(
+                        pilot_res, "average_power", axis=-1
+                    )
+                    return
+
+        # No frame pilots (or indices out of range): resolve as a single stream.
+        self.resolved_pilot_symbols = None
         self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
-        return self.resolved_symbols
 
     def demap_symbols_hard(
         self,
         **kwargs: Any,
-    ) -> ArrayType:
-        """
-        Maps resolved symbols to bits via minimum Euclidean distance (hard decision).
+    ) -> None:
+        """Map resolved symbols to bits and store in ``self.resolved_bits``.
+
+        Performs hard-decision demapping via minimum Euclidean distance and
+        writes the result to ``self.resolved_bits``.  Call
+        :meth:`resolve_symbols` first.
 
         Parameters
         ----------
         **kwargs : Any
-            Additional arguments passed to `mapping.demap_symbols_hard`
-            (e.g., ``unipolar``).
-
-        Returns
-        -------
-        ndarray
-            Array of recovered bits (int8). Shape: (..., N_symbols * log2(order)).
-            Result is also stored in ``self.resolved_bits``.
+            Additional arguments forwarded to :func:`mapping.demap_symbols_hard`
+            (e.g. ``unipolar``).
 
         Raises
         ------
         ValueError
-            If modulation metadata is missing or ``resolve_symbols()`` has not
-            been called yet.
+            If modulation metadata is missing or :meth:`resolve_symbols` has
+            not been called yet.
         """
         from .mapping import demap_symbols_hard
 
@@ -2482,7 +2625,6 @@ class Signal(BaseModel):
             **kwargs,
         )
         self.resolved_bits = bits
-        return bits
 
     # -------------------------------------------------------------------------
     # Metrics Methods
@@ -3520,6 +3662,7 @@ class SingleCarrierFrame(BaseModel):
             payload_symbols=self.payload_symbols,  # payload only, no preamble, no pilots
             pilot_symbols=self.pilot_symbols,  # pilots only, or None
             payload_bits=self.payload_bits,  # payload bits for sig.ber()
+            pilot_bits=self.pilot_bits,  # pilot bits, or None
             pulse_shape=pulse_shape,
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
