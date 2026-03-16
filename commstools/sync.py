@@ -692,9 +692,16 @@ def estimate_timing(
 
     # === Per-Channel Normalization ===
     # Calculate Energy per channel
-    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C,) or scalar
+    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C_tx,) or scalar
     if e_p.ndim == 0:  # SISO: broadcast scalar energy to all channels
         e_p = xp.full(num_sig_ch, e_p)
+    elif _is_time_orthogonal:
+        # corr[i] was taken against template best_t[i], not template i.
+        # Re-index so norm_factors[i] uses the energy of the template that was
+        # actually correlated with RX channel i.  For time_orthogonal all
+        # templates have equal energy today, but indexing correctly future-proofs
+        # against asymmetric preamble designs.
+        e_p = e_p[best_t]  # (C_rx,)
 
     e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
 
@@ -1232,6 +1239,7 @@ def estimate_frequency_offset_preamble(
     preamble_samples: ArrayType,
     fs: float,
     offset: int = 0,
+    sps: int = 1,
     stream_assignment: Optional[ArrayType] = None,
     debug_plot: bool = False,
 ) -> float:
@@ -1259,6 +1267,28 @@ def estimate_frequency_offset_preamble(
     offset : int, default 0
         Sample index of the start of the preamble region in ``signal``.
         Typically the ``coarse_offset`` returned by :func:`estimate_timing`.
+    sps : int, default 1
+        Samples per symbol of the input signal.  When ``sps > 1`` (i.e.
+        the signal is oversampled — typical after matched filtering without
+        decimation), both the received window and the reference are
+        subsampled at the symbol stride (``[::sps]``) before the
+        differential estimator is applied.
+
+        **Why this matters at sps=2:** after RRC matched filtering the
+        output has zero crossings at every intersymbol (odd) sample — a
+        direct consequence of the Nyquist ISI-free property.  Including
+        these near-zero samples in the differential product
+        ``y[n+1]·y*[n]`` produces random-phase terms that dominate Kay's
+        weighted sum (especially near the centre of the window where the
+        sine-squared weights peak) and yield a badly biased estimate.
+        Subsampling to on-symbol samples eliminates all zero crossings
+        and restores a clean constant differential phase across the full
+        preamble window.
+
+        The subsampled effective sample rate seen by the estimator is
+        ``fs / sps`` (the symbol rate), and the lock range becomes
+        ``±fs / (2 · sps · L_sym)`` where ``L_sym = L // sps`` is the
+        preamble length in symbols.
     stream_assignment : array_like of int, shape (C,), optional
         TX stream index (= time slot index) that carries the dominant
         signal on each RX channel.  Pass the third return value of
@@ -1287,10 +1317,10 @@ def estimate_frequency_offset_preamble(
     exponential at Δf.  Kay's estimator (``weighted=True``) is applied for
     maximum-likelihood performance at high SNR.
 
-    **Lock range:** ``~[-fs/(2L), fs/(2L)]`` where ``L`` is the preamble
-    length.  For large offsets, use
-    :func:`estimate_frequency_offset_mth_power` as a coarse stage first,
-    correct it, then call this function for fine tuning.
+    **Lock range:** ``~[-fs/(2·sps·L_sym), +fs/(2·sps·L_sym)]`` where
+    ``L_sym = L // sps`` is the number of preamble symbols.  For large
+    offsets, use :func:`estimate_frequency_offset_mth_power` as a coarse
+    stage first, correct it, then call this function for fine tuning.
 
     References
     ----------
@@ -1328,14 +1358,28 @@ def estimate_frequency_offset_preamble(
     else:
         r_p = signal[..., offset : offset + L]  # (C, L) — same window for all
 
+    if sps > 1:
+        # Keep only on-symbol samples (0, sps, 2*sps, …).  Both the received
+        # window and the reference must be subsampled with the same stride so
+        # the demodulation r_p * conj(preamble) stays sample-aligned.
+        # After RRC matched filtering the intersymbol samples are near-zero
+        # (Nyquist zero crossings); including them in y[n+1]·y*[n] produces
+        # random-phase products that corrupt Kay's estimator.
+        r_p = r_p[..., ::sps]
+        preamble_samples = preamble_samples[..., ::sps]
+        fs_eff = fs / sps  # symbol-rate view for the estimator
+    else:
+        fs_eff = fs
+
     logger.debug(
-        f"FOE (preamble): L={L} samples, offset={offset}, "
+        f"FOE (preamble): L={L} samples, sps={sps}, "
+        f"L_sym={r_p.shape[-1]}, offset={offset}, "
         f"stream_assignment={None if stream_assignment is None else sa.tolist()}"
     )
     # Delegate demodulation to the ref_signal path of estimate_frequency_offset_differential,
     # which computes y = r_p * conj(preamble_samples) internally before Kay's estimator.
     return estimate_frequency_offset_differential(
-        r_p, fs, ref_signal=preamble_samples, weighted=True, debug_plot=debug_plot
+        r_p, fs_eff, ref_signal=preamble_samples, weighted=True, debug_plot=debug_plot
     )
 
 

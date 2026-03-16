@@ -66,10 +66,11 @@ class EqualizerResult:
     Attributes
     ----------
     y_hat : ArrayType
-        Equalized output symbols. Shape: ``(N_sym,)`` or ``(C, N_sym)``.
-        For frame-aware equalization with pilots this is the full combined
-        payload+pilot output; use ``payload_symbols_eq`` / ``pilot_symbols_eq``
-        to access each region separately.
+        Full-frame equalized symbol sequence in frame order (preamble first,
+        then payload and pilots interleaved, guard excluded).  Shape:
+        ``(N_total,)`` SISO or ``(C, N_total)`` MIMO.  Use
+        ``preamble_symbols_eq``, ``payload_symbols_eq``, and
+        ``pilot_symbols_eq`` to access each segment separately.
     weights : ArrayType
         Final tap weight vector. Shape: ``(num_taps,)`` for SISO
         or ``(C, C, num_taps)`` for MIMO butterfly.
@@ -78,18 +79,30 @@ class EqualizerResult:
     weights_history : ArrayType or None
         Tap weight evolution over time. Only populated when
         ``store_weights=True``.
+    num_preamble_symbols : int
+        Number of preamble symbols prepended to ``y_hat``.  Non-zero only when
+        the equalizer ran a DA-LMS preamble pre-convergence stage.  Use this
+        to skip the preamble prefix when computing payload-domain metrics.
     num_train_symbols : int
-        Number of data-aided training symbols actually consumed by the equalizer.
-        This value is used to discard transients (the training portion) before
-        computing steady-state metrics like EVM, SNR, and BER on the blind
-        decision-directed portion of the output.
+        Number of data-aided training symbols consumed by the payload equalizer
+        (excluding preamble).  Used to discard the DA-trained transient before
+        computing steady-state metrics like EVM, SNR, and BER.
     payload_symbols_eq : ArrayType or None
-        Payload-only equalized symbols extracted from ``y_hat``.  Populated by
-        :func:`equalize_frame` when pilots are present; ``None`` otherwise
-        (in which case ``y_hat`` is already payload-only).
+        Payload-only equalized symbols extracted from ``y_hat``.  Always
+        populated by :func:`equalize_frame`; ``None`` only when ``y_hat``
+        contains no payload symbols.
     pilot_symbols_eq : ArrayType or None
         Pilot-only equalized symbols extracted from ``y_hat``.  Populated by
         :func:`equalize_frame` when pilots are present; ``None`` otherwise.
+    preamble_symbols_eq : ArrayType or None
+        Preamble-only equalized symbols extracted from ``y_hat``.  Populated
+        by :func:`equalize_frame` when a preamble is present; ``None``
+        otherwise.  Shape: ``(L,)`` for SISO, ``(C, L)`` for MIMO same-mode,
+        or ``(C, C*L)`` for MIMO time-orthogonal (slot i in columns
+        ``i*L … (i+1)*L``).  Useful for frequency-offset estimation after
+        equalization: pass to
+        :func:`~commstools.sync.estimate_frequency_offset_preamble` with
+        ``sps=1`` and ``stream_assignment=np.arange(C)``.
     input_norm_factor : float
         Global normalization factor ``rms(samples) * sqrt(sps)`` applied to
         the input samples by ``_normalize_inputs`` before equalization.
@@ -114,9 +127,11 @@ class EqualizerResult:
     weights: ArrayType
     error: ArrayType
     weights_history: Optional[ArrayType] = None
+    num_preamble_symbols: int = 0
     num_train_symbols: int = 0
     payload_symbols_eq: Optional[ArrayType] = None
     pilot_symbols_eq: Optional[ArrayType] = None
+    preamble_symbols_eq: Optional[ArrayType] = None
     input_norm_factor: float = 1.0
 
 
@@ -155,44 +170,125 @@ def _log_equalizer_exit(
 
 def _split_hybrid_result(
     result: "EqualizerResult",
-    payload_pilot_mask: np.ndarray,
+    preamble_mask: np.ndarray,
+    pilot_mask: np.ndarray,
 ) -> "EqualizerResult":
-    """Split a hybrid-pass result into payload-only and pilot-only arrays.
+    """Split a full-frame result into preamble, payload, and pilot arrays.
 
     Parameters
     ----------
     result : EqualizerResult
-        Output from a hybrid DA/blind pass.  ``y_hat`` shape is
-        ``(N_combined,)`` for SISO or ``(C, N_combined)`` for MIMO, where
-        ``N_combined = N_payload + N_pilots``.
-    payload_pilot_mask : (N_combined,) bool ndarray
-        ``True`` at pilot positions, ``False`` at payload positions.
+        Full-frame result.  ``y_hat`` shape is ``(N_total,)`` SISO or
+        ``(C, N_total)`` MIMO, where
+        ``N_total = N_preamble + N_payload + N_pilots``.
+    preamble_mask : (N_total,) bool ndarray
+        ``True`` at preamble symbol positions.
+    pilot_mask : (N_total,) bool ndarray
+        ``True`` at pilot symbol positions.
 
     Returns
     -------
     EqualizerResult
-        Same as *result* but with ``payload_symbols_eq`` and
-        ``pilot_symbols_eq`` populated.
+        Same as *result* but with ``preamble_symbols_eq``,
+        ``payload_symbols_eq``, and ``pilot_symbols_eq`` populated.
     """
-    pilot_idx = np.where(payload_pilot_mask)[0]
-    payload_idx = np.where(~payload_pilot_mask)[0]
+    payload_mask = ~preamble_mask & ~pilot_mask
+    preamble_idx = np.where(preamble_mask)[0]
+    pilot_idx = np.where(pilot_mask)[0]
+    payload_idx = np.where(payload_mask)[0]
     y = result.y_hat
     if y.ndim == 1:
-        payload_eq = y[payload_idx]
-        pilot_eq = y[pilot_idx]
+        preamble_eq = y[preamble_idx] if len(preamble_idx) else None
+        pilot_eq = y[pilot_idx] if len(pilot_idx) else None
+        payload_eq = y[payload_idx] if len(payload_idx) else None
     else:
-        payload_eq = y[:, payload_idx]
-        pilot_eq = y[:, pilot_idx]
+        preamble_eq = y[:, preamble_idx] if len(preamble_idx) else None
+        pilot_eq = y[:, pilot_idx] if len(pilot_idx) else None
+        payload_eq = y[:, payload_idx] if len(payload_idx) else None
     return EqualizerResult(
         y_hat=result.y_hat,
         weights=result.weights,
         error=result.error,
         weights_history=result.weights_history,
+        num_preamble_symbols=result.num_preamble_symbols,
         num_train_symbols=result.num_train_symbols,
+        preamble_symbols_eq=preamble_eq,
         payload_symbols_eq=payload_eq,
         pilot_symbols_eq=pilot_eq,
         input_norm_factor=result.input_norm_factor,
     )
+
+
+def _finalize_frame_result(
+    raw_result: "EqualizerResult",
+    preamble_eq_syms: Optional[ArrayType],
+    preamble_error: Optional[ArrayType],
+    payload_pilot_mask: Optional[np.ndarray],
+) -> "EqualizerResult":
+    """Prepend preamble symbols/error into y_hat/error and split all segments.
+
+    Parameters
+    ----------
+    raw_result : EqualizerResult
+        Output from a payload equalizer pass.  ``y_hat`` and ``error`` contain
+        the body (payload + interleaved pilots, or payload-only when no pilots).
+        Shape ``(N_body,)`` SISO or ``(C, N_body)`` MIMO.
+    preamble_eq_syms : ndarray or None
+        Equalized preamble symbols from the DA-LMS pre-convergence stage.
+        Shape ``(L,)`` SISO, ``(C, L)`` MIMO same-mode, or ``(C, C*L)``
+        time-orthogonal MIMO.  ``None`` when no preamble is present.
+    preamble_error : ndarray or None
+        Error signal from the DA-LMS pre-convergence stage, same shape as
+        ``preamble_eq_syms``.  ``None`` when no preamble is present.
+    payload_pilot_mask : (N_body,) bool ndarray or None
+        ``True`` at pilot positions within the body, ``False`` at payload
+        positions.  Pass ``None`` or all-``False`` when no pilots are present.
+
+    Returns
+    -------
+    EqualizerResult
+        ``y_hat`` and ``error`` are full-frame in symbol order: preamble first,
+        then the body (payload + pilots interleaved).  ``num_preamble_symbols``
+        equals the preamble length; ``num_train_symbols`` reflects payload-domain
+        DA training only.  ``preamble_symbols_eq``, ``payload_symbols_eq``, and
+        ``pilot_symbols_eq`` are extracted via the corresponding boolean masks.
+    """
+    body_y = raw_result.y_hat
+    N_body = body_y.shape[-1] if body_y.ndim > 1 else len(body_y)
+
+    if preamble_eq_syms is not None:
+        # axis=-1 works for both 1-D (SISO) and 2-D (MIMO) arrays; numpy
+        # dispatches to CuPy via __array_function__ when both are on GPU.
+        y_hat_full = np.concatenate([preamble_eq_syms, body_y], axis=-1)
+        error_full = np.concatenate([preamble_error, raw_result.error], axis=-1)
+        N_pre = (
+            preamble_eq_syms.shape[-1]
+            if preamble_eq_syms.ndim > 1
+            else len(preamble_eq_syms)
+        )
+    else:
+        y_hat_full = body_y
+        error_full = raw_result.error
+        N_pre = 0
+
+    N_total = N_pre + N_body
+    full_preamble_mask = np.zeros(N_total, dtype=bool)
+    full_preamble_mask[:N_pre] = True
+
+    full_pilot_mask = np.zeros(N_total, dtype=bool)
+    if payload_pilot_mask is not None and N_body > 0:
+        full_pilot_mask[N_pre:] = payload_pilot_mask
+
+    result_full = EqualizerResult(
+        y_hat=y_hat_full,
+        weights=raw_result.weights,
+        error=error_full,
+        weights_history=raw_result.weights_history,
+        num_preamble_symbols=N_pre,
+        num_train_symbols=raw_result.num_train_symbols,
+        input_norm_factor=raw_result.input_norm_factor,
+    )
+    return _split_hybrid_result(result_full, full_preamble_mask, full_pilot_mask)
 
 
 # -----------------------------------------------------------------------------
@@ -3081,8 +3177,11 @@ def equalize_frame(
     Returns
     -------
     EqualizerResult
-        Equalized symbols covering the payload region.  When a preamble was
-        processed, ``num_train_symbols`` reflects the preamble length.
+        Full-frame result.  ``y_hat`` and ``error`` span preamble + payload +
+        pilots in frame order (guard excluded).  ``num_train_symbols`` equals
+        the preamble length.  Use ``preamble_symbols_eq``,
+        ``payload_symbols_eq``, and ``pilot_symbols_eq`` to access each
+        segment.
 
     Notes
     -----
@@ -3144,6 +3243,8 @@ def equalize_frame(
     # ── Step 1: Preamble pre-convergence (DA-LMS) ────────────────────────────
     w_0 = w_init
     n_preamble_syms = 0
+    preamble_eq_syms: Optional[ArrayType] = None  # populated if preamble present
+    preamble_error: Optional[ArrayType] = None    # populated if preamble present
 
     if has_preamble:
         preamble_mask_np = preamble_mask.astype(bool)
@@ -3159,28 +3260,53 @@ def equalize_frame(
             preamble_samples = samples[:, preamble_start_samp:preamble_end_samp]
 
         preamble_syms = to_device(frame.preamble.symbols, "cpu").astype(np.complex64)
+        _use_per_slot_lms = False  # True only for time_orthogonal MIMO (see below)
+
         if preamble_syms.ndim == 1 and num_ch > 1:
             base_syms = preamble_syms  # (L,)
             L_base = len(base_syms)
 
             if frame.preamble_mode == "time_orthogonal":
-                # time_orthogonal: TX stream i transmits the preamble in its own
-                # dedicated time slot (slot i) while all other streams are silent.
-                # The preamble region in the received samples therefore spans
-                # num_ch * L_base symbols.  The correct block-diagonal DA reference
-                # for the butterfly equalizer is:
+                # Per-slot sequential DA-LMS for time-orthogonal MIMO preambles.
                 #
-                #   channel 0: [ P  0  0 … ]   (P in slot 0, zeros elsewhere)
-                #   channel 1: [ 0  P  0 … ]   (P in slot 1, zeros elsewhere)
-                #   …
+                # Each of the C slots activates exactly one TX stream.  The
+                # reference for slot k is (C, L_base): P in row k, zeros elsewhere.
+                # _normalize_inputs handles this correctly: all-zero rows divide by
+                # safe_norm=1 and stay at 0; the active row is normalised to unit
+                # power by rms(P).  This matches the normalised sample domain.
                 #
-                # This is the only reference that gives the butterfly taps an
-                # unambiguous per-stream training signal and correctly resolves H⁻¹.
-                preamble_syms = np.zeros(
-                    (num_ch, num_ch * L_base), dtype=np.complex64
-                )
-                for i in range(num_ch):
-                    preamble_syms[i, i * L_base : (i + 1) * L_base] = base_syms
+                # A single block-diagonal call over C*L_base symbols would instead
+                # dilute the per-row average power by 1/C (due to C-1 zero blocks),
+                # causing _normalize_inputs to inflate the active targets by sqrt(C)
+                # (≈3 dB for C=2).  The LMS would exhibit a systematic gain mismatch
+                # and never reach zero error during training.
+                _use_per_slot_lms = True
+                preamble_eq_parts = []
+                preamble_err_parts = []
+                for slot in range(num_ch):
+                    slot_samp = preamble_samples[
+                        :, slot * L_base * stride : (slot + 1) * L_base * stride
+                    ]
+                    slot_syms = np.zeros((num_ch, L_base), dtype=np.complex64)
+                    slot_syms[slot, :] = base_syms
+                    pre_result = lms(
+                        slot_samp,
+                        training_symbols=slot_syms,
+                        num_taps=num_taps,
+                        step_size=lms_step_size,
+                        w_init=w_0,
+                        sps=sps,
+                        backend=backend,
+                    )
+                    _w = pre_result.weights
+                    w_0 = to_device(_w, "cpu")
+                    if w_0.ndim == 1:
+                        w_0 = w_0[np.newaxis, np.newaxis, :]
+                    preamble_eq_parts.append(pre_result.y_hat)
+                    preamble_err_parts.append(pre_result.error)
+                # Concatenate equalized symbols/errors from all slots: (C, C*L_base)
+                preamble_eq_syms = np.concatenate(preamble_eq_parts, axis=-1)
+                preamble_error = np.concatenate(preamble_err_parts, axis=-1)
             else:
                 # "same" mode: all streams transmit the identical sequence, so
                 # broadcasting P to every output channel is correct.
@@ -3202,20 +3328,24 @@ def equalize_frame(
                     base_syms[np.newaxis, :], (num_ch, L_base)
                 )
 
-        pre_result = lms(
-            preamble_samples,
-            training_symbols=preamble_syms,
-            num_taps=num_taps,
-            step_size=lms_step_size,
-            w_init=w_0,
-            sps=sps,
-            backend=backend,
-        )
-        _w = pre_result.weights
-        w_0 = to_device(_w, "cpu")
-        if w_0.ndim == 1:
-            # SISO: lms squeezes weights to (num_taps,) — expand to (1, 1, num_taps)
-            w_0 = w_0[np.newaxis, np.newaxis, :]
+        if not _use_per_slot_lms:
+            # SISO or "same"-mode MIMO: single DA-LMS call.
+            pre_result = lms(
+                preamble_samples,
+                training_symbols=preamble_syms,
+                num_taps=num_taps,
+                step_size=lms_step_size,
+                w_init=w_0,
+                sps=sps,
+                backend=backend,
+            )
+            _w = pre_result.weights
+            w_0 = to_device(_w, "cpu")
+            if w_0.ndim == 1:
+                # SISO: lms squeezes weights to (num_taps,) — expand to (1, 1, num_taps)
+                w_0 = w_0[np.newaxis, np.newaxis, :]
+            preamble_eq_syms = pre_result.y_hat
+            preamble_error = pre_result.error
 
     # ── Step 2: Payload equalization ─────────────────────────────────────────
     if payload_mask is not None:
@@ -3241,11 +3371,17 @@ def equalize_frame(
         empty_W = (
             w_0 if w_0 is not None else _init_butterfly_weights_numpy(num_ch, num_taps)
         )
-        return EqualizerResult(
-            y_hat=y_empty[0] if was_1d else y_empty,
-            weights=empty_W,
-            error=y_empty[0] if was_1d else y_empty,
-            num_train_symbols=n_preamble_syms,
+        return _finalize_frame_result(
+            EqualizerResult(
+                y_hat=y_empty[0] if was_1d else y_empty,
+                weights=empty_W,
+                error=y_empty[0] if was_1d else y_empty,
+                num_train_symbols=n_preamble_syms,
+                input_norm_factor=1.0,
+            ),
+            preamble_eq_syms,
+            preamble_error,
+            None,
         )
 
     payload_start_samp = int(sym_indices[0]) * stride
@@ -3389,7 +3525,7 @@ def equalize_frame(
                 )
 
             return _log_equalizer_exit(
-                _split_hybrid_result(
+                _finalize_frame_result(
                     _unpack_result_jax(
                         y_jax,
                         e_jax,
@@ -3402,6 +3538,8 @@ def equalize_frame(
                         num_train_symbols=0,
                         input_norm_factor=eq_norm,
                     ),
+                    preamble_eq_syms,
+                    preamble_error,
                     payload_pilot_mask,
                 ),
                 name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, JAX)",
@@ -3447,7 +3585,7 @@ def equalize_frame(
             )
 
         return _log_equalizer_exit(
-            _split_hybrid_result(
+            _finalize_frame_result(
                 _unpack_result_numpy(
                     y_out,
                     e_out,
@@ -3460,6 +3598,8 @@ def equalize_frame(
                     num_train_symbols=0,
                     input_norm_factor=eq_norm,
                 ),
+                preamble_eq_syms,
+                preamble_error,
                 payload_pilot_mask,
             ),
             name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, Numba)",
@@ -3481,7 +3621,7 @@ def equalize_frame(
             w_init=w_0,
         )
         return _log_equalizer_exit(
-            _res,
+            _finalize_frame_result(_res, preamble_eq_syms, preamble_error, None),
             name=f"equalize_frame(blind-{blind_algorithm.upper()})",
             debug_plot=debug_plot,
         )

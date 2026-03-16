@@ -16,9 +16,6 @@ The .npz file contains the following named entries:
   ``samples``              - IQ sample array  (always present)
   ``source_bits``          - source bit array  (omitted if None)
   ``source_symbols``       - source symbol array  (omitted if None)
-  ``payload_symbols``      - payload-only symbols, 1 SPS  (omitted if None)
-  ``pilot_symbols``        - pilot-only symbols, 1 SPS  (omitted if None)
-  ``payload_bits``         - payload bits  (omitted if None)
   ``resolved_symbols``     - cached symbol array  (only with include_cache=True)
   ``resolved_bits``        - cached bit array     (only with include_cache=True)
   ``__metadata__``         - zero-d object array holding a YAML string with all
@@ -72,9 +69,6 @@ _META_FIELDS: tuple[str, ...] = (
 _OPTIONAL_ARRAY_FIELDS: tuple[str, ...] = (
     "source_bits",
     "source_symbols",
-    "payload_symbols",
-    "pilot_symbols",
-    "payload_bits",
 )
 
 # Derived / cached array fields (only written when include_cache=True)
@@ -155,7 +149,7 @@ def save_npz(
     # Saving it ensures that equalize_frame(), correct_timing(), and pilot
     # extraction all work after a save/load round-trip without requiring the
     # caller to keep a reference to the original frame object.
-    frame = getattr(signal, "_frame", None)
+    frame = signal.frame
     if frame is not None:
         # All public fields are JSON-serializable primitives; nested Preamble
         # is a Pydantic model and is also captured by model_dump().
@@ -307,7 +301,7 @@ def load_npz(
         if "frame_payload_bits" in data:
             frame._payload_bits = data["frame_payload_bits"]
 
-        sig._frame = frame
+        sig.frame = frame
 
     # -------------------------------------------------------------------------
     # Move to target device
