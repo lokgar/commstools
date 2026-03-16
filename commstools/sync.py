@@ -26,7 +26,7 @@ estimate_frequency_offset_mth_power :
     Blind FOE via M-th power spectral method with parabolic sub-bin interpolation.
 estimate_frequency_offset_differential :
     Blind or data-aided FOE via differential auto-correlation (Kay's estimator).
-estimate_frequency_offset_data_aided :
+estimate_frequency_offset_preamble :
     Preamble-based FOE using known training sequence (Kay/Fitz ML estimator).
 estimate_frequency_offset_pilots :
     Scattered-pilot FOE via least-squares phase slope fitting.
@@ -442,8 +442,9 @@ def estimate_timing(
     search_range: Optional[Tuple[int, int]] = None,
     dft_upsample: int = 1,
     fractional_method: str = "log-parabolic",
+    return_stream_assignment: bool = False,
     debug_plot: bool = False,
-) -> Tuple[ArrayType, ArrayType]:
+) -> Union[Tuple[ArrayType, ArrayType], Tuple[ArrayType, ArrayType, ArrayType]]:
     """
     Estimates coarse and fractional timing offsets via preamble correlation.
 
@@ -481,6 +482,13 @@ def estimate_timing(
         Use > 1 for high-precision fractional delay estimation.
     fractional_method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
         Fitting method for fractional delay estimation.
+    return_stream_assignment : bool, default False
+        If True, a third element is included in the return tuple: an integer
+        array of shape ``(N_channels,)`` giving the TX stream index whose
+        preamble slot produced the strongest correlation on each RX channel.
+        Only meaningful for ``time_orthogonal`` MIMO preambles; for all other
+        cases it is ``None``.  Useful for diagnosing polarization permutation
+        or for reordering downstream outputs to match the TX stream order.
     debug_plot : bool, default False
         If True, plots the correlation magnitude for debugging.
 
@@ -492,6 +500,12 @@ def estimate_timing(
     fractional_offsets : ArrayType
         Sub-sample timing offsets in [-0.5, 0.5) per channel.
         Shape: ``(N_channels,)``.
+    stream_assignment : ArrayType or None
+        Only present when ``return_stream_assignment=True``.
+        Integer array of shape ``(N_channels,)``: ``stream_assignment[i]`` is
+        the TX stream index (0-based) whose preamble time slot had the highest
+        correlation with RX channel ``i``.  ``None`` when the preamble mode is
+        not ``time_orthogonal``.
 
     Raises
     ------
@@ -627,6 +641,7 @@ def estimate_timing(
         and getattr(info, "preamble_mode", None) == "time_orthogonal"
         and preamble_waveform.shape[0] > 1
     )
+    _best_t: Optional[ArrayType] = None  # TX-stream assignment per RX channel
 
     if _is_time_orthogonal:
         # For time-orthogonal MIMO preambles the Rx polarization assignment is
@@ -650,6 +665,7 @@ def estimate_timing(
         )
         # Best-matching template per Rx channel: argmax over peak magnitude
         best_t = xp.argmax(xp.max(xp.abs(corr_all), axis=-1), axis=1)  # (C_rx,)
+        _best_t = best_t  # stash for optional return
         _best_t_list = best_t.tolist()
         _repeated = len(set(_best_t_list)) < len(_best_t_list)
         logger.info(
@@ -741,6 +757,8 @@ def estimate_timing(
         f"Metrics: {metrics.tolist()}"
     )
 
+    if return_stream_assignment:
+        return coarse_offsets, fractional_offsets, _best_t
     return coarse_offsets, fractional_offsets
 
 
@@ -1105,7 +1123,7 @@ def estimate_frequency_offset_differential(
        ``ref_signal``): applies M-th power pre-processing to remove
        modulation before estimating.
     3. **Generic blind** (neither provided): estimates frequency directly
-       from raw differential phases.  Best for constant-envelope signals.
+       from raw differential phases. Best for constant-envelope signals.
 
     Parameters
     ----------
@@ -1209,11 +1227,12 @@ def estimate_frequency_offset_differential(
     return f_est
 
 
-def estimate_frequency_offset_data_aided(
+def estimate_frequency_offset_preamble(
     signal: ArrayType,
     preamble_samples: ArrayType,
     fs: float,
     offset: int = 0,
+    stream_assignment: Optional[ArrayType] = None,
     debug_plot: bool = False,
 ) -> float:
     """
@@ -1228,14 +1247,34 @@ def estimate_frequency_offset_data_aided(
     signal : array_like
         Received complex samples. Shape: (N,) or (C, N).
     preamble_samples : array_like
-        Known preamble at the same sample rate as ``signal``.
-        Shape: (L,) or (C, L).
+        Known preamble waveform (one slot, L samples) at the same sample
+        rate as ``signal``.  Shape: (L,) or (1, L).
+
+        Always pass the **base preamble** (one slot worth), not the full
+        ``C*L`` time-orthogonal region.  The same base sequence P is
+        transmitted in every time slot; ``stream_assignment`` selects which
+        slot to read on each RX channel.
     fs : float
         Sampling rate in Hz.
     offset : int, default 0
-        Integer sample index where the preamble begins in the received
-        signal.  Typically the ``coarse_offset`` returned by
-        :func:`estimate_timing`.
+        Sample index of the start of the preamble region in ``signal``.
+        Typically the ``coarse_offset`` returned by :func:`estimate_timing`.
+    stream_assignment : array_like of int, shape (C,), optional
+        TX stream index (= time slot index) that carries the dominant
+        signal on each RX channel.  Pass the third return value of
+        :func:`estimate_timing` when ``return_stream_assignment=True``.
+
+        When provided, RX channel ``i`` is read from slot
+        ``stream_assignment[i]``, i.e. samples
+        ``[offset + stream_assignment[i]*L, offset + (stream_assignment[i]+1)*L)``.
+
+        When ``None`` (default), all channels are read from the same window
+        starting at ``offset``.  This is correct for ``same``-mode preambles
+        and for mixed channels where every slot carries signal on every RX
+        channel.  For a near-identity channel with a ``time_orthogonal``
+        preamble, slot 0 has near-zero signal on RX channels whose dominant
+        TX stream is 1, 2, …; failing to pass ``stream_assignment`` in that
+        case causes those channels to return a near-zero (biased) FOE estimate.
 
     Returns
     -------
@@ -1262,6 +1301,7 @@ def estimate_frequency_offset_data_aided(
     was_1d = signal.ndim == 1
     if was_1d:
         signal = signal[None, :]  # (1, N)
+    C = signal.shape[0]
 
     preamble_samples, _, _ = dispatch(preamble_samples)
     if preamble_samples.ndim == 1:
@@ -1269,9 +1309,29 @@ def estimate_frequency_offset_data_aided(
     preamble_samples = xp.asarray(preamble_samples)
 
     L = preamble_samples.shape[-1]
-    r_p = signal[..., offset : offset + L]  # (C, L)
 
-    logger.debug(f"FOE (data-aided): preamble L={L} samples, signal offset={offset}")
+    if stream_assignment is not None:
+        # time_orthogonal: RX channel i's active slot starts at
+        # offset + stream_assignment[i] * L.  Each channel gets its own
+        # L-sample window so every row of r_p contains an active preamble slot
+        # rather than a potentially zero slot.
+        # to_device: a CuPy 0-d element cannot be used as a Python slice bound
+        # without .item(); pulling the whole C-element array to CPU is cheaper
+        # than a per-element device sync inside the loop.
+        sa = to_device(stream_assignment, "cpu").astype(int)
+        r_p = xp.stack(
+            [
+                signal[i, offset + int(sa[i]) * L : offset + (int(sa[i]) + 1) * L]
+                for i in range(C)
+            ]
+        )  # (C, L)
+    else:
+        r_p = signal[..., offset : offset + L]  # (C, L) — same window for all
+
+    logger.debug(
+        f"FOE (preamble): L={L} samples, offset={offset}, "
+        f"stream_assignment={None if stream_assignment is None else sa.tolist()}"
+    )
     # Delegate demodulation to the ref_signal path of estimate_frequency_offset_differential,
     # which computes y = r_p * conj(preamble_samples) internally before Kay's estimator.
     return estimate_frequency_offset_differential(
@@ -1307,7 +1367,7 @@ def estimate_frequency_offset_pilots(
           Lock range determined by comb spacing.
         * **Block (contiguous cluster):** e.g. ``[0, 1, ..., L-1]``.
           Equivalent to a preamble; consider
-          :func:`estimate_frequency_offset_data_aided` (Kay ML) instead,
+          :func:`estimate_frequency_offset_preamble` (Kay ML) instead,
           which is optimal for contiguous blocks.
         * **Multi-block:** e.g. a front preamble and a mid-burst pilot
           cluster.  Lock range is set by the **largest gap** between any

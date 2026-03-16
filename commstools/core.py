@@ -296,6 +296,10 @@ class Signal(BaseModel):
     # (correct_timing, equalize_frame) without requiring the caller to re-supply
     # the frame object.
     _frame: Any = PrivateAttr(default=None)
+    # TX-stream-per-RX-channel assignment from estimate_timing() for time_orthogonal
+    # MIMO preambles.  Set by correct_timing(), consumed by correct_frequency_offset()
+    # so the FOE call automatically reads the active preamble slot per RX channel.
+    _stream_assignment: Any = PrivateAttr(default=None)
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
@@ -1454,13 +1458,17 @@ class Signal(BaseModel):
                     "signal via SingleCarrierFrame.to_signal() with a preamble."
                 )
 
-        coarse, fractional = sync.estimate_timing(
+        coarse, fractional, stream_assignment = sync.estimate_timing(
             self,
             preamble=resolved_preamble,
             info=resolved_info,
+            return_stream_assignment=True,
             debug_plot=debug_plot,
             **kwargs,
         )
+        # Cache for downstream use by correct_frequency_offset('preamble').
+        # None for non-time_orthogonal preambles.
+        self._stream_assignment = stream_assignment
         self.samples = sync.correct_timing(self.samples, coarse, fractional, mode=mode)
         return coarse, fractional
 
@@ -1479,7 +1487,7 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        method : {'mth_power', 'differential', 'data_aided', 'pilots'}, default 'mth_power'
+        method : {'mth_power', 'differential', 'preamble', 'pilots'}, default 'mth_power'
             Frequency offset estimation algorithm.
 
             * ``'mth_power'``: Blind M-th power spectral method. Requires
@@ -1488,7 +1496,7 @@ class Signal(BaseModel):
             * ``'differential'``: Differential auto-correlation (Kay's
               estimator). Blind or data-aided via ``ref_signal`` kwarg.
               Keyword args: ``ref_signal``, ``weighted``.
-            * ``'data_aided'``: Preamble-based ML estimator.
+            * ``'preamble'``: Preamble-based ML estimator.
               Keyword args: ``preamble_samples``, ``offset``.
             * ``'pilots'``: Scattered-pilot phase slope estimator.
               Keyword args: ``pilot_indices``, ``pilot_values``.
@@ -1535,8 +1543,36 @@ class Signal(BaseModel):
                 debug_plot=debug_plot,
                 **kwargs,
             )
-        elif method == "data_aided":
-            offset = sync.estimate_frequency_offset_data_aided(
+        elif method == "preamble":
+            # Auto-resolve preamble_samples from the attached frame when the
+            # caller did not supply it explicitly.  Mirrors the logic in
+            # estimate_timing: regenerate the shaped preamble waveform at the
+            # signal's own sample rate so the demodulation reference matches
+            # exactly what was transmitted.
+            if "preamble_samples" not in kwargs:
+                if self._frame is None or self._frame.preamble is None:
+                    raise ValueError(
+                        "correct_frequency_offset('preamble') requires either "
+                        "preamble_samples=... kwarg or a frame with a preamble "
+                        "attached (generate the signal via SingleCarrierFrame.to_signal)."
+                    )
+                p_sig = self._frame.preamble.to_signal(
+                    sps=int(round(self.sps)),
+                    symbol_rate=1.0,
+                    pulse_shape=self.pulse_shape or "rrc",
+                    filter_span=self.filter_span,
+                    rrc_rolloff=self.rrc_rolloff,
+                    rc_rolloff=self.rc_rolloff,
+                    gaussian_bt=self.gaussian_bt,
+                    smoothrect_bt=self.smoothrect_bt,
+                )
+                kwargs["preamble_samples"] = p_sig.samples
+            # After correct_timing the preamble starts at sample 0; default offset=0.
+            kwargs.setdefault("offset", 0)
+            # Auto-pass stream_assignment captured by correct_timing (may be None
+            # for same-mode preambles; estimate_frequency_offset_preamble ignores None).
+            kwargs.setdefault("stream_assignment", self._stream_assignment)
+            offset = sync.estimate_frequency_offset_preamble(
                 self.samples,
                 fs=self.sampling_rate,
                 debug_plot=debug_plot,
@@ -1552,7 +1588,7 @@ class Signal(BaseModel):
         else:
             raise ValueError(
                 f"Unknown FOE method: {method!r}. "
-                "Choose from 'mth_power', 'differential', 'data_aided', 'pilots'."
+                "Choose from 'mth_power', 'differential', 'preamble', 'pilots'."
             )
 
         self.samples = sync.correct_frequency_offset(
