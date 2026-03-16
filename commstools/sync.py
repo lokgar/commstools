@@ -1306,6 +1306,19 @@ def estimate_frequency_offset_preamble(
         TX stream is 1, 2, …; failing to pass ``stream_assignment`` in that
         case causes those channels to return a near-zero (biased) FOE estimate.
 
+        **Slot layout for a 2x2 time-orthogonal preamble** (one slot = L
+        samples of the base sequence P)::
+
+            sample index:  0        L        2L
+                           |        |        |
+            slot 0:        [-- P --][-- 0 --]   TX stream 0 active, stream 1 silent
+            slot 1:        [-- 0 --][-- P --]   TX stream 1 active, stream 0 silent
+
+        On a near-identity channel ``stream_assignment = [0, 1]`` (RX 0 ↔ TX 0).
+        On a fully crossed channel ``stream_assignment = [1, 0]`` (RX 0 ↔ TX 1).
+        Obtain it from :func:`estimate_timing` with
+        ``return_stream_assignment=True``.
+
     Returns
     -------
     float
