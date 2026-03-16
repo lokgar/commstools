@@ -192,7 +192,7 @@ class TestFoeDataAided:
         # shift_frequency quantizes to the nearest bin; compare against actual offset
         zc_shifted, actual_fo = spectral.shift_frequency(zc_xp, fo_hz, FS)
 
-        est = sync.estimate_frequency_offset_data_aided(
+        est = sync.estimate_frequency_offset_preamble(
             zc_shifted, preamble_samples=zc_xp, fs=FS, offset=0
         )
         assert abs(est - actual_fo) / abs(actual_fo) < 0.05
@@ -209,7 +209,7 @@ class TestFoeDataAided:
         full = xp.concatenate([guard, zc_xp])
         received, actual_fo = spectral.shift_frequency(full, fo_hz, FS)
 
-        est = sync.estimate_frequency_offset_data_aided(
+        est = sync.estimate_frequency_offset_preamble(
             received, preamble_samples=zc_xp, fs=FS, offset=100
         )
         assert abs(est - actual_fo) / abs(actual_fo) < 0.05

@@ -3160,9 +3160,47 @@ def equalize_frame(
 
         preamble_syms = to_device(frame.preamble.symbols, "cpu").astype(np.complex64)
         if preamble_syms.ndim == 1 and num_ch > 1:
-            preamble_syms = np.broadcast_to(
-                preamble_syms[np.newaxis, :], (num_ch, len(preamble_syms))
-            )
+            base_syms = preamble_syms  # (L,)
+            L_base = len(base_syms)
+
+            if frame.preamble_mode == "time_orthogonal":
+                # time_orthogonal: TX stream i transmits the preamble in its own
+                # dedicated time slot (slot i) while all other streams are silent.
+                # The preamble region in the received samples therefore spans
+                # num_ch * L_base symbols.  The correct block-diagonal DA reference
+                # for the butterfly equalizer is:
+                #
+                #   channel 0: [ P  0  0 … ]   (P in slot 0, zeros elsewhere)
+                #   channel 1: [ 0  P  0 … ]   (P in slot 1, zeros elsewhere)
+                #   …
+                #
+                # This is the only reference that gives the butterfly taps an
+                # unambiguous per-stream training signal and correctly resolves H⁻¹.
+                preamble_syms = np.zeros(
+                    (num_ch, num_ch * L_base), dtype=np.complex64
+                )
+                for i in range(num_ch):
+                    preamble_syms[i, i * L_base : (i + 1) * L_base] = base_syms
+            else:
+                # "same" mode: all streams transmit the identical sequence, so
+                # broadcasting P to every output channel is correct.
+                # WARNING: because both TX streams carry the same preamble, the
+                # DA-LMS has no way to distinguish which output should carry
+                # which stream.  With a pure polarization swap (H ≈ [[0,1],[1,0]])
+                # the equalizer converges with streams permuted: output[i] may
+                # deliver TX stream (1-i) instead of TX stream i.  The blind
+                # payload stage then inherits and preserves the wrong assignment.
+                # Use preamble_mode="time_orthogonal" for MIMO if correct output
+                # ordering matters.
+                logger.warning(
+                    "equalize_frame: preamble_mode='same' with MIMO — output stream "
+                    "ordering is not guaranteed.  A polarization swap in the channel "
+                    "can cause output[i] to carry TX stream j≠i.  Use "
+                    "preamble_mode='time_orthogonal' to resolve this ambiguity."
+                )
+                preamble_syms = np.broadcast_to(
+                    base_syms[np.newaxis, :], (num_ch, L_base)
+                )
 
         pre_result = lms(
             preamble_samples,
