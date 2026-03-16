@@ -289,11 +289,6 @@ class Signal(BaseModel):
     # Metric methods must trim the same count from the reference tail before comparing.
     _num_tail_trim: int = PrivateAttr(default=0)
 
-    # TX-stream-per-RX-channel assignment from estimate_timing() for time_orthogonal
-    # MIMO preambles.  Set by correct_timing(), consumed by correct_frequency_offset()
-    # so the FOE call automatically reads the active preamble slot per RX channel.
-    _stream_assignment: Any = PrivateAttr(default=None)
-
     # -------------------------------------------------------------------------
     # Frame-derived read-only properties
     # -------------------------------------------------------------------------
@@ -1533,12 +1528,48 @@ class Signal(BaseModel):
         -------
         tuple of (coarse_offsets, fractional_offsets)
             Per-channel integer and fractional timing estimates (before
-            correction is applied).
+            correction is applied).  When ``return_stream_assignment=True``
+            is forwarded via ``**kwargs``, the return is a 3-tuple
+            ``(coarse_offsets, fractional_offsets, stream_assignment)``
+            where ``stream_assignment`` is an integer array of shape
+            ``(N_channels,)``: ``stream_assignment[i]`` is the TX stream
+            index (0-based) whose preamble time slot had the highest
+            correlation with RX channel ``i``.  Only meaningful for
+            ``time_orthogonal`` MIMO preambles; ``None`` for all other
+            preamble modes.
 
         Raises
         ------
         ValueError
             If no preamble can be resolved and ``info`` is also ``None``.
+
+        Examples
+        --------
+        For a 2x2 time-orthogonal MIMO system the preamble region looks like::
+
+            slot 0: [P  0]   ← TX stream 0 transmits, TX stream 1 silent
+            slot 1: [0  P]   ← TX stream 1 transmits, TX stream 0 silent
+
+        On a near-identity channel (e.g. back-to-back), RX channel 0 sees
+        energy only in slot 0 and RX channel 1 only in slot 1, so::
+
+            stream_assignment == [0, 1]   # natural order
+
+        On a crossed channel (e.g. after a 90° polarization rotation), the
+        mapping is swapped::
+
+            stream_assignment == [1, 0]   # RX 0 carries TX stream 1, and vice versa
+
+        Retrieve the assignment and pass it to ``correct_frequency_offset``
+        so preamble-based FOE reads the active slot on each RX channel::
+
+            coarse, fractional, stream_assignment = sig.correct_timing(
+                return_stream_assignment=True
+            )
+            sig.correct_frequency_offset(
+                method="preamble",
+                stream_assignment=stream_assignment,
+            )
         """
         from . import sync
 
@@ -1555,17 +1586,13 @@ class Signal(BaseModel):
                     "signal via SingleCarrierFrame.to_signal() with a preamble."
                 )
 
-        coarse, fractional, stream_assignment = sync.estimate_timing(
+        coarse, fractional = sync.estimate_timing(
             self,
             preamble=resolved_preamble,
             info=resolved_info,
-            return_stream_assignment=True,
             debug_plot=debug_plot,
             **kwargs,
         )
-        # Cache for downstream use by correct_frequency_offset('preamble').
-        # None for non-time_orthogonal preambles.
-        self._stream_assignment = stream_assignment
         self.samples = sync.correct_timing(self.samples, coarse, fractional, mode=mode)
         return coarse, fractional
 
@@ -1594,7 +1621,9 @@ class Signal(BaseModel):
               estimator). Blind or data-aided via ``ref_signal`` kwarg.
               Keyword args: ``ref_signal``, ``weighted``.
             * ``'preamble'``: Preamble-based ML estimator.
-              Keyword args: ``preamble_samples``, ``offset``.
+              Keyword args: ``preamble_samples``, ``offset``, ``stream_assignment``.
+              Behaviour depends on whether an equalizer result is stored
+              (see Notes).
             * ``'pilots'``: Scattered-pilot phase slope estimator.
               Keyword args: ``pilot_indices``, ``pilot_values``.
 
@@ -1614,6 +1643,27 @@ class Signal(BaseModel):
         ``digital_frequency_offset`` is **not** updated — that attribute
         tracks intentional digital frequency shifts applied by the TX/RX
         chain, not recovered carrier offsets.
+
+        **Preamble method — two internal paths:**
+
+        *Post-equalization path* (``equalize()`` was called before this
+        method): operates on the equalizer's ``preamble_symbols_eq`` output
+        at 1 SPS.  For ``time_orthogonal`` MIMO preambles,
+        ``stream_assignment`` is automatically set to ``[0, 1, …, C-1]``
+        because equalization has already remapped each RX channel to its
+        corresponding TX stream — no user action needed.
+
+        *Pre-equalization path* (no equalizer result stored): operates on
+        ``self.samples`` at ``self.sps`` SPS.  ``stream_assignment`` defaults
+        to ``None``, which is correct for ``same``-mode preambles and for
+        channels with significant polarization mixing.  For a near-identity
+        channel with a ``time_orthogonal`` preamble the active preamble slot
+        differs per RX channel; pass it explicitly::
+
+            coarse, fractional, sa = sig.correct_timing(
+                return_stream_assignment=True
+            )
+            sig.correct_frequency_offset(method="preamble", stream_assignment=sa)
         """
         from . import sync
 
@@ -1701,8 +1751,6 @@ class Signal(BaseModel):
                 kwargs.setdefault("offset", 0)
                 # Subsample at symbol rate to avoid RRC zero-crossing corruption.
                 kwargs.setdefault("sps", int(round(self.sps)))
-                # Auto-pass stream_assignment captured by correct_timing (may be None).
-                kwargs.setdefault("stream_assignment", self._stream_assignment)
                 offset = sync.estimate_frequency_offset_preamble(
                     self.samples,
                     fs=self.sampling_rate,
