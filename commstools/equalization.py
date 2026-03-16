@@ -90,6 +90,24 @@ class EqualizerResult:
     pilot_symbols_eq : ArrayType or None
         Pilot-only equalized symbols extracted from ``y_hat``.  Populated by
         :func:`equalize_frame` when pilots are present; ``None`` otherwise.
+    input_norm_factor : float
+        Global normalization factor ``rms(samples) * sqrt(sps)`` applied to
+        the input samples by ``_normalize_inputs`` before equalization.
+        Stored so callers can apply the post-hoc power correction needed when
+        passing a different capture (e.g. vacuum noise) through the same
+        frozen taps without disturbing the ratio:
+
+        .. code-block:: python
+
+            α = signal_result.input_norm_factor
+            β = noise_result.input_norm_factor
+            P_noise_corrected = (
+                np.mean(np.abs(noise_result.y_hat) ** 2) * (β / α) ** 2
+            )
+
+        ``P_signal / P_noise_corrected`` is then the physically meaningful
+        signal-to-noise power ratio preserved through the DSP chain.
+        At ``sps=1`` this factor equals the plain RMS of the input symbols.
     """
 
     y_hat: ArrayType
@@ -99,6 +117,7 @@ class EqualizerResult:
     num_train_symbols: int = 0
     payload_symbols_eq: Optional[ArrayType] = None
     pilot_symbols_eq: Optional[ArrayType] = None
+    input_norm_factor: float = 1.0
 
 
 def _log_equalizer_exit(
@@ -172,6 +191,7 @@ def _split_hybrid_result(
         num_train_symbols=result.num_train_symbols,
         payload_symbols_eq=payload_eq,
         pilot_symbols_eq=pilot_eq,
+        input_norm_factor=result.input_norm_factor,
     )
 
 
@@ -1079,16 +1099,23 @@ def _normalize_inputs(samples, training_symbols, sps):
     -------
     samples          : unit symbol-power, same shape/backend
     training_symbols : unit average-power, same shape/backend (or None)
+    input_norm_factor : float
+        Global normalization factor ``rms(samples) * sqrt(sps)`` that was
+        applied to *samples* before this function returned.  Stored in
+        ``EqualizerResult.input_norm_factor`` so callers can reconstruct
+        the physical power scale of a different capture (e.g. vacuum noise)
+        passed through the same frozen taps.  See ``EqualizerResult`` docs.
     """
-    from commstools.helpers import normalize as c_normalize
+    from commstools.helpers import normalize as c_normalize, rms as _rms
 
+    input_norm_factor = float(_rms(samples) * (sps**0.5))
     samples = c_normalize(samples, "symbol_power", sps=sps, axis=-1)
 
     if training_symbols is not None:
         # Training symbols are at 1 sps; "average_power" == "symbol_power" at sps=1.
         training_symbols = c_normalize(training_symbols, "average_power", axis=-1)
 
-    return samples, training_symbols
+    return samples, training_symbols, input_norm_factor
 
 
 def _init_butterfly_weights_jax(num_ch, num_taps, jnp, sps=2, center_tap=None):
@@ -1283,6 +1310,7 @@ def _unpack_result_jax(
     n_sym=None,
     xp=np,
     num_train_symbols=0,
+    input_norm_factor=1.0,
 ):
     """Convert JAX scan outputs into an ``EqualizerResult``.
 
@@ -1333,6 +1361,7 @@ def _unpack_result_jax(
         error=errors,
         weights_history=w_history,
         num_train_symbols=num_train_symbols,
+        input_norm_factor=input_norm_factor,
     )
 
 
@@ -1346,6 +1375,7 @@ def _unpack_result_numpy(
     n_sym=None,
     xp=np,
     num_train_symbols=0,
+    input_norm_factor=1.0,
 ):
     """Convert Numba kernel outputs (plain NumPy) into an ``EqualizerResult``.
 
@@ -1394,6 +1424,7 @@ def _unpack_result_numpy(
         error=errors,
         weights_history=w_history,
         num_train_symbols=num_train_symbols,
+        input_norm_factor=input_norm_factor,
     )
 
 
@@ -1556,7 +1587,9 @@ def lms(
             if training_symbols is not None
             else None
         )
-        samples_np, training_np = _normalize_inputs(samples_np, training_np, sps)
+        samples_np, training_np, eq_norm = _normalize_inputs(
+            samples_np, training_np, sps
+        )
         # Pad (NumPy)
         if was_1d:
             samples_padded = np.pad(samples_np, (pad_left, pad_right))[np.newaxis, :]
@@ -1620,6 +1653,7 @@ def lms(
                 n_sym=None,
                 xp=xp,
                 num_train_symbols=int(n_train_aligned),
+                input_norm_factor=eq_norm,
             ),
             name="LMS",
             debug_plot=debug_plot,
@@ -1630,7 +1664,9 @@ def lms(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, training_symbols = _normalize_inputs(samples, training_symbols, sps)
+    samples, training_symbols, eq_norm = _normalize_inputs(
+        samples, training_symbols, sps
+    )
     # Pad (backend-agnostic via xp)
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -1683,7 +1719,9 @@ def lms(
             np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
+        _validate_w_init(
+            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
+        )
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -1707,6 +1745,7 @@ def lms(
             n_sym=None,
             xp=xp,
             num_train_symbols=int(n_train_aligned),
+            input_norm_factor=eq_norm,
         ),
         name="LMS",
         debug_plot=debug_plot,
@@ -1899,7 +1938,9 @@ def rls(
             if training_symbols is not None
             else None
         )
-        samples_np, training_np = _normalize_inputs(samples_np, training_np, sps)
+        samples_np, training_np, eq_norm = _normalize_inputs(
+            samples_np, training_np, sps
+        )
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -1978,6 +2019,7 @@ def rls(
                 n_sym=n_update_halt,
                 xp=xp,
                 num_train_symbols=int(n_train_aligned),
+                input_norm_factor=eq_norm,
             ),
             name="RLS",
             debug_plot=debug_plot,
@@ -1988,7 +2030,9 @@ def rls(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, training_symbols = _normalize_inputs(samples, training_symbols, sps)
+    samples, training_symbols, eq_norm = _normalize_inputs(
+        samples, training_symbols, sps
+    )
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -2048,7 +2092,9 @@ def rls(
             np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
+        _validate_w_init(
+            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
+        )
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2087,6 +2133,7 @@ def rls(
             n_sym=n_update_halt,
             xp=xp,
             num_train_symbols=int(n_train_aligned),
+            input_norm_factor=eq_norm,
         ),
         name="RLS",
         debug_plot=debug_plot,
@@ -2211,7 +2258,7 @@ def cma(
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
         # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-        samples_np, _ = _normalize_inputs(samples_np, None, sps)
+        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -2256,6 +2303,7 @@ def cma(
                 store_weights,
                 n_sym=None,
                 xp=xp,
+                input_norm_factor=eq_norm,
             ),
             name="CMA",
             debug_plot=debug_plot,
@@ -2268,7 +2316,7 @@ def cma(
         raise ImportError("JAX is required for backend='jax'.")
 
     # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-    samples, _ = _normalize_inputs(samples, None, sps)
+    samples, _, eq_norm = _normalize_inputs(samples, None, sps)
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -2298,7 +2346,9 @@ def cma(
             np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
+        _validate_w_init(
+            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
+        )
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2319,6 +2369,7 @@ def cma(
             store_weights,
             n_sym=None,
             xp=xp,
+            input_norm_factor=eq_norm,
         ),
         name="CMA",
         debug_plot=debug_plot,
@@ -2471,7 +2522,7 @@ def rde(
             raise ImportError("Numba is required for backend='numba'.")
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
-        samples_np, _ = _normalize_inputs(samples_np, None, sps)
+        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
 
         x_np = (
             np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
@@ -2520,6 +2571,7 @@ def rde(
                 store_weights,
                 n_sym=None,
                 xp=xp,
+                input_norm_factor=eq_norm,
             ),
             name="RDE",
             debug_plot=debug_plot,
@@ -2531,7 +2583,7 @@ def rde(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
-    samples, _ = _normalize_inputs(samples, None, sps)
+    samples, _, eq_norm = _normalize_inputs(samples, None, sps)
 
     samples_padded = (
         xp.pad(samples, ((0, 0), (pad_left, pad_right)))
@@ -2561,7 +2613,9 @@ def rde(
             np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
             device=platform,
         )
-        _validate_w_init(to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps)
+        _validate_w_init(
+            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
+        )
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2582,6 +2636,7 @@ def rde(
             store_weights,
             n_sym=None,
             xp=xp,
+            input_norm_factor=eq_norm,
         ),
         name="RDE",
         debug_plot=debug_plot,
@@ -3215,10 +3270,12 @@ def equalize_frame(
         )
 
         # Normalize payload samples
-        samples_np = np.ascontiguousarray(to_device(payload_samples, "cpu"), dtype=np.complex64)
+        samples_np = np.ascontiguousarray(
+            to_device(payload_samples, "cpu"), dtype=np.complex64
+        )
         if samples_np.ndim == 1:
             samples_np = samples_np[np.newaxis, :]
-        samples_np, _ = _normalize_inputs(samples_np, None, sps)
+        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
 
         c_tap = num_taps // 2
         pad_left = c_tap
@@ -3305,6 +3362,7 @@ def equalize_frame(
                         n_sym=None,
                         xp=xp,
                         num_train_symbols=0,
+                        input_norm_factor=eq_norm,
                     ),
                     payload_pilot_mask,
                 ),
@@ -3362,6 +3420,7 @@ def equalize_frame(
                     n_sym=None,
                     xp=xp,
                     num_train_symbols=0,
+                    input_norm_factor=eq_norm,
                 ),
                 payload_pilot_mask,
             ),
