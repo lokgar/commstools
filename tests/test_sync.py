@@ -760,3 +760,385 @@ def test_fft_fractional_delay_preserves_float32_dtype(backend_device, xp):
     sig = xp.asarray(np.sin(2 * np.pi * 0.05 * n))
     out = sync.fft_fractional_delay(sig, 0.3)
     assert out.dtype == xp.float32, f"Expected float32, got {out.dtype}"
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — VITERBI-VITERBI
+# =============================================================================
+
+
+class TestViterbiViterbi:
+    """Tests for recover_carrier_phase_viterbi_viterbi."""
+
+    def _qpsk_symbols(self, xp, N=512, seed=0):
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        bits = rng.integers(0, 4, N)
+        angles = (2 * np.pi / 4) * bits + np.pi / 4
+        return xp.asarray(np.exp(1j * angles).astype(np.complex64))
+
+    def _qam16_symbols(self, xp, N=512, seed=1):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qam", 16)
+        idx = rng.integers(0, 16, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def test_siso_qpsk_output_shape(self, backend_device, xp):
+        """SISO QPSK: output is (N,) float64."""
+        syms = self._qpsk_symbols(xp)
+        phi_est = sync.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=32)
+        assert phi_est.shape == syms.shape
+        assert phi_est.dtype == xp.float64
+
+    def test_siso_qpsk_recovers_static_phase(self, backend_device, xp):
+        """VV tracks applied phase: difference between rotated and unrotated estimate equals phi_true mod π/2."""
+        import numpy as np
+        phi_true = 0.3  # radians
+        syms = self._qpsk_symbols(xp, N=512)
+        # Baseline (no rotation)
+        phi_base = float(xp.mean(sync.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=32)))
+        # Rotated by phi_true
+        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
+        phi_rot = float(xp.mean(sync.recover_carrier_phase_viterbi_viterbi(rotated, "psk", 4, block_size=32)))
+        # The shift should equal phi_true modulo π/2
+        delta = phi_rot - phi_base
+        residual = (delta - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        assert abs(residual) < 0.15, f"Phase tracking error too large: {residual:.3f} rad"
+
+    def test_siso_qam16_output_shape(self, backend_device, xp):
+        """SISO QAM16: output shape matches input."""
+        syms = self._qam16_symbols(xp)
+        phi_est = sync.recover_carrier_phase_viterbi_viterbi(syms, "qam", 16, block_size=32)
+        assert phi_est.shape == syms.shape
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO input (C, N): output shape is (C, N)."""
+        import numpy as np
+        C, N = 2, 256
+        syms = xp.asarray(np.random.default_rng(5).standard_normal((C, N)).astype(np.float32)
+                          + 1j * np.random.default_rng(6).standard_normal((C, N)).astype(np.float32))
+        phi_est = sync.recover_carrier_phase_viterbi_viterbi(syms, "qam", 16, block_size=32)
+        assert phi_est.shape == (C, N)
+
+    def test_block_size_too_large_raises(self, backend_device, xp):
+        """block_size > N should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=16)
+        with pytest.raises(ValueError, match="block_size"):
+            sync.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=64)
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — BLIND PHASE SEARCH
+# =============================================================================
+
+
+class TestBPS:
+    """Tests for recover_carrier_phase_bps."""
+
+    def _qam16_symbols(self, xp, N=512, seed=2):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qam", 16)
+        idx = rng.integers(0, 16, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def _qpsk_symbols(self, xp, N=512, seed=3):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qpsk", 4)
+        idx = rng.integers(0, 4, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def test_siso_qam16_output_shape(self, backend_device, xp):
+        """SISO QAM16 (square QAM fast path): output is (N,) float64."""
+        syms = self._qam16_symbols(xp)
+        phi_est = sync.recover_carrier_phase_bps(syms, "qam", 16, num_test_phases=32, block_size=32)
+        assert phi_est.shape == syms.shape
+        assert phi_est.dtype == xp.float64
+
+    def test_siso_qam16_recovers_static_phase(self, backend_device, xp):
+        """BPS should estimate a static QAM16 phase offset to within π/8 tolerance."""
+        import numpy as np
+        phi_true = 0.25
+        syms = self._qam16_symbols(xp, N=512)
+        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
+        phi_est = sync.recover_carrier_phase_bps(
+            rotated, "qam", 16, num_test_phases=64, block_size=32
+        )
+        phi_mean = float(xp.mean(phi_est))
+        # 4-fold ambiguity: allow ±π/8 residual
+        residual = (phi_mean - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        assert abs(residual) < 0.15, f"Residual phase error too large: {residual:.3f} rad"
+
+    def test_siso_qpsk_general_path(self, backend_device, xp):
+        """SISO QPSK (non-square: triggers general distance path): output shape correct."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi_est = sync.recover_carrier_phase_bps(syms, "psk", 4, num_test_phases=16, block_size=32)
+        assert phi_est.shape == syms.shape
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO input (C, N): output shape is (C, N)."""
+        import numpy as np
+        C, N = 2, 256
+        rng = np.random.default_rng(7)
+        syms = xp.asarray((rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(np.complex64))
+        phi_est = sync.recover_carrier_phase_bps(syms, "qam", 16, num_test_phases=16, block_size=32)
+        assert phi_est.shape == (C, N)
+
+    def test_block_size_too_large_raises(self, backend_device, xp):
+        """block_size > N should raise ValueError."""
+        syms = self._qam16_symbols(xp, N=16)
+        with pytest.raises(ValueError, match="block_size"):
+            sync.recover_carrier_phase_bps(syms, "qam", 16, block_size=64)
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — DECISION-DIRECTED PLL
+# =============================================================================
+
+
+class TestDDPLL:
+    """Tests for recover_carrier_phase_decision_directed."""
+
+    def _qpsk_symbols(self, xp, N=512, seed=10):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qpsk", 4)
+        return xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
+
+    def test_siso_output_shape(self, backend_device, xp):
+        """SISO: output is (N,) float64."""
+        syms = self._qpsk_symbols(xp)
+        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4)
+        assert phi.shape == syms.shape
+        assert phi.dtype == xp.float64
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO (C, N): output shape is (C, N)."""
+        import numpy as np
+        C, N = 2, 256
+        rng = np.random.default_rng(11)
+        from commstools.mapping import gray_constellation
+        const = gray_constellation("qpsk", 4)
+        syms = xp.asarray(const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64))
+        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4)
+        assert phi.shape == (C, N)
+
+    def test_second_order_loop(self, backend_device, xp):
+        """beta > 0 engages 2nd-order loop without raising."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4, mu=0.02, beta=1e-4)
+        assert phi.shape == syms.shape
+
+    def test_phase_init_applied(self, backend_device, xp):
+        """phase_init shifts the starting phase estimate."""
+        import numpy as np
+        syms = self._qpsk_symbols(xp, N=256)
+        phi_init = 0.5
+        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4, phase_init=phi_init)
+        # First estimate should be close to phase_init before any loop correction
+        assert abs(float(phi[0]) - phi_init) < 0.5
+
+    def test_numpy_fallback_path(self, backend_device, xp):
+        """_dd_pll_numpy fallback is exercised when Numba is unavailable."""
+        import numpy as np
+        from unittest.mock import patch
+        from commstools import sync as _sync
+
+        syms_device = self._qpsk_symbols(xp, N=64)
+        syms_np = syms_device.get() if hasattr(syms_device, "get") else np.asarray(syms_device)
+        # Patch _get_numba_dd_pll to return None → forces _dd_pll_numpy code path
+        with patch.object(_sync, "_get_numba_dd_pll", return_value=lambda: None):
+            # Call _dd_pll_numpy directly since _get_numba_dd_pll is cached
+            from commstools.mapping import gray_constellation
+            const = gray_constellation("psk", 4).astype(np.complex128)
+            result = _sync._dd_pll_numpy(syms_np[0:1].astype(np.complex128), const, 0.01, 0.0, 0.0, 0.0)
+            assert result.shape == (1,)
+            assert result.dtype == np.float64
+
+
+# =============================================================================
+# CORRECT TIMING — SCALAR MODES AND PER-CHANNEL VECTORIZED GATHER
+# =============================================================================
+
+
+class TestCorrectTiming:
+    """Tests for correct_timing scalar zero/slice modes and per-channel vectorized paths."""
+
+    def test_scalar_zero_mode_positive_shift(self, backend_device, xp):
+        """Scalar coarse offset with mode='zero': signal shifts left, tail zero-padded."""
+        import numpy as np
+        N, shift = 100, 10
+        sig = xp.asarray(np.arange(N, dtype=np.complex64))
+        out = sync.correct_timing(sig, shift, mode="zero")
+        assert out.shape == sig.shape
+        # After left-shift by 10: out[0] == sig[10], tail is zeros
+        assert float(out[0].real) == pytest.approx(float(sig[shift].real))
+        assert float(out[-1].real) == pytest.approx(0.0)
+
+    def test_scalar_zero_mode_negative_shift(self, backend_device, xp):
+        """Scalar negative coarse offset with mode='zero': signal shifts right, head zero-padded."""
+        import numpy as np
+        N, shift = 100, -5
+        sig = xp.asarray(np.ones(N, dtype=np.complex64))
+        out = sync.correct_timing(sig, shift, mode="zero")
+        assert out.shape == sig.shape
+        # Head should be zero-padded
+        assert float(out[0].real) == pytest.approx(0.0)
+
+    def test_scalar_slice_mode(self, backend_device, xp):
+        """Scalar coarse offset with mode='slice': output is shorter by offset."""
+        import numpy as np
+        N, shift = 100, 15
+        sig = xp.asarray(np.ones(N, dtype=np.complex64))
+        out = sync.correct_timing(sig, shift, mode="slice")
+        assert out.shape[-1] == N - shift
+
+    def test_per_channel_circular_mode(self, backend_device, xp):
+        """Per-channel array offset with mode='circular': each channel rolled independently."""
+        import numpy as np
+        C, N = 2, 64
+        rng = np.random.default_rng(20)
+        sig = xp.asarray((rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(np.complex64))
+        offsets = xp.asarray(np.array([3, 7], dtype=np.int64))
+        out = sync.correct_timing(sig, offsets, mode="circular")
+        assert out.shape == (C, N)
+
+    def test_per_channel_zero_mode(self, backend_device, xp):
+        """Per-channel array offset with mode='zero': output same shape, tail zeroed."""
+        import numpy as np
+        C, N = 2, 64
+        sig = xp.asarray(np.ones((C, N), dtype=np.complex64))
+        offsets = xp.asarray(np.array([4, 8], dtype=np.int64))
+        out = sync.correct_timing(sig, offsets, mode="zero")
+        assert out.shape == (C, N)
+
+    def test_per_channel_slice_mode(self, backend_device, xp):
+        """Per-channel array offset with mode='slice': output length is N - max(offset)."""
+        import numpy as np
+        C, N = 2, 64
+        offsets = np.array([3, 10])
+        sig = xp.asarray(np.ones((C, N), dtype=np.complex64))
+        out = sync.correct_timing(sig, xp.asarray(offsets), mode="slice")
+        assert out.shape == (C, N - max(offsets))
+
+
+# =============================================================================
+# CORRECT TIMING — INVALID MODE ERROR PATHS
+# =============================================================================
+
+
+class TestCorrectTimingErrors:
+    """ValueError for unknown mode — scalar and per-channel paths."""
+
+    def test_scalar_unknown_mode_raises(self, backend_device, xp):
+        """Scalar offset with unsupported mode raises ValueError."""
+        import numpy as np
+        sig = xp.asarray(np.ones(64, dtype=np.complex64))
+        with pytest.raises(ValueError, match="Unknown mode"):
+            sync.correct_timing(sig, 4, mode="wrap")
+
+    def test_per_channel_unknown_mode_raises(self, backend_device, xp):
+        """Per-channel offset with unsupported mode raises ValueError."""
+        import numpy as np
+        sig = xp.asarray(np.ones((2, 64), dtype=np.complex64))
+        offsets = xp.asarray(np.array([2, 4], dtype=np.int64))
+        with pytest.raises(ValueError, match="Unknown mode"):
+            sync.correct_timing(sig, offsets, mode="wrap")
+
+
+# =============================================================================
+# CORRECT FREQUENCY OFFSET — REAL AND MIMO BRANCHES
+# =============================================================================
+
+
+class TestCorrectFrequencyOffsetBranches:
+    """Branches for real-valued and MIMO input in correct_frequency_offset."""
+
+    def test_real_float32_input(self, backend_device, xp):
+        """Real float32 input is cast to complex64 and frequency-corrected."""
+        import numpy as np
+        N = 256
+        t = xp.arange(N, dtype=xp.float32) / 1e6
+        # Simple real cosine as stand-in for a real-baseband signal
+        sig = xp.cos(t)
+        sig = sig.astype(xp.float32)
+        out = sync.correct_frequency_offset(sig, offset=5000.0, fs=1e6)
+        assert out.dtype == xp.complex64
+        assert out.shape == sig.shape
+
+    def test_mimo_input_broadcasts_mixer(self, backend_device, xp):
+        """MIMO (C, N) input: mixer is broadcast over channels without error."""
+        import numpy as np
+        C, N = 2, 256
+        rng = np.random.default_rng(99)
+        sig = xp.asarray((rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(np.complex64))
+        out = sync.correct_frequency_offset(sig, offset=3000.0, fs=1e6)
+        assert out.shape == (C, N)
+        assert out.dtype == xp.complex64
+
+
+# =============================================================================
+# ESTIMATE FREQUENCY OFFSET (PREAMBLE) — STREAM ASSIGNMENT AND SPS > 1
+# =============================================================================
+
+
+class TestFoePreambleBranches:
+    """Branches for stream_assignment and sps > 1 in estimate_frequency_offset_preamble."""
+
+    def test_stream_assignment_mimo(self, backend_device, xp):
+        """stream_assignment parameter triggers per-slot MIMO extraction."""
+        import numpy as np
+        L = 63
+        fo_hz = 5000.0
+        fs = 1e6
+        zc = sync.zadoff_chu_sequence(L)
+        zc_xp = xp.asarray(zc.astype(np.complex64))
+
+        # Build 2-stream time-orthogonal preamble: [stream0 | stream1]
+        silence = xp.zeros(L, dtype=xp.complex64)
+        preamble_tx = xp.concatenate([zc_xp, silence, silence, zc_xp])  # (4L,)
+
+        # Apply freq offset
+        t = xp.arange(len(preamble_tx), dtype=xp.float64) / fs
+        preamble_rx = (preamble_tx * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
+
+        # Stack into MIMO (2, 4L)
+        rx_mimo = xp.stack([preamble_rx, preamble_rx])
+        stream_assignment = np.array([0, 1])
+
+        est = sync.estimate_frequency_offset_preamble(
+            rx_mimo,
+            preamble_samples=zc_xp,
+            fs=fs,
+            offset=0,
+            stream_assignment=stream_assignment,
+        )
+        assert isinstance(est, float)
+
+    def test_sps_2_decimates_before_estimating(self, backend_device, xp):
+        """sps=2 triggers on-symbol decimation branch; estimate still returns float."""
+        import numpy as np
+        L = 63
+        fo_hz = 4000.0
+        fs = 1e6
+        sps = 2
+        zc = sync.zadoff_chu_sequence(L)
+        zc_np = zc.astype(np.complex64)
+        # Upsample preamble by sps (repeat each sample)
+        zc_up = np.repeat(zc_np, sps)
+        zc_up_xp = xp.asarray(zc_up)
+        zc_xp = xp.asarray(zc_np)
+
+        t = xp.arange(len(zc_up_xp), dtype=xp.float64) / (fs * sps)
+        rx = (zc_up_xp * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
+
+        est = sync.estimate_frequency_offset_preamble(
+            rx, preamble_samples=zc_xp, fs=fs, offset=0, sps=sps
+        )
+        assert isinstance(est, float)

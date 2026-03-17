@@ -18,19 +18,19 @@ FS = 1e6  # 1 MHz sampling rate, common to all tests
 SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 
 
-def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS):
+def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
-    sig = Signal.qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs)
-    sig = apply_awgn(sig, esn0_db=snr_db)
+    sig = Signal.qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = apply_awgn(sig, esn0_db=snr_db, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
     return sig
 
 
-def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS):
+def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
-    sig = Signal.psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs)
-    sig = apply_awgn(sig, esn0_db=snr_db)
+    sig = Signal.psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = apply_awgn(sig, esn0_db=snr_db, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
     return sig

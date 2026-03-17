@@ -26,6 +26,7 @@ def apply_awgn(
     signal: Union[ArrayType, "Signal"],
     esn0_db: float,
     sps: float = None,
+    seed: Optional[int] = None,
 ) -> Union[ArrayType, "Signal"]:
     """
     Adds Additive White Gaussian Noise (AWGN) to a signal based on $E_s/N_0$.
@@ -43,6 +44,9 @@ def apply_awgn(
     sps : float, default 1.0
         Samples per symbol. For `Signal` objects, this is extracted
         automatically from the metadata.
+    seed : int, optional
+        Random seed for reproducible noise generation. When ``None`` (default),
+        the global RNG state is used.
 
     Returns
     -------
@@ -105,17 +109,18 @@ def apply_awgn(
     # Handle complex signals (split power between I and Q)
     is_complex = xp.iscomplexobj(samples)
 
+    rng = xp.random.RandomState(seed) if seed is not None else xp.random
     if is_complex:
         noise_std_component = xp.sqrt(noise_power / 2)
         real_dtype = samples.real.dtype
-        noise = xp.random.normal(0, noise_std_component, samples.shape).astype(
+        noise = rng.normal(0, noise_std_component, samples.shape).astype(
             real_dtype
-        ) + 1j * xp.random.normal(0, noise_std_component, samples.shape).astype(
+        ) + 1j * rng.normal(0, noise_std_component, samples.shape).astype(
             real_dtype
         )
     else:
         noise_std = xp.sqrt(noise_power)
-        noise = xp.random.normal(0, noise_std, samples.shape).astype(samples.dtype)
+        noise = rng.normal(0, noise_std, samples.shape).astype(samples.dtype)
 
     noisy_samples = samples + noise
 

@@ -34,6 +34,11 @@ uv run pytest tests/test_signal.py::test_name -v
 
 # Run with coverage
 uv run pytest --cov=commstools
+
+# Bump project version
+uvx bump-my-version bump patch   # 0.1.0 → 0.1.1
+uvx bump-my-version bump minor   # 0.1.0 → 0.2.0
+uvx bump-my-version bump major   # 0.1.0 → 1.0.0
 ```
 
 ## Architecture
