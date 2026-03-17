@@ -1687,6 +1687,37 @@ class Signal(BaseModel):
             self.samples[..., _n_pre_samp:] if _n_pre_samp > 0 else self.samples
         )
 
+        # When pilots use a different modulation than payload, they break the
+        # M-th power nonlinearity and Kay's differential.  Extract payload-only
+        # samples from the body in that case.
+        _info = self.signal_info
+        _pilot_mod_differs = (
+            _info is not None
+            and self.frame is not None
+            and getattr(_info, "pilot_pattern", "none") != "none"
+            and (
+                (
+                    _info.pilot_mod_scheme is not None
+                    and _info.pilot_mod_scheme != _info.payload_mod_scheme
+                )
+                or (
+                    _info.pilot_mod_order is not None
+                    and _info.pilot_mod_order != 0
+                    and _info.pilot_mod_order != _info.payload_mod_order
+                )
+            )
+        )
+        if _pilot_mod_differs and method in ("mth_power", "differential"):
+            _struct_body = self.frame.get_structure_map(
+                unit="samples", sps=_sps, include_preamble=False
+            )
+            _payload_mask = _np.asarray(_struct_body["payload"])
+            _signal_body = _signal_body[..., _payload_mask]
+            logger.debug(
+                f"FOE ({method}): pilot mod differs from payload — using payload-only "
+                f"samples ({int(_payload_mask.sum())} of {_payload_mask.size} body samples)."
+            )
+
         if method == "mth_power":
             if self.mod_scheme is None or self.mod_order is None:
                 raise ValueError(
@@ -1876,7 +1907,30 @@ class Signal(BaseModel):
         :meth:`decimate_to_symbol_rate`).  Applying CPR to an oversampled
         signal will give poor results.
         """
+        import numpy as _np  # noqa: PLC0415
+
         from . import sync
+
+        # When pilots use a different modulation than payload, blind CPR methods
+        # (VV, BPS) must not see pilot symbols.  At this point self.samples is
+        # body-only (preamble stripped after FOE), so use include_preamble=False.
+        _info = self.signal_info
+        _pilot_mod_differs_cpr = (
+            _info is not None
+            and self.frame is not None
+            and getattr(_info, "pilot_pattern", "none") != "none"
+            and (
+                (
+                    _info.pilot_mod_scheme is not None
+                    and _info.pilot_mod_scheme != _info.payload_mod_scheme
+                )
+                or (
+                    _info.pilot_mod_order is not None
+                    and _info.pilot_mod_order != 0
+                    and _info.pilot_mod_order != _info.payload_mod_order
+                )
+            )
+        )
 
         if method == "viterbi_viterbi":
             if self.mod_scheme is None or self.mod_order is None:
@@ -1884,26 +1938,86 @@ class Signal(BaseModel):
                     "mod_scheme and mod_order must be set on the Signal for "
                     "the 'viterbi_viterbi' method."
                 )
-            phase = sync.recover_carrier_phase_viterbi_viterbi(
-                self.samples,
-                modulation=self.mod_scheme,
-                order=self.mod_order,
-                debug_plot=debug_plot,
-                **kwargs,
-            )
+            if _pilot_mod_differs_cpr:
+                _struct_body = self.frame.get_structure_map(
+                    unit="symbols", sps=1, include_preamble=False
+                )
+                _payload_mask = _np.asarray(_struct_body["payload"])
+                _payload_idx = _np.where(_payload_mask)[0]
+                logger.debug(
+                    "CPR (viterbi_viterbi): pilot mod differs from payload — estimating "
+                    f"phase from {len(_payload_idx)} payload symbols, interpolating to "
+                    f"{self.samples.shape[-1]} body symbols."
+                )
+                _phase_payload = sync.recover_carrier_phase_viterbi_viterbi(
+                    self.samples[..., _payload_mask],
+                    modulation=self.mod_scheme,
+                    order=self.mod_order,
+                    debug_plot=debug_plot,
+                    **kwargs,
+                )
+                _n_body = self.samples.shape[-1]
+                _body_idx = _np.arange(_n_body)
+                if _phase_payload.ndim == 1:
+                    phase = _np.interp(_body_idx, _payload_idx, _phase_payload)
+                else:
+                    phase = _np.stack(
+                        [
+                            _np.interp(_body_idx, _payload_idx, _phase_payload[c])
+                            for c in range(_phase_payload.shape[0])
+                        ]
+                    )
+            else:
+                phase = sync.recover_carrier_phase_viterbi_viterbi(
+                    self.samples,
+                    modulation=self.mod_scheme,
+                    order=self.mod_order,
+                    debug_plot=debug_plot,
+                    **kwargs,
+                )
         elif method == "bps":
             if self.mod_scheme is None or self.mod_order is None:
                 raise ValueError(
                     "mod_scheme and mod_order must be set on the Signal for "
                     "the 'bps' method."
                 )
-            phase = sync.recover_carrier_phase_bps(
-                self.samples,
-                modulation=self.mod_scheme,
-                order=self.mod_order,
-                debug_plot=debug_plot,
-                **kwargs,
-            )
+            if _pilot_mod_differs_cpr:
+                _struct_body = self.frame.get_structure_map(
+                    unit="symbols", sps=1, include_preamble=False
+                )
+                _payload_mask = _np.asarray(_struct_body["payload"])
+                _payload_idx = _np.where(_payload_mask)[0]
+                logger.debug(
+                    "CPR (bps): pilot mod differs from payload — estimating "
+                    f"phase from {len(_payload_idx)} payload symbols, interpolating to "
+                    f"{self.samples.shape[-1]} body symbols."
+                )
+                _phase_payload = sync.recover_carrier_phase_bps(
+                    self.samples[..., _payload_mask],
+                    modulation=self.mod_scheme,
+                    order=self.mod_order,
+                    debug_plot=debug_plot,
+                    **kwargs,
+                )
+                _n_body = self.samples.shape[-1]
+                _body_idx = _np.arange(_n_body)
+                if _phase_payload.ndim == 1:
+                    phase = _np.interp(_body_idx, _payload_idx, _phase_payload)
+                else:
+                    phase = _np.stack(
+                        [
+                            _np.interp(_body_idx, _payload_idx, _phase_payload[c])
+                            for c in range(_phase_payload.shape[0])
+                        ]
+                    )
+            else:
+                phase = sync.recover_carrier_phase_bps(
+                    self.samples,
+                    modulation=self.mod_scheme,
+                    order=self.mod_order,
+                    debug_plot=debug_plot,
+                    **kwargs,
+                )
         elif method == "pilots":
             # Auto-extract pilot positions and values from the attached frame
             # when the caller has not provided them explicitly.  CPR is assumed

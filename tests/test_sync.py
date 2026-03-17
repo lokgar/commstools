@@ -738,6 +738,219 @@ def test_estimate_timing_info_without_sps(backend_device, xp):
 
 
 # -----------------------------------------------------------------------------
+# TIME-ORTHOGONAL MIMO TIMING SYNC TESTS
+# -----------------------------------------------------------------------------
+
+
+def _make_time_orthogonal_mimo_signal(xp, channel_matrix, preamble_pos=200):
+    """Helper: build 2×2 MIMO received signal with time-orthogonal preamble.
+
+    Parameters
+    ----------
+    xp : module
+        Array backend (numpy or cupy).
+    channel_matrix : array_like, shape (2, 2)
+        Jones-like channel matrix applied to the MIMO preamble.
+        ``rx = channel_matrix @ tx``.
+    preamble_pos : int
+        Sample index where the preamble starts.
+
+    Returns
+    -------
+    sig : array, shape (2, N)
+        Received signal with embedded preamble.
+    preamble_waveform : array, shape (2, 2*L)
+        Expanded time-orthogonal preamble templates.
+    L_slot : int
+        Length of one preamble slot (= base sequence length).
+    """
+    from commstools.helpers import expand_preamble_mimo
+
+    # Base preamble: Barker-13 (real-valued, good autocorrelation)
+    base = xp.asarray(sync.barker_sequence(13), dtype="complex64")
+    L_slot = len(base)
+
+    # Expand to block-diagonal: TX0=[P|0], TX1=[0|P]
+    preamble_waveform = expand_preamble_mimo(base, num_streams=2, mode="time_orthogonal")
+    L_total = preamble_waveform.shape[-1]  # 2 * L_slot
+
+    # Build transmitted MIMO signal (preamble + noise-like payload)
+    N = preamble_pos + L_total + 300
+    tx = xp.zeros((2, N), dtype="complex64")
+    tx[:, preamble_pos : preamble_pos + L_total] = preamble_waveform
+
+    # Add some payload energy so the signal isn't trivially sparse
+    rng_state = xp.random.RandomState(42) if hasattr(xp, "random") else None
+    if rng_state is not None:
+        payload = (rng_state.randn(2, N) + 1j * rng_state.randn(2, N)).astype(
+            "complex64"
+        ) * 0.05
+    else:
+        import numpy as _np
+
+        _rng = _np.random.RandomState(42)
+        payload = xp.asarray(
+            (_rng.randn(2, N) + 1j * _rng.randn(2, N)).astype("complex64") * 0.05
+        )
+    tx += payload
+
+    # Apply channel matrix: rx[i] = sum_j H[i,j] * tx[j]
+    H = xp.asarray(channel_matrix, dtype="complex64")
+    sig = H @ tx  # (2, N)
+
+    return sig, preamble_waveform, L_slot
+
+
+def test_estimate_timing_time_orthogonal_identity(backend_device, xp):
+    """Time-orthogonal MIMO with identity channel: correct frame_start and stream assignment [0, 1]."""
+    from commstools.core import SignalInfo
+
+    preamble_pos = 200
+    H = [[1.0, 0.0], [0.0, 1.0]]  # identity
+    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
+        xp, H, preamble_pos
+    )
+
+    info = SignalInfo(
+        signal_type="Single-Carrier Frame",
+        preamble_type="barker",
+        preamble_seq_len=13,
+        preamble_mode="time_orthogonal",
+        num_streams=2,
+    )
+
+    coarse, frac, streams = sync.estimate_timing(
+        sig,
+        preamble=preamble_waveform,
+        info=info,
+        sps=1,
+        pulse_shape="none",
+        threshold=0.1,
+        return_stream_assignment=True,
+    )
+
+    # Frame start should be at preamble_pos (±1 sample tolerance)
+    for ch in range(2):
+        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        )
+
+    # Stream assignment: identity → RX0↔TX0, RX1↔TX1
+    assert int(streams[0]) == 0
+    assert int(streams[1]) == 1
+
+
+def test_estimate_timing_time_orthogonal_polswap(backend_device, xp):
+    """Time-orthogonal MIMO with polarization swap: correct frame_start and stream assignment [1, 0]."""
+    from commstools.core import SignalInfo
+
+    preamble_pos = 200
+    H = [[0.0, 1.0], [1.0, 0.0]]  # swap
+    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
+        xp, H, preamble_pos
+    )
+
+    info = SignalInfo(
+        signal_type="Single-Carrier Frame",
+        preamble_type="barker",
+        preamble_seq_len=13,
+        preamble_mode="time_orthogonal",
+        num_streams=2,
+    )
+
+    coarse, frac, streams = sync.estimate_timing(
+        sig,
+        preamble=preamble_waveform,
+        info=info,
+        sps=1,
+        pulse_shape="none",
+        threshold=0.1,
+        return_stream_assignment=True,
+    )
+
+    # Frame start should still be at preamble_pos
+    for ch in range(2):
+        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        )
+
+    # Polarization swap: RX0 sees TX1, RX1 sees TX0
+    assert int(streams[0]) == 1
+    assert int(streams[1]) == 0
+
+
+def test_estimate_timing_time_orthogonal_mixed_channel(backend_device, xp):
+    """Time-orthogonal MIMO with 45° rotation: both streams present on each RX, but one dominates."""
+    from commstools.core import SignalInfo
+    import numpy as np
+
+    preamble_pos = 150
+    # 40° rotation — near-equal mixing but with asymmetry to ensure
+    # deterministic assignment.  cos(40°)≈0.766, sin(40°)≈0.643
+    angle = np.radians(40)
+    H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
+        xp, H, preamble_pos
+    )
+
+    info = SignalInfo(
+        signal_type="Single-Carrier Frame",
+        preamble_type="barker",
+        preamble_seq_len=13,
+        preamble_mode="time_orthogonal",
+        num_streams=2,
+    )
+
+    coarse, frac, streams = sync.estimate_timing(
+        sig,
+        preamble=preamble_waveform,
+        info=info,
+        sps=1,
+        pulse_shape="none",
+        threshold=0.05,
+        return_stream_assignment=True,
+    )
+
+    # Frame start should be correct regardless of rotation
+    for ch in range(2):
+        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        )
+
+    # With a rotation < 45°, dominant stream should still be identity-like
+    assert int(streams[0]) == 0
+    assert int(streams[1]) == 1
+
+
+def test_estimate_timing_time_orthogonal_no_stream_flag(backend_device, xp):
+    """Without return_stream_assignment, result is a 2-tuple (no stream info)."""
+    from commstools.core import SignalInfo
+
+    H = [[1.0, 0.0], [0.0, 1.0]]
+    sig, preamble_waveform, _ = _make_time_orthogonal_mimo_signal(xp, H)
+
+    info = SignalInfo(
+        signal_type="Single-Carrier Frame",
+        preamble_type="barker",
+        preamble_seq_len=13,
+        preamble_mode="time_orthogonal",
+        num_streams=2,
+    )
+
+    result = sync.estimate_timing(
+        sig,
+        preamble=preamble_waveform,
+        info=info,
+        sps=1,
+        pulse_shape="none",
+        threshold=0.1,
+        return_stream_assignment=False,
+    )
+
+    assert len(result) == 2, "Expected 2-tuple when return_stream_assignment=False"
+
+
+# -----------------------------------------------------------------------------
 # DTYPE PRESERVATION TESTS
 # -----------------------------------------------------------------------------
 

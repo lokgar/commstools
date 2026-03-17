@@ -644,15 +644,31 @@ def estimate_timing(
     _best_t: Optional[ArrayType] = None  # TX-stream assignment per RX channel
 
     if _is_time_orthogonal:
-        # For time-orthogonal MIMO preambles the Rx polarization assignment is
-        # unknown a priori: Rx channel 0 may carry Tx stream 1's preamble slot
-        # and vice versa.  Row-wise correlation (rx[i] vs template[i]) would
-        # produce near-zero output for all channels if the assignment is swapped.
+        # ------------------------------------------------------------------
+        # Time-orthogonal MIMO timing estimation
         #
-        # Fix: compute the full C_rx × C_tx correlation tensor, then for each
-        # Rx channel select the template that gave the strongest peak.  This is
-        # immune to any polarization permutation (or even partial mixing).
+        # Each expanded template (e.g. [P|0], [0|P]) has P at a specific
+        # offset and zeros elsewhere.  The zeros contribute nothing to the
+        # cross-correlation, so ALL templates yield the same peak magnitude
+        # (≈ |h_rx,k_dom| · E_P) but at DIFFERENT lag positions — shifted by
+        # the template's internal P offset.
+        #
+        # Consequence: argmax-over-templates cannot distinguish templates
+        # (identical magnitudes → tie-breaks to index 0).  For RX channels
+        # dominated by TX stream k≠0 the reported lag is off by k·L_slot
+        # samples, causing a skew equal to one full preamble slot.
+        #
+        # Fix: use template 0's correlation (≡ base-P correlation, since
+        # trailing zeros are inert) to find per-channel peaks.  Each peak
+        # sits at t0 + k_rx·L_slot where k_rx is the dominant slot for
+        # that RX channel.  The frame start is the minimum peak across
+        # channels, and stream assignment follows from the slot offsets.
+        # Finally, select the correctly-assigned expanded template so that
+        # every channel's correlation peaks at the common frame start.
+        # ------------------------------------------------------------------
         C_tx = preamble_waveform.shape[0]
+        L_slot = preamble_waveform.shape[-1] // C_tx  # samples per slot
+
         # corr_all[c_rx, c_tx, lag] — shape (C_rx, C_tx, N_lag)
         corr_all = xp.stack(
             [
@@ -663,21 +679,47 @@ def estimate_timing(
             ],
             axis=1,
         )
-        # Best-matching template per Rx channel: argmax over peak magnitude
-        best_t = xp.argmax(xp.max(xp.abs(corr_all), axis=-1), axis=1)  # (C_rx,)
-        _best_t = best_t  # stash for optional return
-        _best_t_list = best_t.tolist()
+
+        # --- Frame-start estimation via base-P correlation ---------------
+        # Template 0 = [P | 0 … 0]; its correlation ≡ base-P correlation
+        # because trailing zeros are inert.  Per-channel peaks sit at the
+        # dominant slot's start position: t0 + k_rx · L_slot.
+        corr_base_mag = xp.abs(corr_all[:, 0, :])  # (C_rx, N_lag)
+        peak0 = xp.argmax(corr_base_mag, axis=-1)  # (C_rx,) per-ch peaks
+
+        # Frame start = earliest per-channel peak (slot 0 position).
+        frame_start = int(xp.min(peak0))
+
+        # --- Stream assignment from per-channel peak offsets -------------
+        # k_rx = round((peak_rx - frame_start) / L_slot)
+        stream_assignment = xp.round(
+            (peak0 - frame_start).astype(float) / L_slot
+        ).astype(int)
+        stream_assignment = xp.clip(stream_assignment, 0, C_tx - 1)
+        _best_t = stream_assignment
+
+        _best_t_list = stream_assignment.tolist()
         _repeated = len(set(_best_t_list)) < len(_best_t_list)
         logger.info(
-            f"Time-orthogonal sync: dominant Tx template per Rx channel: {_best_t_list}"
+            f"Time-orthogonal sync: frame_start={frame_start}, "
+            f"dominant Tx slot per Rx channel: {_best_t_list}"
             + (
-                " (repeated indices indicate channel mixing — normal for a rotated Jones matrix)"
+                " (repeated — channel mixing)"
                 if _repeated
                 else ""
             )
         )
+
+        # Select the correctly-assigned expanded template per RX channel.
+        # Template j = stream_assignment[rx] has its P at offset j·L_slot,
+        # so its correlation peak sits at frame_start (not frame_start +
+        # j·L_slot), giving a consistent coarse offset for all channels.
         rx_idx = xp.arange(num_sig_ch)
-        corr = corr_all[rx_idx, best_t, :]  # (C_rx, N_lag)
+        corr = corr_all[rx_idx, stream_assignment, :]  # (C_rx, N_lag)
+
+        # Override L to slot length for downstream normalization:
+        # the effective correlation window is L_slot, not C·L_slot.
+        L = L_slot
     else:
         corr = cross_correlate_fft(
             sig_processing, preamble_waveform, mode="positive_lags"
@@ -696,12 +738,12 @@ def estimate_timing(
     if e_p.ndim == 0:  # SISO: broadcast scalar energy to all channels
         e_p = xp.full(num_sig_ch, e_p)
     elif _is_time_orthogonal:
-        # corr[i] was taken against template best_t[i], not template i.
+        # corr[i] was taken against template stream_assignment[i].
         # Re-index so norm_factors[i] uses the energy of the template that was
         # actually correlated with RX channel i.  For time_orthogonal all
         # templates have equal energy today, but indexing correctly future-proofs
         # against asymmetric preamble designs.
-        e_p = e_p[best_t]  # (C_rx,)
+        e_p = e_p[_best_t]  # (C_rx,)
 
     e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
 
@@ -1209,13 +1251,19 @@ def estimate_frequency_offset_differential(
         w_np = np.maximum(w_np, 0.0)
         w_np /= w_np.sum()
         w = xp.asarray(w_np)
-        # Weighted complex phasor sum → angle
-        weighted_sum = xp.sum(w * y_diff, axis=-1)  # (C,)
-        f_per_ch = xp.angle(weighted_sum) * (fs / (2 * np.pi))
+        # Coherent MIMO combining: sum weighted complex y_diff across all
+        # channels before taking the angle.  Every channel observes the
+        # same frequency offset Δf; their complex differential products
+        # add coherently while incoherent per-channel noise averages down
+        # as 1/√C.  Taking angle(sum_channels) is equivalent to a
+        # maximum-likelihood estimate under equal-power, independent noise.
+        # This is far better than angle(sum_c) per channel → mean(angle),
+        # where a single noisy channel can pull the mean-of-angles off.
+        combined_sum = xp.sum(w * y_diff, axis=(-2, -1))  # scalar complex
     else:
-        f_per_ch = xp.angle(xp.sum(y_diff, axis=-1)) * (fs / (2 * np.pi))
+        combined_sum = xp.sum(y_diff)  # scalar complex, sum over C and N-1
 
-    f_est = float(xp.mean(f_per_ch)) / M
+    f_est = float(xp.angle(combined_sum)) * (fs / (2 * np.pi)) / M
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
     logger.info(f"FOE (differential, {mode_str}): {f_est:.2f} Hz")
 
