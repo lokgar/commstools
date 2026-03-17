@@ -41,6 +41,8 @@ cma :
     Constant Modulus Algorithm blind equalizer.
 zf_equalizer :
     Zero-Forcing / MMSE frequency-domain block equalizer.
+apply_taps :
+    Apply frozen equalizer taps to a new signal (no weight updates).
 """
 
 import functools
@@ -3745,3 +3747,98 @@ def zf_equalizer(
         )
 
     return out[0] if was_1d else out
+
+
+def apply_taps(
+    samples: ArrayType,
+    weights: ArrayType,
+    sps: int = 2,
+    normalize: bool = True,
+) -> ArrayType:
+    """Apply frozen equalizer taps to a signal (inference pass, no weight updates).
+
+    Performs the butterfly FIR forward pass using pre-converged weights,
+    decimating by ``sps`` to produce one output symbol per ``sps`` input samples.
+    Suitable for reusing frozen taps from a prior equalizer run on a new signal
+    without re-running adaptation.
+
+    The forward pass implements:
+
+    .. math::
+
+        y[i, n] = \\sum_j \\sum_t W^*[i,j,t] \\cdot x[j,\\, n \\cdot sps + t]
+
+    which is the same inner computation as the Numba/JAX adaptive-equalizer
+    kernels, fully vectorized over ``n`` via a single batched ``einsum``.
+
+    Parameters
+    ----------
+    samples : array_like
+        Input samples. Shape: ``(N_samples,)`` for SISO or
+        ``(C, N_samples)`` for MIMO. Typically at ``sps`` samples/symbol.
+    weights : array_like
+        Frozen tap weights, typically ``EqualizerResult.weights`` from a
+        prior equalizer run. Shape: ``(num_taps,)`` for SISO or
+        ``(C, C, num_taps)`` for MIMO butterfly.
+    sps : int, default 2
+        Samples per symbol. Output length is ``N_samples // sps``.
+        Unlike the adaptive equalizers, any ``sps >= 1`` is accepted.
+    normalize : bool, default True
+        If ``True``, normalize ``samples`` to unit symbol power before
+        filtering (same pre-processing as the adaptive equalizers via
+        ``_normalize_inputs``). Set to ``False`` if the caller has already
+        scaled the input consistently with the original training run.
+
+    Returns
+    -------
+    array_like
+        Equalized symbols. Shape: ``(N_sym,)`` for SISO or
+        ``(C, N_sym)`` for MIMO, where ``N_sym = N_samples // sps``.
+        Resides on the same backend as ``samples``.
+
+    Examples
+    --------
+    Freeze taps from a training run and apply to a new capture::
+
+        result = equalization.lms(train_signal, training_symbols, num_taps=31)
+        y = equalization.apply_taps(new_signal, result.weights)
+    """
+    samples, xp, _ = dispatch(samples)
+    weights = xp.asarray(weights)
+
+    was_1d = samples.ndim == 1
+
+    # Promote SISO → MIMO shapes for uniform butterfly code path
+    if was_1d:
+        samples = samples[None, :]  # (N,) → (1, N)
+    if weights.ndim == 1:
+        weights = weights[None, None, :]  # (T,) → (1, 1, T)
+
+    C, N = samples.shape
+    num_taps = weights.shape[-1]
+    n_sym = N // sps
+
+    if normalize:
+        samples, _, _ = _normalize_inputs(samples, None, sps)
+
+    # Pad left by center tap so window[0] is center-aligned with sample 0,
+    # pad right to fill the last window completely — mirrors LMS pre-processing.
+    c_tap = num_taps // 2
+    pad_left = c_tap
+    pad_right = n_sym * sps - N + num_taps - 1 - pad_left
+    samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+
+    # Zero-copy sliding-window view: (C, N_sym, num_taps)
+    # windows[c, n, t] = samples_padded[c, n*sps + t]
+    s0, s1 = samples_padded.strides
+    windows = xp.lib.stride_tricks.as_strided(
+        samples_padded,
+        shape=(C, n_sym, num_taps),
+        strides=(s0, sps * s1, s1),
+    )
+
+    # Butterfly forward pass — single batched GEMM (dispatches to cuBLAS on GPU)
+    # y[i, n] = Σ_j Σ_t conj(W[i,j,t]) * windows[j, n, t]
+    y = xp.einsum("ijt,jnt->in", xp.conj(weights), windows)  # (C, N_sym)
+
+    return y[0] if was_1d else y
