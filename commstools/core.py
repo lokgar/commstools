@@ -1665,7 +1665,27 @@ class Signal(BaseModel):
             )
             sig.correct_frequency_offset(method="preamble", stream_assignment=sa)
         """
+        import numpy as _np  # noqa: PLC0415
+
         from . import sync
+
+        # Compute preamble sample count once — used by both the blind-method
+        # body-only slice and the post-correction preamble strip.
+        _sps = int(round(self.sps))
+        _n_pre_samp = 0
+        if self.frame is not None and self.frame.preamble is not None:
+            _n_pre = self.frame.preamble.num_symbols
+            if getattr(self.frame, "preamble_mode", None) == "time_orthogonal":
+                _n_pre *= getattr(self.frame, "num_streams", 1)
+            _n_pre_samp = _n_pre * _sps
+
+        # For blind methods, estimate only on the body (post-preamble samples).
+        # Time-orthogonal MIMO preambles contain zero-slots that corrupt the
+        # M-th power spectrum and Kay's weighted differential; even for
+        # non-MIMO frames, excluding the deterministic preamble is cleaner.
+        _signal_body = (
+            self.samples[..., _n_pre_samp:] if _n_pre_samp > 0 else self.samples
+        )
 
         if method == "mth_power":
             if self.mod_scheme is None or self.mod_order is None:
@@ -1674,7 +1694,7 @@ class Signal(BaseModel):
                     "the 'mth_power' method."
                 )
             offset = sync.estimate_frequency_offset_mth_power(
-                self.samples,
+                _signal_body,
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
@@ -1683,7 +1703,7 @@ class Signal(BaseModel):
             )
         elif method == "differential":
             offset = sync.estimate_frequency_offset_differential(
-                self.samples,
+                _signal_body,
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
@@ -1708,8 +1728,6 @@ class Signal(BaseModel):
                 kwargs.setdefault("offset", 0)
                 # After equalization, slot i → channel i (identity), so use
                 # stream_assignment = [0, 1, ...] for time_orthogonal preambles.
-                import numpy as _np  # noqa: PLC0415
-
                 _is_time_orth = (
                     self.frame is not None
                     and getattr(self.frame, "preamble_mode", None) == "time_orthogonal"
@@ -1723,7 +1741,7 @@ class Signal(BaseModel):
                     )
                 offset = sync.estimate_frequency_offset_preamble(
                     _peq,
-                    fs=self.sampling_rate / int(round(self.sps)),
+                    fs=self.sampling_rate / _sps,
                     debug_plot=debug_plot,
                     **kwargs,
                 )
@@ -1737,7 +1755,7 @@ class Signal(BaseModel):
                             "attached (generate the signal via SingleCarrierFrame.to_signal)."
                         )
                     p_sig = self.frame.preamble.to_signal(
-                        sps=int(round(self.sps)),
+                        sps=_sps,
                         symbol_rate=1.0,
                         pulse_shape=self.pulse_shape or "rrc",
                         filter_span=self.filter_span,
@@ -1750,7 +1768,21 @@ class Signal(BaseModel):
                 # After correct_timing the preamble starts at sample 0.
                 kwargs.setdefault("offset", 0)
                 # Subsample at symbol rate to avoid RRC zero-crossing corruption.
-                kwargs.setdefault("sps", int(round(self.sps)))
+                kwargs.setdefault("sps", _sps)
+                # For time_orthogonal MIMO, auto-set identity stream_assignment
+                # (slot k dominant on RX channel k) when not explicitly provided.
+                # Pass stream_assignment explicitly if the channel has significant
+                # polarization mixing (e.g. from correct_timing return value).
+                if (
+                    "stream_assignment" not in kwargs
+                    and self.frame is not None
+                    and getattr(self.frame, "preamble_mode", None) == "time_orthogonal"
+                    and self.samples.ndim == 2
+                ):
+                    kwargs.setdefault(
+                        "stream_assignment",
+                        _np.arange(self.samples.shape[0], dtype=int),
+                    )
                 offset = sync.estimate_frequency_offset_preamble(
                     self.samples,
                     fs=self.sampling_rate,
@@ -1764,9 +1796,6 @@ class Signal(BaseModel):
             # same coordinate space as self.samples (which may contain a preamble
             # prefix after equalize_frame).
             if "pilot_indices" not in kwargs and self.frame is not None:
-                import numpy as _np  # noqa: PLC0415
-
-                _sps = int(round(self.sps))
                 _unit = "symbols" if _sps == 1 else "samples"
                 _struct = self.frame.get_structure_map(
                     unit=_unit, sps=_sps, include_preamble=True
@@ -1795,6 +1824,11 @@ class Signal(BaseModel):
         self.samples = sync.correct_frequency_offset(
             self.samples, offset, self.sampling_rate
         )
+        # Strip the preamble from self.samples after correction.  The preamble
+        # has been consumed (either as the FOE reference or as context for timing)
+        # and subsequent DSP steps operate on the body only.
+        if _n_pre_samp > 0:
+            self.samples = self.samples[..., _n_pre_samp:]
         return offset
 
     def recover_carrier_phase(

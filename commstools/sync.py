@@ -1070,24 +1070,22 @@ def estimate_frequency_offset_mth_power(
             )
         mag = xp.where(mask[None, :], mag, xp.zeros_like(mag))
 
-    # Peak bin per channel: (C,)
-    k_peaks = xp.argmax(mag, axis=-1)
+    # For MIMO, sum spectra across channels before peak detection so the
+    # estimator benefits from coherent accumulation rather than averaging
+    # independent (noisy) per-channel estimates.  For SISO this is a no-op
+    # (C=1, sum = identity).
+    mag_combined = xp.sum(mag, axis=0)  # (nfft,)
 
-    # Parabolic interpolation: C scalar operations — loop overhead is negligible
-    estimates = []
-    for ch in range(C):
-        k_peak = int(k_peaks[ch])
-        k_safe = max(1, min(k_peak, nfft - 2))
-        a = float(mag[ch, k_safe - 1])
-        b_ = float(mag[ch, k_safe])
-        c = float(mag[ch, k_safe + 1])
-        denom = a - 2 * b_ + c
-        mu = 0.5 * (a - c) / denom if abs(denom) > 1e-15 else 0.0
-        mu = max(-0.5, min(0.5, mu))
-        f_tone = freqs_np[k_peak] + mu * (fs / nfft)
-        estimates.append(f_tone / M)
+    k_peak_combined = int(xp.argmax(mag_combined))
+    k_safe = max(1, min(k_peak_combined, nfft - 2))
+    a = float(mag_combined[k_safe - 1])
+    b_ = float(mag_combined[k_safe])
+    c = float(mag_combined[k_safe + 1])
+    denom = a - 2 * b_ + c
+    mu = 0.5 * (a - c) / denom if abs(denom) > 1e-15 else 0.0
+    mu = max(-0.5, min(0.5, mu))
+    f_est = (freqs_np[k_peak_combined] + mu * (fs / nfft)) / M
 
-    f_est = float(np.mean(estimates))
     logger.info(
         f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
         f"[nfft={nfft}, search_range={search_range}]"
@@ -1096,12 +1094,13 @@ def estimate_frequency_offset_mth_power(
     if debug_plot:
         from . import plotting as _plotting
 
+        # Pass the combined spectrum and a single peak index for the plot
         _plotting.frequency_offset_spectrum(
-            mag_spectrum=to_device(mag, "cpu"),
+            mag_spectrum=to_device(mag_combined[None, :], "cpu"),
             freqs=freqs_np,
             M=M,
-            k_peaks=to_device(k_peaks, "cpu"),
-            f_estimates=estimates,
+            k_peaks=np.array([k_peak_combined]),
+            f_estimates=[f_est],
             search_range=search_range,
             show=True,
         )
