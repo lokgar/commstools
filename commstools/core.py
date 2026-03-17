@@ -1133,7 +1133,9 @@ class Signal(BaseModel):
             plot_data = eq.payload_symbols_eq
             _mod = self.signal_info.payload_mod_scheme if self.signal_info else None
             _order = self.signal_info.payload_mod_order if self.signal_info else None
-            _overlay_ref = self.frame.payload_symbols if self.frame is not None else None
+            _overlay_ref = (
+                self.frame.payload_symbols if self.frame is not None else None
+            )
         elif data == "pilots":
             eq = self._equalizer_result
             if eq is None or eq.pilot_symbols_eq is None:
@@ -1833,9 +1835,7 @@ class Signal(BaseModel):
                 )
                 _pm = _struct.get("pilots")
                 if _pm is not None:
-                    kwargs.setdefault(
-                        "pilot_indices", _np.where(_np.asarray(_pm))[0]
-                    )
+                    kwargs.setdefault("pilot_indices", _np.where(_np.asarray(_pm))[0])
             if "pilot_values" not in kwargs and self.frame is not None:
                 _pv = self.frame.pilot_symbols
                 if _pv is not None:
@@ -2032,9 +2032,7 @@ class Signal(BaseModel):
                 )
                 _pm = _struct.get("pilots")
                 if _pm is not None:
-                    kwargs.setdefault(
-                        "pilot_indices", _np.where(_np.asarray(_pm))[0]
-                    )
+                    kwargs.setdefault("pilot_indices", _np.where(_np.asarray(_pm))[0])
             if "pilot_values" not in kwargs and self.frame is not None:
                 _pv = self.frame.pilot_symbols
                 if _pv is not None:
