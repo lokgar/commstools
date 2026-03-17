@@ -3269,56 +3269,43 @@ def equalize_frame(
             L_base = len(base_syms)
 
             if frame.preamble_mode == "time_orthogonal":
-                # Per-slot sequential DA-LMS for time-orthogonal MIMO preambles.
+                # Single-pass block-diagonal DA-LMS over the full time-orthogonal
+                # preamble (all C slots, C*L_base symbols at SPS).
                 #
-                # Each of the C slots activates exactly one TX stream.  The
-                # reference for slot k is (C, L_base): P in row k, zeros elsewhere.
-                # _normalize_inputs handles this correctly: all-zero rows divide by
-                # safe_norm=1 and stay at 0; the active row is normalised to unit
-                # power by rms(P).  This matches the normalised sample domain.
+                # Build the block-diagonal reference: slot k has base_syms in row k
+                # and zeros elsewhere.  The resulting (C, C*L_base) target matrix
+                # simultaneously constrains all C rows of the butterfly:
+                #   W * H[:,k] * P ≈ e_k * P  for k = 0 … C-1
+                # which (jointly) has a unique solution W = H⁻¹.
                 #
-                # A single block-diagonal call over C*L_base symbols would instead
-                # dilute the per-row average power by 1/C (due to C-1 zero blocks),
-                # causing _normalize_inputs to inflate the active targets by sqrt(C)
-                # (≈3 dB for C=2).  The LMS would exhibit a systematic gain mismatch
-                # and never reach zero error during training.
+                # Per-slot training (previous approach) only observed one TX stream
+                # at a time, so W[k,:]*H[:,j≠k] was never trained — the assembled
+                # butterfly had no cross-stream cancellation for strongly mixed channels.
+                #
+                # Normalization note: _normalize_inputs will scale each row of
+                # training_full by 1/rms(row) ≈ sqrt(C) because C-1 of C slots are
+                # zeros.  The LMS therefore converges to sqrt(C)*H⁻¹ rather than H⁻¹.
+                # This is a pure gain bias — convergence is not affected — and is
+                # absorbed by the power normalisation in resolve_symbols().
                 _use_per_slot_lms = True
-                preamble_eq_parts = []
-                preamble_err_parts = []
-                slot_weights = []  # (C,) list of (C, C, num_taps) arrays
-                w_init_slot = w_0  # identical starting point for every slot
+                training_full = np.zeros((num_ch, num_ch * L_base), dtype=np.complex64)
                 for slot in range(num_ch):
-                    slot_samp = preamble_samples[
-                        :, slot * L_base * stride : (slot + 1) * L_base * stride
-                    ]
-                    slot_syms = np.zeros((num_ch, L_base), dtype=np.complex64)
-                    slot_syms[slot, :] = base_syms
-                    pre_result = lms(
-                        slot_samp,
-                        training_symbols=slot_syms,
-                        num_taps=num_taps,
-                        step_size=lms_step_size,
-                        w_init=w_init_slot,  # same init for all slots — no cross-slot interference
-                        sps=sps,
-                        backend=backend,
-                    )
-                    _w = to_device(pre_result.weights, "cpu")
-                    if _w.ndim == 1:
-                        _w = _w[np.newaxis, np.newaxis, :]
-                    slot_weights.append(_w)
-                    preamble_eq_parts.append(pre_result.y_hat)
-                    preamble_err_parts.append(pre_result.error)
-                # Assemble butterfly: row k comes from slot k's independently trained W_k.
-                # In slot k only TX stream k is active, so only row k of W_k has a valid
-                # DA reference; taking that row avoids the mutual-suppression artefact that
-                # occurs when chaining weights across slots.
-                W_combined = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
-                for slot in range(num_ch):
-                    W_combined[slot, :, :] = slot_weights[slot][slot, :, :]
-                w_0 = W_combined
-                # Concatenate equalized symbols/errors from all slots: (C, C*L_base)
-                preamble_eq_syms = np.concatenate(preamble_eq_parts, axis=-1)
-                preamble_error = np.concatenate(preamble_err_parts, axis=-1)
+                    training_full[slot, slot * L_base : (slot + 1) * L_base] = base_syms
+                pre_result = lms(
+                    preamble_samples,  # (C, C*L_base*stride) — full TO preamble
+                    training_symbols=training_full,  # (C, C*L_base)
+                    num_taps=num_taps,
+                    step_size=lms_step_size,
+                    w_init=w_0,
+                    sps=sps,
+                    backend=backend,
+                )
+                _w = to_device(pre_result.weights, "cpu")
+                if _w.ndim == 1:
+                    _w = _w[np.newaxis, np.newaxis, :]
+                w_0 = _w
+                preamble_eq_syms = pre_result.y_hat  # (C, C*L_base)
+                preamble_error = pre_result.error     # (C, C*L_base)
             else:
                 # "same" mode: all streams transmit the identical sequence, so
                 # broadcasting P to every output channel is correct.
