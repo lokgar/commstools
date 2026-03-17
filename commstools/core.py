@@ -1758,6 +1758,28 @@ class Signal(BaseModel):
                     **kwargs,
                 )
         elif method == "pilots":
+            # Auto-extract pilot positions and values from the attached frame
+            # when the caller has not provided them explicitly.  The structure
+            # map uses include_preamble=True so that returned indices are in the
+            # same coordinate space as self.samples (which may contain a preamble
+            # prefix after equalize_frame).
+            if "pilot_indices" not in kwargs and self.frame is not None:
+                import numpy as _np  # noqa: PLC0415
+
+                _sps = int(round(self.sps))
+                _unit = "symbols" if _sps == 1 else "samples"
+                _struct = self.frame.get_structure_map(
+                    unit=_unit, sps=_sps, include_preamble=True
+                )
+                _pm = _struct.get("pilots")
+                if _pm is not None:
+                    kwargs.setdefault(
+                        "pilot_indices", _np.where(_np.asarray(_pm))[0]
+                    )
+            if "pilot_values" not in kwargs and self.frame is not None:
+                _pv = self.frame.pilot_symbols
+                if _pv is not None:
+                    kwargs.setdefault("pilot_values", _pv)
             offset = sync.estimate_frequency_offset_pilots(
                 self.samples,
                 fs=self.sampling_rate,
@@ -1849,6 +1871,26 @@ class Signal(BaseModel):
                 **kwargs,
             )
         elif method == "pilots":
+            # Auto-extract pilot positions and values from the attached frame
+            # when the caller has not provided them explicitly.  CPR is assumed
+            # to run at 1 SPS (post-equalization), so symbol-domain indices with
+            # include_preamble=True match the coordinate space of self.samples,
+            # which may contain a preamble prefix after equalize_frame().
+            if "pilot_indices" not in kwargs and self.frame is not None:
+                import numpy as _np  # noqa: PLC0415
+
+                _struct = self.frame.get_structure_map(
+                    unit="symbols", sps=1, include_preamble=True
+                )
+                _pm = _struct.get("pilots")
+                if _pm is not None:
+                    kwargs.setdefault(
+                        "pilot_indices", _np.where(_np.asarray(_pm))[0]
+                    )
+            if "pilot_values" not in kwargs and self.frame is not None:
+                _pv = self.frame.pilot_symbols
+                if _pv is not None:
+                    kwargs.setdefault("pilot_values", _pv)
             phase = sync.recover_carrier_phase_pilots(
                 self.samples, debug_plot=debug_plot, **kwargs
             )
@@ -2824,7 +2866,7 @@ class Signal(BaseModel):
             from .backend import to_device as _to_device  # noqa: PLC0415
 
             struct = self.frame.get_structure_map(
-                unit="symbols", sps=1, include_preamble=False
+                unit="symbols", sps=1, include_preamble=True
             )
             pilot_m = struct.get("pilots")
             payload_m = struct.get("payload")
