@@ -2577,20 +2577,25 @@ class TestApplyTaps:
 
     def _make_siso(self, xp, n_samples=2000, sps=2, num_taps=11, seed=42):
         rng = np.random.default_rng(seed)
-        x = (rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)).astype(
-            np.complex64
-        )
+        x = (
+            rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
+        ).astype(np.complex64)
         x = xp.asarray(x)
-        result = equalization.lms(x, training_symbols=x[::sps], num_taps=num_taps, sps=sps, backend="numba")
+        result = equalization.lms(
+            x, training_symbols=x[::sps], num_taps=num_taps, sps=sps, backend="numba"
+        )
         return x, result
 
     def _make_mimo(self, xp, n_samples=2000, sps=2, num_taps=11, C=2, seed=7):
         rng = np.random.default_rng(seed)
-        x = (rng.standard_normal((C, n_samples)) + 1j * rng.standard_normal((C, n_samples))).astype(
-            np.complex64
-        )
+        x = (
+            rng.standard_normal((C, n_samples))
+            + 1j * rng.standard_normal((C, n_samples))
+        ).astype(np.complex64)
         x = xp.asarray(x)
-        result = equalization.lms(x, training_symbols=x[:, ::sps], num_taps=num_taps, sps=sps, backend="numba")
+        result = equalization.lms(
+            x, training_symbols=x[:, ::sps], num_taps=num_taps, sps=sps, backend="numba"
+        )
         return x, result
 
     def test_siso_output_shape(self, backend_device, xp):
@@ -2611,7 +2616,9 @@ class TestApplyTaps:
         """Center-tap identity weights decimate the input at the symbol grid."""
         N, sps, T = 1000, 2, 11
         rng = np.random.default_rng(0)
-        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(np.complex64)
+        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
+            np.complex64
+        )
         x = xp.asarray(x_np)
 
         # Identity: single 1.0 at center tap
@@ -2628,7 +2635,9 @@ class TestApplyTaps:
         """MIMO identity butterfly passes each channel through independently."""
         N, sps, T, C = 1000, 2, 11, 2
         rng = np.random.default_rng(1)
-        x_np = (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(np.complex64)
+        x_np = (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
+            np.complex64
+        )
         x = xp.asarray(x_np)
 
         # (C, C, T) identity butterfly: W[i, i, center] = 1, rest zero
@@ -2639,7 +2648,9 @@ class TestApplyTaps:
 
         y = equalization.apply_taps(x, W, sps=sps, normalize=False)
         for i in range(C):
-            np.testing.assert_allclose(_to_np(y[i]), x_np[i, ::sps][: N // sps], atol=1e-5)
+            np.testing.assert_allclose(
+                _to_np(y[i]), x_np[i, ::sps][: N // sps], atol=1e-5
+            )
 
     def test_frozen_taps_equalize_new_signal(self, backend_device, xp):
         """Frozen taps trained on one frame should equalize a fresh frame of the same channel.
@@ -2662,7 +2673,13 @@ class TestApplyTaps:
         x1 = np.repeat(syms1, sps).astype(np.complex64)
         rx1 = np.convolve(x1, h)[: len(x1)].astype(np.complex64)
         rx1 = xp.asarray(rx1)
-        result = equalization.lms(rx1, training_symbols=xp.asarray(syms1), num_taps=T, sps=sps, backend="numba")
+        result = equalization.lms(
+            rx1,
+            training_symbols=xp.asarray(syms1),
+            num_taps=T,
+            sps=sps,
+            backend="numba",
+        )
 
         # Second frame: apply frozen taps
         bits2 = rng.integers(0, 2, 4 * N_sym)
@@ -2676,14 +2693,23 @@ class TestApplyTaps:
         # Equalized output should be close to QPSK constellation
         # (residual MSE well below 0 dB)
         y2_np = _to_np(y2)
-        mse = np.mean(np.abs(y2_np - np.sign(y2_np.real + 1e-8) * 0.707 - 1j * np.sign(y2_np.imag + 1e-8) * 0.707) ** 2)
+        mse = np.mean(
+            np.abs(
+                y2_np
+                - np.sign(y2_np.real + 1e-8) * 0.707
+                - 1j * np.sign(y2_np.imag + 1e-8) * 0.707
+            )
+            ** 2
+        )
         assert mse < 0.5, f"Frozen taps produced poor equalization: MSE={mse:.3f}"
 
     def test_sps_1_works(self, backend_device, xp):
         """sps=1 (symbol-rate input) is accepted and produces correct length."""
         N, sps, T = 500, 1, 7
         rng = np.random.default_rng(3)
-        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(np.complex64)
+        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
+            np.complex64
+        )
         x = xp.asarray(x_np)
         w = xp.asarray(np.zeros(T, dtype=np.complex64))
         w_np = np.zeros(T, dtype=np.complex64)
@@ -2696,7 +2722,9 @@ class TestApplyTaps:
         """normalize=False should not rescale the output relative to the input."""
         N, sps, T = 1000, 2, 5
         rng = np.random.default_rng(5)
-        x_np = (10.0 * rng.standard_normal(N) + 10j * rng.standard_normal(N)).astype(np.complex64)
+        x_np = (10.0 * rng.standard_normal(N) + 10j * rng.standard_normal(N)).astype(
+            np.complex64
+        )
         x = xp.asarray(x_np)
 
         w = np.zeros(T, dtype=np.complex64)
@@ -2770,7 +2798,9 @@ class TestEqualizeFrameBranches:
         )
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
         # sig.samples is already (2, N) for a 2-stream frame
-        samples = xp.asarray(sig.samples.get() if hasattr(sig.samples, "get") else sig.samples)
+        samples = xp.asarray(
+            sig.samples.get() if hasattr(sig.samples, "get") else sig.samples
+        )
 
         # Run without crash; stream-ordering warning is logged not raised
         result = equalize_frame(samples, frame, num_taps=11, sps=2, backend="numba")
@@ -2788,6 +2818,7 @@ class TestEqualizeFramePayloadBranches:
     def _make_frame_no_preamble(self, mod="qam", order=16, n=128, seed=5):
         """SingleCarrierFrame with no preamble — w_0 is None at payload stage."""
         from commstools.core import SingleCarrierFrame
+
         return SingleCarrierFrame(
             payload_len=n,
             payload_mod_scheme=mod,
@@ -2805,8 +2836,13 @@ class TestEqualizeFramePayloadBranches:
         samples = xp.asarray(sig.samples)
 
         result = equalize_frame(
-            samples, frame, num_taps=11, sps=2,
-            modulation="qam", order=16, backend="numba",
+            samples,
+            frame,
+            num_taps=11,
+            sps=2,
+            modulation="qam",
+            order=16,
+            backend="numba",
         )
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[-1] > 0
@@ -2821,8 +2857,12 @@ class TestEqualizeFramePayloadBranches:
 
         # Omit modulation/order → hits r2=1.0 fallback branch
         result = equalize_frame(
-            samples, frame, num_taps=11, sps=2,
-            blind_algorithm="cma", backend="numba",
+            samples,
+            frame,
+            num_taps=11,
+            sps=2,
+            blind_algorithm="cma",
+            backend="numba",
         )
         assert isinstance(result, EqualizerResult)
 
@@ -2836,8 +2876,12 @@ class TestEqualizeFramePayloadBranches:
 
         # Omit modulation/order → hits radii=[1.0] fallback branch
         result = equalize_frame(
-            samples, frame, num_taps=11, sps=2,
-            blind_algorithm="rde", backend="numba",
+            samples,
+            frame,
+            num_taps=11,
+            sps=2,
+            blind_algorithm="rde",
+            backend="numba",
         )
         assert isinstance(result, EqualizerResult)
 

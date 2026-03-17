@@ -3246,7 +3246,7 @@ def equalize_frame(
     w_0 = w_init
     n_preamble_syms = 0
     preamble_eq_syms: Optional[ArrayType] = None  # populated if preamble present
-    preamble_error: Optional[ArrayType] = None    # populated if preamble present
+    preamble_error: Optional[ArrayType] = None  # populated if preamble present
 
     if has_preamble:
         preamble_mask_np = preamble_mask.astype(bool)
@@ -3305,7 +3305,7 @@ def equalize_frame(
                     _w = _w[np.newaxis, np.newaxis, :]
                 w_0 = _w
                 preamble_eq_syms = pre_result.y_hat  # (C, C*L_base)
-                preamble_error = pre_result.error     # (C, C*L_base)
+                preamble_error = pre_result.error  # (C, C*L_base)
             else:
                 # "same" mode: all streams transmit the identical sequence, so
                 # broadcasting P to every output channel is correct.
