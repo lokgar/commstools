@@ -3285,6 +3285,8 @@ def equalize_frame(
                 _use_per_slot_lms = True
                 preamble_eq_parts = []
                 preamble_err_parts = []
+                slot_weights = []  # (C,) list of (C, C, num_taps) arrays
+                w_init_slot = w_0  # identical starting point for every slot
                 for slot in range(num_ch):
                     slot_samp = preamble_samples[
                         :, slot * L_base * stride : (slot + 1) * L_base * stride
@@ -3296,16 +3298,24 @@ def equalize_frame(
                         training_symbols=slot_syms,
                         num_taps=num_taps,
                         step_size=lms_step_size,
-                        w_init=w_0,
+                        w_init=w_init_slot,  # same init for all slots — no cross-slot interference
                         sps=sps,
                         backend=backend,
                     )
-                    _w = pre_result.weights
-                    w_0 = to_device(_w, "cpu")
-                    if w_0.ndim == 1:
-                        w_0 = w_0[np.newaxis, np.newaxis, :]
+                    _w = to_device(pre_result.weights, "cpu")
+                    if _w.ndim == 1:
+                        _w = _w[np.newaxis, np.newaxis, :]
+                    slot_weights.append(_w)
                     preamble_eq_parts.append(pre_result.y_hat)
                     preamble_err_parts.append(pre_result.error)
+                # Assemble butterfly: row k comes from slot k's independently trained W_k.
+                # In slot k only TX stream k is active, so only row k of W_k has a valid
+                # DA reference; taking that row avoids the mutual-suppression artefact that
+                # occurs when chaining weights across slots.
+                W_combined = np.zeros((num_ch, num_ch, num_taps), dtype=np.complex64)
+                for slot in range(num_ch):
+                    W_combined[slot, :, :] = slot_weights[slot][slot, :, :]
+                w_0 = W_combined
                 # Concatenate equalized symbols/errors from all slots: (C, C*L_base)
                 preamble_eq_syms = np.concatenate(preamble_eq_parts, axis=-1)
                 preamble_error = np.concatenate(preamble_err_parts, axis=-1)
