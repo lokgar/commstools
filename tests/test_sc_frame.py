@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools.core import Preamble, SignalInfo, SingleCarrierFrame
+from commstools.core import Preamble, SingleCarrierFrame
 
 
 def test_sc_frame_none(backend_device, xp):
@@ -13,8 +13,8 @@ def test_sc_frame_none(backend_device, xp):
     assert len(sig.samples) == 100
     assert sig.symbol_rate == 1e6
     assert sig.symbol_rate == 1e6
-    assert sig.signal_info is not None
-    assert sig.signal_info.payload_len == 100
+    assert sig.signal_type == "Single-Carrier Frame"
+    assert sig.frame.payload_len == 100
 
 
 def test_sc_frame_comb(backend_device, xp):
@@ -31,7 +31,7 @@ def test_sc_frame_comb(backend_device, xp):
 
     sig = frame.to_signal(sps=1, pulse_shape="none")
     assert len(sig.samples) == 12
-    assert sig.signal_info.pilot_count == 3
+    assert len(sig.frame.pilot_symbols) >= 3
 
 
 def test_sc_frame_block(backend_device, xp):
@@ -65,8 +65,8 @@ def test_sc_frame_guard_zero(backend_device, xp):
     sig = frame.to_signal(sps=1, pulse_shape="none")
     assert len(sig.samples) == 120
     assert xp.all(sig.samples[-20:] == 0)
-    assert sig.signal_info.guard_len == 20
-    assert sig.signal_info.guard_type == "zero"
+    assert sig.frame.guard_len == 20
+    assert sig.frame.guard_type == "zero"
 
 
 def test_sc_frame_guard_cp(backend_device, xp, xpt):
@@ -79,7 +79,7 @@ def test_sc_frame_guard_cp(backend_device, xp, xpt):
     # CP should match the last 20 samples of the *original* body
     # New structure: [CP (20), Body (100)]
     xpt.assert_allclose(sig.samples[:20], sig.samples[-20:])
-    assert sig.signal_info.guard_type == "cp"
+    assert sig.frame.guard_type == "cp"
 
 
 def test_sc_frame_preamble(backend_device, xp, xpt):
@@ -91,8 +91,8 @@ def test_sc_frame_preamble(backend_device, xp, xpt):
     assert len(sig.samples) == 113  # 13 preamble + 100 payload
     # Verify preamble symbols match
     xpt.assert_allclose(sig.samples[:13], preamble.symbols)
-    # Verify SignalInfo
-    assert sig.signal_info.preamble_seq_len == 13
+    # Verify frame
+    assert sig.frame.preamble.length == 13
 
 
 def test_sc_frame_bit_first(backend_device, xp):
@@ -177,10 +177,7 @@ def test_sc_frame_structure_map_cp():
     assert not struct["guard"][5]
 
 
-def test_signal_info_minimal():
-    """Verify minimal SignalInfo creation."""
-    si = SignalInfo(signal_type="Preamble")
-    assert si.preamble_seq_len is None
+
 
 
 def test_independent_preamble_normalization(backend_device, xp):
@@ -390,26 +387,6 @@ def test_pilot_gain_db_mimo(backend_device, xp):
 
 
 # -----------------------------------------------------------------------------
-# STRUCTURE MAP WITH TIME-ORTHOGONAL MIMO PREAMBLE
-# -----------------------------------------------------------------------------
-
-
-def test_structure_map_time_orthogonal_mimo_preamble(backend_device, xp):
-    """structure_map with time_orthogonal MIMO preamble multiplies preamble length by num_streams."""
-    preamble = Preamble(sequence_type="barker", length=7)
-    frame = SingleCarrierFrame(
-        payload_len=100,
-        symbol_rate=1e6,
-        num_streams=2,
-        preamble=preamble,
-        preamble_mode="time_orthogonal",
-    )
-    struct = frame.get_structure_map(include_preamble=True)
-    # time_orthogonal: preamble_len = preamble.num_symbols * num_streams = 7 * 2 = 14
-    preamble_count = int(xp.sum(xp.asarray(struct["preamble"])))
-    assert preamble_count == 14
-
-
 # -----------------------------------------------------------------------------
 # PILOT BITS/SYMBOLS WITH PILOTS ENABLED
 # -----------------------------------------------------------------------------

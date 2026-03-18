@@ -19,7 +19,7 @@ The .npz file contains the following named entries:
   ``resolved_symbols``     - cached symbol array  (only with include_cache=True)
   ``resolved_bits``        - cached bit array     (only with include_cache=True)
   ``__metadata__``         - zero-d object array holding a YAML string with all
-                             scalar fields and the serialised SignalInfo dict.
+                             scalar fields.
   ``__frame_metadata__``   - zero-d object array holding a YAML string with the
                              serialised SingleCarrierFrame fields (omitted when
                              the signal was not generated from a frame).
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 _META_FIELDS: tuple[str, ...] = (
     "sampling_rate",
     "symbol_rate",
+    "signal_type",
     "mod_scheme",
     "mod_order",
     "mod_unipolar",
@@ -177,13 +178,8 @@ def save_npz(
     # Build metadata dict and serialise to YAML
     # -------------------------------------------------------------------------
     meta: dict = {f: getattr(signal, f) for f in _META_FIELDS}
-
-    if signal.signal_info is not None:
-        meta["signal_info"] = signal.signal_info.model_dump()
-    else:
-        meta["signal_info"] = None
-
     yaml_str = yaml.dump(meta, default_flow_style=False, allow_unicode=True)
+
     # Store as a zero-d object array so np.savez treats it as a single entry
     arrays["__metadata__"] = np.array(yaml_str, dtype=object)
 
@@ -230,7 +226,7 @@ def load_npz(
     >>> sig_cpu = load_npz("capture.npz", device="cpu")
     >>> sig_gpu = load_npz("capture.npz", device="gpu")
     """
-    from .core import Signal, SignalInfo
+    from .core import Signal
 
     path = Path(path)
     if path.suffix != ".npz":
@@ -246,16 +242,10 @@ def load_npz(
     yaml_str = str(data["__metadata__"])
     meta: dict = yaml.safe_load(yaml_str)
 
-    signal_info = None
-    if meta.get("signal_info") is not None:
-        signal_info = SignalInfo(**meta["signal_info"])
-
-    # -------------------------------------------------------------------------
     # Build Signal constructor kwargs
     # -------------------------------------------------------------------------
     kwargs: dict = {f: meta.get(f) for f in _META_FIELDS}
     kwargs["samples"] = data["samples"]
-    kwargs["signal_info"] = signal_info
 
     for field in _OPTIONAL_ARRAY_FIELDS:
         if field in data:

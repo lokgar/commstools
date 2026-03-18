@@ -18,8 +18,6 @@ Preamble :
 SingleCarrierFrame :
     A complex frame container supporting pilot patterns, guard intervals,
     and spatial multiplexing (MIMO).
-SignalInfo :
-    Metadata structure describing the physical bounds of a signal/frame.
 """
 
 import types
@@ -53,105 +51,6 @@ from .backend import (
 from .logger import logger
 
 
-class SignalInfo(BaseModel):
-    """
-    Metadata describing the structural components of a `Signal`.
-
-    This class encapsulates timing and structure parameters for various signal
-    types (frames, preambles, continuous streams). It allows downstream
-    processing to distinguish between segments like preambles, pilots, and payloads.
-
-    Attributes
-    ----------
-    signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}
-        Human-readable label for the signal structure.  Informational only —
-        no library logic dispatches on this field.  Frame reconstruction
-        during save/load uses the ``_frame_type`` key embedded in the frame
-        YAML, not this field.
-    preamble_seq_len : int
-        Number of symbols in the preamble/training sequence.
-    preamble_type : Literal["barker", "zc"], optional
-        The type of sequence (e.g., 'barker', 'zc').
-    preamble_mode : Literal["same", "time_orthogonal"], optional
-        The mode of preamble transmission (e.g., 'same', 'time_orthogonal').
-    preamble_kwargs : dict
-        Parameters used for preamble generation (e.g., 'root' for ZC).
-    preamble_secondary_type : Literal["barker", "zc"], optional
-        Sequence type of the secondary (off-diagonal) preamble for time_orthogonal MIMO.
-        Length is always equal to ``preamble_seq_len``.
-    preamble_secondary_kwargs : dict, optional
-        Parameters used for secondary preamble generation (e.g., 'root' for ZC).
-    payload_len : int
-        Number of symbols in the data payload.
-    payload_mod_scheme : str, optional
-        Modulation scheme used for the payload (e.g., 'QAM').
-    payload_mod_order : int, optional
-        Modulation order for the payload.
-    payload_mod_unipolar : bool
-        Whether the payload modulation is unipolar (for PAM/ASK).
-    payload_mod_rz : bool
-        Whether the payload modulation is RZ (for PAM/ASK).
-    pilot_count : int
-        Total number of pilot/reference symbols embedded in the frame.
-    pilot_pattern : {"none", "block", "comb"}
-        The pattern used for pilot insertion.
-    pilot_period : int
-        The repetition period for pilot insertion.
-    pilot_block_len : int
-        Length of pilot blocks if pattern is "block".
-    pilot_mod_scheme : str, optional
-        Modulation scheme used for pilot symbols (e.g., 'PSK').
-    pilot_mod_order : int, default 0
-        Modulation order for pilot symbols.
-    pilot_mod_unipolar : bool
-        Whether the pilot modulation is unipolar (for PAM/ASK).
-    pilot_mod_rz : bool
-        Whether the pilot modulation is RZ (for PAM/ASK).
-    pilot_gain_db : float, default 0.0
-        Gain of pilot symbols in dB.
-    guard_len : int
-        Length of the guard interval (e.g., cyclic prefix) in symbols.
-    guard_type : {"zero", "cp"}
-        Type of guard interval: "zero" for zero-padding, "cp" for cyclic prefix.
-    num_streams : int, default 1
-        Number of streams for MIMO.
-
-    Notes
-    -----
-    The structure typically refers to: [Guard] + [Preamble] + [Body].
-    """
-
-    signal_type: Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]
-
-    preamble_seq_len: Optional[int] = Field(default=None, ge=0)
-    preamble_type: Optional[Literal["barker", "zc"]] = None
-    preamble_mode: Optional[Literal["same", "time_orthogonal"]] = None
-    preamble_kwargs: Optional[Dict[str, Any]] = None
-    preamble_secondary_type: Optional[Literal["barker", "zc"]] = None
-    preamble_secondary_kwargs: Optional[Dict[str, Any]] = None
-
-    payload_len: Optional[int] = Field(default=None, ge=0)
-    payload_mod_scheme: Optional[str] = None
-    payload_mod_order: Optional[int] = Field(default=None, ge=2)
-    payload_mod_unipolar: Optional[bool] = None
-    payload_mod_rz: Optional[bool] = None
-
-    pilot_count: Optional[int] = Field(default=None, ge=0)
-    pilot_pattern: Optional[Literal["none", "block", "comb"]] = None
-    pilot_period: Optional[int] = Field(default=None, ge=0)
-    pilot_block_len: Optional[int] = Field(default=None, ge=0)
-    pilot_mod_scheme: Optional[str] = None
-    pilot_mod_order: Optional[int] = Field(default=None, ge=2)
-    pilot_mod_unipolar: Optional[bool] = None
-    pilot_mod_rz: Optional[bool] = None
-    pilot_gain_db: Optional[float] = None
-
-    guard_len: Optional[int] = Field(default=None, ge=0)
-    guard_type: Optional[Literal["zero", "cp"]] = None
-
-    num_streams: Optional[int] = Field(default=None, ge=1)
-
-
 class Signal(BaseModel):
     """
     Primary container for digital baseband or RF signals.
@@ -174,11 +73,11 @@ class Signal(BaseModel):
     mod_scheme : str, optional
         Identifier for the modulation format (e.g., 'QPSK', '16QAM').
         For frame-generated signals this is ``None``; modulation is carried by
-        ``signal_info.payload_mod_scheme`` instead.
+        ``frame.payload_mod_scheme`` instead.
     mod_order : int, optional
-        The size of the symbol constellation (e.g., 4, 16).
-        For frame-generated signals this is ``None``; use
-        ``signal_info.payload_mod_order``.
+        The modulation order. Similar to `mod_scheme`, it might be `None`
+        if multiple modes are present within a frame. See
+        ``frame.payload_mod_order``.
     mod_unipolar : bool, optional
         If True, uses a unipolar constellation (e.g., 0 to M-1).
     mod_rz : bool, optional
@@ -191,7 +90,7 @@ class Signal(BaseModel):
         ``Signal`` with the relevant ``source_bits`` for per-segment metrics.
     source_symbols : array_like, optional
         The mapped constellation symbols before pulse shaping (full wire
-        order).  Same scoping note as ``source_bits``.
+        order). Same scoping note as ``source_bits``.
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
         ``'gaussian'``).
@@ -214,10 +113,8 @@ class Signal(BaseModel):
         The carrier or center frequency in Hz.
     digital_frequency_offset : float
         Cumulative digital frequency shift applied to the signal in Hz.
-    signal_info : SignalInfo, optional
-        Structural metadata (frame type, payload/pilot/guard dimensions,
-        modulation per segment) populated when the signal is generated from
-        a :class:`SingleCarrierFrame` or :class:`Preamble`.
+    signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}, optional
+        Human-readable label for the signal structure. Informational only.
     frame : Frame, optional
         The frame that generated the signal.
     resolved_symbols : array_like, optional
@@ -232,7 +129,7 @@ class Signal(BaseModel):
     Notes
     -----
     **Frame-generated signals**: :meth:`SingleCarrierFrame.to_signal` sets
-    ``self.frame`` and ``self.signal_info`` but leaves ``source_symbols`` and
+    ``self.frame`` but leaves ``source_symbols`` and
     ``source_bits`` as ``None``.  The receive workflow is:
 
     1. Run timing / FOE / CPR / equalization on the frame signal.
@@ -271,8 +168,10 @@ class Signal(BaseModel):
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: float = Field(default=0)
 
-    # Signal structure info (populated when Signal is generated from Frame/Preamble)
-    signal_info: Optional[SignalInfo] = None
+    # Human-readable label for the signal structure
+    signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
+        None
+    )
 
     # Back-reference to the SingleCarrierFrame that generated this signal (set by
     # SingleCarrierFrame.to_signal()). Enables frame-aware convenience methods
@@ -406,7 +305,7 @@ class Signal(BaseModel):
         Sections
         --------
         **Signal** — always shown: type, waveform, rate, shape, backend.
-        **Frame structure** — shown when ``signal_info`` carries frame metadata
+        **Frame structure** — shown when ``frame`` carries frame metadata
         (preamble, payload, pilots, guard).
         **Reference data** — shows which symbol/bit arrays and frame object are
         attached (determines which of ``ber()``, ``evm()``
@@ -416,17 +315,16 @@ class Signal(BaseModel):
         from IPython import get_ipython
         from IPython.display import display
 
-        info = self.signal_info
-
         # ── helpers ──────────────────────────────────────────────────────────
         def _yn(v) -> str:
             return "yes" if v is not None else "no"
 
-        # Modulation: frame signals store it in signal_info, not on the Signal.
-        mod_scheme = self.mod_scheme or (info.payload_mod_scheme if info else None)
-        mod_order = self.mod_order or (info.payload_mod_order if info else None)
+        # Modulation: frame signals store it on the frame.
+        frame = getattr(self, "frame", None)
+        mod_scheme = self.mod_scheme or (getattr(frame, "payload_mod_scheme", None))
+        mod_order = self.mod_order or (getattr(frame, "payload_mod_order", None))
         mod_unipolar = self.mod_unipolar or (
-            info.payload_mod_unipolar if info else False
+            getattr(frame, "payload_mod_unipolar", False)
         )
         mod_str = (
             f"{mod_scheme or 'None'} / {mod_order or 'None'}"
@@ -440,12 +338,7 @@ class Signal(BaseModel):
         )
 
         # ── Section 1: Signal ─────────────────────────────────────────────
-        if info is None:
-            sig_type_label = "Signal"
-        elif info.signal_type == "Preamble":
-            sig_type_label = "Preamble"
-        else:
-            sig_type_label = info.signal_type  # "Single-Carrier Frame", "OFDM Frame", …
+        sig_type_label = self.signal_type or "Signal"
 
         rows: list[tuple[str, str]] = [
             ("Signal type", sig_type_label),
@@ -469,53 +362,64 @@ class Signal(BaseModel):
         ]
 
         # ── Section 2: Structure info (content varies by signal_type) ───────
-        if info is not None and info.signal_type == "Preamble":
+        if self.signal_type == "Preamble" and self.frame is not None:
+            preamble = self.frame
             rows.append(("─── Preamble info", ""))
-            if info.preamble_type is not None:
-                preamble_str = (
-                    f"{info.preamble_type.upper()}  len={info.preamble_seq_len}"
-                    + (
-                        f"  kwargs={info.preamble_kwargs}"
-                        if info.preamble_kwargs
-                        else ""
-                    )
+            preamble_str = (
+                f"{preamble.sequence_type.upper()}  len={preamble.length}"
+                + (
+                    f"  kwargs={{'root': {preamble.root}}}"
+                    if preamble.sequence_type == "zc"
+                    else (f"  kwargs={preamble.kwargs}" if preamble.kwargs else "")
                 )
-                rows.append(("Sequence", preamble_str))
+            )
+            rows.append(("Sequence", preamble_str))
 
-        elif info is not None:
+        elif self.signal_type == "Single-Carrier Frame" and self.frame is not None:
+            frame = self.frame
             rows.append(("─── Frame structure", ""))
 
-            if info.preamble_type is not None:
-                preamble_str = (
-                    f"{info.preamble_type.upper()}  len={info.preamble_seq_len}"
-                    + (f"  mode={info.preamble_mode}" if info.preamble_mode else "")
-                    + (
-                        f"  kwargs={info.preamble_kwargs}"
-                        if info.preamble_kwargs
-                        else ""
-                    )
+            if hasattr(frame, "preamble") and frame.preamble is not None:
+                p = frame.preamble
+                preamble_str = f"{p.sequence_type.upper()}  len={p.length}" + (
+                    f"  kwargs={{'root': {p.root}}}"
+                    if p.sequence_type == "zc"
+                    else (f"  kwargs={p.kwargs}" if p.kwargs else "")
                 )
                 rows.append(("Preamble", preamble_str))
             else:
                 rows.append(("Preamble", "none"))
 
-            if info.payload_len is not None:
-                rows.append(("Payload length", f"{info.payload_len} symbols"))
+            if hasattr(frame, "payload_len") and frame.payload_len is not None:
+                rows.append(("Payload length", f"{frame.payload_len} symbols"))
 
-            pilot_pattern = info.pilot_pattern or "none"
+            pilot_pattern = getattr(frame, "pilot_pattern", "none")
             if pilot_pattern != "none":
+                mask, _ = frame._generate_pilot_mask()
+                pilot_count = (
+                    int(np.sum(mask))
+                    if hasattr(frame, "_generate_pilot_mask")
+                    else None
+                )
+                pilot_period = getattr(frame, "pilot_period", None)
+                pilot_gain_db = getattr(frame, "pilot_gain_db", None)
+
                 pilot_str = (
                     f"{pilot_pattern}"
-                    + (f"  count={info.pilot_count}" if info.pilot_count else "")
-                    + (f"  period={info.pilot_period}" if info.pilot_period else "")
-                    + (f"  gain={info.pilot_gain_db} dB" if info.pilot_gain_db else "")
+                    + (f"  count={pilot_count}" if pilot_count else "")
+                    + (f"  period={pilot_period}" if pilot_period else "")
+                    + (
+                        f"  gain={pilot_gain_db} dB"
+                        if pilot_gain_db is not None
+                        else ""
+                    )
                 )
                 rows.append(("Pilots", pilot_str))
             else:
                 rows.append(("Pilots", "none"))
 
-            if info.guard_len:
-                rows.append(("Guard", f"{info.guard_type}  len={info.guard_len}"))
+            if hasattr(frame, "guard_len") and frame.guard_len:
+                rows.append(("Guard", f"{frame.guard_type}  len={frame.guard_len}"))
             else:
                 rows.append(("Guard", "none"))
 
@@ -1342,7 +1246,6 @@ class Signal(BaseModel):
     def correct_timing(
         self,
         preamble=None,
-        info=None,
         mode: str = "slice",
         debug_plot: bool = False,
         **kwargs,
@@ -1351,8 +1254,8 @@ class Signal(BaseModel):
         Estimates and corrects timing offset in-place.
 
         Wraps :func:`~commstools.sync.estimate_timing` +
-        :func:`~commstools.sync.correct_timing`. If neither ``preamble``
-        nor ``info`` is provided and the signal was generated from a
+        :func:`~commstools.sync.correct_timing`. If ``preamble``
+        is not provided and the signal was generated from a
         :class:`SingleCarrierFrame` (via :meth:`SingleCarrierFrame.to_signal`),
         the preamble is resolved automatically from the attached frame.
 
@@ -1363,9 +1266,6 @@ class Signal(BaseModel):
             :func:`~commstools.sync.estimate_timing`.
             Falls back to ``self.frame.preamble`` when ``None`` and a
             frame is attached.
-        info : SignalInfo, optional
-            Pre-computed correlation metadata. Skips preamble extraction
-            when provided.
         mode : {'slice', 'zero', 'circular'}, default 'slice'
             Boundary handling after coarse correction.
 
@@ -1383,70 +1283,30 @@ class Signal(BaseModel):
         -------
         tuple of (coarse_offsets, fractional_offsets)
             Per-channel integer and fractional timing estimates (before
-            correction is applied).  When ``return_stream_assignment=True``
-            is forwarded via ``**kwargs``, the return is a 3-tuple
-            ``(coarse_offsets, fractional_offsets, stream_assignment)``
-            where ``stream_assignment`` is an integer array of shape
-            ``(N_channels,)``: ``stream_assignment[i]`` is the TX stream
-            index (0-based) whose preamble time slot had the highest
-            correlation with RX channel ``i``.  Only meaningful for
-            ``time_orthogonal`` MIMO preambles; ``None`` for all other
-            preamble modes.
+            correction is applied).
 
         Raises
         ------
         ValueError
-            If no preamble can be resolved and ``info`` is also ``None``.
-
-        Examples
-        --------
-        For a 2x2 time-orthogonal MIMO system the preamble region looks like::
-
-            slot 0: [P  0]   ← TX stream 0 transmits, TX stream 1 silent
-            slot 1: [0  P]   ← TX stream 1 transmits, TX stream 0 silent
-
-        On a near-identity channel (e.g. back-to-back), RX channel 0 sees
-        energy only in slot 0 and RX channel 1 only in slot 1, so::
-
-            stream_assignment == [0, 1]   # natural order
-
-        On a crossed channel (e.g. after a 90° polarization rotation), the
-        mapping is swapped::
-
-            stream_assignment == [1, 0]   # RX 0 carries TX stream 1, and vice versa
-
-        Retrieve the assignment and, if using data-aided FOE, pass it when
-        building the preamble reference for ``method='differential'``::
-
-            coarse, fractional, stream_assignment = sig.correct_timing(
-                return_stream_assignment=True
-            )
-            # Data-aided FOE: pass the per-channel preamble reference
-            preamble_sig = sig.frame.preamble.to_signal(sps=int(sig.sps), ...)
-            sig.correct_frequency_offset(
-                method="differential",
-                ref_signal=preamble_sig.samples,
-            )
+            If no preamble can be resolved.
         """
         from . import sync
 
-        resolved_info = info if info is not None else self.signal_info
-
         resolved_preamble = preamble
-        if resolved_preamble is None and resolved_info is None:
-            if self.frame is not None and self.frame.preamble is not None:
+        if resolved_preamble is None:
+            if hasattr(self.frame, "preamble") and self.frame.preamble is not None:
                 resolved_preamble = self.frame.preamble
+            elif self.signal_type == "Preamble" and self.frame is not None:
+                resolved_preamble = self.frame
             else:
                 raise ValueError(
-                    "A preamble or pre-computed info is required for timing "
-                    "estimation. Pass preamble=..., info=..., or generate the "
-                    "signal via SingleCarrierFrame.to_signal() with a preamble."
+                    "A preamble is required for timing estimation. Pass preamble=..., or "
+                    "generate the signal via SingleCarrierFrame.to_signal() with a preamble."
                 )
 
         coarse, fractional = sync.estimate_timing(
             self,
             preamble=resolved_preamble,
-            info=resolved_info,
             debug_plot=debug_plot,
             **kwargs,
         )
@@ -2517,7 +2377,7 @@ class Signal(BaseModel):
             If ``symbol_rate`` or ``sampling_rate`` are missing, or SPS is
             not a positive integer.
         """
-        if self.signal_info is not None:
+        if self.signal_type != None:
             logger.warning(
                 "resolve_symbols() called on a frame-generated signal — skipping. "
                 "Frame signals mix preamble, pilots, and payload segments that may "
@@ -2576,7 +2436,7 @@ class Signal(BaseModel):
         """
         from .mapping import demap_symbols_hard
 
-        if self.signal_info is not None:
+        if self.signal_type != None:
             logger.warning(
                 "demap_symbols_hard() called on a frame-generated signal — skipping. "
                 "Extract the payload segment via frame.get_structure_map() and build "
@@ -2647,7 +2507,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_info is not None:
+        if self.signal_type != None:
             logger.warning(
                 "evm() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2723,7 +2583,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_info is not None:
+        if self.signal_type != None:
             logger.warning(
                 "snr() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2800,7 +2660,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_info is not None:
+        if self.signal_type != None:
             logger.warning(
                 "ber() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2857,14 +2717,24 @@ class Preamble(BaseModel):
         Total length of the preamble in symbols.
         For "barker": length must be from the set {2, 3, 4, 5, 7, 11, 13}.
         For "zc": length must be a prime number.
+    root : int, default 1
+        ZC root index (only meaningful for ``sequence_type='zc'``).
+        Must satisfy ``1 ≤ root < length``.
     kwargs : dict
-        Additional parameters for sequence generation (e.g., 'root' for ZC).
+        Reserved for future extension parameters.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     sequence_type: Literal["barker", "zc"] = "barker"
     length: int
+    root: int = Field(
+        default=1,
+        ge=1,
+        description="ZC root index.  Only meaningful for ``sequence_type='zc'``; "
+        "ignored for Barker sequences.  Must satisfy ``1 ≤ root < length``; "
+        "for prime ``length`` every root in this range yields a valid CAZAC sequence.",
+    )
     kwargs: Dict[str, Any] = Field(default_factory=dict)
 
     # Internal state managed during post-init
@@ -2890,9 +2760,8 @@ class Preamble(BaseModel):
             self._symbols = sync.barker_sequence(self.length)
 
         elif stype in ("zc", "zadoff_chu"):
-            # ZC complex symbols
-            root = self.kwargs.get("root", 1)
-            self._symbols = sync.zadoff_chu_sequence(self.length, root=root)
+            # ZC complex symbols — use the named 'root' field directly.
+            self._symbols = sync.zadoff_chu_sequence(self.length, root=self.root)
 
         # Move to GPU if available
         if is_cupy_available():
@@ -2975,14 +2844,6 @@ class Preamble(BaseModel):
             **kwargs,
         )
 
-        # Create minimal SignalInfo for the Preamble
-        signal_info = SignalInfo(
-            signal_type="Preamble",
-            preamble_seq_len=self.length,
-            preamble_type=self.sequence_type,
-            preamble_kwargs=self.kwargs,
-        )
-
         return Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
@@ -2991,7 +2852,7 @@ class Preamble(BaseModel):
             mod_order=None,
             source_symbols=None,
             pulse_shape=pulse_shape,
-            signal_info=signal_info,
+            signal_type="Preamble",
             **kwargs,
         )
 
@@ -3016,8 +2877,9 @@ class SingleCarrierFrame(BaseModel):
     payload_seed : int, default 42
         Seed for reproducible payload data generation.
     preamble : Preamble, optional
-        Structured preamble for synchronization.
-    preamble_mode : {"same", "time_orthogonal"}, default "same"
+        Structured preamble for synchronization.  For MIMO with ZC sequences,
+        each TX stream automatically receives a unique root via
+        :func:`~commstools.helpers.zc_mimo_root`.
     pilot_pattern : {"none", "block", "comb"}, default "none"
         "none": No pilots.
         "block": A block of symbols at the start of the frame body.
@@ -3050,9 +2912,8 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = Field(default=4, ge=1)
     payload_mod_unipolar: bool = False
+
     preamble: Optional[Preamble] = None
-    preamble_mode: Literal["same", "time_orthogonal"] = "same"
-    preamble_secondary: Optional[Preamble] = None
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = Field(default=0, ge=0)
@@ -3353,63 +3214,6 @@ class SingleCarrierFrame(BaseModel):
         return body
 
     # -------------------------------------------------------------------------
-    # Preamble Helpers
-    # -------------------------------------------------------------------------
-
-    @property
-    def preamble_length(self) -> int:
-        """
-        Effective preamble length in symbols, accounting for MIMO time-orthogonal expansion.
-
-        For ``preamble_mode="time_orthogonal"`` with ``num_streams > 1`` the transmitted
-        preamble spans ``num_symbols * num_streams`` symbol slots (one stream per slot).
-        For all other cases this equals ``preamble.num_symbols``.
-        Returns 0 if no preamble is attached.
-        """
-        if self.preamble is None:
-            return 0
-        n = self.preamble.num_symbols
-        if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
-            n *= self.num_streams
-        return n
-
-    def _get_secondary_preamble(self) -> "Preamble":
-        """
-        Return the secondary preamble (Q) used in off-diagonal time-orthogonal slots.
-
-        If ``preamble_secondary`` is set explicitly, it is returned as-is.
-        Otherwise, for ZC preambles, a secondary sequence is auto-generated with a
-        different root: ``sec_root = (primary_root % (length - 1)) + 1``.
-        Barker preambles have no standard orthogonal companion at the same length, so
-        ``preamble_secondary`` must be set explicitly in that case.
-
-        Raises
-        ------
-        ValueError
-            If ``preamble`` is None, or if the preamble type is "barker" and
-            ``preamble_secondary`` is not set.
-        """
-        if self.preamble is None:
-            raise ValueError("No preamble set on this frame.")
-
-        if self.preamble_secondary is not None:
-            return self.preamble_secondary
-
-        if self.preamble.sequence_type == "zc":
-            N = self.preamble.length
-            primary_root = self.preamble.kwargs.get("root", 1)
-            # Choose the next root cyclically, skipping the primary root
-            sec_root = (primary_root % (N - 1)) + 1
-            if sec_root == primary_root:
-                sec_root = (sec_root % (N - 1)) + 1
-            return Preamble(sequence_type="zc", length=N, kwargs={"root": sec_root})
-
-        raise ValueError(
-            "Barker preambles have no standard orthogonal companion sequence. "
-            "Set preamble_secondary explicitly to use time_orthogonal mode."
-        )
-
-    # -------------------------------------------------------------------------
     # Frame Structure Mapping
     # -------------------------------------------------------------------------
 
@@ -3445,7 +3249,7 @@ class SingleCarrierFrame(BaseModel):
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
 
-        preamble_len = self.preamble_length
+        preamble_len = self.preamble.num_symbols if self.preamble else 0
 
         if include_preamble:
             total_len = preamble_len + body_length + self.guard_len
@@ -3629,36 +3433,46 @@ class SingleCarrierFrame(BaseModel):
             max_iq_p = xp.where(max_iq_p == 0, xp.ones_like(max_iq_p), max_iq_p)
             preamble_samples = preamble_samples / max_iq_p
 
-            # For time_orthogonal MIMO, shape and normalise the secondary (Q) waveform.
-            secondary_samples = None
-            if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
-                sec_preamble = self._get_secondary_preamble()
-                sec_signal = sec_preamble.to_signal(
-                    sps=sps,
-                    symbol_rate=symbol_rate,
-                    pulse_shape=pulse_shape,
-                    filter_span=filter_span,
-                    rrc_rolloff=rrc_rolloff,
-                    rc_rolloff=rc_rolloff,
-                    smoothrect_bt=smoothrect_bt,
-                    gaussian_bt=gaussian_bt,
-                    **kwargs,
-                )
-                sec_samples = sec_signal.samples
-                max_iq_s = xp.maximum(
-                    xp.max(xp.abs(sec_samples.real), axis=-1, keepdims=True),
-                    xp.max(xp.abs(sec_samples.imag), axis=-1, keepdims=True),
-                )
-                max_iq_s = xp.where(max_iq_s == 0, xp.ones_like(max_iq_s), max_iq_s)
-                secondary_samples = sec_samples / max_iq_s
-
-            # Handle MIMO preamble structure
-            preamble_samples = helpers.expand_preamble_mimo(
-                preamble_samples,
-                self.num_streams,
-                self.preamble_mode,
-                secondary_waveform=secondary_samples,
-            )
+            # Handle MIMO preamble structure.
+            # ZC preambles: generate a unique root per TX stream for near-orthogonal
+            # simultaneous transmission — all streams transmit at the same time and
+            # each RX channel sees a mixture that can be timed independently.
+            # Non-ZC preambles: broadcast the single shaped waveform to all streams.
+            if self.num_streams > 1:
+                if self.preamble.sequence_type == "zc":
+                    stream_waveforms = []
+                    for k in range(self.num_streams):
+                        root_k = helpers.zc_mimo_root(
+                            k, self.preamble.root, self.preamble.length
+                        )
+                        pk_sig = Preamble(
+                            sequence_type="zc",
+                            length=self.preamble.length,
+                            root=root_k,
+                        ).to_signal(
+                            sps=sps,
+                            symbol_rate=symbol_rate,
+                            pulse_shape=pulse_shape,
+                            filter_span=filter_span,
+                            rrc_rolloff=rrc_rolloff,
+                            rc_rolloff=rc_rolloff,
+                            smoothrect_bt=smoothrect_bt,
+                            gaussian_bt=gaussian_bt,
+                        )
+                        pk_samples = pk_sig.samples
+                        max_iq_k = xp.maximum(
+                            xp.max(xp.abs(pk_samples.real), keepdims=True),
+                            xp.max(xp.abs(pk_samples.imag), keepdims=True),
+                        )
+                        max_iq_k = xp.where(
+                            max_iq_k == 0, xp.ones_like(max_iq_k), max_iq_k
+                        )
+                        stream_waveforms.append(pk_samples / max_iq_k)
+                    preamble_samples = xp.stack(stream_waveforms, axis=0)  # (C, L*sps)
+                else:
+                    preamble_samples = xp.tile(
+                        preamble_samples[None, :], (self.num_streams, 1)
+                    )
 
             # Concatenate Preamble + Body
             samples = xp.concatenate([preamble_samples, body_samples], axis=-1)
@@ -3690,55 +3504,12 @@ class SingleCarrierFrame(BaseModel):
         # same factor.  Guard zeros remain zero after scaling.
         samples = helpers.normalize(samples, "symbol_power", sps=sps, axis=-1)
 
-        # 5. Build SignalInfo metadata
-        mask, _ = self._generate_pilot_mask()
-        pilot_count = int(xp.sum(mask)) if self.pilot_pattern != "none" else 0
-
-        if self.preamble:
-            preamble_base_len = self.preamble.num_symbols
-        else:
-            preamble_base_len = None
-
-        # Resolve secondary preamble metadata for SignalInfo
-        _sec: Optional[Preamble] = None
-        if (
-            self.preamble is not None
-            and self.preamble_mode == "time_orthogonal"
-            and self.num_streams > 1
-        ):
-            _sec = self._get_secondary_preamble()
-
-        signal_info = SignalInfo(
-            signal_type="Single-Carrier Frame",
-            payload_mod_scheme=self.payload_mod_scheme,
-            payload_mod_order=self.payload_mod_order,
-            payload_mod_unipolar=self.payload_mod_unipolar,
-            preamble_seq_len=preamble_base_len,
-            preamble_type=self.preamble.sequence_type if self.preamble else None,
-            preamble_mode=self.preamble_mode if self.preamble else None,
-            preamble_kwargs=self.preamble.kwargs if self.preamble else None,
-            preamble_secondary_type=_sec.sequence_type if _sec else None,
-            preamble_secondary_kwargs=_sec.kwargs if _sec else None,
-            payload_len=self.payload_len,
-            pilot_count=pilot_count,
-            pilot_pattern=self.pilot_pattern,
-            pilot_period=self.pilot_period,
-            pilot_block_len=self.pilot_block_len,
-            pilot_mod_scheme=self.pilot_mod_scheme,
-            pilot_mod_order=self.pilot_mod_order,
-            pilot_mod_unipolar=self.pilot_mod_unipolar,
-            pilot_gain_db=self.pilot_gain_db,
-            guard_len=self.guard_len,
-            guard_type=self.guard_type,
-            num_streams=self.num_streams,
-        )
-
-        sig = Signal(
+        return Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
             symbol_rate=symbol_rate,
-            mod_scheme=None,  # Moved to SignalInfo to avoid misleading metadata
-            mod_order=None,  # Moved to SignalInfo
+            mod_scheme=None,
+            mod_order=None,
             mod_unipolar=None,
             mod_rz=None,
             source_bits=None,  # extract via frame.get_structure_map() after equalization
@@ -3750,8 +3521,7 @@ class SingleCarrierFrame(BaseModel):
             rc_rolloff=rc_rolloff,
             smoothrect_bt=smoothrect_bt,
             gaussian_bt=gaussian_bt,
-            signal_info=signal_info,
+            signal_type="Single-Carrier Frame",
+            frame=self,
             **kwargs,
         )
-        sig.frame = self
-        return sig

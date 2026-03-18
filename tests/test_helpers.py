@@ -171,59 +171,27 @@ def test_rms_axis(backend_device, xp, xpt):
 # -----------------------------------------------------------------------------
 
 
-def test_expand_preamble_mimo_time_orthogonal(backend_device, xp, xpt):
-    """Verify time-orthogonal MIMO preamble expansion fills diagonal=P, off-diagonal=Q."""
-    import pytest
-    from commstools.helpers import expand_preamble_mimo
+def test_zc_mimo_root(backend_device, xp):
+    """zc_mimo_root assigns distinct roots cycling from base_root in [1, length-1]."""
+    from commstools.helpers import zc_mimo_root
 
-    P = xp.array([1.0 + 0j, -1.0 + 0j, 1.0 + 0j])
-    Q = xp.array([0.5 + 0.5j, -0.5 + 0.5j, 0.5 - 0.5j])
+    # base_root=1, N=13 → roots 1,2,3,4
+    assert zc_mimo_root(0, 1, 13) == 1
+    assert zc_mimo_root(1, 1, 13) == 2
+    assert zc_mimo_root(2, 1, 13) == 3
 
-    result = expand_preamble_mimo(P, num_streams=3, mode="time_orthogonal", secondary_waveform=Q)
+    # wraps at length-1=12 → root 12 then back to 1
+    assert zc_mimo_root(0, 10, 13) == 10
+    assert zc_mimo_root(1, 10, 13) == 11
+    assert zc_mimo_root(2, 10, 13) == 12
+    assert zc_mimo_root(3, 10, 13) == 1  # wraps
 
-    assert result.shape == (3, 9)  # (num_streams, L * num_streams)
-    # Diagonal blocks = P
-    xpt.assert_allclose(result[0, :3], P)
-    xpt.assert_allclose(result[1, 3:6], P)
-    xpt.assert_allclose(result[2, 6:], P)
-    # Off-diagonal blocks = Q
-    xpt.assert_allclose(result[0, 3:6], Q)
-    xpt.assert_allclose(result[0, 6:], Q)
-    xpt.assert_allclose(result[1, :3], Q)
-    xpt.assert_allclose(result[1, 6:], Q)
-    xpt.assert_allclose(result[2, :3], Q)
-    xpt.assert_allclose(result[2, 3:6], Q)
+    # All roots must be in [1, length-1]
+    for k in range(12):
+        r = zc_mimo_root(k, 1, 13)
+        assert 1 <= r <= 12
 
 
-def test_expand_preamble_mimo_time_orthogonal_requires_secondary(backend_device, xp, xpt):
-    """Verify ValueError is raised when secondary_waveform is omitted for time_orthogonal."""
-    import pytest
-    from commstools.helpers import expand_preamble_mimo
-
-    base = xp.array([1.0 + 0j, -1.0 + 0j])
-    with pytest.raises(ValueError, match="secondary_waveform is required"):
-        expand_preamble_mimo(base, num_streams=2, mode="time_orthogonal")
-
-
-def test_expand_preamble_mimo_single_stream(backend_device, xp, xpt):
-    """Verify expand_preamble_mimo returns the base waveform unchanged for 1 stream."""
-    from commstools.helpers import expand_preamble_mimo
-
-    base = xp.array([1.0, -1.0])
-    result = expand_preamble_mimo(base, num_streams=1, mode="same")
-    xpt.assert_array_equal(result, base)
-
-
-def test_expand_preamble_mimo_unknown_mode(backend_device, xp, xpt):
-    """Verify expand_preamble_mimo broadcasts the base waveform for an unknown mode."""
-    from commstools.helpers import expand_preamble_mimo
-
-    base = xp.array([1.0, -1.0])
-    result = expand_preamble_mimo(base, num_streams=2, mode="unknown_mode")
-
-    assert result.shape == (2, 2)
-    xpt.assert_allclose(result[0], base)
-    xpt.assert_allclose(result[1], base)
 
 
 # -----------------------------------------------------------------------------

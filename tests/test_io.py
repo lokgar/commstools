@@ -218,37 +218,37 @@ def test_compressed_smaller_than_uncompressed(tmp_path):
 # -----------------------------------------------------------------------------
 
 
-def test_roundtrip_frame_signal_info(tmp_path):
+def test_roundtrip_frame_metadata(tmp_path):
     sig = _frame_signal()
-    assert sig.signal_info is not None
-    assert sig.signal_info.signal_type == "Single-Carrier Frame"
+    assert sig.signal_type == "Single-Carrier Frame"
+    assert sig.frame is not None
 
     p = tmp_path / "frame.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
 
-    assert sig2.signal_info is not None
-    assert sig2.signal_info.signal_type == "Single-Carrier Frame"
-    assert sig2.signal_info.payload_len == sig.signal_info.payload_len
-    assert sig2.signal_info.payload_mod_scheme == sig.signal_info.payload_mod_scheme
-    assert sig2.signal_info.payload_mod_order == sig.signal_info.payload_mod_order
-    assert sig2.signal_info.preamble_seq_len == sig.signal_info.preamble_seq_len
-    assert sig2.signal_info.preamble_type == sig.signal_info.preamble_type
-    assert sig2.signal_info.pilot_pattern == sig.signal_info.pilot_pattern
-    assert sig2.signal_info.pilot_period == sig.signal_info.pilot_period
-    assert sig2.signal_info.guard_type == sig.signal_info.guard_type
-    assert sig2.signal_info.guard_len == sig.signal_info.guard_len
-    assert sig2.signal_info.num_streams == sig.signal_info.num_streams
+    assert sig2.signal_type == "Single-Carrier Frame"
+    assert sig2.frame is not None
+    assert sig2.frame.payload_len == sig.frame.payload_len
+    assert sig2.frame.payload_mod_scheme == sig.frame.payload_mod_scheme
+    assert sig2.frame.payload_mod_order == sig.frame.payload_mod_order
+    assert sig2.frame.preamble.length == sig.frame.preamble.length
+    assert sig2.frame.preamble.sequence_type == sig.frame.preamble.sequence_type
+    assert sig2.frame.pilot_pattern == sig.frame.pilot_pattern
+    assert sig2.frame.pilot_period == sig.frame.pilot_period
+    assert sig2.frame.guard_type == sig.frame.guard_type
+    assert sig2.frame.guard_len == sig.frame.guard_len
+    assert sig2.frame.num_streams == sig.frame.num_streams
 
 
-def test_roundtrip_signal_info_none(tmp_path):
-    """Signal without signal_info should load with signal_info=None."""
+def test_roundtrip_signal_type_none(tmp_path):
+    """Signal without signal_type should load with signal_type=None."""
     sig = _siso_signal()
-    assert sig.signal_info is None
+    assert sig.signal_type is None
     p = tmp_path / "plain.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
-    assert sig2.signal_info is None
+    assert sig2.signal_type is None
 
 
 # -----------------------------------------------------------------------------
@@ -259,15 +259,15 @@ def test_roundtrip_signal_info_none(tmp_path):
 def test_roundtrip_zc_preamble_kwargs(tmp_path):
     frame = SingleCarrierFrame(
         payload_len=100,
-        preamble=Preamble(sequence_type="zc", length=31, kwargs={"root": 7}),
+        preamble=Preamble(sequence_type="zc", length=31, root=7),
     )
     sig = frame.to_signal(sps=4, symbol_rate=1e9)
-    assert sig.signal_info.preamble_kwargs == {"root": 7}
+    assert sig.frame.preamble.root == 7
 
     p = tmp_path / "zc.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
-    assert sig2.signal_info.preamble_kwargs == {"root": 7}
+    assert sig2.frame.preamble.root == 7
 
 
 # -----------------------------------------------------------------------------
