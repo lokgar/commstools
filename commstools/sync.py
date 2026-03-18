@@ -26,8 +26,6 @@ estimate_frequency_offset_mth_power :
     Blind FOE via M-th power spectral method with parabolic sub-bin interpolation.
 estimate_frequency_offset_differential :
     Blind or data-aided FOE via differential auto-correlation (Kay's estimator).
-estimate_frequency_offset_preamble :
-    Preamble-based FOE using known training sequence (Kay/Fitz ML estimator).
 estimate_frequency_offset_pilots :
     Scattered-pilot FOE via least-squares phase slope fitting.
 correct_frequency_offset :
@@ -582,7 +580,47 @@ def estimate_timing(
         num_streams = info.num_streams
         mode = info.preamble_mode or "same"
 
-        preamble_waveform = expand_preamble_mimo(base_waveform, num_streams, mode)
+        # Reconstruct secondary preamble waveform for time_orthogonal templates.
+        # Templates now fill off-diagonal blocks with Q (near-orthogonal to P)
+        # so that all templates peak at t0, enabling robust frame-start detection.
+        sec_waveform = None
+        if mode == "time_orthogonal" and (num_streams or 1) > 1:
+            sec_seq_len = info.preamble_seq_len  # always same length as primary
+            if getattr(info, "preamble_secondary_type", None) is not None:
+                sec_obj = Preamble(
+                    sequence_type=info.preamble_secondary_type,
+                    length=sec_seq_len,
+                    **info.preamble_secondary_kwargs or {},
+                )
+            elif info.preamble_type == "zc":
+                # Auto-generate secondary ZC with a different root (matches
+                # SingleCarrierFrame._get_secondary_preamble logic)
+                primary_root = (info.preamble_kwargs or {}).get("root", 1)
+                sec_root = (primary_root % (sec_seq_len - 1)) + 1
+                if sec_root == primary_root:
+                    sec_root = (sec_root % (sec_seq_len - 1)) + 1
+                sec_obj = Preamble(
+                    sequence_type="zc",
+                    length=sec_seq_len,
+                    kwargs={"root": sec_root},
+                )
+            else:
+                raise ValueError(
+                    "Cannot reconstruct secondary preamble for time_orthogonal mode: "
+                    "preamble_secondary_type not set in SignalInfo and preamble_type is "
+                    "not 'zc'. Set preamble_secondary explicitly on the frame."
+                )
+            sec_sig = sec_obj.to_signal(
+                sps=sps,
+                symbol_rate=1.0,
+                pulse_shape=pulse_shape or "rrc",
+                **filter_params,
+            )
+            sec_waveform = sec_sig.samples
+
+        preamble_waveform = expand_preamble_mimo(
+            base_waveform, num_streams, mode, secondary_waveform=sec_waveform
+        )
 
     # Fallback to manual preamble argument
     elif preamble is not None:
@@ -680,42 +718,29 @@ def estimate_timing(
             axis=1,
         )
 
-        # --- Frame-start estimation via base-P correlation ---------------
-        # Template 0 = [P | 0 … 0]; its correlation ≡ base-P correlation
-        # because trailing zeros are inert.  Per-channel peaks sit at the
-        # dominant slot's start position: t0 + k_rx · L_slot.
-        corr_base_mag = xp.abs(corr_all[:, 0, :])  # (C_rx, N_lag)
-        peak0 = xp.argmax(corr_base_mag, axis=-1)  # (C_rx,) per-ch peaks
+        # --- Frame-start estimation via combined max across all templates ---
+        # With Q-filled off-diagonal blocks every template peaks at t0
+        # (not t0 + k*L_slot) regardless of which TX stream dominates the
+        # RX channel.  Taking max over templates then max over RX channels
+        # gives a single robust combined correlation; its argmax is t0.
+        corr_abs = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
+        combined = xp.max(xp.max(corr_abs, axis=1), axis=0)  # (N_lag,)
+        frame_start = int(xp.argmax(combined))
 
-        # Frame start = earliest per-channel peak (slot 0 position).
-        frame_start = int(xp.min(peak0))
+        # --- Stream assignment: which template peaks highest at t0? ------
+        _best_t = xp.argmax(corr_abs[:, :, frame_start], axis=-1)  # (C_rx,)
 
-        # --- Stream assignment from per-channel peak offsets -------------
-        # k_rx = round((peak_rx - frame_start) / L_slot)
-        stream_assignment = xp.round(
-            (peak0 - frame_start).astype(float) / L_slot
-        ).astype(int)
-        stream_assignment = xp.clip(stream_assignment, 0, C_tx - 1)
-        _best_t = stream_assignment
-
-        _best_t_list = stream_assignment.tolist()
+        _best_t_list = _best_t.tolist()
         _repeated = len(set(_best_t_list)) < len(_best_t_list)
         logger.info(
             f"Time-orthogonal sync: frame_start={frame_start}, "
             f"dominant Tx slot per Rx channel: {_best_t_list}"
-            + (
-                " (repeated — channel mixing)"
-                if _repeated
-                else ""
-            )
+            + (" (repeated — channel mixing)" if _repeated else "")
         )
 
-        # Select the correctly-assigned expanded template per RX channel.
-        # Template j = stream_assignment[rx] has its P at offset j·L_slot,
-        # so its correlation peak sits at frame_start (not frame_start +
-        # j·L_slot), giving a consistent coarse offset for all channels.
+        # Per-RX correlation: use the template that best matches each channel.
         rx_idx = xp.arange(num_sig_ch)
-        corr = corr_all[rx_idx, stream_assignment, :]  # (C_rx, N_lag)
+        corr = corr_all[rx_idx, _best_t, :]  # (C_rx, N_lag)
 
         # Override L to slot length for downstream normalization:
         # the effective correlation window is L_slot, not C·L_slot.
@@ -781,6 +806,14 @@ def estimate_timing(
 
     # Frame Start Calculation (Per-Channel)
     coarse_offsets = peak_indices + offset
+    if _is_time_orthogonal:
+        # All channels share the same frame start t0.  peak_indices is still
+        # used for fractional-delay interpolation (per-channel fine timing),
+        # but the coarse offset must be uniform so that downstream code slices
+        # every channel's preamble from the same position.
+        coarse_offsets = xp.full(
+            num_sig_ch, frame_start + offset, dtype=coarse_offsets.dtype
+        )
     coarse_offsets = xp.maximum(0, coarse_offsets)
 
     if debug_plot:
@@ -861,9 +894,9 @@ def correct_timing(
     **Preamble is not removed.**  After correction, ``signal[..., 0]``
     corresponds to the first sample of the preamble (the frame start).
     All three modes align the frame start to index 0 — they do not strip
-    the preamble from the output.  Use :func:`~commstools.equalization.equalize_frame`
-    (which uses :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
-    to locate preamble and payload regions) or manually slice using the
+    the preamble from the output.  Use
+    :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
+    to locate preamble and payload regions, or manually slice using the
     structure map if you need to process the body in isolation.
 
     The fractional correction uses FFT-based frequency-domain delay, which
@@ -1281,168 +1314,6 @@ def estimate_frequency_offset_differential(
     return f_est
 
 
-def estimate_frequency_offset_preamble(
-    signal: ArrayType,
-    preamble_samples: ArrayType,
-    fs: float,
-    offset: int = 0,
-    sps: int = 1,
-    stream_assignment: Optional[ArrayType] = None,
-    debug_plot: bool = False,
-) -> float:
-    """
-    Estimates frequency offset using a known preamble (data-aided).
-
-    Extracts a preamble-length window from the received signal, demodulates
-    it against the known preamble to isolate the complex tone at Δf, then
-    applies Kay's ML estimator on the result.
-
-    Parameters
-    ----------
-    signal : array_like
-        Received complex samples. Shape: (N,) or (C, N).
-    preamble_samples : array_like
-        Known preamble waveform (one slot, L samples) at the same sample
-        rate as ``signal``.  Shape: (L,) or (1, L).
-
-        Always pass the **base preamble** (one slot worth), not the full
-        ``C*L`` time-orthogonal region.  The same base sequence P is
-        transmitted in every time slot; ``stream_assignment`` selects which
-        slot to read on each RX channel.
-    fs : float
-        Sampling rate in Hz.
-    offset : int, default 0
-        Sample index of the start of the preamble region in ``signal``.
-        Typically the ``coarse_offset`` returned by :func:`estimate_timing`.
-    sps : int, default 1
-        Samples per symbol of the input signal.  When ``sps > 1`` (i.e.
-        the signal is oversampled — typical after matched filtering without
-        decimation), both the received window and the reference are
-        subsampled at the symbol stride (``[::sps]``) before the
-        differential estimator is applied.
-
-        **Why this matters at sps=2:** after RRC matched filtering the
-        output has zero crossings at every intersymbol (odd) sample — a
-        direct consequence of the Nyquist ISI-free property.  Including
-        these near-zero samples in the differential product
-        ``y[n+1]·y*[n]`` produces random-phase terms that dominate Kay's
-        weighted sum (especially near the centre of the window where the
-        sine-squared weights peak) and yield a badly biased estimate.
-        Subsampling to on-symbol samples eliminates all zero crossings
-        and restores a clean constant differential phase across the full
-        preamble window.
-
-        The subsampled effective sample rate seen by the estimator is
-        ``fs / sps`` (the symbol rate), and the lock range becomes
-        ``±fs / (2 · sps · L_sym)`` where ``L_sym = L // sps`` is the
-        preamble length in symbols.
-    stream_assignment : array_like of int, shape (C,), optional
-        TX stream index (= time slot index) that carries the dominant
-        signal on each RX channel.  Pass the third return value of
-        :func:`estimate_timing` when ``return_stream_assignment=True``.
-
-        When provided, RX channel ``i`` is read from slot
-        ``stream_assignment[i]``, i.e. samples
-        ``[offset + stream_assignment[i]*L, offset + (stream_assignment[i]+1)*L)``.
-
-        When ``None`` (default), all channels are read from the same window
-        starting at ``offset``.  This is correct for ``same``-mode preambles
-        and for mixed channels where every slot carries signal on every RX
-        channel.  For a near-identity channel with a ``time_orthogonal``
-        preamble, slot 0 has near-zero signal on RX channels whose dominant
-        TX stream is 1, 2, …; failing to pass ``stream_assignment`` in that
-        case causes those channels to return a near-zero (biased) FOE estimate.
-
-        **Slot layout for a 2x2 time-orthogonal preamble** (one slot = L
-        samples of the base sequence P)::
-
-            sample index:  0        L        2L
-                           |        |        |
-            slot 0:        [-- P --][-- 0 --]   TX stream 0 active, stream 1 silent
-            slot 1:        [-- 0 --][-- P --]   TX stream 1 active, stream 0 silent
-
-        On a near-identity channel ``stream_assignment = [0, 1]`` (RX 0 ↔ TX 0).
-        On a fully crossed channel ``stream_assignment = [1, 0]`` (RX 0 ↔ TX 1).
-        Obtain it from :func:`estimate_timing` with
-        ``return_stream_assignment=True``.
-
-    Returns
-    -------
-    float
-        Estimated frequency offset in Hz.
-
-    Notes
-    -----
-    After demodulation, ``y[n] = r_p[n] · p*[n]`` is a noisy complex
-    exponential at Δf.  Kay's estimator (``weighted=True``) is applied for
-    maximum-likelihood performance at high SNR.
-
-    **Lock range:** ``~[-fs/(2·sps·L_sym), +fs/(2·sps·L_sym)]`` where
-    ``L_sym = L // sps`` is the number of preamble symbols.  For large
-    offsets, use :func:`estimate_frequency_offset_mth_power` as a coarse
-    stage first, correct it, then call this function for fine tuning.
-
-    References
-    ----------
-    M. Fitz, "Further results in the unified analysis of digital
-    communication systems," IEEE Trans. Commun., 1994.
-    """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
-    if was_1d:
-        signal = signal[None, :]  # (1, N)
-    C = signal.shape[0]
-
-    preamble_samples, _, _ = dispatch(preamble_samples)
-    if preamble_samples.ndim == 1:
-        preamble_samples = preamble_samples[None, :]
-    preamble_samples = xp.asarray(preamble_samples)
-
-    L = preamble_samples.shape[-1]
-
-    if stream_assignment is not None:
-        # time_orthogonal: RX channel i's active slot starts at
-        # offset + stream_assignment[i] * L.  Each channel gets its own
-        # L-sample window so every row of r_p contains an active preamble slot
-        # rather than a potentially zero slot.
-        # to_device: a CuPy 0-d element cannot be used as a Python slice bound
-        # without .item(); pulling the whole C-element array to CPU is cheaper
-        # than a per-element device sync inside the loop.
-        sa = to_device(stream_assignment, "cpu").astype(int)
-        r_p = xp.stack(
-            [
-                signal[i, offset + int(sa[i]) * L : offset + (int(sa[i]) + 1) * L]
-                for i in range(C)
-            ]
-        )  # (C, L)
-    else:
-        r_p = signal[..., offset : offset + L]  # (C, L) — same window for all
-
-    if sps > 1:
-        # Keep only on-symbol samples (0, sps, 2*sps, …).  Both the received
-        # window and the reference must be subsampled with the same stride so
-        # the demodulation r_p * conj(preamble) stays sample-aligned.
-        # After RRC matched filtering the intersymbol samples are near-zero
-        # (Nyquist zero crossings); including them in y[n+1]·y*[n] produces
-        # random-phase products that corrupt Kay's estimator.
-        r_p = r_p[..., ::sps]
-        preamble_samples = preamble_samples[..., ::sps]
-        fs_eff = fs / sps  # symbol-rate view for the estimator
-    else:
-        fs_eff = fs
-
-    logger.debug(
-        f"FOE (preamble): L={L} samples, sps={sps}, "
-        f"L_sym={r_p.shape[-1]}, offset={offset}, "
-        f"stream_assignment={None if stream_assignment is None else sa.tolist()}"
-    )
-    # Delegate demodulation to the ref_signal path of estimate_frequency_offset_differential,
-    # which computes y = r_p * conj(preamble_samples) internally before Kay's estimator.
-    return estimate_frequency_offset_differential(
-        r_p, fs_eff, ref_signal=preamble_samples, weighted=True, debug_plot=debug_plot
-    )
-
-
 def estimate_frequency_offset_pilots(
     signal: ArrayType,
     pilot_indices: ArrayType,
@@ -1470,9 +1341,9 @@ def estimate_frequency_offset_pilots(
         * **Comb (scattered):** uniform grid, e.g. every 16th sample.
           Lock range determined by comb spacing.
         * **Block (contiguous cluster):** e.g. ``[0, 1, ..., L-1]``.
-          Equivalent to a preamble; consider
-          :func:`estimate_frequency_offset_preamble` (Kay ML) instead,
-          which is optimal for contiguous blocks.
+          For contiguous blocks the differential estimator
+          (``estimate_frequency_offset_differential`` with
+          ``ref_signal=``) provides ML performance.
         * **Multi-block:** e.g. a front preamble and a mid-burst pilot
           cluster.  Lock range is set by the **largest gap** between any
           two consecutive pilot indices (see Notes).

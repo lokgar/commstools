@@ -176,46 +176,6 @@ class TestFoeDifferential:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOE — Data-Aided
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoeDataAided:
-    @pytest.mark.parametrize("fo_hz", [5_000.0, 10_000.0, -8_000.0])
-    def test_accuracy_with_zc_preamble(self, backend_device, xp, fo_hz):
-        """Data-aided FOE within 5% of actually-applied offset using ZC preamble."""
-        # Use a long preamble so frequency resolution is fine enough
-        preamble_len = 511
-        zc = sync.zadoff_chu_sequence(preamble_len)
-        zc_xp = xp.asarray(zc).astype(xp.complex64)
-
-        # shift_frequency quantizes to the nearest bin; compare against actual offset
-        zc_shifted, actual_fo = spectral.shift_frequency(zc_xp, fo_hz, FS)
-
-        est = sync.estimate_frequency_offset_preamble(
-            zc_shifted, preamble_samples=zc_xp, fs=FS, offset=0
-        )
-        assert abs(est - actual_fo) / abs(actual_fo) < 0.05
-
-    def test_offset_parameter(self, backend_device, xp):
-        """Non-zero offset parameter extracts preamble from the correct position."""
-        preamble_len = 511
-        zc = sync.zadoff_chu_sequence(preamble_len)
-        zc_xp = xp.asarray(zc).astype(xp.complex64)
-        fo_hz = 8_000.0
-
-        # 100-sample guard + preamble; compare against actual quantised offset
-        guard = xp.zeros(100, dtype=xp.complex64)
-        full = xp.concatenate([guard, zc_xp])
-        received, actual_fo = spectral.shift_frequency(full, fo_hz, FS)
-
-        est = sync.estimate_frequency_offset_preamble(
-            received, preamble_samples=zc_xp, fs=FS, offset=100
-        )
-        assert abs(est - actual_fo) / abs(actual_fo) < 0.05
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # CPR — Viterbi-Viterbi
 # ─────────────────────────────────────────────────────────────────────────────
 
