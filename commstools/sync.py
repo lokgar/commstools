@@ -48,7 +48,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 
 from .backend import ArrayType, dispatch, is_cupy_available, to_device
-from .core import Preamble, Signal, SignalInfo
+from .core import Preamble, Signal
 from .logger import logger
 
 # Window length for DFT-upsampling in estimate_fractional_delay()
@@ -433,39 +433,43 @@ def estimate_timing(
     signal: Union[ArrayType, "Signal"],
     preamble: Optional[Union[ArrayType, "Preamble"]] = None,
     threshold: float = 0.5,
-    info: Optional["SignalInfo"] = None,
     sps: Optional[int] = None,
     pulse_shape: Optional[str] = None,
     filter_params: Optional[dict] = None,
     search_range: Optional[Tuple[int, int]] = None,
     dft_upsample: int = 1,
     fractional_method: str = "log-parabolic",
-    return_stream_assignment: bool = False,
     debug_plot: bool = False,
-) -> Union[Tuple[ArrayType, ArrayType], Tuple[ArrayType, ArrayType, ArrayType]]:
+) -> Tuple[ArrayType, ArrayType]:
     """
     Estimates coarse and fractional timing offsets via preamble correlation.
 
     Performs a sliding cross-correlation between the received signal and
     the expected preamble to determine the coarse (integer sample) timing
-    offset. Additionally estimates the fractional (sub-sample) timing
-    offset using parabolic interpolation on the correlation peak.
-    Supports SISO and MIMO configurations, handling different preamble
-    modes (e.g., 'same', 'time_orthogonal') automatically if
-    ``SignalInfo`` is provided.
+    offset per channel.  Additionally estimates the fractional (sub-sample)
+    timing offset using parabolic interpolation on the correlation peak.
+
+    For MIMO ZC preambles each TX stream uses a unique root (assigned by
+    :func:`~commstools.helpers.zc_mimo_root`).  All templates are correlated
+    against all RX channels; the incoherent sum over templates is used to
+    find each channel's peak independently, so **hardware skew between RX
+    channels is preserved in the returned per-channel offsets**.
 
     Parameters
     ----------
     signal : array_like or Signal
         Received signal samples.
+
+        .. note::
+            When ``signal`` is a raw array (not a :class:`~commstools.core.Signal`),
+            ``info`` always wins over ``preamble`` for template reconstruction, and
+            ``sps`` must be supplied explicitly.
+
     preamble : array_like or Preamble, optional
-        The known preamble symbols (reference sequence). If None, it will be
-        inferred from ``signal.signal_info`` or ``info`` argument.
+        Known preamble (used only when ``info`` is not provided).
     threshold : float, default 0.5
         Detection threshold normalized between 0 and 1.
-    info : SignalInfo, optional
-        Metadata describing the frame structure. If provided, it overrides
-        any info attached to ``signal``.
+
     sps : int, optional
         Samples per symbol. Inferred from ``signal`` if not provided.
     pulse_shape : str, optional
@@ -480,30 +484,18 @@ def estimate_timing(
         Use > 1 for high-precision fractional delay estimation.
     fractional_method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
         Fitting method for fractional delay estimation.
-    return_stream_assignment : bool, default False
-        If True, a third element is included in the return tuple: an integer
-        array of shape ``(N_channels,)`` giving the TX stream index whose
-        preamble slot produced the strongest correlation on each RX channel.
-        Only meaningful for ``time_orthogonal`` MIMO preambles; for all other
-        cases it is ``None``.  Useful for diagnosing polarization permutation
-        or for reordering downstream outputs to match the TX stream order.
     debug_plot : bool, default False
         If True, plots the correlation magnitude for debugging.
 
     Returns
     -------
     coarse_offsets : ArrayType
-        Integer sample offsets where the frame begins, per channel.
-        Shape: ``(N_channels,)``.
+        Integer sample offsets where the frame begins, per RX channel.
+        Shape: ``(N_channels,)``.  Each channel's offset is estimated
+        independently so hardware skew between channels is preserved.
     fractional_offsets : ArrayType
         Sub-sample timing offsets in [-0.5, 0.5) per channel.
         Shape: ``(N_channels,)``.
-    stream_assignment : ArrayType or None
-        Only present when ``return_stream_assignment=True``.
-        Integer array of shape ``(N_channels,)``: ``stream_assignment[i]`` is
-        the TX stream index (0-based) whose preamble time slot had the highest
-        correlation with RX channel ``i``.  ``None`` when the preamble mode is
-        not ``time_orthogonal``.
 
     Raises
     ------
@@ -520,15 +512,13 @@ def estimate_timing(
       and SNR compared to correlating with 1 SPS symbols. Ensure the
       ``preamble`` argument matches the sampling rate of the input ``signal``.
     """
-    from .helpers import cross_correlate_fft, expand_preamble_mimo
+    from .helpers import cross_correlate_fft, zc_mimo_root
 
     # 1. Resolve Inputs & Metadata
     sig_array = None
 
     if isinstance(signal, Signal):
         sig_array = signal.samples
-        if info is None:
-            info = signal.signal_info
         if sps is None:
             sps = int(round(signal.sps))
         if pulse_shape is None:
@@ -550,91 +540,60 @@ def estimate_timing(
     sig_array, xp, _ = dispatch(sig_array)
 
     # 2. Reconstruct/Get Preamble Waveform
-    # We prioritize reconstructing from 'info' to get correct MIMO structure
+    # We prioritize reconstructing from signal.frame to get correct MIMO structure.
     preamble_waveform = None
 
-    # Check if we can reconstruct from Info
-    if info is not None and info.preamble_type is not None:
-        # Reconstruct Preamble Object
-        p_obj = Preamble(
-            sequence_type=info.preamble_type,
-            length=info.preamble_seq_len,
-            **info.preamble_kwargs or {},
-        )
+    frame = getattr(signal, "frame", None) if isinstance(signal, Signal) else None
+    
+    resolved_preamble = preamble
+    num_streams = 1
+    
+    if resolved_preamble is None and frame is not None:
+        if hasattr(frame, 'preamble') and frame.preamble is not None:
+            resolved_preamble = frame.preamble
+            num_streams = getattr(frame, "num_streams", 1)
+        elif getattr(signal, "signal_type", None) == "Preamble":
+            resolved_preamble = frame
 
-        # Generate Base Waveform
-        # Must strictly use SPS/Filter from signal to match
+    if isinstance(resolved_preamble, Preamble):
         if sps is None:
             raise ValueError("SPS must be provided or inferred from Signal.")
 
-        p_sig = p_obj.to_signal(
-            sps=sps,
-            symbol_rate=1.0,  # dummy, affects only sampling_rate metadata
-            pulse_shape=pulse_shape or "rrc",
-            **filter_params,
-        )
-        base_waveform = p_sig.samples
+        primary = resolved_preamble
 
-        # Apply MIMO Structure (Same logic as SingleCarrierFrame.to_signal)
-        # This ensures we correlate against exactly what was transmitted
-        num_streams = info.num_streams
-        mode = info.preamble_mode or "same"
-
-        # Reconstruct secondary preamble waveform for time_orthogonal templates.
-        # Templates now fill off-diagonal blocks with Q (near-orthogonal to P)
-        # so that all templates peak at t0, enabling robust frame-start detection.
-        sec_waveform = None
-        if mode == "time_orthogonal" and (num_streams or 1) > 1:
-            sec_seq_len = info.preamble_seq_len  # always same length as primary
-            if getattr(info, "preamble_secondary_type", None) is not None:
-                sec_obj = Preamble(
-                    sequence_type=info.preamble_secondary_type,
-                    length=sec_seq_len,
-                    **info.preamble_secondary_kwargs or {},
-                )
-            elif info.preamble_type == "zc":
-                # Auto-generate secondary ZC with a different root (matches
-                # SingleCarrierFrame._get_secondary_preamble logic)
-                primary_root = (info.preamble_kwargs or {}).get("root", 1)
-                sec_root = (primary_root % (sec_seq_len - 1)) + 1
-                if sec_root == primary_root:
-                    sec_root = (sec_root % (sec_seq_len - 1)) + 1
-                sec_obj = Preamble(
+        if num_streams > 1 and primary.sequence_type == "zc":
+            # MIMO ZC: per-stream unique-root waveforms matching TX.
+            stream_waveforms = []
+            for k in range(num_streams):
+                root_k = zc_mimo_root(k, primary.root, primary.length)
+                pk_sig = Preamble(
                     sequence_type="zc",
-                    length=sec_seq_len,
-                    kwargs={"root": sec_root},
+                    length=primary.length,
+                    root=root_k,
+                ).to_signal(
+                    sps=sps,
+                    symbol_rate=1.0,
+                    pulse_shape=pulse_shape or "rrc",
+                    **filter_params,
                 )
-            else:
-                raise ValueError(
-                    "Cannot reconstruct secondary preamble for time_orthogonal mode: "
-                    "preamble_secondary_type not set in SignalInfo and preamble_type is "
-                    "not 'zc'. Set preamble_secondary explicitly on the frame."
-                )
-            sec_sig = sec_obj.to_signal(
+                stream_waveforms.append(pk_sig.samples)
+            preamble_waveform = xp.stack(
+                [xp.asarray(w) for w in stream_waveforms], axis=0
+            )  # (C_tx, L*sps)
+        else:
+            # SISO or non-ZC MIMO: broadcast single template.
+            p_sig = primary.to_signal(
                 sps=sps,
                 symbol_rate=1.0,
                 pulse_shape=pulse_shape or "rrc",
                 **filter_params,
             )
-            sec_waveform = sec_sig.samples
+            preamble_waveform = xp.tile(xp.asarray(p_sig.samples)[None, :], (num_streams, 1))
 
-        preamble_waveform = expand_preamble_mimo(
-            base_waveform, num_streams, mode, secondary_waveform=sec_waveform
-        )
-
-    # Fallback to manual preamble argument
-    elif preamble is not None:
-        if isinstance(preamble, Preamble):
-            if sps is None:
-                raise ValueError("SPS required for Preamble object.")
-            p_sig = preamble.to_signal(
-                sps=sps, symbol_rate=1.0, pulse_shape=pulse_shape, **filter_params
-            )
-            preamble_waveform = p_sig.samples
-        else:
-            preamble_waveform = xp.asarray(preamble)
+    elif resolved_preamble is not None:
+        preamble_waveform = xp.asarray(resolved_preamble)
     else:
-        raise ValueError("Either 'info' or 'preamble' must be provided.")
+        raise ValueError("Either 'signal.frame' with a preamble, or 'preamble' argument must be provided.")
 
     # 3. Correlation Strategy
     # Signal: (C, N) or (N,)
@@ -673,41 +632,11 @@ def estimate_timing(
 
     # === Vectorized Correlation (FFT) via shared helper ===
     L = preamble_waveform.shape[-1]
+    C_tx = preamble_waveform.shape[0]
 
-    _is_time_orthogonal = (
-        info is not None
-        and getattr(info, "preamble_mode", None) == "time_orthogonal"
-        and preamble_waveform.shape[0] > 1
-    )
-    _best_t: Optional[ArrayType] = None  # TX-stream assignment per RX channel
-
-    if _is_time_orthogonal:
-        # ------------------------------------------------------------------
-        # Time-orthogonal MIMO timing estimation
-        #
-        # Each expanded template (e.g. [P|0], [0|P]) has P at a specific
-        # offset and zeros elsewhere.  The zeros contribute nothing to the
-        # cross-correlation, so ALL templates yield the same peak magnitude
-        # (≈ |h_rx,k_dom| · E_P) but at DIFFERENT lag positions — shifted by
-        # the template's internal P offset.
-        #
-        # Consequence: argmax-over-templates cannot distinguish templates
-        # (identical magnitudes → tie-breaks to index 0).  For RX channels
-        # dominated by TX stream k≠0 the reported lag is off by k·L_slot
-        # samples, causing a skew equal to one full preamble slot.
-        #
-        # Fix: use template 0's correlation (≡ base-P correlation, since
-        # trailing zeros are inert) to find per-channel peaks.  Each peak
-        # sits at t0 + k_rx·L_slot where k_rx is the dominant slot for
-        # that RX channel.  The frame start is the minimum peak across
-        # channels, and stream assignment follows from the slot offsets.
-        # Finally, select the correctly-assigned expanded template so that
-        # every channel's correlation peaks at the common frame start.
-        # ------------------------------------------------------------------
-        C_tx = preamble_waveform.shape[0]
-        L_slot = preamble_waveform.shape[-1] // C_tx  # samples per slot
-
-        # corr_all[c_rx, c_tx, lag] — shape (C_rx, C_tx, N_lag)
+    if C_tx > 1:
+        # MIMO unique-root: correlate every TX template against every RX channel.
+        # corr_all[rx, tx, lag] — shape (C_rx, C_tx, N_lag)
         corr_all = xp.stack(
             [
                 cross_correlate_fft(
@@ -717,34 +646,13 @@ def estimate_timing(
             ],
             axis=1,
         )
-
-        # --- Frame-start estimation via combined max across all templates ---
-        # With Q-filled off-diagonal blocks every template peaks at t0
-        # (not t0 + k*L_slot) regardless of which TX stream dominates the
-        # RX channel.  Taking max over templates then max over RX channels
-        # gives a single robust combined correlation; its argmax is t0.
-        corr_abs = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
-        combined = xp.max(xp.max(corr_abs, axis=1), axis=0)  # (N_lag,)
-        frame_start = int(xp.argmax(combined))
-
-        # --- Stream assignment: which template peaks highest at t0? ------
-        _best_t = xp.argmax(corr_abs[:, :, frame_start], axis=-1)  # (C_rx,)
-
-        _best_t_list = _best_t.tolist()
-        _repeated = len(set(_best_t_list)) < len(_best_t_list)
-        logger.info(
-            f"Time-orthogonal sync: frame_start={frame_start}, "
-            f"dominant Tx slot per Rx channel: {_best_t_list}"
-            + (" (repeated — channel mixing)" if _repeated else "")
-        )
-
-        # Per-RX correlation: use the template that best matches each channel.
-        rx_idx = xp.arange(num_sig_ch)
-        corr = corr_all[rx_idx, _best_t, :]  # (C_rx, N_lag)
-
-        # Override L to slot length for downstream normalization:
-        # the effective correlation window is L_slot, not C·L_slot.
-        L = L_slot
+        # Incoherent sum over TX templates per RX channel — robust to phase
+        # differences between ZC roots.  argmax gives independent per-channel
+        # frame start, preserving any hardware skew between RX channels.
+        corr_incoherent = xp.sum(xp.abs(corr_all), axis=1)  # (C_rx, N_lag)
+        peak_indices = xp.argmax(corr_incoherent, axis=-1)  # (C_rx,)
+        # Coherent complex sum for fractional delay interpolation.
+        corr = xp.sum(corr_all, axis=1)  # (C_rx, N_lag) complex
     else:
         corr = cross_correlate_fft(
             sig_processing, preamble_waveform, mode="positive_lags"
@@ -754,21 +662,18 @@ def estimate_timing(
     corr_mag = xp.abs(corr)
 
     # === Per-Channel Analysis ===
-    # Find peak index per channel
-    peak_indices = xp.argmax(corr_mag, axis=-1)  # Shape (C,)
+    # For SISO / broadcast single template: find peak from magnitude
+    if C_tx == 1:
+        peak_indices = xp.argmax(corr_mag, axis=-1)  # Shape (C,)
 
     # === Per-Channel Normalization ===
     # Calculate Energy per channel
     e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C_tx,) or scalar
     if e_p.ndim == 0:  # SISO: broadcast scalar energy to all channels
         e_p = xp.full(num_sig_ch, e_p)
-    elif _is_time_orthogonal:
-        # corr[i] was taken against template stream_assignment[i].
-        # Re-index so norm_factors[i] uses the energy of the template that was
-        # actually correlated with RX channel i.  For time_orthogonal all
-        # templates have equal energy today, but indexing correctly future-proofs
-        # against asymmetric preamble designs.
-        e_p = e_p[_best_t]  # (C_rx,)
+    else:
+        # Multiple TX templates: broadcast mean energy to all RX channels
+        e_p = xp.full(num_sig_ch, xp.mean(e_p))
 
     e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
 
@@ -805,16 +710,8 @@ def estimate_timing(
                 logger.info(f"Channels aligned (spread {spread}).")
 
     # Frame Start Calculation (Per-Channel)
-    coarse_offsets = peak_indices + offset
-    if _is_time_orthogonal:
-        # All channels share the same frame start t0.  peak_indices is still
-        # used for fractional-delay interpolation (per-channel fine timing),
-        # but the coarse offset must be uniform so that downstream code slices
-        # every channel's preamble from the same position.
-        coarse_offsets = xp.full(
-            num_sig_ch, frame_start + offset, dtype=coarse_offsets.dtype
-        )
-    coarse_offsets = xp.maximum(0, coarse_offsets)
+    # Each channel's peak is found independently so hardware skew is preserved.
+    coarse_offsets = xp.maximum(0, peak_indices + offset)
 
     if debug_plot:
         from . import plotting as _plotting
@@ -839,8 +736,6 @@ def estimate_timing(
         f"Metrics: {metrics.tolist()}"
     )
 
-    if return_stream_assignment:
-        return coarse_offsets, fractional_offsets, _best_t
     return coarse_offsets, fractional_offsets
 
 

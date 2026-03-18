@@ -137,7 +137,7 @@ def test_preamble_auto_generation(backend_device, xp):
     assert isinstance(preamble.symbols, xp.ndarray)
 
     # Test Zadoff-Chu auto-generation
-    preamble_zc = Preamble(sequence_type="zc", length=63, kwargs={"root": 1})
+    preamble_zc = Preamble(sequence_type="zc", length=63, root=1)
     assert preamble_zc.symbols is not None
     assert len(preamble_zc.symbols) == 63
 
@@ -317,7 +317,7 @@ def test_estimate_timing_infer_error(backend_device, xp):
     """Verify error when Preamble object used with raw array signal."""
     pre = Preamble(bits=[1, 0, 1], length=3)
     sig = xp.zeros(20)
-    with pytest.raises(ValueError, match="SPS required for Preamble object."):
+    with pytest.raises(ValueError, match="SPS must be provided or inferred from Signal."):
         sync.estimate_timing(sig, pre)
 
 
@@ -604,32 +604,29 @@ def test_estimate_timing_no_preamble_error(backend_device, xp):
     """Verify estimate_timing raises when neither info nor preamble given."""
     sig = xp.zeros(100, dtype="complex64")
     with pytest.raises(
-        ValueError, match="Either 'info' or 'preamble' must be provided"
+        ValueError, match="Either 'signal.frame' with a preamble, or 'preamble' argument must be provided."
     ):
         sync.estimate_timing(sig)
 
 
-def test_estimate_timing_with_info(backend_device, xp):
-    """Verify estimate_timing with SignalInfo reconstruction from preamble type and length."""
-    from commstools.core import SignalInfo
+def test_estimate_timing_with_frame(backend_device, xp):
+    """Verify estimate_timing with Frame reconstruction from preamble type and length."""
+    from commstools.core import Signal, Preamble, SingleCarrierFrame
 
     # Create a signal with a Barker-7 preamble embedded at sample 40
     barker = sync.barker_sequence(7)
 
     # Create shaped preamble at sps=1 for simplicity
-    sig = xp.zeros(200, dtype="complex64")
-    sig[40:47] = barker
+    sig = Signal(samples=xp.zeros(200, dtype="complex64"), sampling_rate=1, symbol_rate=1, signal_type="Single-Carrier Frame")
+    sig.samples[40:47] = barker
 
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="barker",
-        preamble_seq_len=7,
-        preamble_mode="same",
-        num_streams=1,
+    sig.frame = SingleCarrierFrame(
+        payload_len=100,
+        preamble=Preamble(sequence_type="barker", length=7),
     )
 
     coarse, frac = sync.estimate_timing(
-        sig, info=info, sps=1, pulse_shape="none", threshold=0.3
+        sig, sps=1, pulse_shape="none", threshold=0.3
     )
     assert abs(int(coarse[0]) - 40) <= 1
 
@@ -722,291 +719,140 @@ def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
     assert abs(float(mu)) < 0.5
 
 
-def test_estimate_timing_info_without_sps(backend_device, xp):
-    """Verify estimate_timing raises when info is provided but sps is missing."""
-    from commstools.core import SignalInfo
-
+def test_estimate_timing_preamble_kwargs_without_sps(backend_device, xp):
+    """Verify estimate_timing raises when preamble is provided but sps is missing."""
+    from commstools.core import Preamble
     sig = xp.zeros(100, dtype="complex64")
-    info = SignalInfo(
-        signal_type="Preamble",
-        preamble_type="barker",
-        preamble_seq_len=7,
-        num_streams=1,
-    )
+    pre = Preamble(sequence_type="barker", length=7)
     with pytest.raises(ValueError, match="SPS must be provided"):
-        sync.estimate_timing(sig, info=info)
+        sync.estimate_timing(sig, preamble=pre)
 
 
 # -----------------------------------------------------------------------------
-# TIME-ORTHOGONAL MIMO TIMING SYNC TESTS
+# MIMO UNIQUE-ROOT TIMING SYNC TESTS
 # -----------------------------------------------------------------------------
 
 
-def _make_time_orthogonal_mimo_signal(xp, channel_matrix, preamble_pos=200):
-    """Helper: build 2×2 MIMO received signal with time-orthogonal preamble.
+def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
+    """Helper: build 2×2 MIMO received signal with unique-root ZC preamble.
 
     Parameters
     ----------
     xp : module
         Array backend (numpy or cupy).
     channel_matrix : array_like, shape (2, 2)
-        Jones-like channel matrix applied to the MIMO preamble.
-        ``rx = channel_matrix @ tx``.
+        Jones-like channel matrix.  ``rx = channel_matrix @ tx``.
     preamble_pos : int
-        Sample index where the preamble starts.
+        Sample index where the preamble starts on RX channel 0.
+    skew : int
+        Additional sample offset applied to RX channel 1 only, simulating
+        hardware channel skew.
 
     Returns
     -------
     sig : array, shape (2, N)
         Received signal with embedded preamble.
-    preamble_waveform : array, shape (2, 2*L)
-        Expanded time-orthogonal preamble templates.
-    L_slot : int
-        Length of one preamble slot (= base sequence length).
+    info : SignalInfo
+        Metadata for estimate_timing reconstruction.
+    L : int
+        Preamble sequence length in samples (= 13 at 1 sps).
     """
-    from commstools.helpers import expand_preamble_mimo
+    import numpy as _np
+    from commstools.core import Signal, Preamble, SingleCarrierFrame
+    from commstools.helpers import zc_mimo_root
 
-    # Base preamble: ZC-13 root=1 (complex, near-orthogonal to root=2 secondary)
-    # 13 is prime, which is required for ZC sequences.
-    ROOT_P, ROOT_Q = 1, 2
-    base = xp.asarray(sync.zadoff_chu_sequence(13, root=ROOT_P), dtype="complex64")
-    secondary = xp.asarray(sync.zadoff_chu_sequence(13, root=ROOT_Q), dtype="complex64")
-    L_slot = len(base)
+    # ZC-13 with unique roots per TX stream: root 1 for TX0, root 2 for TX1
+    L = 13
+    zc0 = xp.asarray(sync.zadoff_chu_sequence(L, root=zc_mimo_root(0, 1, L)), dtype="complex64")
+    zc1 = xp.asarray(sync.zadoff_chu_sequence(L, root=zc_mimo_root(1, 1, L)), dtype="complex64")
+    preamble_waveform = xp.stack([zc0, zc1], axis=0)  # (2, L)
 
-    # Expand to [ P Q ]/[ Q P ] structure — off-diagonal slots carry Q so all
-    # templates peak at t0 regardless of which TX stream dominates the RX channel.
-    preamble_waveform = expand_preamble_mimo(
-        base, num_streams=2, mode="time_orthogonal", secondary_waveform=secondary
-    )
-    L_total = preamble_waveform.shape[-1]  # 2 * L_slot
-
-    # Build transmitted MIMO signal (preamble + noise-like payload)
-    N = preamble_pos + L_total + 300
+    # Build TX: both streams transmit simultaneously at preamble_pos
+    N = preamble_pos + L + 300
     tx = xp.zeros((2, N), dtype="complex64")
-    tx[:, preamble_pos : preamble_pos + L_total] = preamble_waveform
+    tx[0, preamble_pos : preamble_pos + L] = zc0
+    tx[1, preamble_pos : preamble_pos + L] = zc1
 
-    # Add some payload energy so the signal isn't trivially sparse
-    rng_state = xp.random.RandomState(42) if hasattr(xp, "random") else None
-    if rng_state is not None:
-        payload = (rng_state.randn(2, N) + 1j * rng_state.randn(2, N)).astype(
-            "complex64"
-        ) * 0.05
-    else:
-        import numpy as _np
+    # Low-level noise
+    _rng = _np.random.RandomState(42)
+    noise = xp.asarray(
+        (_rng.randn(2, N) + 1j * _rng.randn(2, N)).astype("complex64") * 0.05
+    )
+    tx = tx + noise
 
-        _rng = _np.random.RandomState(42)
-        payload = xp.asarray(
-            (_rng.randn(2, N) + 1j * _rng.randn(2, N)).astype("complex64") * 0.05
-        )
-    tx += payload
-
-    # Apply channel matrix: rx[i] = sum_j H[i,j] * tx[j]
+    # Apply channel matrix and optional per-channel skew
     H = xp.asarray(channel_matrix, dtype="complex64")
-    sig = H @ tx  # (2, N)
+    rx = H @ tx  # (2, N)
 
-    return sig, preamble_waveform, L_slot
+    if skew != 0:
+        # Roll channel 1 to simulate a timing skew of `skew` samples
+        rx = xp.stack([rx[0], xp.roll(rx[1], skew)], axis=0)
 
-
-def test_estimate_timing_time_orthogonal_identity(backend_device, xp):
-    """Time-orthogonal MIMO with identity channel: correct frame_start and stream assignment [0, 1]."""
-    from commstools.core import SignalInfo
-
-    preamble_pos = 200
-    H = [[1.0, 0.0], [0.0, 1.0]]  # identity
-    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
-        xp, H, preamble_pos
-    )
-
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="zc",
-        preamble_seq_len=13,
-        preamble_kwargs={"root": 1},
-        preamble_mode="time_orthogonal",
+    sig = Signal(samples=rx, sampling_rate=1, symbol_rate=1, signal_type="Single-Carrier Frame")
+    sig.frame = SingleCarrierFrame(
+        payload_len=100,
+        preamble=Preamble(sequence_type="zc", length=L, root=1),
         num_streams=2,
     )
+    return sig, L
 
-    coarse, frac, streams = sync.estimate_timing(
-        sig,
-        preamble=preamble_waveform,
-        info=info,
-        sps=1,
-        pulse_shape="none",
-        threshold=0.1,
-        return_stream_assignment=True,
+
+def test_estimate_timing_mimo_identity(backend_device, xp):
+    """MIMO unique-root ZC: identity channel, both channels align to preamble_pos."""
+    preamble_pos = 200
+    sig, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
+
+    coarse, frac = sync.estimate_timing(
+        sig, sps=1, pulse_shape="none", threshold=0.05
     )
 
-    # Frame start should be at preamble_pos (±1 sample tolerance)
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
             f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
         )
 
-    # Stream assignment: identity → RX0↔TX0, RX1↔TX1
-    assert int(streams[0]) == 0
-    assert int(streams[1]) == 1
 
-
-def test_estimate_timing_time_orthogonal_polswap(backend_device, xp):
-    """Time-orthogonal MIMO with polarization swap: correct frame_start and stream assignment [1, 0]."""
-    from commstools.core import SignalInfo
-
-    preamble_pos = 200
-    H = [[0.0, 1.0], [1.0, 0.0]]  # swap
-    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
-        xp, H, preamble_pos
-    )
-
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="zc",
-        preamble_seq_len=13,
-        preamble_kwargs={"root": 1},
-        preamble_mode="time_orthogonal",
-        num_streams=2,
-    )
-
-    coarse, frac, streams = sync.estimate_timing(
-        sig,
-        preamble=preamble_waveform,
-        info=info,
-        sps=1,
-        pulse_shape="none",
-        threshold=0.1,
-        return_stream_assignment=True,
-    )
-
-    # Frame start should still be at preamble_pos
-    for ch in range(2):
-        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
-            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
-        )
-
-    # Polarization swap: RX0 sees TX1, RX1 sees TX0
-    assert int(streams[0]) == 1
-    assert int(streams[1]) == 0
-
-
-def test_estimate_timing_time_orthogonal_mixed_channel(backend_device, xp):
-    """Time-orthogonal MIMO with 45° rotation: both streams present on each RX, but one dominates."""
-    from commstools.core import SignalInfo
+def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
+    """MIMO unique-root ZC: mixed channel (both streams present on each RX)."""
     import numpy as np
 
     preamble_pos = 150
-    # 40° rotation — near-equal mixing but with asymmetry to ensure
-    # deterministic assignment.  cos(40°)≈0.766, sin(40°)≈0.643
     angle = np.radians(40)
     H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
-    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
-        xp, H, preamble_pos
+    sig, L = _make_mimo_signal(xp, H, preamble_pos)
+
+    coarse, frac = sync.estimate_timing(
+        sig, sps=1, pulse_shape="none", threshold=0.05
     )
 
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="zc",
-        preamble_seq_len=13,
-        preamble_kwargs={"root": 1},
-        preamble_mode="time_orthogonal",
-        num_streams=2,
-    )
-
-    coarse, frac, streams = sync.estimate_timing(
-        sig,
-        preamble=preamble_waveform,
-        info=info,
-        sps=1,
-        pulse_shape="none",
-        threshold=0.05,
-        return_stream_assignment=True,
-    )
-
-    # Frame start should be correct regardless of rotation
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
             f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
         )
 
-    # With a rotation < 45°, dominant stream should still be identity-like
-    assert int(streams[0]) == 0
-    assert int(streams[1]) == 1
 
-
-def test_estimate_timing_time_orthogonal_no_stream_flag(backend_device, xp):
-    """Without return_stream_assignment, result is a 2-tuple (no stream info)."""
-    from commstools.core import SignalInfo
-
-    H = [[1.0, 0.0], [0.0, 1.0]]
-    sig, preamble_waveform, _ = _make_time_orthogonal_mimo_signal(xp, H)
-
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="zc",
-        preamble_seq_len=13,
-        preamble_kwargs={"root": 1},
-        preamble_mode="time_orthogonal",
-        num_streams=2,
-    )
-
-    result = sync.estimate_timing(
-        sig,
-        preamble=preamble_waveform,
-        info=info,
-        sps=1,
-        pulse_shape="none",
-        threshold=0.1,
-        return_stream_assignment=False,
-    )
-
-    assert len(result) == 2, "Expected 2-tuple when return_stream_assignment=False"
-
-
-def test_estimate_timing_time_orthogonal_dominated_by_stream1(backend_device, xp):
-    """All RX channels dominated by TX stream 1: frame_start must still equal preamble_pos.
-
-    This validates the fix for the old bug where ``frame_start = min(argmax per channel)``
-    would return ``preamble_pos + L_slot`` when all channels were dominated by stream 1,
-    causing a one-slot timing error.  With Q-filled off-diagonal blocks every template
-    peaks at t0, so the combined-max approach correctly recovers t0 regardless.
-    """
-    from commstools.core import SignalInfo
-
+def test_estimate_timing_mimo_channel_skew(backend_device, xp):
+    """MIMO: hardware skew of 5 samples on channel 1 is reflected in per-channel coarse offsets."""
     preamble_pos = 200
-    # Channel where both RX channels are almost entirely stream-1 dominated
-    # (stream 0 is very weak, stream 1 is very strong)
-    H = [[0.05, 0.95], [0.1, 0.9]]
-    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
-        xp, H, preamble_pos
+    skew = 5
+    sig, L = _make_mimo_signal(
+        xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew
     )
 
-    info = SignalInfo(
-        signal_type="Single-Carrier Frame",
-        preamble_type="zc",
-        preamble_seq_len=13,
-        preamble_kwargs={"root": 1},
-        preamble_mode="time_orthogonal",
-        num_streams=2,
+    coarse, frac = sync.estimate_timing(
+        sig, sps=1, pulse_shape="none", threshold=0.05
     )
 
-    coarse, frac, streams = sync.estimate_timing(
-        sig,
-        preamble=preamble_waveform,
-        info=info,
-        sps=1,
-        pulse_shape="none",
-        threshold=0.05,
-        return_stream_assignment=True,
+    # Channel 0 should find preamble_pos; channel 1 is shifted by skew
+    assert abs(int(coarse[0]) - preamble_pos) <= 1, (
+        f"Ch0: expected {preamble_pos}, got {int(coarse[0])}"
     )
-
-    # Frame start must be at preamble_pos — the old code returned preamble_pos + L_slot
-    for ch in range(2):
-        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
-            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])} "
-            f"(L_slot={L_slot}, off by {int(coarse[ch]) - preamble_pos} samples)"
-        )
-
-    # Both channels dominated by stream 1
-    assert int(streams[0]) == 1
-    assert int(streams[1]) == 1
+    expected_ch1 = preamble_pos + skew
+    assert abs(int(coarse[1]) - expected_ch1) <= 1, (
+        f"Ch1: expected {expected_ch1} (pos+skew), got {int(coarse[1])}"
+    )
+    # Offsets must differ by ~skew (not forced equal)
+    assert int(coarse[0]) != int(coarse[1]), "Skew channels must have different coarse offsets"
 
 
 # -----------------------------------------------------------------------------

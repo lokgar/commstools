@@ -21,8 +21,8 @@ validate_array :
     Ensures input data is coerced into a supported backend array type.
 cross_correlate_fft :
     Vectorized FFT-based cross-correlation for 1D and multichannel signals.
-expand_preamble_mimo :
-    Expands a single preamble waveform to a MIMO preamble for N_tx antennas.
+zc_mimo_root :
+    Deterministic unique ZC root assignment per TX stream for MIMO preambles.
 """
 
 from typing import Any, Optional
@@ -431,91 +431,38 @@ def cross_correlate_fft(
     return corr
 
 
-def expand_preamble_mimo(
-    base_waveform: ArrayType,
-    num_streams: int,
-    mode: str = "same",
-    secondary_waveform: Optional[ArrayType] = None,
-) -> ArrayType:
+def zc_mimo_root(stream_idx: int, base_root: int, length: int) -> int:
     """
-    Expands a base preamble waveform into a MIMO preamble structure.
+    Returns the Zadoff-Chu root for TX stream ``stream_idx`` in a MIMO preamble.
+
+    Assigns a deterministic unique root to each TX stream by cycling through
+    distinct roots starting from ``base_root``, wrapping in the range
+    ``[1, length-1]``.  For prime ``length`` all roots are valid CAZAC
+    sequences; any two distinct roots are near-orthogonal with cross-correlation
+    magnitude ``1/sqrt(length)`` at every lag.
 
     Parameters
     ----------
-    base_waveform : ArrayType
-        Primary preamble samples P, shape (L,) or (1, L).
-    num_streams : int
-        Number of transmit streams.
-    mode : str
-        MIMO mode: "same" (broadcast) or "time_orthogonal".
-    secondary_waveform : ArrayType
-        Secondary preamble Q (ideally near-orthogonal to P), shape (L,) or (1, L).
-        **Required** when ``mode="time_orthogonal"``. Off-diagonal blocks are filled
-        with Q instead of zeros, giving:
-
-            [ P Q Q ]
-            [ Q P Q ]
-            [ Q Q P ]
-
-        This makes every correlation peak carry energy proportional to
-        ``|h_P|^2 * E_P + (C-1)*|h_Q|^2 * E_Q`` rather than just ``|h_P|^2 * E_P``,
-        greatly improving stream-identification reliability when any channel
-        is dominated by a non-primary stream.
+    stream_idx : int
+        TX stream index (0-based).
+    base_root : int
+        ZC root assigned to stream 0.  Must be in ``[1, length-1]``.
+    length : int
+        Sequence length (should be prime for the CAZAC property).
 
     Returns
     -------
-    ArrayType
-        Expanded preamble, shape (C, L_mimo).
+    int
+        ZC root for stream ``stream_idx``, guaranteed in ``[1, length-1]``.
 
-    Raises
-    ------
-    ValueError
-        If ``mode="time_orthogonal"`` and ``secondary_waveform`` is None.
+    Examples
+    --------
+    >>> [zc_mimo_root(k, 1, 13) for k in range(4)]
+    [1, 2, 3, 4]
+    >>> [zc_mimo_root(k, 10, 13) for k in range(4)]
+    [10, 11, 12, 1]
     """
-    if num_streams <= 1:
-        return base_waveform
+    return ((base_root - 1 + stream_idx) % (length - 1)) + 1
 
-    xp = get_array_module(base_waveform)
 
-    # Ensure (1, L)
-    if base_waveform.ndim == 1:
-        base_waveform = base_waveform[None, :]
 
-    if mode == "same":
-        # Broadcast: (C, L)
-        return xp.tile(base_waveform, (num_streams, 1))
-
-    elif mode == "time_orthogonal":
-        if secondary_waveform is None:
-            raise ValueError(
-                "secondary_waveform is required for mode='time_orthogonal'. "
-                "Provide a near-orthogonal sequence Q (e.g. a ZC sequence with "
-                "a different root) so that off-diagonal blocks carry energy."
-            )
-
-        # Time-Orthogonal: (C, C*L)
-        # [ P Q Q ]
-        # [ Q P Q ]
-        # [ Q Q P ]
-        L = base_waveform.shape[-1]
-        dtype = base_waveform.dtype
-
-        total_len = L * num_streams
-        p_mimo = xp.zeros((num_streams, total_len), dtype=dtype)
-
-        # Reshape to (C, C, L) — row i, slot j, sample k
-        p_view = p_mimo.reshape(num_streams, num_streams, L)
-
-        # Fill all blocks with Q, then overwrite diagonal with P
-        sec = xp.asarray(secondary_waveform)
-        if sec.ndim == 1:
-            sec = sec[None, :]
-        p_view[:] = sec[0]  # broadcast Q across all (C, C) blocks
-
-        indices = xp.arange(num_streams)
-        p_view[indices, indices, :] = base_waveform[0]  # diagonal = P
-
-        return p_mimo
-
-    else:
-        return xp.tile(base_waveform, (num_streams, 1))
