@@ -111,7 +111,7 @@ def save_npz(
     the originating frame is serialised into the archive
     (``__frame_metadata__`` + ``frame_payload_symbols`` etc.).  On load,
     :func:`load_npz` reconstructs the frame and re-attaches it so that
-    :meth:`Signal.equalize_frame` and :meth:`Signal.correct_timing` work
+    :meth:`Signal.correct_timing` and frame-aware equalizer workflows work
     identically to a freshly generated signal.
 
     Examples
@@ -146,9 +146,9 @@ def save_npz(
     # -------------------------------------------------------------------------
     # The frame holds the complete transmit-side description (structure map,
     # pilot masks, preamble sequence, generated payload/pilot symbols).
-    # Saving it ensures that equalize_frame(), correct_timing(), and pilot
-    # extraction all work after a save/load round-trip without requiring the
-    # caller to keep a reference to the original frame object.
+    # Saving it ensures that correct_timing() and pilot extraction all work
+    # after a save/load round-trip without requiring the caller to keep a
+    # reference to the original frame object.
     frame = signal.frame
     if frame is not None:
         # All public fields are JSON-serializable primitives; nested Preamble
@@ -221,8 +221,8 @@ def load_npz(
     :func:`save_npz` when the signal originated from a frame), the
     originating frame is reconstructed (class determined by the
     ``_frame_type`` key embedded in the metadata) and re-attached as
-    ``sig.frame``.  This makes :meth:`Signal.equalize_frame` and
-    :meth:`Signal.correct_timing` work without any extra arguments.
+    ``sig.frame``.  This makes :meth:`Signal.correct_timing` and
+    frame-aware equalizer workflows work without any extra arguments.
 
     Examples
     --------

@@ -38,7 +38,11 @@ lms :
 rls :
     Recursive Least Squares adaptive equalizer.
 cma :
-    Constant Modulus Algorithm blind equalizer.
+    Constant Modulus Algorithm blind equalizer (optionally pilot-aided).
+rde :
+    Radius Directed Equalizer blind equalizer (optionally pilot-aided).
+build_pilot_ref :
+    Build dense pilot reference arrays for passing to ``cma`` / ``rde``.
 zf_equalizer :
     Zero-Forcing / MMSE frequency-domain block equalizer.
 apply_taps :
@@ -68,11 +72,8 @@ class EqualizerResult:
     Attributes
     ----------
     y_hat : ArrayType
-        Full-frame equalized symbol sequence in frame order (preamble first,
-        then payload and pilots interleaved, guard excluded).  Shape:
-        ``(N_total,)`` SISO or ``(C, N_total)`` MIMO.  Use
-        ``preamble_symbols_eq``, ``payload_symbols_eq``, and
-        ``pilot_symbols_eq`` to access each segment separately.
+        Equalized symbol sequence.  Shape: ``(N_sym,)`` SISO or
+        ``(C, N_sym)`` MIMO.
     weights : ArrayType
         Final tap weight vector. Shape: ``(num_taps,)`` for SISO
         or ``(C, C, num_taps)`` for MIMO butterfly.
@@ -81,30 +82,10 @@ class EqualizerResult:
     weights_history : ArrayType or None
         Tap weight evolution over time. Only populated when
         ``store_weights=True``.
-    num_preamble_symbols : int
-        Number of preamble symbols prepended to ``y_hat``.  Non-zero only when
-        the equalizer ran a DA-LMS preamble pre-convergence stage.  Use this
-        to skip the preamble prefix when computing payload-domain metrics.
     num_train_symbols : int
-        Number of data-aided training symbols consumed by the payload equalizer
-        (excluding preamble).  Used to discard the DA-trained transient before
-        computing steady-state metrics like EVM, SNR, and BER.
-    payload_symbols_eq : ArrayType or None
-        Payload-only equalized symbols extracted from ``y_hat``.  Always
-        populated by :func:`equalize_frame`; ``None`` only when ``y_hat``
-        contains no payload symbols.
-    pilot_symbols_eq : ArrayType or None
-        Pilot-only equalized symbols extracted from ``y_hat``.  Populated by
-        :func:`equalize_frame` when pilots are present; ``None`` otherwise.
-    preamble_symbols_eq : ArrayType or None
-        Preamble-only equalized symbols extracted from ``y_hat``.  Populated
-        by :func:`equalize_frame` when a preamble is present; ``None``
-        otherwise.  Shape: ``(L,)`` for SISO, ``(C, L)`` for MIMO same-mode,
-        or ``(C, C*L)`` for MIMO time-orthogonal (slot i in columns
-        ``i*L … (i+1)*L``).  Useful for frequency-offset estimation after
-        equalization: pass to
-        :func:`~commstools.sync.estimate_frequency_offset_preamble` with
-        ``sps=1`` and ``stream_assignment=np.arange(C)``.
+        Number of data-aided training symbols consumed (LMS/RLS).  Used to
+        discard the DA-trained transient before computing steady-state metrics
+        like EVM, SNR, and BER.
     input_norm_factor : float
         Global normalization factor ``rms(samples) * sqrt(sps)`` applied to
         the input samples by ``_normalize_inputs`` before equalization.
@@ -129,11 +110,7 @@ class EqualizerResult:
     weights: ArrayType
     error: ArrayType
     weights_history: Optional[ArrayType] = None
-    num_preamble_symbols: int = 0
     num_train_symbols: int = 0
-    payload_symbols_eq: Optional[ArrayType] = None
-    pilot_symbols_eq: Optional[ArrayType] = None
-    preamble_symbols_eq: Optional[ArrayType] = None
     input_norm_factor: float = 1.0
 
 
@@ -168,129 +145,6 @@ def _log_equalizer_exit(
         _plotting.equalizer_result(result)
 
     return result
-
-
-def _split_hybrid_result(
-    result: "EqualizerResult",
-    preamble_mask: np.ndarray,
-    pilot_mask: np.ndarray,
-) -> "EqualizerResult":
-    """Split a full-frame result into preamble, payload, and pilot arrays.
-
-    Parameters
-    ----------
-    result : EqualizerResult
-        Full-frame result.  ``y_hat`` shape is ``(N_total,)`` SISO or
-        ``(C, N_total)`` MIMO, where
-        ``N_total = N_preamble + N_payload + N_pilots``.
-    preamble_mask : (N_total,) bool ndarray
-        ``True`` at preamble symbol positions.
-    pilot_mask : (N_total,) bool ndarray
-        ``True`` at pilot symbol positions.
-
-    Returns
-    -------
-    EqualizerResult
-        Same as *result* but with ``preamble_symbols_eq``,
-        ``payload_symbols_eq``, and ``pilot_symbols_eq`` populated.
-    """
-    payload_mask = ~preamble_mask & ~pilot_mask
-    preamble_idx = np.where(preamble_mask)[0]
-    pilot_idx = np.where(pilot_mask)[0]
-    payload_idx = np.where(payload_mask)[0]
-    y = result.y_hat
-    if y.ndim == 1:
-        preamble_eq = y[preamble_idx] if len(preamble_idx) else None
-        pilot_eq = y[pilot_idx] if len(pilot_idx) else None
-        payload_eq = y[payload_idx] if len(payload_idx) else None
-    else:
-        preamble_eq = y[:, preamble_idx] if len(preamble_idx) else None
-        pilot_eq = y[:, pilot_idx] if len(pilot_idx) else None
-        payload_eq = y[:, payload_idx] if len(payload_idx) else None
-    return EqualizerResult(
-        y_hat=result.y_hat,
-        weights=result.weights,
-        error=result.error,
-        weights_history=result.weights_history,
-        num_preamble_symbols=result.num_preamble_symbols,
-        num_train_symbols=result.num_train_symbols,
-        preamble_symbols_eq=preamble_eq,
-        payload_symbols_eq=payload_eq,
-        pilot_symbols_eq=pilot_eq,
-        input_norm_factor=result.input_norm_factor,
-    )
-
-
-def _finalize_frame_result(
-    raw_result: "EqualizerResult",
-    preamble_eq_syms: Optional[ArrayType],
-    preamble_error: Optional[ArrayType],
-    payload_pilot_mask: Optional[np.ndarray],
-) -> "EqualizerResult":
-    """Prepend preamble symbols/error into y_hat/error and split all segments.
-
-    Parameters
-    ----------
-    raw_result : EqualizerResult
-        Output from a payload equalizer pass.  ``y_hat`` and ``error`` contain
-        the body (payload + interleaved pilots, or payload-only when no pilots).
-        Shape ``(N_body,)`` SISO or ``(C, N_body)`` MIMO.
-    preamble_eq_syms : ndarray or None
-        Equalized preamble symbols from the DA-LMS pre-convergence stage.
-        Shape ``(L,)`` SISO, ``(C, L)`` MIMO same-mode, or ``(C, C*L)``
-        time-orthogonal MIMO.  ``None`` when no preamble is present.
-    preamble_error : ndarray or None
-        Error signal from the DA-LMS pre-convergence stage, same shape as
-        ``preamble_eq_syms``.  ``None`` when no preamble is present.
-    payload_pilot_mask : (N_body,) bool ndarray or None
-        ``True`` at pilot positions within the body, ``False`` at payload
-        positions.  Pass ``None`` or all-``False`` when no pilots are present.
-
-    Returns
-    -------
-    EqualizerResult
-        ``y_hat`` and ``error`` are full-frame in symbol order: preamble first,
-        then the body (payload + pilots interleaved).  ``num_preamble_symbols``
-        equals the preamble length; ``num_train_symbols`` reflects payload-domain
-        DA training only.  ``preamble_symbols_eq``, ``payload_symbols_eq``, and
-        ``pilot_symbols_eq`` are extracted via the corresponding boolean masks.
-    """
-    body_y = raw_result.y_hat
-    N_body = body_y.shape[-1] if body_y.ndim > 1 else len(body_y)
-
-    if preamble_eq_syms is not None:
-        # axis=-1 works for both 1-D (SISO) and 2-D (MIMO) arrays; numpy
-        # dispatches to CuPy via __array_function__ when both are on GPU.
-        y_hat_full = np.concatenate([preamble_eq_syms, body_y], axis=-1)
-        error_full = np.concatenate([preamble_error, raw_result.error], axis=-1)
-        N_pre = (
-            preamble_eq_syms.shape[-1]
-            if preamble_eq_syms.ndim > 1
-            else len(preamble_eq_syms)
-        )
-    else:
-        y_hat_full = body_y
-        error_full = raw_result.error
-        N_pre = 0
-
-    N_total = N_pre + N_body
-    full_preamble_mask = np.zeros(N_total, dtype=bool)
-    full_preamble_mask[:N_pre] = True
-
-    full_pilot_mask = np.zeros(N_total, dtype=bool)
-    if payload_pilot_mask is not None and N_body > 0:
-        full_pilot_mask[N_pre:] = payload_pilot_mask
-
-    result_full = EqualizerResult(
-        y_hat=y_hat_full,
-        weights=raw_result.weights,
-        error=error_full,
-        weights_history=raw_result.weights_history,
-        num_preamble_symbols=N_pre,
-        num_train_symbols=raw_result.num_train_symbols,
-        input_norm_factor=raw_result.input_norm_factor,
-    )
-    return _split_hybrid_result(result_full, full_preamble_mask, full_pilot_mask)
 
 
 # -----------------------------------------------------------------------------
@@ -1169,6 +1023,338 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
 
 
 # -----------------------------------------------------------------------------
+# HYBRID DA / BLIND KERNELS  (internal — used by cma/rde when pilot_ref supplied)
+# -----------------------------------------------------------------------------
+#
+# These kernels process every symbol with a per-step error-function switch:
+#
+#   pilot_mask[idx] == 1  →  DA-LMS error:   e[i] = pilot_ref[i, idx] - y[i]
+#   pilot_mask[idx] == 0  →  blind error:    e[i] = CMA or RDE formula
+#
+# The weight update rule is identical to the blind case.  This achieves
+# phase-resolved convergence at pilot/preamble positions while preserving
+# correct blind tracking at data positions — all in a single kernel pass.
+
+
+def _get_numba_pa_cma():
+    """JIT-compile and cache the Numba pilot-aided CMA butterfly loop kernel.
+
+    Hybrid CMA: LMS error at pilot positions (pilot_mask==1), standard
+    Godard CMA error at data positions (pilot_mask==0).  "Pilot-Aided" (PA)
+    is the standard telecom term for this mixed DA/blind adaptation strategy.
+
+    Returns
+    -------
+    pa_cma_loop : numba-compiled callable
+    """
+    if "pa_cma" not in _NUMBA_KERNELS:
+        numba_mod = _get_numba()
+        if numba_mod is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        def pa_cma_loop(
+            x_padded,
+            W,
+            step_size,
+            r2,
+            stride,
+            store_weights,
+            y_out,
+            e_out,
+            w_hist_out,
+            pilot_ref,
+            pilot_mask,
+        ):
+            # x_padded   : (C, N_pad)          complex64
+            # W          : (C, C, num_taps)     complex64 — modified in-place
+            # step_size  : float32
+            # r2         : float32             — Godard radius R²
+            # stride     : int
+            # store_weights : bool
+            # y_out      : (N_sym, C)           complex64
+            # e_out      : (N_sym, C)           complex64
+            # w_hist_out : (N_sym or 1, C, C, T) complex64
+            # pilot_ref  : (C, N_sym)           complex64 — known symbol; 0 at data positions
+            # pilot_mask : (N_sym,)             uint8     — 1 at pilot/preamble, 0 at data
+            C = W.shape[0]
+            num_taps = W.shape[2]
+            n_sym = y_out.shape[0]
+
+            X_wins = np.empty((C, num_taps), dtype=np.complex64)
+            y = np.empty(C, dtype=np.complex64)
+            e = np.empty(C, dtype=np.complex64)
+
+            for idx in range(n_sym):
+                sample_idx = idx * stride
+
+                # Window extraction
+                for c in range(C):
+                    for t in range(num_taps):
+                        X_wins[c, t] = x_padded[c, sample_idx + t]
+
+                # Butterfly forward pass
+                for i in range(C):
+                    acc = np.complex64(0.0)
+                    for j in range(C):
+                        for t in range(num_taps):
+                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
+                    y[i] = acc
+                    y_out[idx, i] = acc
+
+                # Error: DA-LMS at pilots, CMA Godard at data
+                for i in range(C):
+                    if pilot_mask[idx]:
+                        e[i] = pilot_ref[i, idx] - y[i]
+                    else:
+                        mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
+                        e[i] = y[i] * np.float32(mod2 - r2)
+                    e_out[idx, i] = e[i]
+
+                # Weight update
+                for i in range(C):
+                    ce_i = np.conj(e[i])
+                    for j in range(C):
+                        for t in range(num_taps):
+                            W[i, j, t] = W[i, j, t] - step_size * ce_i * X_wins[j, t]
+
+                if store_weights:
+                    for i in range(C):
+                        for j in range(C):
+                            for t in range(num_taps):
+                                w_hist_out[idx, i, j, t] = W[i, j, t]
+
+        _NUMBA_KERNELS["pa_cma"] = pa_cma_loop
+    return _NUMBA_KERNELS["pa_cma"]
+
+
+def _get_numba_pa_rde():
+    """JIT-compile and cache the Numba pilot-aided RDE butterfly loop kernel.
+
+    Hybrid RDE: LMS error at pilot positions (pilot_mask==1), standard
+    ring-directed RDE error at data positions (pilot_mask==0).  "Pilot-Aided"
+    (PA) is the standard telecom term for this mixed DA/blind adaptation strategy.
+
+    Returns
+    -------
+    pa_rde_loop : numba-compiled callable
+    """
+    if "pa_rde" not in _NUMBA_KERNELS:
+        numba_mod = _get_numba()
+        if numba_mod is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        def pa_rde_loop(
+            x_padded,
+            W,
+            step_size,
+            radii,
+            stride,
+            store_weights,
+            y_out,
+            e_out,
+            w_hist_out,
+            pilot_ref,
+            pilot_mask,
+        ):
+            # x_padded   : (C, N_pad)            complex64
+            # W          : (C, C, num_taps)       complex64 — modified in-place
+            # step_size  : float32
+            # radii      : (K,)                  float32   — unique |c| radii, sorted
+            # stride     : int
+            # store_weights : bool
+            # y_out      : (N_sym, C)             complex64
+            # e_out      : (N_sym, C)             complex64
+            # w_hist_out : (N_sym or 1, C, C, T)  complex64
+            # pilot_ref  : (C, N_sym)             complex64 — 0 at data positions
+            # pilot_mask : (N_sym,)               uint8     — 1 at pilot/preamble
+            C = W.shape[0]
+            num_taps = W.shape[2]
+            n_sym = y_out.shape[0]
+            K = radii.shape[0]
+
+            X_wins = np.empty((C, num_taps), dtype=np.complex64)
+            y = np.empty(C, dtype=np.complex64)
+            e = np.empty(C, dtype=np.complex64)
+
+            for idx in range(n_sym):
+                sample_idx = idx * stride
+
+                # Window extraction
+                for c in range(C):
+                    for t in range(num_taps):
+                        X_wins[c, t] = x_padded[c, sample_idx + t]
+
+                # Butterfly forward pass
+                for i in range(C):
+                    acc = np.complex64(0.0)
+                    for j in range(C):
+                        for t in range(num_taps):
+                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
+                    y[i] = acc
+                    y_out[idx, i] = acc
+
+                # Error: DA-LMS at pilots, RDE ring-directed at data
+                for i in range(C):
+                    if pilot_mask[idx]:
+                        e[i] = pilot_ref[i, idx] - y[i]
+                    else:
+                        mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
+                        abs_y = mod2 ** np.float32(0.5)
+                        best_rd = radii[0]
+                        best_dist = abs(abs_y - radii[0])
+                        for k in range(1, K):
+                            dist_k = abs(abs_y - radii[k])
+                            if dist_k < best_dist:
+                                best_dist = dist_k
+                                best_rd = radii[k]
+                        e[i] = y[i] * np.float32(mod2 - best_rd * best_rd)
+                    e_out[idx, i] = e[i]
+
+                # Weight update
+                for i in range(C):
+                    ce_i = np.conj(e[i])
+                    for j in range(C):
+                        for t in range(num_taps):
+                            W[i, j, t] = W[i, j, t] - step_size * ce_i * X_wins[j, t]
+
+                if store_weights:
+                    for i in range(C):
+                        for j in range(C):
+                            for t in range(num_taps):
+                                w_hist_out[idx, i, j, t] = W[i, j, t]
+
+        _NUMBA_KERNELS["pa_rde"] = pa_rde_loop
+    return _NUMBA_KERNELS["pa_rde"]
+
+
+def _get_jax_pa_cma(num_taps: int, stride: int, num_ch: int):
+    """JIT-compile and cache the JAX pilot-aided CMA butterfly scan.
+
+    Hybrid CMA scan using ``jax.lax.scan``.  At pilot positions
+    (``pilot_mask[t] == True``) the error is the standard LMS residual
+    ``pilot_ref[t] - y``; at data positions the Godard CMA error
+    ``y * (|y|² - R²)`` is used.  The switch is XLA-branchless via
+    ``jnp.where``, keeping the scan body shape-static for efficient
+    compilation.
+
+    Parameters
+    ----------
+    num_taps : int
+    stride   : int — samples per symbol (sps)
+    num_ch   : int — number of MIMO channels C
+
+    Returns
+    -------
+    pa_cma_scan : jax.jit-compiled callable
+        ``(x_input, w_init, step_size, r2, pilot_ref, pilot_mask, n_sym)
+        → (y_all, e_all, W_final, w_hist)``
+        where ``pilot_ref`` has shape ``(n_sym, C)`` and ``pilot_mask``
+        has shape ``(n_sym,)`` bool.
+    """
+    key = ("pa_cma", num_taps, stride, num_ch)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+
+        @functools.partial(jax.jit, static_argnums=(6,))
+        def pa_cma_scan(
+            x_input,  # (C, N_pad)  complex64 — padded received samples
+            w_init,  # (C, C, T)   complex64 — initial butterfly weights
+            step_size,  # ()          float32
+            r2,  # ()          float32 — Godard R² = E[|s|⁴]/E[|s|²]
+            pilot_ref,  # (n_sym, C)  complex64 — known symbols; 0 at data
+            pilot_mask,  # (n_sym,)    bool — True at pilot/preamble positions
+            n_sym,  # int (static) — total symbol count
+        ):
+            def step(W, xs_t):
+                idx, p_ref, p_mask = xs_t  # (): int, (C,): cplx, (): bool
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, idx * stride), (num_ch, num_taps)
+                )  # (C, T)
+                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
+
+                abs_y2 = jnp.real(y * jnp.conj(y))  # strict real |y|²
+                e_blind = y * (abs_y2 - r2)  # Godard CMA
+                e_da = p_ref - y  # pilot LMS
+                e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
+
+                W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
+                return W_new, (y, e, W_new)
+
+            xs = (jnp.arange(n_sym), pilot_ref, pilot_mask)
+            W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
+            return y_all, e_all, W_final, wh_all
+
+        _JITTED_EQ[key] = pa_cma_scan
+    return _JITTED_EQ[key]
+
+
+def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
+    """JIT-compile and cache the JAX pilot-aided RDE butterfly scan.
+
+    Hybrid RDE scan using ``jax.lax.scan``.  At pilot positions the error
+    is the LMS residual ``pilot_ref[t] - y``; at data positions the
+    ring-directed RDE error ``y * (|y|² - R_d²)`` is used, where ``R_d``
+    is the nearest constellation ring radius.  The switch is branchless.
+
+    Parameters
+    ----------
+    num_taps  : int
+    stride    : int — samples per symbol (sps)
+    num_radii : int — number of unique constellation ring radii K
+    num_ch    : int — number of MIMO channels C
+
+    Returns
+    -------
+    pa_rde_scan : jax.jit-compiled callable
+        ``(x_input, w_init, step_size, radii, pilot_ref, pilot_mask, n_sym)
+        → (y_all, e_all, W_final, w_hist)``
+        where ``pilot_ref`` has shape ``(n_sym, C)`` and ``pilot_mask``
+        has shape ``(n_sym,)`` bool.
+    """
+    key = ("pa_rde", num_taps, stride, num_radii, num_ch)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+
+        @functools.partial(jax.jit, static_argnums=(6,))
+        def pa_rde_scan(
+            x_input,  # (C, N_pad)  complex64 — padded received samples
+            w_init,  # (C, C, T)   complex64 — initial butterfly weights
+            step_size,  # ()          float32
+            radii,  # (K,)        float32 — unique |c| constellation radii, sorted
+            pilot_ref,  # (n_sym, C)  complex64 — known symbols; 0 at data
+            pilot_mask,  # (n_sym,)    bool — True at pilot/preamble positions
+            n_sym,  # int (static) — total symbol count
+        ):
+            def step(W, xs_t):
+                idx, p_ref, p_mask = xs_t  # (): int, (C,): cplx, (): bool
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, idx * stride), (num_ch, num_taps)
+                )  # (C, T)
+                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
+
+                abs_y2 = jnp.real(y * jnp.conj(y))  # strict real |y|²
+                abs_y = jnp.sqrt(abs_y2)  # (C,)
+                dist = jnp.abs(abs_y[:, None] - radii[None, :])  # (C, K) broadcast
+                rd = radii[jnp.argmin(dist, axis=1)]  # (C,) nearest radius
+
+                e_blind = y * (abs_y2 - rd**2)  # RDE ring-directed
+                e_da = p_ref - y  # pilot LMS
+                e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
+
+                W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
+                return W_new, (y, e, W_new)
+
+            xs = (jnp.arange(n_sym), pilot_ref, pilot_mask)
+            W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
+            return y_all, e_all, W_final, wh_all
+
+        _JITTED_EQ[key] = pa_rde_scan
+    return _JITTED_EQ[key]
+
+
+# -----------------------------------------------------------------------------
 # SHARED HELPERS
 # -----------------------------------------------------------------------------
 
@@ -1269,8 +1455,13 @@ def _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=None):
     return W
 
 
-def _validate_w_init(w: np.ndarray, num_ch: int, num_taps: int) -> None:
-    """Raise ValueError if w_init shape is incompatible with the equalizer config.
+def _validate_w_init(w: np.ndarray, num_ch: int, num_taps: int) -> np.ndarray:
+    """Validate w_init shape and return it in butterfly layout ``(C, C, T)``.
+
+    The library's unpack helpers squeeze SISO weights from ``(1, 1, T)`` to
+    ``(T,)`` in ``EqualizerResult.weights`` for user convenience.  This means
+    a weight array produced by one SISO equalizer stage and passed as ``w_init``
+    to the next stage arrives here as ``(T,)``; that shape must be accepted.
 
     Parameters
     ----------
@@ -1278,16 +1469,26 @@ def _validate_w_init(w: np.ndarray, num_ch: int, num_taps: int) -> None:
     num_ch   : int        — expected number of channels C
     num_taps : int        — expected number of FIR taps T
 
+    Returns
+    -------
+    np.ndarray — w reshaped to ``(num_ch, num_ch, num_taps)`` if needed.
+
     Raises
     ------
-    ValueError if ``w.shape != (num_ch, num_ch, num_taps)``.
+    ValueError if the shape cannot be mapped to ``(num_ch, num_ch, num_taps)``.
     """
     expected = (num_ch, num_ch, num_taps)
-    if w.shape != expected:
-        raise ValueError(
-            f"w_init shape {tuple(w.shape)} does not match expected "
-            f"(num_ch={num_ch}, num_ch={num_ch}, num_taps={num_taps}) = {expected}."
-        )
+    if w.shape == expected:
+        return w
+    # SISO: accept the squeezed shapes emitted by _unpack_result_*:
+    #   (T,)    — both channel dims collapsed  (_unpack: W[0, 0])
+    #   (1, T)  — one channel dim collapsed
+    if num_ch == 1 and w.shape in ((num_taps,), (1, num_taps)):
+        return w.reshape(1, 1, num_taps)
+    raise ValueError(
+        f"w_init shape {tuple(w.shape)} does not match expected "
+        f"(num_ch={num_ch}, num_ch={num_ch}, num_taps={num_taps}) = {expected}."
+    )
 
 
 def _prepare_training_jax(
@@ -1626,7 +1827,9 @@ def lms(
         ``'jax'`` uses ``jax.lax.scan`` and supports GPU placement and
         automatic differentiation through the equalizer.
     w_init : array_like, optional
-        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64.
+        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
+        SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
+        ``EqualizerResult.weights`` for single-channel equalizers.
         If provided, the equalizer warm-starts from these weights instead of
         the default center-tap identity matrix.  Useful for weight handoff from
         a prior stage (e.g. preamble LMS → payload LMS).
@@ -1716,7 +1919,7 @@ def lms(
         )
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
-            _validate_w_init(w_arr, num_ch, num_taps)
+            w_arr = _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
             W = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
@@ -1813,13 +2016,9 @@ def lms(
     train_jax = to_jax(train_full, device=platform)
     const_jax = to_jax(constellation_np, device=platform)
     if w_init is not None:
-        W_jax = to_jax(
-            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
-            device=platform,
-        )
-        _validate_w_init(
-            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
-        )
+        w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
+        w_arr = _validate_w_init(w_arr, num_ch, num_taps)
+        W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2074,7 +2273,7 @@ def rls(
         )
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
-            _validate_w_init(w_arr, num_ch, num_taps)
+            w_arr = _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
             W = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
@@ -2186,13 +2385,9 @@ def rls(
     train_jax = to_jax(train_full, device=platform)
     const_jax = to_jax(constellation_np, device=platform)
     if w_init is not None:
-        W_jax = to_jax(
-            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
-            device=platform,
-        )
-        _validate_w_init(
-            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
-        )
+        w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
+        w_arr = _validate_w_init(w_arr, num_ch, num_taps)
+        W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2238,6 +2433,75 @@ def rls(
     )
 
 
+def build_pilot_ref(
+    pilot_symbols: np.ndarray,
+    pilot_mask: np.ndarray,
+    n_sym: int,
+    num_ch: int,
+) -> tuple:
+    """Build dense pilot reference array and uint8 mask for the hybrid PA kernel.
+
+    Packs sparse pilot symbols into a dense ``(C, n_sym)`` array suitable for
+    passing to :func:`cma` or :func:`rde` as ``pilot_ref`` / ``pilot_mask``.
+    Data positions are filled with zeros; the mask marks which positions carry
+    known reference symbols.
+
+    Parameters
+    ----------
+    pilot_symbols : (K,) or (C, K) complex64 ndarray
+        Known pilot symbols in transmission order (only the K pilot positions,
+        no data symbols).  A 1-D array is broadcast to all C channels.
+    pilot_mask : (n_sym,) bool ndarray
+        ``True`` at the K pilot positions within the equalized body region.
+    n_sym : int
+        Total number of output symbols (payload + pilots).
+    num_ch : int
+        Number of receive channels C.
+
+    Returns
+    -------
+    pilot_ref : (C, n_sym) complex64 ndarray
+        Dense reference array — zeros at data positions, pilot symbols at
+        pilot positions.
+    pilot_mask_u8 : (n_sym,) uint8 ndarray
+        ``1`` at pilot positions, ``0`` elsewhere.
+
+    Examples
+    --------
+    Build the reference from a :class:`~commstools.core.SingleCarrierFrame` and
+    pass it directly to :func:`rde`:
+
+    .. code-block:: python
+
+        struct = frame.get_structure_map(unit="symbols", sps=1, include_preamble=False)
+        pilot_ref, pilot_mask_u8 = build_pilot_ref(
+            pilot_symbols=frame.pilot_symbols,
+            pilot_mask=np.asarray(struct["pilots"]),
+            n_sym=n_body_symbols,
+            num_ch=num_ch,
+        )
+        result = rde(body_samples, ..., pilot_ref=pilot_ref, pilot_mask=pilot_mask_u8)
+    """
+    pilot_ref_arr = np.zeros((num_ch, n_sym), dtype=np.complex64)
+    mask_uint8 = np.zeros(n_sym, dtype=np.uint8)
+
+    pilot_positions = np.where(pilot_mask)[0]
+    n_pilots = len(pilot_positions)
+
+    if pilot_symbols.ndim == 1:
+        pilot_symbols = np.broadcast_to(
+            pilot_symbols[np.newaxis, :], (num_ch, n_pilots)
+        )
+    else:
+        pilot_symbols = np.asarray(pilot_symbols, dtype=np.complex64)
+
+    for ch in range(num_ch):
+        pilot_ref_arr[ch, pilot_positions] = pilot_symbols[ch, :n_pilots]
+    mask_uint8[pilot_positions] = 1
+
+    return pilot_ref_arr, mask_uint8
+
+
 def cma(
     samples: ArrayType,
     num_taps: int = 21,
@@ -2251,6 +2515,9 @@ def cma(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    pilot_ref: Optional[ArrayType] = None,
+    pilot_mask: Optional[np.ndarray] = None,
+    pilot_gain_db: float = 0.0,
     debug_plot: bool = False,
 ) -> EqualizerResult:
     """
@@ -2262,6 +2529,13 @@ def cma(
 
     CMA recovers the signal up to a phase ambiguity. A phase recovery step
     (e.g. Viterbi-Viterbi, pilot-aided) is typically needed after CMA.
+
+    When ``pilot_ref`` and ``pilot_mask`` are both supplied the equalizer
+    switches to a **pilot-aided hybrid** mode: the standard Godard CMA error
+    is used at data positions while an LMS residual error
+    (``pilot_ref − y``) is used at every pilot position.  This resolves the
+    phase ambiguity at pilot locations while preserving blind adaptation
+    elsewhere.  Build the dense arrays with :func:`build_pilot_ref`.
 
     Parameters
     ----------
@@ -2298,10 +2572,27 @@ def cma(
         typically fastest on CPU. ``'jax'`` uses ``jax.lax.scan``
         (XLA-compiled, GPU-capable).
     w_init : array_like, optional
-        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64.
+        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
+        SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
+        ``EqualizerResult.weights`` for single-channel equalizers.
         Warm-starts blind equalization from pre-converged weights (e.g. from
         a prior ``lms()`` call on the preamble). Raises ``ValueError`` on
         shape mismatch.
+    pilot_ref : (C, N_sym) complex64 array, optional
+        Dense pilot reference array — zeros at data positions, known symbols
+        at pilot positions.  Build with :func:`build_pilot_ref`.
+        Must be provided together with ``pilot_mask``.
+    pilot_mask : (N_sym,) uint8 array, optional
+        Pilot position mask — ``1`` at pilot positions, ``0`` elsewhere.
+        Build with :func:`build_pilot_ref`.
+    pilot_gain_db : float, default 0.0
+        Pilot boosting in dB relative to payload power, matching
+        ``SingleCarrierFrame.pilot_gain_db``.  When non-zero, the received
+        signal at pilot positions is attenuated by the inverse of the boost
+        factor before the global RMS normalisation.  This prevents boosted
+        pilots from inflating the RMS estimate and biasing the Godard
+        convergence target at data positions.  Set to ``0.0`` when pilots
+        are not boosted.
 
     Returns
     -------
@@ -2317,9 +2608,10 @@ def cma(
     ``device='cpu'`` for typical SISO sequences, or ``backend='numba'`` for
     CPU-optimal throughput.
     """
+    use_pilots = pilot_ref is not None and pilot_mask is not None
     logger.info(
         f"CMA equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
-        f"backend={backend}"
+        f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
     )
 
     samples, xp, _ = dispatch(samples)
@@ -2355,6 +2647,12 @@ def cma(
             raise ImportError("Numba is required for backend='numba'.")
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
+        # Deboost pilot positions before global normalisation so boosted pilots
+        # don't inflate the RMS estimate and bias the Godard convergence target.
+        if use_pilots and pilot_gain_db != 0.0:
+            _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
+            _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
+            samples_np[..., _smask] /= _amp
         # RMS-normalize samples to unit symbol-rate power (CMA has no training)
         samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
 
@@ -2369,7 +2667,7 @@ def cma(
 
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
-            _validate_w_init(w_arr, num_ch, num_taps)
+            w_arr = _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
             W = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
@@ -2380,17 +2678,34 @@ def cma(
             if store_weights
             else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
         )
-        _get_numba_cma()(
-            x_np,
-            W,
-            np.float32(step_size),
-            np.float32(r2),
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_buf,
-        )
+        if use_pilots:
+            pref = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+            pmask = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
+            _get_numba_pa_cma()(
+                x_np,
+                W,
+                np.float32(step_size),
+                np.float32(r2),
+                stride,
+                store_weights,
+                y_out,
+                e_out,
+                w_hist_buf,
+                pref,
+                pmask,
+            )
+        else:
+            _get_numba_cma()(
+                x_np,
+                W,
+                np.float32(step_size),
+                np.float32(r2),
+                stride,
+                store_weights,
+                y_out,
+                e_out,
+                w_hist_buf,
+            )
         return _log_equalizer_exit(
             _unpack_result_numpy(
                 y_out,
@@ -2403,7 +2718,7 @@ def cma(
                 xp=xp,
                 input_norm_factor=eq_norm,
             ),
-            name="CMA",
+            name="CMA" if not use_pilots else "CMA(PA)",
             debug_plot=debug_plot,
             check_convergence=True,
         )
@@ -2413,6 +2728,13 @@ def cma(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
+    # Deboost pilot positions before global normalisation so boosted pilots
+    # don't inflate the RMS estimate and bias the Godard convergence target.
+    if use_pilots and pilot_gain_db != 0.0:
+        _amp = float(10.0 ** (pilot_gain_db / 20.0))
+        _smask = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
+        samples = samples.copy()
+        samples[..., _smask] /= xp.float32(_amp)
     # RMS-normalize samples to unit symbol-rate power (CMA has no training)
     samples, _, eq_norm = _normalize_inputs(samples, None, sps)
 
@@ -2440,13 +2762,9 @@ def cma(
         platform = "cpu"
 
     if w_init is not None:
-        W_jax = to_jax(
-            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
-            device=platform,
-        )
-        _validate_w_init(
-            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
-        )
+        w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
+        w_arr = _validate_w_init(w_arr, num_ch, num_taps)
+        W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2455,8 +2773,19 @@ def cma(
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     r2_jax = to_jax(jnp.float32(r2), device=platform)
 
-    scan_fn = _get_jax_cma(num_taps, stride, num_ch)
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, r2_jax, n_sym)
+    if use_pilots:
+        pref_np = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        pmask_np = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
+        # pilot_ref: (C, n_sym) → (n_sym, C) for scan xs
+        pref_jax = to_jax(pref_np.T, device=platform)
+        pmask_jax = to_jax(pmask_np.astype(bool), device=platform)
+        scan_fn = _get_jax_pa_cma(num_taps, stride, num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(
+            x_jax, W_jax, mu_jax, r2_jax, pref_jax, pmask_jax, n_sym
+        )
+    else:
+        scan_fn = _get_jax_cma(num_taps, stride, num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, r2_jax, n_sym)
     return _log_equalizer_exit(
         _unpack_result_jax(
             y_jax,
@@ -2469,7 +2798,7 @@ def cma(
             xp=xp,
             input_norm_factor=eq_norm,
         ),
-        name="CMA",
+        name="CMA" if not use_pilots else "CMA(PA)",
         debug_plot=debug_plot,
         check_convergence=True,
     )
@@ -2488,6 +2817,9 @@ def rde(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    pilot_ref: Optional[ArrayType] = None,
+    pilot_mask: Optional[np.ndarray] = None,
+    pilot_gain_db: float = 0.0,
     debug_plot: bool = False,
 ) -> EqualizerResult:
     """
@@ -2542,10 +2874,27 @@ def rde(
     backend : str, default 'numba'
         ``'numba'`` uses Numba ``@njit``; ``'jax'`` uses ``jax.lax.scan``.
     w_init : array_like, optional
-        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64.
+        Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
+        SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
+        ``EqualizerResult.weights`` for single-channel equalizers.
         Warm-starts blind equalization from pre-converged weights (e.g. from
         a prior ``lms()`` or ``cma()`` call). Raises ``ValueError`` on shape
         mismatch.
+    pilot_ref : (C, N_sym) complex64 array, optional
+        Dense pilot reference array — zeros at data positions, known symbols
+        at pilot positions.  Build with :func:`build_pilot_ref`.
+        Must be provided together with ``pilot_mask``.
+    pilot_mask : (N_sym,) uint8 array, optional
+        Pilot position mask — ``1`` at pilot positions, ``0`` elsewhere.
+        Build with :func:`build_pilot_ref`.
+    pilot_gain_db : float, default 0.0
+        Pilot boosting in dB relative to payload power, matching
+        ``SingleCarrierFrame.pilot_gain_db``.  When non-zero, the received
+        signal at pilot positions is attenuated by the inverse of the boost
+        factor before the global RMS normalisation.  This prevents boosted
+        pilots from inflating the RMS estimate and biasing the ring-radius
+        convergence targets at data positions.  Set to ``0.0`` when pilots
+        are not boosted.
 
     Returns
     -------
@@ -2573,9 +2922,10 @@ def rde(
     Use ``device='cpu'`` for typical SISO sequences, or ``backend='numba'``
     for CPU-optimal throughput.
     """
+    use_pilots = pilot_ref is not None and pilot_mask is not None
     logger.info(
         f"RDE equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
-        f"backend={backend}"
+        f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
     )
 
     samples, xp, _ = dispatch(samples)
@@ -2620,6 +2970,12 @@ def rde(
             raise ImportError("Numba is required for backend='numba'.")
 
         samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
+        # Deboost pilot positions before global normalisation so boosted pilots
+        # don't inflate the RMS estimate and bias the ring-radius convergence targets.
+        if use_pilots and pilot_gain_db != 0.0:
+            _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
+            _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
+            samples_np[..., _smask] /= _amp
         samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
 
         x_np = (
@@ -2637,7 +2993,7 @@ def rde(
 
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
-            _validate_w_init(w_arr, num_ch, num_taps)
+            w_arr = _validate_w_init(w_arr, num_ch, num_taps)
             W = w_arr.copy()
         else:
             W = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
@@ -2648,17 +3004,34 @@ def rde(
             if store_weights
             else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
         )
-        _get_numba_rde()(
-            x_np,
-            W,
-            np.float32(step_size),
-            radii_np,
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_buf,
-        )
+        if use_pilots:
+            pref = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+            pmask = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
+            _get_numba_pa_rde()(
+                x_np,
+                W,
+                np.float32(step_size),
+                radii_np,
+                stride,
+                store_weights,
+                y_out,
+                e_out,
+                w_hist_buf,
+                pref,
+                pmask,
+            )
+        else:
+            _get_numba_rde()(
+                x_np,
+                W,
+                np.float32(step_size),
+                radii_np,
+                stride,
+                store_weights,
+                y_out,
+                e_out,
+                w_hist_buf,
+            )
         return _log_equalizer_exit(
             _unpack_result_numpy(
                 y_out,
@@ -2671,7 +3044,7 @@ def rde(
                 xp=xp,
                 input_norm_factor=eq_norm,
             ),
-            name="RDE",
+            name="RDE" if not use_pilots else "RDE(PA)",
             debug_plot=debug_plot,
             check_convergence=True,
         )
@@ -2681,6 +3054,13 @@ def rde(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
+    # Deboost pilot positions before global normalisation so boosted pilots
+    # don't inflate the RMS estimate and bias the ring-radius convergence targets.
+    if use_pilots and pilot_gain_db != 0.0:
+        _amp = float(10.0 ** (pilot_gain_db / 20.0))
+        _smask = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
+        samples = samples.copy()
+        samples[..., _smask] /= xp.float32(_amp)
     samples, _, eq_norm = _normalize_inputs(samples, None, sps)
 
     samples_padded = (
@@ -2707,13 +3087,9 @@ def rde(
         platform = "cpu"
 
     if w_init is not None:
-        W_jax = to_jax(
-            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
-            device=platform,
-        )
-        _validate_w_init(
-            to_device(w_init, "cpu").astype(np.complex64), num_ch, num_taps
-        )
+        w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
+        w_arr = _validate_w_init(w_arr, num_ch, num_taps)
+        W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
             num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
@@ -2722,8 +3098,19 @@ def rde(
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     radii_jax = to_jax(jnp.asarray(radii, dtype=jnp.float32), device=platform)
 
-    scan_fn = _get_jax_rde(num_taps, stride, num_radii, num_ch)
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, radii_jax, n_sym)
+    if use_pilots:
+        pref_np = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        pmask_np = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
+        # pilot_ref: (C, n_sym) → (n_sym, C) for scan xs
+        pref_jax = to_jax(pref_np.T, device=platform)
+        pmask_jax = to_jax(pmask_np.astype(bool), device=platform)
+        scan_fn = _get_jax_pa_rde(num_taps, stride, num_radii, num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(
+            x_jax, W_jax, mu_jax, radii_jax, pref_jax, pmask_jax, n_sym
+        )
+    else:
+        scan_fn = _get_jax_rde(num_taps, stride, num_radii, num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(x_jax, W_jax, mu_jax, radii_jax, n_sym)
     return _log_equalizer_exit(
         _unpack_result_jax(
             y_jax,
@@ -2736,894 +3123,10 @@ def rde(
             xp=xp,
             input_norm_factor=eq_norm,
         ),
-        name="RDE",
+        name="RDE" if not use_pilots else "RDE(PA)",
         debug_plot=debug_plot,
         check_convergence=True,
     )
-
-
-# -----------------------------------------------------------------------------
-# HYBRID DA / BLIND KERNELS  (internal — used only by equalize_frame)
-# -----------------------------------------------------------------------------
-#
-# These kernels process every symbol with a per-step error-function switch:
-#
-#   pilot_mask[idx] == 1  →  DA-LMS error:   e[i] = pilot_ref[i, idx] - y[i]
-#   pilot_mask[idx] == 0  →  blind error:    e[i] = CMA or RDE formula
-#
-# The weight update rule is identical to the blind case.  This achieves
-# phase-resolved convergence at pilot/preamble positions while preserving
-# correct blind tracking at data positions — all in a single kernel pass.
-
-
-def _get_numba_pa_cma():
-    """JIT-compile and cache the Numba pilot-aided CMA butterfly loop kernel.
-
-    Hybrid CMA: LMS error at pilot positions (pilot_mask==1), standard
-    Godard CMA error at data positions (pilot_mask==0).  "Pilot-Aided" (PA)
-    is the standard telecom term for this mixed DA/blind adaptation strategy.
-
-    Returns
-    -------
-    pa_cma_loop : numba-compiled callable
-    """
-    if "pa_cma" not in _NUMBA_KERNELS:
-        numba_mod = _get_numba()
-        if numba_mod is None:
-            raise ImportError("Numba is required for backend='numba'.")
-
-        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
-        def pa_cma_loop(
-            x_padded,
-            W,
-            step_size,
-            r2,
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_out,
-            pilot_ref,
-            pilot_mask,
-        ):
-            # x_padded   : (C, N_pad)          complex64
-            # W          : (C, C, num_taps)     complex64 — modified in-place
-            # step_size  : float32
-            # r2         : float32             — Godard radius R²
-            # stride     : int
-            # store_weights : bool
-            # y_out      : (N_sym, C)           complex64
-            # e_out      : (N_sym, C)           complex64
-            # w_hist_out : (N_sym or 1, C, C, T) complex64
-            # pilot_ref  : (C, N_sym)           complex64 — known symbol; 0 at data positions
-            # pilot_mask : (N_sym,)             uint8     — 1 at pilot/preamble, 0 at data
-            C = W.shape[0]
-            num_taps = W.shape[2]
-            n_sym = y_out.shape[0]
-
-            X_wins = np.empty((C, num_taps), dtype=np.complex64)
-            y = np.empty(C, dtype=np.complex64)
-            e = np.empty(C, dtype=np.complex64)
-
-            for idx in range(n_sym):
-                sample_idx = idx * stride
-
-                # Window extraction
-                for c in range(C):
-                    for t in range(num_taps):
-                        X_wins[c, t] = x_padded[c, sample_idx + t]
-
-                # Butterfly forward pass
-                for i in range(C):
-                    acc = np.complex64(0.0)
-                    for j in range(C):
-                        for t in range(num_taps):
-                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
-                    y[i] = acc
-                    y_out[idx, i] = acc
-
-                # Error: DA-LMS at pilots, CMA Godard at data
-                for i in range(C):
-                    if pilot_mask[idx]:
-                        e[i] = pilot_ref[i, idx] - y[i]
-                    else:
-                        mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
-                        e[i] = y[i] * np.float32(mod2 - r2)
-                    e_out[idx, i] = e[i]
-
-                # Weight update
-                for i in range(C):
-                    ce_i = np.conj(e[i])
-                    for j in range(C):
-                        for t in range(num_taps):
-                            W[i, j, t] = W[i, j, t] - step_size * ce_i * X_wins[j, t]
-
-                if store_weights:
-                    for i in range(C):
-                        for j in range(C):
-                            for t in range(num_taps):
-                                w_hist_out[idx, i, j, t] = W[i, j, t]
-
-        _NUMBA_KERNELS["pa_cma"] = pa_cma_loop
-    return _NUMBA_KERNELS["pa_cma"]
-
-
-def _get_numba_pa_rde():
-    """JIT-compile and cache the Numba pilot-aided RDE butterfly loop kernel.
-
-    Hybrid RDE: LMS error at pilot positions (pilot_mask==1), standard
-    ring-directed RDE error at data positions (pilot_mask==0).  "Pilot-Aided"
-    (PA) is the standard telecom term for this mixed DA/blind adaptation strategy.
-
-    Returns
-    -------
-    pa_rde_loop : numba-compiled callable
-    """
-    if "pa_rde" not in _NUMBA_KERNELS:
-        numba_mod = _get_numba()
-        if numba_mod is None:
-            raise ImportError("Numba is required for backend='numba'.")
-
-        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
-        def pa_rde_loop(
-            x_padded,
-            W,
-            step_size,
-            radii,
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_out,
-            pilot_ref,
-            pilot_mask,
-        ):
-            # x_padded   : (C, N_pad)            complex64
-            # W          : (C, C, num_taps)       complex64 — modified in-place
-            # step_size  : float32
-            # radii      : (K,)                  float32   — unique |c| radii, sorted
-            # stride     : int
-            # store_weights : bool
-            # y_out      : (N_sym, C)             complex64
-            # e_out      : (N_sym, C)             complex64
-            # w_hist_out : (N_sym or 1, C, C, T)  complex64
-            # pilot_ref  : (C, N_sym)             complex64 — 0 at data positions
-            # pilot_mask : (N_sym,)               uint8     — 1 at pilot/preamble
-            C = W.shape[0]
-            num_taps = W.shape[2]
-            n_sym = y_out.shape[0]
-            K = radii.shape[0]
-
-            X_wins = np.empty((C, num_taps), dtype=np.complex64)
-            y = np.empty(C, dtype=np.complex64)
-            e = np.empty(C, dtype=np.complex64)
-
-            for idx in range(n_sym):
-                sample_idx = idx * stride
-
-                # Window extraction
-                for c in range(C):
-                    for t in range(num_taps):
-                        X_wins[c, t] = x_padded[c, sample_idx + t]
-
-                # Butterfly forward pass
-                for i in range(C):
-                    acc = np.complex64(0.0)
-                    for j in range(C):
-                        for t in range(num_taps):
-                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
-                    y[i] = acc
-                    y_out[idx, i] = acc
-
-                # Error: DA-LMS at pilots, RDE ring-directed at data
-                for i in range(C):
-                    if pilot_mask[idx]:
-                        e[i] = pilot_ref[i, idx] - y[i]
-                    else:
-                        mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
-                        abs_y = mod2 ** np.float32(0.5)
-                        best_rd = radii[0]
-                        best_dist = abs(abs_y - radii[0])
-                        for k in range(1, K):
-                            dist_k = abs(abs_y - radii[k])
-                            if dist_k < best_dist:
-                                best_dist = dist_k
-                                best_rd = radii[k]
-                        e[i] = y[i] * np.float32(mod2 - best_rd * best_rd)
-                    e_out[idx, i] = e[i]
-
-                # Weight update
-                for i in range(C):
-                    ce_i = np.conj(e[i])
-                    for j in range(C):
-                        for t in range(num_taps):
-                            W[i, j, t] = W[i, j, t] - step_size * ce_i * X_wins[j, t]
-
-                if store_weights:
-                    for i in range(C):
-                        for j in range(C):
-                            for t in range(num_taps):
-                                w_hist_out[idx, i, j, t] = W[i, j, t]
-
-        _NUMBA_KERNELS["pa_rde"] = pa_rde_loop
-    return _NUMBA_KERNELS["pa_rde"]
-
-
-def _get_jax_pa_cma(num_taps: int, stride: int, num_ch: int):
-    """JIT-compile and cache the JAX pilot-aided CMA butterfly scan.
-
-    Hybrid CMA scan using ``jax.lax.scan``.  At pilot positions
-    (``pilot_mask[t] == True``) the error is the standard LMS residual
-    ``pilot_ref[t] - y``; at data positions the Godard CMA error
-    ``y * (|y|² - R²)`` is used.  The switch is XLA-branchless via
-    ``jnp.where``, keeping the scan body shape-static for efficient
-    compilation.
-
-    Parameters
-    ----------
-    num_taps : int
-    stride   : int — samples per symbol (sps)
-    num_ch   : int — number of MIMO channels C
-
-    Returns
-    -------
-    pa_cma_scan : jax.jit-compiled callable
-        ``(x_input, w_init, step_size, r2, pilot_ref, pilot_mask, n_sym)
-        → (y_all, e_all, W_final, w_hist)``
-        where ``pilot_ref`` has shape ``(n_sym, C)`` and ``pilot_mask``
-        has shape ``(n_sym,)`` bool.
-    """
-    key = ("pa_cma", num_taps, stride, num_ch)
-    if key not in _JITTED_EQ:
-        jax, jnp, _ = _get_jax()
-
-        @functools.partial(jax.jit, static_argnums=(6,))
-        def pa_cma_scan(
-            x_input,  # (C, N_pad)  complex64 — padded received samples
-            w_init,  # (C, C, T)   complex64 — initial butterfly weights
-            step_size,  # ()          float32
-            r2,  # ()          float32 — Godard R² = E[|s|⁴]/E[|s|²]
-            pilot_ref,  # (n_sym, C)  complex64 — known symbols; 0 at data
-            pilot_mask,  # (n_sym,)    bool — True at pilot/preamble positions
-            n_sym,  # int (static) — total symbol count
-        ):
-            def step(W, xs_t):
-                idx, p_ref, p_mask = xs_t  # (): int, (C,): cplx, (): bool
-                X_wins = jax.lax.dynamic_slice(
-                    x_input, (0, idx * stride), (num_ch, num_taps)
-                )  # (C, T)
-                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
-
-                abs_y2 = jnp.real(y * jnp.conj(y))  # strict real |y|²
-                e_blind = y * (abs_y2 - r2)  # Godard CMA
-                e_da = p_ref - y  # pilot LMS
-                e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
-
-                W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
-                return W_new, (y, e, W_new)
-
-            xs = (jnp.arange(n_sym), pilot_ref, pilot_mask)
-            W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
-            return y_all, e_all, W_final, wh_all
-
-        _JITTED_EQ[key] = pa_cma_scan
-    return _JITTED_EQ[key]
-
-
-def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
-    """JIT-compile and cache the JAX pilot-aided RDE butterfly scan.
-
-    Hybrid RDE scan using ``jax.lax.scan``.  At pilot positions the error
-    is the LMS residual ``pilot_ref[t] - y``; at data positions the
-    ring-directed RDE error ``y * (|y|² - R_d²)`` is used, where ``R_d``
-    is the nearest constellation ring radius.  The switch is branchless.
-
-    Parameters
-    ----------
-    num_taps  : int
-    stride    : int — samples per symbol (sps)
-    num_radii : int — number of unique constellation ring radii K
-    num_ch    : int — number of MIMO channels C
-
-    Returns
-    -------
-    pa_rde_scan : jax.jit-compiled callable
-        ``(x_input, w_init, step_size, radii, pilot_ref, pilot_mask, n_sym)
-        → (y_all, e_all, W_final, w_hist)``
-        where ``pilot_ref`` has shape ``(n_sym, C)`` and ``pilot_mask``
-        has shape ``(n_sym,)`` bool.
-    """
-    key = ("pa_rde", num_taps, stride, num_radii, num_ch)
-    if key not in _JITTED_EQ:
-        jax, jnp, _ = _get_jax()
-
-        @functools.partial(jax.jit, static_argnums=(6,))
-        def pa_rde_scan(
-            x_input,  # (C, N_pad)  complex64 — padded received samples
-            w_init,  # (C, C, T)   complex64 — initial butterfly weights
-            step_size,  # ()          float32
-            radii,  # (K,)        float32 — unique |c| constellation radii, sorted
-            pilot_ref,  # (n_sym, C)  complex64 — known symbols; 0 at data
-            pilot_mask,  # (n_sym,)    bool — True at pilot/preamble positions
-            n_sym,  # int (static) — total symbol count
-        ):
-            def step(W, xs_t):
-                idx, p_ref, p_mask = xs_t  # (): int, (C,): cplx, (): bool
-                X_wins = jax.lax.dynamic_slice(
-                    x_input, (0, idx * stride), (num_ch, num_taps)
-                )  # (C, T)
-                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
-
-                abs_y2 = jnp.real(y * jnp.conj(y))  # strict real |y|²
-                abs_y = jnp.sqrt(abs_y2)  # (C,)
-                dist = jnp.abs(abs_y[:, None] - radii[None, :])  # (C, K) broadcast
-                rd = radii[jnp.argmin(dist, axis=1)]  # (C,) nearest radius
-
-                e_blind = y * (abs_y2 - rd**2)  # RDE ring-directed
-                e_da = p_ref - y  # pilot LMS
-                e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
-
-                W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
-                return W_new, (y, e, W_new)
-
-            xs = (jnp.arange(n_sym), pilot_ref, pilot_mask)
-            W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
-            return y_all, e_all, W_final, wh_all
-
-        _JITTED_EQ[key] = pa_rde_scan
-    return _JITTED_EQ[key]
-
-
-# -----------------------------------------------------------------------------
-# FRAME EQUALIZATION HELPERS & PUBLIC API
-# -----------------------------------------------------------------------------
-
-
-def _build_pilot_ref(
-    pilot_symbols_payload: np.ndarray,
-    pilot_mask_payload: np.ndarray,
-    n_sym: int,
-    num_ch: int,
-) -> tuple:
-    """Build dense pilot reference array and uint8 mask for the hybrid kernel.
-
-    Parameters
-    ----------
-    pilot_symbols_payload : (K,) or (C, K) complex64 ndarray
-        Known pilot symbols in transmission order (only pilot positions).
-    pilot_mask_payload : (n_sym,) bool ndarray
-        True at pilot positions within the payload+pilot region.
-    n_sym : int
-        Total number of output symbols in the equalized region.
-    num_ch : int
-        Number of channels C.
-
-    Returns
-    -------
-    pilot_ref  : (C, n_sym) complex64 ndarray — zeros at data positions.
-    pilot_mask : (n_sym,)   uint8   ndarray — 1 at pilot positions.
-    """
-    pilot_ref = np.zeros((num_ch, n_sym), dtype=np.complex64)
-    mask_uint8 = np.zeros(n_sym, dtype=np.uint8)
-
-    pilot_positions = np.where(pilot_mask_payload)[0]
-    n_pilots = len(pilot_positions)
-
-    if pilot_symbols_payload.ndim == 1:
-        pilot_symbols_payload = np.broadcast_to(
-            pilot_symbols_payload[np.newaxis, :], (num_ch, n_pilots)
-        )
-    else:
-        pilot_symbols_payload = np.asarray(pilot_symbols_payload, dtype=np.complex64)
-
-    for ch in range(num_ch):
-        pilot_ref[ch, pilot_positions] = pilot_symbols_payload[ch, :n_pilots]
-    mask_uint8[pilot_positions] = 1
-
-    return pilot_ref, mask_uint8
-
-
-def equalize_frame(
-    samples,
-    frame,
-    num_taps: int = 21,
-    lms_step_size: float = 0.01,
-    blind_step_size: float = 1e-4,
-    blind_algorithm: str = "rde",
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-    sps: int = 2,
-    backend: str = "numba",
-    store_weights: bool = False,
-    w_init: Optional[ArrayType] = None,
-    debug_plot: bool = False,
-) -> "EqualizerResult":
-    """Frame-aware multi-stage equalizer pipeline.
-
-    Automatically orchestrates weight handoffs between a preamble pre-convergence
-    stage (DA-LMS) and a payload blind stage (CMA or RDE).  When pilots are
-    present, a single-pass hybrid kernel switches between DA-LMS error (at pilot
-    positions) and the chosen blind error (at data positions) sample-by-sample.
-
-    Parameters
-    ----------
-    samples : array_like
-        Full frame samples, shape ``(N_samples,)`` for SISO or
-        ``(C, N_samples)`` for MIMO.  Includes preamble + payload.
-    frame : SingleCarrierFrame
-        Frame structure used for ``get_structure_map()`` and pilot symbol lookup.
-    num_taps : int, default 21
-        FIR tap count for all equalizer stages.
-    lms_step_size : float, default 0.01
-        NLMS step size for the preamble (and pilot-position) DA stage.
-    blind_step_size : float, default 1e-4
-        Fixed gradient step size for the blind CMA/RDE stage.
-    blind_algorithm : {"rde", "cma"}, default "rde"
-        Blind algorithm for data positions.  ``"rde"`` is recommended for
-        multi-ring constellations (QAM); ``"cma"`` for PSK or unknown modulation.
-    modulation : str, optional
-        Modulation type (e.g. ``"qam"``) — passed to the blind stage for radius
-        or Godard constant computation.
-    order : int, optional
-        Modulation order (e.g. 16) — passed to the blind stage.
-    sps : int, default 2
-        Samples per symbol at the input.
-    backend : str, default "numba"
-        Kernel backend (``"numba"`` or ``"jax"``).
-    store_weights : bool, default False
-        If True, weight history is stored for the blind payload stage.
-    w_init : array_like, optional
-        External initial weights.  Passed to the preamble LMS stage (if present)
-        or directly to the blind stage when there is no preamble.
-
-    Returns
-    -------
-    EqualizerResult
-        Full-frame result.  ``y_hat`` and ``error`` span preamble + payload +
-        pilots in frame order (guard excluded).  ``num_train_symbols`` equals
-        the preamble length.  Use ``preamble_symbols_eq``,
-        ``payload_symbols_eq``, and ``pilot_symbols_eq`` to access each
-        segment.
-
-    Notes
-    -----
-    Pilot pattern handling:
-
-    * ``"none"`` — preamble LMS → blind CMA/RDE (two separate calls with weight
-      handoff via ``w_init``).
-    * ``"block"`` or ``"comb"`` — preamble LMS → single-pass hybrid kernel that
-      engages DA error at every pilot position and blind error elsewhere.
-
-    If no preamble is present, the blind stage starts from ``w_init`` (or the
-    center-tap identity when ``w_init=None``).
-    """
-    # Local import to avoid circular dependency (core imports from equalization)
-    from .core import SingleCarrierFrame  # noqa: PLC0415
-
-    if not isinstance(frame, SingleCarrierFrame):
-        raise TypeError(
-            f"frame must be a SingleCarrierFrame, got {type(frame).__name__}"
-        )
-
-    samples, xp, _ = dispatch(samples)
-    was_1d = samples.ndim == 1
-    num_ch = 1 if was_1d else samples.shape[0]
-
-    logger.info(
-        f"equalize_frame: num_taps={num_taps}, blind={blind_algorithm}, "
-        f"lms_mu={lms_step_size}, blind_mu={blind_step_size}, "
-        f"sps={sps}, backend={backend}, num_ch={num_ch}"
-    )
-
-    # ── Structure map (symbol domain) ────────────────────────────────────────
-    # get_structure_map() may return CuPy arrays (uses cp when available).
-    # Convert all masks to plain NumPy immediately — they are frame metadata,
-    # not signal data, and must stay on CPU for indexing and control flow.
-    struct = frame.get_structure_map(unit="symbols", sps=1)
-    _m = struct.get("preamble")
-    preamble_mask = to_device(_m, "cpu") if _m is not None else None
-    _m = struct.get("pilots")
-    pilot_mask_full = to_device(_m, "cpu") if _m is not None else None
-    _m = struct.get("payload")
-    payload_mask = to_device(_m, "cpu") if _m is not None else None
-    del _m
-
-    has_preamble = (
-        frame.preamble is not None
-        and preamble_mask is not None
-        and bool(np.any(preamble_mask))
-    )
-    has_pilots = (
-        frame.pilot_pattern != "none"
-        and pilot_mask_full is not None
-        and bool(np.any(pilot_mask_full))
-    )
-
-    # Samples at 2 SPS → symbol-domain indexing uses sps stride on sample axis
-    stride = int(sps)
-
-    # ── Step 1: Preamble pre-convergence (DA-LMS) ────────────────────────────
-    w_0 = w_init
-    n_preamble_syms = 0
-    preamble_eq_syms: Optional[ArrayType] = None  # populated if preamble present
-    preamble_error: Optional[ArrayType] = None  # populated if preamble present
-
-    if has_preamble:
-        preamble_mask_np = preamble_mask.astype(bool)
-        preamble_sym_indices = np.where(preamble_mask_np)[0]
-        n_preamble_syms = len(preamble_sym_indices)
-
-        # Convert symbol indices to sample indices (T/2-spaced)
-        preamble_start_samp = int(preamble_sym_indices[0]) * stride
-        preamble_end_samp = (int(preamble_sym_indices[-1]) + 1) * stride
-        if was_1d:
-            preamble_samples = samples[preamble_start_samp:preamble_end_samp]
-        else:
-            preamble_samples = samples[:, preamble_start_samp:preamble_end_samp]
-
-        preamble_syms = to_device(frame.preamble.symbols, "cpu").astype(np.complex64)
-        _use_per_slot_lms = False  # True only for time_orthogonal MIMO (see below)
-
-        if preamble_syms.ndim == 1 and num_ch > 1:
-            base_syms = preamble_syms  # (L,)
-            L_base = len(base_syms)
-
-            if frame.preamble_mode == "time_orthogonal":
-                # Single-pass block-diagonal DA-LMS over the full time-orthogonal
-                # preamble (all C slots, C*L_base symbols at SPS).
-                #
-                # Build the block-diagonal reference: slot k has base_syms in row k
-                # and zeros elsewhere.  The resulting (C, C*L_base) target matrix
-                # simultaneously constrains all C rows of the butterfly:
-                #   W * H[:,k] * P ≈ e_k * P  for k = 0 … C-1
-                # which (jointly) has a unique solution W = H⁻¹.
-                #
-                # Per-slot training (previous approach) only observed one TX stream
-                # at a time, so W[k,:]*H[:,j≠k] was never trained — the assembled
-                # butterfly had no cross-stream cancellation for strongly mixed channels.
-                #
-                # Normalization note: _normalize_inputs will scale each row of
-                # training_full by 1/rms(row) ≈ sqrt(C) because C-1 of C slots are
-                # zeros.  The LMS therefore converges to sqrt(C)*H⁻¹ rather than H⁻¹.
-                # This is a pure gain bias — convergence is not affected — and is
-                # absorbed by the power normalisation in resolve_symbols().
-                _use_per_slot_lms = True
-                training_full = np.zeros((num_ch, num_ch * L_base), dtype=np.complex64)
-                for slot in range(num_ch):
-                    training_full[slot, slot * L_base : (slot + 1) * L_base] = base_syms
-                pre_result = lms(
-                    preamble_samples,  # (C, C*L_base*stride) — full TO preamble
-                    training_symbols=training_full,  # (C, C*L_base)
-                    num_taps=num_taps,
-                    step_size=lms_step_size,
-                    w_init=w_0,
-                    sps=sps,
-                    backend=backend,
-                )
-                _w = to_device(pre_result.weights, "cpu")
-                if _w.ndim == 1:
-                    _w = _w[np.newaxis, np.newaxis, :]
-                w_0 = _w
-                preamble_eq_syms = pre_result.y_hat  # (C, C*L_base)
-                preamble_error = pre_result.error  # (C, C*L_base)
-            else:
-                # "same" mode: all streams transmit the identical sequence, so
-                # broadcasting P to every output channel is correct.
-                # WARNING: because both TX streams carry the same preamble, the
-                # DA-LMS has no way to distinguish which output should carry
-                # which stream.  With a pure polarization swap (H ≈ [[0,1],[1,0]])
-                # the equalizer converges with streams permuted: output[i] may
-                # deliver TX stream (1-i) instead of TX stream i.  The blind
-                # payload stage then inherits and preserves the wrong assignment.
-                # Use preamble_mode="time_orthogonal" for MIMO if correct output
-                # ordering matters.
-                logger.warning(
-                    "equalize_frame: preamble_mode='same' with MIMO — output stream "
-                    "ordering is not guaranteed.  A polarization swap in the channel "
-                    "can cause output[i] to carry TX stream j≠i.  Use "
-                    "preamble_mode='time_orthogonal' to resolve this ambiguity."
-                )
-                preamble_syms = np.broadcast_to(
-                    base_syms[np.newaxis, :], (num_ch, L_base)
-                )
-
-        if not _use_per_slot_lms:
-            # SISO or "same"-mode MIMO: single DA-LMS call.
-            pre_result = lms(
-                preamble_samples,
-                training_symbols=preamble_syms,
-                num_taps=num_taps,
-                step_size=lms_step_size,
-                w_init=w_0,
-                sps=sps,
-                backend=backend,
-            )
-            _w = pre_result.weights
-            w_0 = to_device(_w, "cpu")
-            if w_0.ndim == 1:
-                # SISO: lms squeezes weights to (num_taps,) — expand to (1, 1, num_taps)
-                w_0 = w_0[np.newaxis, np.newaxis, :]
-            preamble_eq_syms = pre_result.y_hat
-            preamble_error = pre_result.error
-
-    # ── Step 2: Payload equalization ─────────────────────────────────────────
-    if payload_mask is not None:
-        payload_mask_np = payload_mask.astype(bool)
-    else:
-        # No explicit payload mask: everything after preamble
-        total_syms = samples.shape[-1] // stride
-        payload_mask_np = np.ones(total_syms, dtype=bool)
-        if has_preamble:
-            payload_mask_np[: len(preamble_mask_np)] &= ~preamble_mask_np
-
-    # Include pilot positions in payload region (they alternate with data)
-    if has_pilots and pilot_mask_full is not None:
-        pilot_mask_np = pilot_mask_full.astype(bool)
-        combined_mask = payload_mask_np | pilot_mask_np
-    else:
-        combined_mask = payload_mask_np
-
-    sym_indices = np.where(combined_mask)[0]
-    if len(sym_indices) == 0:
-        # Nothing to equalize
-        y_empty = np.zeros((num_ch, 0), dtype=np.complex64)
-        empty_W = (
-            w_0 if w_0 is not None else _init_butterfly_weights_numpy(num_ch, num_taps)
-        )
-        return _finalize_frame_result(
-            EqualizerResult(
-                y_hat=y_empty[0] if was_1d else y_empty,
-                weights=empty_W,
-                error=y_empty[0] if was_1d else y_empty,
-                num_train_symbols=n_preamble_syms,
-                input_norm_factor=1.0,
-            ),
-            preamble_eq_syms,
-            preamble_error,
-            None,
-        )
-
-    payload_start_samp = int(sym_indices[0]) * stride
-    payload_end_samp = (int(sym_indices[-1]) + 1) * stride
-    if was_1d:
-        payload_samples = samples[payload_start_samp:payload_end_samp]
-    else:
-        payload_samples = samples[:, payload_start_samp:payload_end_samp]
-
-    # Map the combined mask to the payload-local symbol domain
-    n_payload_sym = len(sym_indices)
-    payload_pilot_mask = np.zeros(n_payload_sym, dtype=bool)
-    if has_pilots:
-        for local_idx, global_idx in enumerate(sym_indices):
-            if global_idx < len(pilot_mask_np) and pilot_mask_np[global_idx]:
-                payload_pilot_mask[local_idx] = True
-
-    if has_pilots and np.any(payload_pilot_mask):
-        # ── Hybrid DA / blind pass ────────────────────────────────────────────
-        # Extract pilot symbols from the frame's payload symbol store
-        pilot_syms_raw = None
-        if hasattr(frame, "_payload_symbols") and frame._payload_symbols is not None:
-            _ps = frame._payload_symbols
-            payload_syms_arr = to_device(_ps, "cpu").astype(np.complex64)
-            if payload_syms_arr.ndim == 1:
-                payload_syms_arr = payload_syms_arr[np.newaxis, :]
-            # pilot positions in payload-only domain
-            payload_only_mask = payload_mask_np
-            if payload_syms_arr.shape[-1] == int(np.sum(payload_only_mask)):
-                # Map local combined-region pilot positions → payload-only indices
-                combined_is_pilot = payload_pilot_mask
-                payload_only_positions = np.where(payload_only_mask)[0]
-                pilot_syms_raw = np.zeros(
-                    (payload_syms_arr.shape[0], np.sum(combined_is_pilot)),
-                    dtype=np.complex64,
-                )
-                for ch in range(payload_syms_arr.shape[0]):
-                    for k, pos in enumerate(np.where(payload_pilot_mask)[0]):
-                        global_sym = sym_indices[pos]
-                        # find index in payload-only domain
-                        local_in_payload = int(
-                            np.searchsorted(payload_only_positions, global_sym)
-                        )
-                        if (
-                            local_in_payload < payload_syms_arr.shape[-1]
-                            and payload_only_positions[local_in_payload] == global_sym
-                        ):
-                            pilot_syms_raw[ch, k] = payload_syms_arr[
-                                ch, local_in_payload
-                            ]
-
-        if pilot_syms_raw is None:
-            # Fallback: use zeros → hybrid kernel degrades to blind at pilot positions too
-            pilot_syms_raw = np.zeros(
-                (num_ch, int(np.sum(payload_pilot_mask))), dtype=np.complex64
-            )
-
-        pilot_ref, pilot_mask_u8 = _build_pilot_ref(
-            pilot_syms_raw, payload_pilot_mask, n_payload_sym, num_ch
-        )
-
-        # Normalize payload samples
-        samples_np = np.ascontiguousarray(
-            to_device(payload_samples, "cpu"), dtype=np.complex64
-        )
-        if samples_np.ndim == 1:
-            samples_np = samples_np[np.newaxis, :]
-        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
-
-        c_tap = num_taps // 2
-        pad_left = c_tap
-        pad_right = (
-            n_payload_sym * stride - samples_np.shape[-1] + num_taps - 1 - pad_left
-        )
-        x_np = np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
-        x_np = np.ascontiguousarray(x_np)
-
-        if w_0 is not None:
-            w_arr = np.ascontiguousarray(to_device(w_0, "cpu"), dtype=np.complex64)
-            _validate_w_init(w_arr, num_ch, num_taps)
-            W = w_arr.copy()
-        else:
-            W = _init_butterfly_weights_numpy(num_ch, num_taps)
-
-        # ── Pre-compute blind-algorithm constants (shared by both backends) ──
-        if blind_algorithm == "rde":
-            if modulation is not None and order is not None:
-                from .mapping import gray_constellation  # noqa: PLC0415
-
-                const = gray_constellation(modulation, order)
-                raw_radii = np.abs(const).astype(np.float32)
-                radii_np = np.ascontiguousarray(
-                    np.unique(np.round(raw_radii, 6)), dtype=np.float32
-                )
-            else:
-                radii_np = np.array([1.0], dtype=np.float32)
-            r2 = None  # unused for RDE
-        else:
-            if modulation is not None and order is not None:
-                from .mapping import gray_constellation  # noqa: PLC0415
-
-                const = gray_constellation(modulation, order)
-                r2 = float(np.mean(np.abs(const) ** 4) / np.mean(np.abs(const) ** 2))
-            else:
-                r2 = 1.0
-            radii_np = None  # unused for CMA
-
-        # ── Backend dispatch ──────────────────────────────────────────────────
-        if backend == "jax":
-            jax_mod, jnp_mod, _ = _get_jax()
-            if jax_mod is None:
-                raise ImportError("JAX is required for backend='jax'.")
-            platform = "gpu" if hasattr(xp, "get") else "cpu"
-            x_jax = to_jax(x_np, device=platform)
-            W_jax = to_jax(W, device=platform)
-            # pilot_ref: (C, n_sym) → (n_sym, C) for scan xs
-            pref_jax = to_jax(np.ascontiguousarray(pilot_ref.T), device=platform)
-            pmask_jax = to_jax(pilot_mask_u8.astype(bool), device=platform)
-
-            if blind_algorithm == "rde":
-                scan_fn = _get_jax_pa_rde(num_taps, stride, len(radii_np), num_ch)
-                y_jax, e_jax, W_out, wh_jax = scan_fn(
-                    x_jax,
-                    W_jax,
-                    jnp_mod.float32(blind_step_size),
-                    to_jax(radii_np, device=platform),
-                    pref_jax,
-                    pmask_jax,
-                    n_payload_sym,
-                )
-            else:
-                scan_fn = _get_jax_pa_cma(num_taps, stride, num_ch)
-                y_jax, e_jax, W_out, wh_jax = scan_fn(
-                    x_jax,
-                    W_jax,
-                    jnp_mod.float32(blind_step_size),
-                    jnp_mod.float32(r2),
-                    pref_jax,
-                    pmask_jax,
-                    n_payload_sym,
-                )
-
-            return _log_equalizer_exit(
-                _finalize_frame_result(
-                    _unpack_result_jax(
-                        y_jax,
-                        e_jax,
-                        W_out,
-                        wh_jax,
-                        was_1d,
-                        store_weights,
-                        n_sym=None,
-                        xp=xp,
-                        num_train_symbols=0,
-                        input_norm_factor=eq_norm,
-                    ),
-                    preamble_eq_syms,
-                    preamble_error,
-                    payload_pilot_mask,
-                ),
-                name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, JAX)",
-                debug_plot=debug_plot,
-            )
-
-        # Numba path
-        y_out = np.empty((n_payload_sym, num_ch), dtype=np.complex64)
-        e_out = np.empty((n_payload_sym, num_ch), dtype=np.complex64)
-        w_hist_buf = (
-            np.empty((n_payload_sym, num_ch, num_ch, num_taps), dtype=np.complex64)
-            if store_weights
-            else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
-        )
-
-        if blind_algorithm == "rde":
-            _get_numba_pa_rde()(
-                x_np,
-                W,
-                np.float32(blind_step_size),
-                radii_np,
-                stride,
-                store_weights,
-                y_out,
-                e_out,
-                w_hist_buf,
-                pilot_ref,
-                pilot_mask_u8,
-            )
-        else:
-            _get_numba_pa_cma()(
-                x_np,
-                W,
-                np.float32(blind_step_size),
-                np.float32(r2),
-                stride,
-                store_weights,
-                y_out,
-                e_out,
-                w_hist_buf,
-                pilot_ref,
-                pilot_mask_u8,
-            )
-
-        return _log_equalizer_exit(
-            _finalize_frame_result(
-                _unpack_result_numpy(
-                    y_out,
-                    e_out,
-                    W,
-                    w_hist_buf,
-                    was_1d,
-                    store_weights,
-                    n_sym=None,
-                    xp=xp,
-                    num_train_symbols=0,
-                    input_norm_factor=eq_norm,
-                ),
-                preamble_eq_syms,
-                preamble_error,
-                payload_pilot_mask,
-            ),
-            name=f"equalize_frame(hybrid-{blind_algorithm.upper()}, Numba)",
-            debug_plot=debug_plot,
-        )
-
-    else:
-        # ── Pure blind pass (no pilots) ───────────────────────────────────────
-        blind_fn = rde if blind_algorithm == "rde" else cma
-        _res = blind_fn(
-            payload_samples,
-            num_taps=num_taps,
-            step_size=blind_step_size,
-            modulation=modulation,
-            order=order,
-            sps=sps,
-            backend=backend,
-            store_weights=store_weights,
-            w_init=w_0,
-        )
-        return _log_equalizer_exit(
-            _finalize_frame_result(_res, preamble_eq_syms, preamble_error, None),
-            name=f"equalize_frame(blind-{blind_algorithm.upper()})",
-            debug_plot=debug_plot,
-        )
 
 
 # -----------------------------------------------------------------------------

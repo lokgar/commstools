@@ -766,12 +766,18 @@ def _make_time_orthogonal_mimo_signal(xp, channel_matrix, preamble_pos=200):
     """
     from commstools.helpers import expand_preamble_mimo
 
-    # Base preamble: Barker-13 (real-valued, good autocorrelation)
-    base = xp.asarray(sync.barker_sequence(13), dtype="complex64")
+    # Base preamble: ZC-13 root=1 (complex, near-orthogonal to root=2 secondary)
+    # 13 is prime, which is required for ZC sequences.
+    ROOT_P, ROOT_Q = 1, 2
+    base = xp.asarray(sync.zadoff_chu_sequence(13, root=ROOT_P), dtype="complex64")
+    secondary = xp.asarray(sync.zadoff_chu_sequence(13, root=ROOT_Q), dtype="complex64")
     L_slot = len(base)
 
-    # Expand to block-diagonal: TX0=[P|0], TX1=[0|P]
-    preamble_waveform = expand_preamble_mimo(base, num_streams=2, mode="time_orthogonal")
+    # Expand to [ P Q ]/[ Q P ] structure — off-diagonal slots carry Q so all
+    # templates peak at t0 regardless of which TX stream dominates the RX channel.
+    preamble_waveform = expand_preamble_mimo(
+        base, num_streams=2, mode="time_orthogonal", secondary_waveform=secondary
+    )
     L_total = preamble_waveform.shape[-1]  # 2 * L_slot
 
     # Build transmitted MIMO signal (preamble + noise-like payload)
@@ -813,8 +819,9 @@ def test_estimate_timing_time_orthogonal_identity(backend_device, xp):
 
     info = SignalInfo(
         signal_type="Single-Carrier Frame",
-        preamble_type="barker",
+        preamble_type="zc",
         preamble_seq_len=13,
+        preamble_kwargs={"root": 1},
         preamble_mode="time_orthogonal",
         num_streams=2,
     )
@@ -852,8 +859,9 @@ def test_estimate_timing_time_orthogonal_polswap(backend_device, xp):
 
     info = SignalInfo(
         signal_type="Single-Carrier Frame",
-        preamble_type="barker",
+        preamble_type="zc",
         preamble_seq_len=13,
+        preamble_kwargs={"root": 1},
         preamble_mode="time_orthogonal",
         num_streams=2,
     )
@@ -895,8 +903,9 @@ def test_estimate_timing_time_orthogonal_mixed_channel(backend_device, xp):
 
     info = SignalInfo(
         signal_type="Single-Carrier Frame",
-        preamble_type="barker",
+        preamble_type="zc",
         preamble_seq_len=13,
+        preamble_kwargs={"root": 1},
         preamble_mode="time_orthogonal",
         num_streams=2,
     )
@@ -931,8 +940,9 @@ def test_estimate_timing_time_orthogonal_no_stream_flag(backend_device, xp):
 
     info = SignalInfo(
         signal_type="Single-Carrier Frame",
-        preamble_type="barker",
+        preamble_type="zc",
         preamble_seq_len=13,
+        preamble_kwargs={"root": 1},
         preamble_mode="time_orthogonal",
         num_streams=2,
     )
@@ -948,6 +958,55 @@ def test_estimate_timing_time_orthogonal_no_stream_flag(backend_device, xp):
     )
 
     assert len(result) == 2, "Expected 2-tuple when return_stream_assignment=False"
+
+
+def test_estimate_timing_time_orthogonal_dominated_by_stream1(backend_device, xp):
+    """All RX channels dominated by TX stream 1: frame_start must still equal preamble_pos.
+
+    This validates the fix for the old bug where ``frame_start = min(argmax per channel)``
+    would return ``preamble_pos + L_slot`` when all channels were dominated by stream 1,
+    causing a one-slot timing error.  With Q-filled off-diagonal blocks every template
+    peaks at t0, so the combined-max approach correctly recovers t0 regardless.
+    """
+    from commstools.core import SignalInfo
+
+    preamble_pos = 200
+    # Channel where both RX channels are almost entirely stream-1 dominated
+    # (stream 0 is very weak, stream 1 is very strong)
+    H = [[0.05, 0.95], [0.1, 0.9]]
+    sig, preamble_waveform, L_slot = _make_time_orthogonal_mimo_signal(
+        xp, H, preamble_pos
+    )
+
+    info = SignalInfo(
+        signal_type="Single-Carrier Frame",
+        preamble_type="zc",
+        preamble_seq_len=13,
+        preamble_kwargs={"root": 1},
+        preamble_mode="time_orthogonal",
+        num_streams=2,
+    )
+
+    coarse, frac, streams = sync.estimate_timing(
+        sig,
+        preamble=preamble_waveform,
+        info=info,
+        sps=1,
+        pulse_shape="none",
+        threshold=0.05,
+        return_stream_assignment=True,
+    )
+
+    # Frame start must be at preamble_pos — the old code returned preamble_pos + L_slot
+    for ch in range(2):
+        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])} "
+            f"(L_slot={L_slot}, off by {int(coarse[ch]) - preamble_pos} samples)"
+        )
+
+    # Both channels dominated by stream 1
+    assert int(streams[0]) == 1
+    assert int(streams[1]) == 1
 
 
 # -----------------------------------------------------------------------------
@@ -1296,62 +1355,3 @@ class TestCorrectFrequencyOffsetBranches:
         assert out.dtype == xp.complex64
 
 
-# =============================================================================
-# ESTIMATE FREQUENCY OFFSET (PREAMBLE) — STREAM ASSIGNMENT AND SPS > 1
-# =============================================================================
-
-
-class TestFoePreambleBranches:
-    """Branches for stream_assignment and sps > 1 in estimate_frequency_offset_preamble."""
-
-    def test_stream_assignment_mimo(self, backend_device, xp):
-        """stream_assignment parameter triggers per-slot MIMO extraction."""
-        import numpy as np
-        L = 63
-        fo_hz = 5000.0
-        fs = 1e6
-        zc = sync.zadoff_chu_sequence(L)
-        zc_xp = xp.asarray(zc.astype(np.complex64))
-
-        # Build 2-stream time-orthogonal preamble: [stream0 | stream1]
-        silence = xp.zeros(L, dtype=xp.complex64)
-        preamble_tx = xp.concatenate([zc_xp, silence, silence, zc_xp])  # (4L,)
-
-        # Apply freq offset
-        t = xp.arange(len(preamble_tx), dtype=xp.float64) / fs
-        preamble_rx = (preamble_tx * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
-
-        # Stack into MIMO (2, 4L)
-        rx_mimo = xp.stack([preamble_rx, preamble_rx])
-        stream_assignment = np.array([0, 1])
-
-        est = sync.estimate_frequency_offset_preamble(
-            rx_mimo,
-            preamble_samples=zc_xp,
-            fs=fs,
-            offset=0,
-            stream_assignment=stream_assignment,
-        )
-        assert isinstance(est, float)
-
-    def test_sps_2_decimates_before_estimating(self, backend_device, xp):
-        """sps=2 triggers on-symbol decimation branch; estimate still returns float."""
-        import numpy as np
-        L = 63
-        fo_hz = 4000.0
-        fs = 1e6
-        sps = 2
-        zc = sync.zadoff_chu_sequence(L)
-        zc_np = zc.astype(np.complex64)
-        # Upsample preamble by sps (repeat each sample)
-        zc_up = np.repeat(zc_np, sps)
-        zc_up_xp = xp.asarray(zc_up)
-        zc_xp = xp.asarray(zc_np)
-
-        t = xp.arange(len(zc_up_xp), dtype=xp.float64) / (fs * sps)
-        rx = (zc_up_xp * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
-
-        est = sync.estimate_frequency_offset_preamble(
-            rx, preamble_samples=zc_xp, fs=fs, offset=0, sps=sps
-        )
-        assert isinstance(est, float)

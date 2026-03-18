@@ -696,8 +696,8 @@ def test_ber_with_rls_tail_trim_and_training_discard(backend_device, xp):
     assert 0.0 <= float(ber_notrim) <= 1.0
 
 
-def test_plot_constellation_resolved_data(backend_device, xp):
-    """Signal.plot_constellation(data='resolved') should use resolved_symbols."""
+def test_plot_constellation_after_equalize(backend_device, xp):
+    """plot_constellation on equalised 1-SPS Signal should succeed."""
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
@@ -712,21 +712,17 @@ def test_plot_constellation_resolved_data(backend_device, xp):
         method="lms", num_taps=7, backend="numba", training_symbols=sig.source_symbols
     )
     rx.resolve_symbols()
-
-    result = rx.plot_constellation(data="resolved", show=False)
+    # Build a plain Signal at 1 SPS for plotting
+    rx_1sps = Signal(
+        samples=rx.resolved_symbols,
+        sampling_rate=rx.symbol_rate,
+        symbol_rate=rx.symbol_rate,
+        mod_scheme="psk",
+        mod_order=4,
+    )
+    result = rx_1sps.plot_constellation(show=False)
     assert result is not None
     plt.close("all")
-
-
-def test_plot_constellation_resolved_no_resolved_symbols(backend_device, xp):
-    """Signal.plot_constellation(data='resolved') raises ValueError if no resolved_symbols."""
-    sig = Signal(
-        samples=xp.ones(100, dtype="complex64"),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
-    )
-    with pytest.raises(ValueError, match="No resolved_symbols"):
-        sig.plot_constellation(data="resolved", show=False)
 
 
 def test_plot_constellation_overlay_source_mimo(backend_device, xp):

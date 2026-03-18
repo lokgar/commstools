@@ -172,20 +172,37 @@ def test_rms_axis(backend_device, xp, xpt):
 
 
 def test_expand_preamble_mimo_time_orthogonal(backend_device, xp, xpt):
-    """Verify time-orthogonal MIMO preamble expansion produces block-diagonal structure."""
+    """Verify time-orthogonal MIMO preamble expansion fills diagonal=P, off-diagonal=Q."""
+    import pytest
     from commstools.helpers import expand_preamble_mimo
 
-    base = xp.array([1.0 + 0j, -1.0 + 0j, 1.0 + 0j])
-    result = expand_preamble_mimo(base, num_streams=3, mode="time_orthogonal")
+    P = xp.array([1.0 + 0j, -1.0 + 0j, 1.0 + 0j])
+    Q = xp.array([0.5 + 0.5j, -0.5 + 0.5j, 0.5 - 0.5j])
+
+    result = expand_preamble_mimo(P, num_streams=3, mode="time_orthogonal", secondary_waveform=Q)
 
     assert result.shape == (3, 9)  # (num_streams, L * num_streams)
-    xpt.assert_allclose(result[0, :3], base)
-    xpt.assert_allclose(result[0, 3:], 0)
-    xpt.assert_allclose(result[1, :3], 0)
-    xpt.assert_allclose(result[1, 3:6], base)
-    xpt.assert_allclose(result[1, 6:], 0)
-    xpt.assert_allclose(result[2, :6], 0)
-    xpt.assert_allclose(result[2, 6:], base)
+    # Diagonal blocks = P
+    xpt.assert_allclose(result[0, :3], P)
+    xpt.assert_allclose(result[1, 3:6], P)
+    xpt.assert_allclose(result[2, 6:], P)
+    # Off-diagonal blocks = Q
+    xpt.assert_allclose(result[0, 3:6], Q)
+    xpt.assert_allclose(result[0, 6:], Q)
+    xpt.assert_allclose(result[1, :3], Q)
+    xpt.assert_allclose(result[1, 6:], Q)
+    xpt.assert_allclose(result[2, :3], Q)
+    xpt.assert_allclose(result[2, 3:6], Q)
+
+
+def test_expand_preamble_mimo_time_orthogonal_requires_secondary(backend_device, xp, xpt):
+    """Verify ValueError is raised when secondary_waveform is omitted for time_orthogonal."""
+    import pytest
+    from commstools.helpers import expand_preamble_mimo
+
+    base = xp.array([1.0 + 0j, -1.0 + 0j])
+    with pytest.raises(ValueError, match="secondary_waveform is required"):
+        expand_preamble_mimo(base, num_streams=2, mode="time_orthogonal")
 
 
 def test_expand_preamble_mimo_single_stream(backend_device, xp, xpt):

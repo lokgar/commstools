@@ -432,7 +432,10 @@ def cross_correlate_fft(
 
 
 def expand_preamble_mimo(
-    base_waveform: ArrayType, num_streams: int, mode: str = "same"
+    base_waveform: ArrayType,
+    num_streams: int,
+    mode: str = "same",
+    secondary_waveform: Optional[ArrayType] = None,
 ) -> ArrayType:
     """
     Expands a base preamble waveform into a MIMO preamble structure.
@@ -440,16 +443,34 @@ def expand_preamble_mimo(
     Parameters
     ----------
     base_waveform : ArrayType
-        Base preamble samples, shape (L,) or (1, L).
+        Primary preamble samples P, shape (L,) or (1, L).
     num_streams : int
         Number of transmit streams.
     mode : str
         MIMO mode: "same" (broadcast) or "time_orthogonal".
+    secondary_waveform : ArrayType
+        Secondary preamble Q (ideally near-orthogonal to P), shape (L,) or (1, L).
+        **Required** when ``mode="time_orthogonal"``. Off-diagonal blocks are filled
+        with Q instead of zeros, giving:
+
+            [ P Q Q ]
+            [ Q P Q ]
+            [ Q Q P ]
+
+        This makes every correlation peak carry energy proportional to
+        ``|h_P|^2 * E_P + (C-1)*|h_Q|^2 * E_Q`` rather than just ``|h_P|^2 * E_P``,
+        greatly improving stream-identification reliability when any channel
+        is dominated by a non-primary stream.
 
     Returns
     -------
     ArrayType
         Expanded preamble, shape (C, L_mimo).
+
+    Raises
+    ------
+    ValueError
+        If ``mode="time_orthogonal"`` and ``secondary_waveform`` is None.
     """
     if num_streams <= 1:
         return base_waveform
@@ -465,37 +486,36 @@ def expand_preamble_mimo(
         return xp.tile(base_waveform, (num_streams, 1))
 
     elif mode == "time_orthogonal":
-        # Time-Orthogonal: (C, L * C)
-        # [ P 0 0 ]
-        # [ 0 P 0 ]
-        # [ 0 0 P ]
+        if secondary_waveform is None:
+            raise ValueError(
+                "secondary_waveform is required for mode='time_orthogonal'. "
+                "Provide a near-orthogonal sequence Q (e.g. a ZC sequence with "
+                "a different root) so that off-diagonal blocks carry energy."
+            )
+
+        # Time-Orthogonal: (C, C*L)
+        # [ P Q Q ]
+        # [ Q P Q ]
+        # [ Q Q P ]
         L = base_waveform.shape[-1]
         dtype = base_waveform.dtype
 
-        # Flattened view strategy to avoid loop
-        # We want to place `base_waveform` at offsets 0, L+1*row_stride, 2L+2*row_stride...
-        # But for time-orthogonal:
-        # p[0, 0:L]
-        # p[1, L:2L]
-        # ...
-
-        # Create empty array
         total_len = L * num_streams
         p_mimo = xp.zeros((num_streams, total_len), dtype=dtype)
 
-        # We can simulate this by reshaping to (num_streams, num_streams, L)
-        # and filling the diagonal blocks (i, i, :)
-
+        # Reshape to (C, C, L) — row i, slot j, sample k
         p_view = p_mimo.reshape(num_streams, num_streams, L)
 
-        # Optimized approach using strided write:
-        # p_view[i, i, :] = base_waveform
-        # Advanced indexing:
+        # Fill all blocks with Q, then overwrite diagonal with P
+        sec = xp.asarray(secondary_waveform)
+        if sec.ndim == 1:
+            sec = sec[None, :]
+        p_view[:] = sec[0]  # broadcast Q across all (C, C) blocks
+
         indices = xp.arange(num_streams)
-        p_view[indices, indices, :] = base_waveform[0]
+        p_view[indices, indices, :] = base_waveform[0]  # diagonal = P
 
         return p_mimo
 
     else:
-        # Fallback to broadcast (or raise error? "same" is safe default)
         return xp.tile(base_waveform, (num_streams, 1))

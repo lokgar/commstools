@@ -76,6 +76,11 @@ class SignalInfo(BaseModel):
         The mode of preamble transmission (e.g., 'same', 'time_orthogonal').
     preamble_kwargs : dict
         Parameters used for preamble generation (e.g., 'root' for ZC).
+    preamble_secondary_type : Literal["barker", "zc"], optional
+        Sequence type of the secondary (off-diagonal) preamble for time_orthogonal MIMO.
+        Length is always equal to ``preamble_seq_len``.
+    preamble_secondary_kwargs : dict, optional
+        Parameters used for secondary preamble generation (e.g., 'root' for ZC).
     payload_len : int
         Number of symbols in the data payload.
     payload_mod_scheme : str, optional
@@ -122,6 +127,8 @@ class SignalInfo(BaseModel):
     preamble_type: Optional[Literal["barker", "zc"]] = None
     preamble_mode: Optional[Literal["same", "time_orthogonal"]] = None
     preamble_kwargs: Optional[Dict[str, Any]] = None
+    preamble_secondary_type: Optional[Literal["barker", "zc"]] = None
+    preamble_secondary_kwargs: Optional[Dict[str, Any]] = None
 
     payload_len: Optional[int] = Field(default=None, ge=0)
     payload_mod_scheme: Optional[str] = None
@@ -177,21 +184,14 @@ class Signal(BaseModel):
     mod_rz : bool, optional
         If True, uses Return-to-Zero (RZ) signaling.
     source_bits : array_like, optional
-        The original binary data that generated the signal (full wire order,
-        including preamble and pilots when present).  Populated by
-        :meth:`Signal.generate` and the ``Signal.pam/psk/qam`` factories.
-        Frame signals use ``payload_bits`` / ``pilot_bits`` (via ``frame``) instead.
+        The original binary data that generated the signal (full wire order).
+        Populated by :meth:`Signal.generate` and the factory methods.
+        For frame-generated signals this is ``None``; extract the payload
+        segment via ``frame.get_structure_map()`` and construct a plain
+        ``Signal`` with the relevant ``source_bits`` for per-segment metrics.
     source_symbols : array_like, optional
         The mapped constellation symbols before pulse shaping (full wire
         order).  Same scoping note as ``source_bits``.
-    payload_symbols : array_like, read-only property
-        Delegates to ``self.frame.payload_symbols`` (``None`` if no frame).
-    pilot_symbols : array_like, read-only property
-        Delegates to ``self.frame.pilot_symbols`` (``None`` if no frame).
-    payload_bits : array_like, read-only property
-        Delegates to ``self.frame.payload_bits`` (``None`` if no frame).
-    pilot_bits : array_like, read-only property
-        Delegates to ``self.frame.pilot_bits`` (``None`` if no frame).
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
         ``'gaussian'``).
@@ -221,18 +221,25 @@ class Signal(BaseModel):
     frame : Frame, optional
         The frame that generated the signal.
     resolved_symbols : array_like, optional
-        Payload symbols at 1 SPS, normalised to unit average power.
-        Populated by :meth:`resolve_symbols`.  When a frame with pilots is
-        attached this contains **payload only**; pilot symbols are in
-        ``resolved_pilot_symbols``.
-    resolved_pilot_symbols : array_like, optional
-        Pilot symbols at 1 SPS, normalised to unit average power.
-        Populated by :meth:`resolve_symbols` when a frame with pilots is
-        attached and ``sps == 1`` (i.e. after :meth:`equalize_frame`).
-        ``None`` otherwise.
+        Symbols at 1 SPS, normalised to unit average power.
+        Populated by :meth:`resolve_symbols`.  Call only on plain signals
+        (non-frame); frame signals contain mixed preamble/pilot/payload that
+        may have different modulations or gains — resolve after splitting.
     resolved_bits : array_like, optional
         Hard-decision bits demapped from ``resolved_symbols``.
         Populated by :meth:`demap_symbols_hard`.
+
+    Notes
+    -----
+    **Frame-generated signals**: :meth:`SingleCarrierFrame.to_signal` sets
+    ``self.frame`` and ``self.signal_info`` but leaves ``source_symbols`` and
+    ``source_bits`` as ``None``.  The receive workflow is:
+
+    1. Run timing / FOE / CPR / equalization on the frame signal.
+    2. Use ``frame.get_structure_map()`` to slice sample/symbol indices.
+    3. Extract each segment and build a plain ``Signal`` with the appropriate
+       ``source_symbols``/``source_bits`` before calling ``resolve_symbols()``,
+       ``evm()``, ``ber()``, etc.
     """
 
     model_config = ConfigDict(
@@ -269,49 +276,23 @@ class Signal(BaseModel):
 
     # Back-reference to the SingleCarrierFrame that generated this signal (set by
     # SingleCarrierFrame.to_signal()). Enables frame-aware convenience methods
-    # (correct_timing, equalize_frame) without requiring the caller to re-supply
+    # (correct_timing, frame-aware equalizers) without requiring the caller to re-supply
     # the frame object.  Excluded from serialisation (numpy arrays inside frame
     # duplicate samples data and are not JSON-serialisable).
     frame: Optional[Any] = Field(default=None, exclude=True, repr=False)
 
     # Resolved data from processing (1 SPS, normalized — populated by resolve_symbols())
     resolved_symbols: Optional[Any] = Field(default=None, repr=False)
-    resolved_pilot_symbols: Optional[Any] = Field(default=None, repr=False)
     resolved_bits: Optional[Any] = Field(default=None, repr=False)
 
     # Private: cached equalizer result for post-hoc inspection
     _equalizer_result: Any = PrivateAttr(default=None)
     _num_train_symbols: int = PrivateAttr(default=0)
-    _num_preamble_symbols: int = PrivateAttr(default=0)
 
     # Symbols removed from the output tail (RLS: last num_taps//2 windows overlap
     # zero-padding, producing spurious errors — those symbols are stripped from y_hat).
     # Metric methods must trim the same count from the reference tail before comparing.
     _num_tail_trim: int = PrivateAttr(default=0)
-
-    # -------------------------------------------------------------------------
-    # Frame-derived read-only properties
-    # -------------------------------------------------------------------------
-
-    @property
-    def payload_symbols(self) -> Optional[Any]:
-        """Payload symbols (no preamble, no pilots), 1 SPS. Delegates to ``frame``."""
-        return self.frame.payload_symbols if self.frame is not None else None
-
-    @property
-    def pilot_symbols(self) -> Optional[Any]:
-        """Pilot symbols only, 1 SPS, before gain boost. Delegates to ``frame``."""
-        return self.frame.pilot_symbols if self.frame is not None else None
-
-    @property
-    def payload_bits(self) -> Optional[Any]:
-        """Payload bits (int8). Delegates to ``frame``."""
-        return self.frame.payload_bits if self.frame is not None else None
-
-    @property
-    def pilot_bits(self) -> Optional[Any]:
-        """Pilot bits (int8). Delegates to ``frame``."""
-        return self.frame.pilot_bits if self.frame is not None else None
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
@@ -428,7 +409,7 @@ class Signal(BaseModel):
         **Frame structure** — shown when ``signal_info`` carries frame metadata
         (preamble, payload, pilots, guard).
         **Reference data** — shows which symbol/bit arrays and frame object are
-        attached (determines which of ``ber()``, ``evm()``, ``equalize_frame()``
+        attached (determines which of ``ber()``, ``evm()``
         can be called without extra arguments).
         """
         import pandas as pd
@@ -540,10 +521,6 @@ class Signal(BaseModel):
 
         # ── Section 3: Reference data ─────────────────────────────────────
         rows.append(("─── Reference data", ""))
-        rows.append(("payload_symbols", _yn(self.payload_symbols)))
-        rows.append(("payload_bits", _yn(self.payload_bits)))
-        rows.append(("pilot_symbols", _yn(self.pilot_symbols)))
-        rows.append(("pilot_bits", _yn(self.pilot_bits)))
         rows.append(("source_symbols", _yn(self.source_symbols)))
         rows.append(("source_bits", _yn(self.source_bits)))
         rows.append(("frame attached", _yn(self.frame)))
@@ -551,7 +528,6 @@ class Signal(BaseModel):
         # ── Section 4: Resolved data ──────────────────────────────────────
         rows.append(("─── Resolved data", ""))
         rows.append(("resolved_symbols", _yn(self.resolved_symbols)))
-        rows.append(("resolved_pilot_symbols", _yn(self.resolved_pilot_symbols)))
         rows.append(("resolved_bits", _yn(self.resolved_bits)))
 
         # ── Render ────────────────────────────────────────────────────────
@@ -731,10 +707,10 @@ class Signal(BaseModel):
     def equalizer_result(self) -> Optional["EqualizerResult"]:
         """The result of the most recent equalizer call, or ``None``.
 
-        Populated by :meth:`equalize` and :meth:`equalize_frame`.  Gives
+        Populated by :meth:`equalize`.  Gives
         access to all equalizer outputs after the fact::
 
-            sig.equalize_frame()
+            sig.equalize(method="rde", ...)
             taps   = sig.equalizer_result.weights          # final FIR taps
             error  = sig.equalizer_result.error            # complex error per symbol
             w_hist = sig.equalizer_result.weights_history  # tap trajectory (store_weights=True)
@@ -921,9 +897,6 @@ class Signal(BaseModel):
 
     def plot_eye(
         self,
-        data: Literal[
-            "samples", "payload", "pilots", "resolved", "resolved_pilots"
-        ] = "samples",
         ax: Optional[Any] = None,
         type: str = "hist",
         title: Optional[str] = "Eye Diagram",
@@ -939,83 +912,39 @@ class Signal(BaseModel):
         jitter. This method supports both high-density histograms and
         classic trace-based line plots.
 
+        Always plots from ``self.samples`` at ``self.sps`` samples per
+        symbol.  To visualise a specific segment (e.g. payload symbols at
+        1 SPS after equalization), build a new ``Signal`` from that data
+        and call ``plot_eye()`` on it directly.
+
         Parameters
         ----------
-        data : {"samples", "payload", "pilots", "resolved", "resolved_pilots"}, default "samples"
-            Which data to plot:
-
-            - ``"samples"``: Raw IQ samples at ``self.sps`` samples per symbol.
-            - ``"payload"``: Equalized payload symbols at 1 SPS from
-              ``equalizer_result.payload_symbols_eq`` (call ``equalize_frame()`` first).
-            - ``"pilots"``: Equalized pilot symbols at 1 SPS from
-              ``equalizer_result.pilot_symbols_eq`` (call ``equalize_frame()`` first).
-            - ``"resolved"``: Payload symbols at 1 SPS from ``resolved_symbols``
-              (call ``resolve_symbols()`` first).
-            - ``"resolved_pilots"``: Pilot symbols at 1 SPS from
-              ``resolved_pilot_symbols`` (call ``resolve_symbols()`` first).
         ax : matplotlib.axes.Axes or list, optional
             Plotting axis. For complex signals, a list of two axes can be
             provided (for I and Q eyes).
         type : {"hist", "line"}, default "hist"
-            "hist": 2D histogram density plot (recommended for noisy signals).
-            "line": Overlaid individual signal traces.
+            ``"hist"``: 2D histogram density plot (recommended for noisy signals).
+            ``"line"``: Overlaid individual signal traces.
         title : str, default "Eye Diagram"
             Plot title.
         vmin, vmax : float, optional
-            Density scale limits for "hist" mode.
+            Density scale limits for ``"hist"`` mode.
         show : bool, default False
-            If True, calls `plt.show()` immediately.
+            If True, calls ``plt.show()`` immediately.
         **kwargs : Any
             Additional parameters passed to the underlying plotting functions.
 
         Returns
         -------
         figure, axis : tuple or None
-            The matplotlib figure and axis objects, or None if `show=True`.
+            The matplotlib figure and axis objects, or None if ``show=True``.
         """
         from . import plotting
 
-        if data == "payload":
-            eq = self._equalizer_result
-            if eq is None or eq.payload_symbols_eq is None:
-                raise ValueError(
-                    "No equalized payload symbols available. "
-                    "Call equalize_frame() first."
-                )
-            plot_data = eq.payload_symbols_eq
-            _sps = 1
-        elif data == "pilots":
-            eq = self._equalizer_result
-            if eq is None or eq.pilot_symbols_eq is None:
-                raise ValueError(
-                    "No equalized pilot symbols available. "
-                    "Call equalize_frame() on a signal with pilots first."
-                )
-            plot_data = eq.pilot_symbols_eq
-            _sps = 1
-        elif data == "resolved":
-            if self.resolved_symbols is None:
-                raise ValueError(
-                    "No resolved_symbols available. Call resolve_symbols() first."
-                )
-            plot_data = self.resolved_symbols
-            _sps = 1
-        elif data == "resolved_pilots":
-            if self.resolved_pilot_symbols is None:
-                raise ValueError(
-                    "No resolved_pilot_symbols available. "
-                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
-                )
-            plot_data = self.resolved_pilot_symbols
-            _sps = 1
-        else:  # "samples"
-            plot_data = self.samples
-            _sps = self.sps
-
         return plotting.eye_diagram(
-            plot_data,
+            self.samples,
             ax=ax,
-            sps=_sps,
+            sps=self.sps,
             type=type,
             title=title,
             vmin=vmin,
@@ -1026,9 +955,6 @@ class Signal(BaseModel):
 
     def plot_constellation(
         self,
-        data: Literal[
-            "samples", "resolved", "resolved_pilots", "payload", "pilots"
-        ] = "samples",
         bins: int = 100,
         cmap: str = "inferno",
         overlay_ideal: bool = False,
@@ -1043,39 +969,26 @@ class Signal(BaseModel):
         """
         Plots the constellation diagram of the signal.
 
-        Uses 2D histogram density mapping to visualize the distribution of
-        received symbols, providing better insight into noise and
-        impairments than traditional scatter plots.
+        Uses a 2D histogram density map of ``self.samples`` to visualise the
+        distribution of received symbols, providing better insight into noise
+        and impairments than traditional scatter plots.
+
+        To visualise a specific segment (e.g. equalised payload symbols at
+        1 SPS), build a new ``Signal`` from that data and call
+        ``plot_constellation()`` on it directly.
 
         Parameters
         ----------
-        data : {"samples", "resolved", "resolved_pilots", "payload", "pilots"}, default "samples"
-            Which data to plot as the density field:
-
-            - ``"samples"``: Raw IQ samples (oversampled or 1 SPS).
-            - ``"resolved"``: Payload symbols from ``resolved_symbols``
-              (call ``resolve_symbols()`` first).
-            - ``"resolved_pilots"``: Pilot symbols from ``resolved_pilot_symbols``
-              (call ``resolve_symbols()`` first).
-            - ``"payload"``: Equalized payload symbols from
-              ``equalizer_result.payload_symbols_eq`` (call ``equalize_frame()`` first).
-              Uses ``signal_info.payload_mod_*`` for ideal overlay; ``overlay_source``
-              shows ``frame.payload_symbols``.
-            - ``"pilots"``: Equalized pilot symbols from
-              ``equalizer_result.pilot_symbols_eq`` (call ``equalize_frame()`` first).
-              Uses ``signal_info.pilot_mod_*`` for ideal overlay; ``overlay_source``
-              shows ``frame.pilot_symbols``.
         bins : int, default 100
             Number of bins per axis for the 2D density histogram.
         cmap : str, default "inferno"
             Matplotlib colormap for the density visualization.
         overlay_ideal : bool, default False
             If True, overlays the ideal constellation points on the plot.
+            Requires ``mod_scheme`` and ``mod_order`` to be set.
         overlay_source : bool, default False
-            If True, overlays reference symbols as cyan scatter markers on top of
-            the density plot.  The reference is ``source_symbols`` for
-            ``"samples"``/``"resolved"`` modes, ``frame.payload_symbols`` for
-            ``"payload"``, and ``frame.pilot_symbols`` for ``"pilots"``.
+            If True, overlays ``source_symbols`` as cyan scatter markers on
+            top of the density plot.
         ax : matplotlib.axes.Axes, optional
             Pre-existing axis for plotting.
         title : str, default "Constellation"
@@ -1083,84 +996,25 @@ class Signal(BaseModel):
         vmin, vmax : float, optional
             Density scale limits.
         show : bool, default False
-            If True, calls `plt.show()` immediately.
+            If True, calls ``plt.show()`` immediately.
         **kwargs : Any
-            Additional arguments passed to `plotting.constellation`.
+            Additional arguments passed to ``plotting.constellation``.
 
         Returns
         -------
         figure, axis : tuple or None
-            The matplotlib figure and axis objects, or None if `show=True`.
+            The matplotlib figure and axis objects, or None if ``show=True``.
         """
         from . import plotting
 
-        _overlay_ref: Optional[Any] = None  # reference for overlay_source
-
-        if data == "resolved":
-            if self.resolved_symbols is None:
-                raise ValueError(
-                    "No resolved_symbols available. Call resolve_symbols() first."
-                )
-            plot_data = self.resolved_symbols
-            _mod = self.mod_scheme or (
-                self.signal_info.payload_mod_scheme if self.signal_info else None
-            )
-            _order = self.mod_order or (
-                self.signal_info.payload_mod_order if self.signal_info else None
-            )
-            _overlay_ref = self.source_symbols
-        elif data == "resolved_pilots":
-            if self.resolved_pilot_symbols is None:
-                raise ValueError(
-                    "No resolved_pilot_symbols available. "
-                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
-                )
-            plot_data = self.resolved_pilot_symbols
-            _mod = self.mod_scheme or (
-                self.signal_info.pilot_mod_scheme if self.signal_info else None
-            )
-            _order = self.mod_order or (
-                self.signal_info.pilot_mod_order if self.signal_info else None
-            )
-            _overlay_ref = self.frame.pilot_symbols if self.frame is not None else None
-        elif data == "payload":
-            eq = self._equalizer_result
-            if eq is None or eq.payload_symbols_eq is None:
-                raise ValueError(
-                    "No equalized payload symbols available. "
-                    "Call equalize_frame() first."
-                )
-            plot_data = eq.payload_symbols_eq
-            _mod = self.signal_info.payload_mod_scheme if self.signal_info else None
-            _order = self.signal_info.payload_mod_order if self.signal_info else None
-            _overlay_ref = (
-                self.frame.payload_symbols if self.frame is not None else None
-            )
-        elif data == "pilots":
-            eq = self._equalizer_result
-            if eq is None or eq.pilot_symbols_eq is None:
-                raise ValueError(
-                    "No equalized pilot symbols available. "
-                    "Call equalize_frame() on a signal with pilots first."
-                )
-            plot_data = eq.pilot_symbols_eq
-            _mod = self.signal_info.pilot_mod_scheme if self.signal_info else None
-            _order = self.signal_info.pilot_mod_order if self.signal_info else None
-            _overlay_ref = self.frame.pilot_symbols if self.frame is not None else None
-        else:  # "samples"
-            plot_data = self.samples
-            _mod = self.mod_scheme
-            _order = self.mod_order
-            _overlay_ref = self.source_symbols
-
         result = plotting.constellation(
-            plot_data,
+            self.samples,
             bins=bins,
             cmap=cmap,
             ax=ax,
             overlay_ideal=overlay_ideal,
-            modulation=_mod,
-            order=_order,
+            modulation=self.mod_scheme,
+            order=self.mod_order,
             unipolar=self.mod_unipolar,
             title=title,
             vmin=vmin,
@@ -1169,9 +1023,9 @@ class Signal(BaseModel):
             **kwargs,
         )
 
-        if overlay_source and _overlay_ref is not None and result is not None:
+        if overlay_source and self.source_symbols is not None and result is not None:
             fig, axes = result
-            src = to_device(_overlay_ref, "cpu")
+            src = to_device(self.source_symbols, "cpu")
 
             def _scatter_source(ax, symbols):
                 ax.scatter(
@@ -1189,7 +1043,6 @@ class Signal(BaseModel):
                 for ch in range(min(src.shape[0], len(ax_list))):
                     _scatter_source(ax_list[ch], src[ch])
             else:
-                # SISO: axes is a single Axes object
                 _scatter_source(axes, src)
 
         if show:
@@ -1562,15 +1415,17 @@ class Signal(BaseModel):
 
             stream_assignment == [1, 0]   # RX 0 carries TX stream 1, and vice versa
 
-        Retrieve the assignment and pass it to ``correct_frequency_offset``
-        so preamble-based FOE reads the active slot on each RX channel::
+        Retrieve the assignment and, if using data-aided FOE, pass it when
+        building the preamble reference for ``method='differential'``::
 
             coarse, fractional, stream_assignment = sig.correct_timing(
                 return_stream_assignment=True
             )
+            # Data-aided FOE: pass the per-channel preamble reference
+            preamble_sig = sig.frame.preamble.to_signal(sps=int(sig.sps), ...)
             sig.correct_frequency_offset(
-                method="preamble",
-                stream_assignment=stream_assignment,
+                method="differential",
+                ref_signal=preamble_sig.samples,
             )
         """
         from . import sync
@@ -1601,6 +1456,8 @@ class Signal(BaseModel):
     def correct_frequency_offset(
         self,
         method: str = "mth_power",
+        pilot_indices: Optional[ArrayType] = None,
+        pilot_values: Optional[ArrayType] = None,
         debug_plot: bool = False,
         **kwargs,
     ) -> float:
@@ -1613,25 +1470,31 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        method : {'mth_power', 'differential', 'preamble', 'pilots'}, default 'mth_power'
+        method : {'mth_power', 'differential', 'pilots'}, default 'mth_power'
             Frequency offset estimation algorithm.
 
             * ``'mth_power'``: Blind M-th power spectral method. Requires
-              ``mod_scheme`` and ``mod_order`` to be set.
+              ``mod_scheme`` and ``mod_order`` to be set on the Signal.
               Keyword args: ``search_range``, ``nfft``.
-            * ``'differential'``: Differential auto-correlation (Kay's
-              estimator). Blind or data-aided via ``ref_signal`` kwarg.
+            * ``'differential'``: Blind or data-aided differential
+              auto-correlation (Kay's estimator).  Requires ``mod_scheme``
+              and ``mod_order`` when used blind.  Pass ``ref_signal=`` kwarg
+              with the known reference waveform for data-aided estimation.
               Keyword args: ``ref_signal``, ``weighted``.
-            * ``'preamble'``: Preamble-based ML estimator.
-              Keyword args: ``preamble_samples``, ``offset``, ``stream_assignment``.
-              Behaviour depends on whether an equalizer result is stored
-              (see Notes).
-            * ``'pilots'``: Scattered-pilot phase slope estimator.
-              Keyword args: ``pilot_indices``, ``pilot_values``.
+            * ``'pilots'``: Scattered-pilot phase slope estimator. Requires
+              ``pilot_indices`` and ``pilot_values`` arguments.
 
+        pilot_indices : array_like of int, optional
+            Sample indices of pilot positions (sorted, unique). Required
+            for ``method='pilots'``.
+        pilot_values : array_like, optional
+            Known transmitted pilot symbols at the corresponding indices.
+            Required for ``method='pilots'``.
+        debug_plot : bool, default False
+            If True, produces diagnostic plots inside the estimator.
         **kwargs
-            Algorithm-specific parameters forwarded to the underlying
-            ``sync.estimate_frequency_offset_*`` function.
+            Additional algorithm-specific parameters forwarded to the
+            underlying ``sync.estimate_frequency_offset_*`` function.
 
         Returns
         -------
@@ -1646,79 +1509,20 @@ class Signal(BaseModel):
         tracks intentional digital frequency shifts applied by the TX/RX
         chain, not recovered carrier offsets.
 
-        **Preamble method — two internal paths:**
+        The preamble-based FOE method has been removed.  To achieve fine
+        frequency estimation using a preamble waveform, strip the preamble
+        from ``self.samples`` first (after :meth:`correct_timing`), then
+        use ``method='differential'`` with ``ref_signal=preamble_samples``
+        for data-aided Kay ML estimation::
 
-        *Post-equalization path* (``equalize()`` was called before this
-        method): operates on the equalizer's ``preamble_symbols_eq`` output
-        at 1 SPS.  For ``time_orthogonal`` MIMO preambles,
-        ``stream_assignment`` is automatically set to ``[0, 1, …, C-1]``
-        because equalization has already remapped each RX channel to its
-        corresponding TX stream — no user action needed.
-
-        *Pre-equalization path* (no equalizer result stored): operates on
-        ``self.samples`` at ``self.sps`` SPS.  ``stream_assignment`` defaults
-        to ``None``, which is correct for ``same``-mode preambles and for
-        channels with significant polarization mixing.  For a near-identity
-        channel with a ``time_orthogonal`` preamble the active preamble slot
-        differs per RX channel; pass it explicitly::
-
-            coarse, fractional, sa = sig.correct_timing(
-                return_stream_assignment=True
+            # strip preamble (already done by correct_timing)
+            preamble_sig = frame.preamble.to_signal(sps=int(sig.sps), ...)
+            sig.correct_frequency_offset(
+                method="differential",
+                ref_signal=preamble_sig.samples,
             )
-            sig.correct_frequency_offset(method="preamble", stream_assignment=sa)
         """
-        import numpy as _np  # noqa: PLC0415
-
         from . import sync
-
-        # Compute preamble sample count once — used by both the blind-method
-        # body-only slice and the post-correction preamble strip.
-        _sps = int(round(self.sps))
-        _n_pre_samp = 0
-        if self.frame is not None and self.frame.preamble is not None:
-            _n_pre = self.frame.preamble.num_symbols
-            if getattr(self.frame, "preamble_mode", None) == "time_orthogonal":
-                _n_pre *= getattr(self.frame, "num_streams", 1)
-            _n_pre_samp = _n_pre * _sps
-
-        # For blind methods, estimate only on the body (post-preamble samples).
-        # Time-orthogonal MIMO preambles contain zero-slots that corrupt the
-        # M-th power spectrum and Kay's weighted differential; even for
-        # non-MIMO frames, excluding the deterministic preamble is cleaner.
-        _signal_body = (
-            self.samples[..., _n_pre_samp:] if _n_pre_samp > 0 else self.samples
-        )
-
-        # When pilots use a different modulation than payload, they break the
-        # M-th power nonlinearity and Kay's differential.  Extract payload-only
-        # samples from the body in that case.
-        _info = self.signal_info
-        _pilot_mod_differs = (
-            _info is not None
-            and self.frame is not None
-            and getattr(_info, "pilot_pattern", "none") != "none"
-            and (
-                (
-                    _info.pilot_mod_scheme is not None
-                    and _info.pilot_mod_scheme != _info.payload_mod_scheme
-                )
-                or (
-                    _info.pilot_mod_order is not None
-                    and _info.pilot_mod_order != 0
-                    and _info.pilot_mod_order != _info.payload_mod_order
-                )
-            )
-        )
-        if _pilot_mod_differs and method in ("mth_power", "differential"):
-            _struct_body = self.frame.get_structure_map(
-                unit="samples", sps=_sps, include_preamble=False
-            )
-            _payload_mask = _np.asarray(_struct_body["payload"])
-            _signal_body = _signal_body[..., _payload_mask]
-            logger.debug(
-                f"FOE ({method}): pilot mod differs from payload — using payload-only "
-                f"samples ({int(_payload_mask.sum())} of {_payload_mask.size} body samples)."
-            )
 
         if method == "mth_power":
             if self.mod_scheme is None or self.mod_order is None:
@@ -1726,8 +1530,8 @@ class Signal(BaseModel):
                     "mod_scheme and mod_order must be set on the Signal for "
                     "the 'mth_power' method."
                 )
-            offset = sync.estimate_frequency_offset_mth_power(
-                _signal_body,
+            fo = sync.estimate_frequency_offset_mth_power(
+                self.samples,
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
@@ -1735,113 +1539,24 @@ class Signal(BaseModel):
                 **kwargs,
             )
         elif method == "differential":
-            offset = sync.estimate_frequency_offset_differential(
-                _signal_body,
+            fo = sync.estimate_frequency_offset_differential(
+                self.samples,
                 fs=self.sampling_rate,
                 modulation=self.mod_scheme,
                 order=self.mod_order,
                 debug_plot=debug_plot,
                 **kwargs,
             )
-        elif method == "preamble":
-            _eq_res = self._equalizer_result
-            _peq = _eq_res.preamble_symbols_eq if _eq_res is not None else None
-            if _peq is not None:
-                # Post-equalization path: signal is already at 1 SPS (symbol domain).
-                # Use preamble_symbols_eq directly — no pulse-shaping reference needed,
-                # no RRC zero-crossing issue (sps=1, all samples are on-symbol).
-                if "preamble_samples" not in kwargs:
-                    if self.frame is None or self.frame.preamble is None:
-                        raise ValueError(
-                            "correct_frequency_offset('preamble') with a stored "
-                            "equalizer result requires a frame attached to the signal."
-                        )
-                    kwargs["preamble_samples"] = self.frame.preamble.symbols
-                kwargs.setdefault("sps", 1)
-                kwargs.setdefault("offset", 0)
-                # After equalization, slot i → channel i (identity), so use
-                # stream_assignment = [0, 1, ...] for time_orthogonal preambles.
-                _is_time_orth = (
-                    self.frame is not None
-                    and getattr(self.frame, "preamble_mode", None) == "time_orthogonal"
-                    and hasattr(_peq, "ndim")
-                    and _peq.ndim == 2
-                    and _peq.shape[-1] > len(self.frame.preamble.symbols)
-                )
-                if _is_time_orth:
-                    kwargs.setdefault(
-                        "stream_assignment", _np.arange(_peq.shape[0], dtype=int)
-                    )
-                offset = sync.estimate_frequency_offset_preamble(
-                    _peq,
-                    fs=self.sampling_rate / _sps,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
-            else:
-                # Pre-equalization path: pulse-shaped waveform at self.sps SPS.
-                if "preamble_samples" not in kwargs:
-                    if self.frame is None or self.frame.preamble is None:
-                        raise ValueError(
-                            "correct_frequency_offset('preamble') requires either "
-                            "preamble_samples=... kwarg or a frame with a preamble "
-                            "attached (generate the signal via SingleCarrierFrame.to_signal)."
-                        )
-                    p_sig = self.frame.preamble.to_signal(
-                        sps=_sps,
-                        symbol_rate=1.0,
-                        pulse_shape=self.pulse_shape or "rrc",
-                        filter_span=self.filter_span,
-                        rrc_rolloff=self.rrc_rolloff,
-                        rc_rolloff=self.rc_rolloff,
-                        gaussian_bt=self.gaussian_bt,
-                        smoothrect_bt=self.smoothrect_bt,
-                    )
-                    kwargs["preamble_samples"] = p_sig.samples
-                # After correct_timing the preamble starts at sample 0.
-                kwargs.setdefault("offset", 0)
-                # Subsample at symbol rate to avoid RRC zero-crossing corruption.
-                kwargs.setdefault("sps", _sps)
-                # For time_orthogonal MIMO, auto-set identity stream_assignment
-                # (slot k dominant on RX channel k) when not explicitly provided.
-                # Pass stream_assignment explicitly if the channel has significant
-                # polarization mixing (e.g. from correct_timing return value).
-                if (
-                    "stream_assignment" not in kwargs
-                    and self.frame is not None
-                    and getattr(self.frame, "preamble_mode", None) == "time_orthogonal"
-                    and self.samples.ndim == 2
-                ):
-                    kwargs.setdefault(
-                        "stream_assignment",
-                        _np.arange(self.samples.shape[0], dtype=int),
-                    )
-                offset = sync.estimate_frequency_offset_preamble(
-                    self.samples,
-                    fs=self.sampling_rate,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
         elif method == "pilots":
-            # Auto-extract pilot positions and values from the attached frame
-            # when the caller has not provided them explicitly.  The structure
-            # map uses include_preamble=True so that returned indices are in the
-            # same coordinate space as self.samples (which may contain a preamble
-            # prefix after equalize_frame).
-            if "pilot_indices" not in kwargs and self.frame is not None:
-                _unit = "symbols" if _sps == 1 else "samples"
-                _struct = self.frame.get_structure_map(
-                    unit=_unit, sps=_sps, include_preamble=True
+            if pilot_indices is None or pilot_values is None:
+                raise ValueError(
+                    "correct_frequency_offset('pilots') requires both "
+                    "pilot_indices and pilot_values arguments."
                 )
-                _pm = _struct.get("pilots")
-                if _pm is not None:
-                    kwargs.setdefault("pilot_indices", _np.where(_np.asarray(_pm))[0])
-            if "pilot_values" not in kwargs and self.frame is not None:
-                _pv = self.frame.pilot_symbols
-                if _pv is not None:
-                    kwargs.setdefault("pilot_values", _pv)
-            offset = sync.estimate_frequency_offset_pilots(
+            fo = sync.estimate_frequency_offset_pilots(
                 self.samples,
+                pilot_indices=pilot_indices,
+                pilot_values=pilot_values,
                 fs=self.sampling_rate,
                 debug_plot=debug_plot,
                 **kwargs,
@@ -1849,22 +1564,21 @@ class Signal(BaseModel):
         else:
             raise ValueError(
                 f"Unknown FOE method: {method!r}. "
-                "Choose from 'mth_power', 'differential', 'preamble', 'pilots'."
+                "Choose from 'mth_power', 'differential', 'pilots'."
             )
 
         self.samples = sync.correct_frequency_offset(
-            self.samples, offset, self.sampling_rate
+            self.samples, fo, self.sampling_rate
         )
-        # Strip the preamble from self.samples after correction.  The preamble
-        # has been consumed (either as the FOE reference or as context for timing)
-        # and subsequent DSP steps operate on the body only.
-        if _n_pre_samp > 0:
-            self.samples = self.samples[..., _n_pre_samp:]
-        return offset
+        logger.info(f"FOE ({method}): estimated {fo:.2f} Hz, correction applied.")
+        return fo
 
     def recover_carrier_phase(
         self,
         method: str = "viterbi_viterbi",
+        pilot_indices: Optional[ArrayType] = None,
+        pilot_values: Optional[ArrayType] = None,
+        interpolation: str = "linear",
         debug_plot: bool = False,
         **kwargs,
     ) -> "ArrayType":
@@ -1881,18 +1595,28 @@ class Signal(BaseModel):
             Carrier phase recovery algorithm.
 
             * ``'viterbi_viterbi'``: Blind M-th power block estimator for
-              PSK and QAM. Requires ``mod_scheme`` and ``mod_order``.
-              Keyword args: ``block_size``.
-            * ``'bps'``: Blind Phase Search.
-              Requires ``mod_scheme`` and ``mod_order``.
+              PSK and QAM. Requires ``mod_scheme`` and ``mod_order`` to be
+              set on the Signal.  Keyword args: ``block_size``.
+            * ``'bps'``: Blind Phase Search for QAM constellations (Pfau
+              et al.).  Requires ``mod_scheme`` and ``mod_order``.
               Keyword args: ``num_test_phases``, ``block_size``.
-            * ``'pilots'``: Pilot-aided estimation with interpolation.
-              Keyword args: ``pilot_indices``, ``pilot_values``,
-              ``interpolation``.
+            * ``'pilots'``: Pilot-aided phase estimation with interpolation.
+              Requires ``pilot_indices`` and ``pilot_values``.
 
+        pilot_indices : array_like of int, optional
+            Symbol indices of pilot positions (sorted, unique). Required
+            when ``method='pilots'``.
+        pilot_values : array_like, optional
+            Known transmitted pilot symbols at the corresponding indices.
+            Required when ``method='pilots'``.
+        interpolation : str, default 'linear'
+            Interpolation strategy for the pilot-aided estimator.
+            Passed directly to :func:`sync.recover_carrier_phase_pilots`.
+        debug_plot : bool, default False
+            If True, produces diagnostic plots inside the estimator.
         **kwargs
-            Algorithm-specific parameters forwarded to the underlying
-            ``sync.recover_carrier_phase_*`` function.
+            Additional algorithm-specific parameters forwarded to the
+            underlying ``sync.recover_carrier_phase_*`` function.
 
         Returns
         -------
@@ -1903,34 +1627,12 @@ class Signal(BaseModel):
 
         Notes
         -----
-        Assumes ``self.samples`` is already at 1 SPS (e.g. after
-        :meth:`decimate_to_symbol_rate`).  Applying CPR to an oversampled
-        signal will give poor results.
+        Assumes ``self.samples`` is already at 1 SPS (i.e. after
+        :meth:`decimate_to_symbol_rate` or :meth:`equalize` with ``sps``
+        internally decimated).  Applying CPR to an oversampled signal will
+        give poor results.
         """
-        import numpy as _np  # noqa: PLC0415
-
         from . import sync
-
-        # When pilots use a different modulation than payload, blind CPR methods
-        # (VV, BPS) must not see pilot symbols.  At this point self.samples is
-        # body-only (preamble stripped after FOE), so use include_preamble=False.
-        _info = self.signal_info
-        _pilot_mod_differs_cpr = (
-            _info is not None
-            and self.frame is not None
-            and getattr(_info, "pilot_pattern", "none") != "none"
-            and (
-                (
-                    _info.pilot_mod_scheme is not None
-                    and _info.pilot_mod_scheme != _info.payload_mod_scheme
-                )
-                or (
-                    _info.pilot_mod_order is not None
-                    and _info.pilot_mod_order != 0
-                    and _info.pilot_mod_order != _info.payload_mod_order
-                )
-            )
-        )
 
         if method == "viterbi_viterbi":
             if self.mod_scheme is None or self.mod_order is None:
@@ -1938,107 +1640,39 @@ class Signal(BaseModel):
                     "mod_scheme and mod_order must be set on the Signal for "
                     "the 'viterbi_viterbi' method."
                 )
-            if _pilot_mod_differs_cpr:
-                _struct_body = self.frame.get_structure_map(
-                    unit="symbols", sps=1, include_preamble=False
-                )
-                _payload_mask = _np.asarray(_struct_body["payload"])
-                _payload_idx = _np.where(_payload_mask)[0]
-                logger.debug(
-                    "CPR (viterbi_viterbi): pilot mod differs from payload — estimating "
-                    f"phase from {len(_payload_idx)} payload symbols, interpolating to "
-                    f"{self.samples.shape[-1]} body symbols."
-                )
-                _phase_payload = sync.recover_carrier_phase_viterbi_viterbi(
-                    self.samples[..., _payload_mask],
-                    modulation=self.mod_scheme,
-                    order=self.mod_order,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
-                _n_body = self.samples.shape[-1]
-                _body_idx = _np.arange(_n_body)
-                if _phase_payload.ndim == 1:
-                    phase = _np.interp(_body_idx, _payload_idx, _phase_payload)
-                else:
-                    phase = _np.stack(
-                        [
-                            _np.interp(_body_idx, _payload_idx, _phase_payload[c])
-                            for c in range(_phase_payload.shape[0])
-                        ]
-                    )
-            else:
-                phase = sync.recover_carrier_phase_viterbi_viterbi(
-                    self.samples,
-                    modulation=self.mod_scheme,
-                    order=self.mod_order,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
+            phase = sync.recover_carrier_phase_viterbi_viterbi(
+                self.samples,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                debug_plot=debug_plot,
+                **kwargs,
+            )
         elif method == "bps":
             if self.mod_scheme is None or self.mod_order is None:
                 raise ValueError(
                     "mod_scheme and mod_order must be set on the Signal for "
                     "the 'bps' method."
                 )
-            if _pilot_mod_differs_cpr:
-                _struct_body = self.frame.get_structure_map(
-                    unit="symbols", sps=1, include_preamble=False
-                )
-                _payload_mask = _np.asarray(_struct_body["payload"])
-                _payload_idx = _np.where(_payload_mask)[0]
-                logger.debug(
-                    "CPR (bps): pilot mod differs from payload — estimating "
-                    f"phase from {len(_payload_idx)} payload symbols, interpolating to "
-                    f"{self.samples.shape[-1]} body symbols."
-                )
-                _phase_payload = sync.recover_carrier_phase_bps(
-                    self.samples[..., _payload_mask],
-                    modulation=self.mod_scheme,
-                    order=self.mod_order,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
-                _n_body = self.samples.shape[-1]
-                _body_idx = _np.arange(_n_body)
-                if _phase_payload.ndim == 1:
-                    phase = _np.interp(_body_idx, _payload_idx, _phase_payload)
-                else:
-                    phase = _np.stack(
-                        [
-                            _np.interp(_body_idx, _payload_idx, _phase_payload[c])
-                            for c in range(_phase_payload.shape[0])
-                        ]
-                    )
-            else:
-                phase = sync.recover_carrier_phase_bps(
-                    self.samples,
-                    modulation=self.mod_scheme,
-                    order=self.mod_order,
-                    debug_plot=debug_plot,
-                    **kwargs,
-                )
+            phase = sync.recover_carrier_phase_bps(
+                self.samples,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                debug_plot=debug_plot,
+                **kwargs,
+            )
         elif method == "pilots":
-            # Auto-extract pilot positions and values from the attached frame
-            # when the caller has not provided them explicitly.  CPR is assumed
-            # to run at 1 SPS (post-equalization), so symbol-domain indices with
-            # include_preamble=True match the coordinate space of self.samples,
-            # which may contain a preamble prefix after equalize_frame().
-            if "pilot_indices" not in kwargs and self.frame is not None:
-                import numpy as _np  # noqa: PLC0415
-
-                _struct = self.frame.get_structure_map(
-                    unit="symbols", sps=1, include_preamble=True
+            if pilot_indices is None or pilot_values is None:
+                raise ValueError(
+                    "recover_carrier_phase('pilots') requires both "
+                    "pilot_indices and pilot_values arguments."
                 )
-                _pm = _struct.get("pilots")
-                if _pm is not None:
-                    kwargs.setdefault("pilot_indices", _np.where(_np.asarray(_pm))[0])
-            if "pilot_values" not in kwargs and self.frame is not None:
-                _pv = self.frame.pilot_symbols
-                if _pv is not None:
-                    kwargs.setdefault("pilot_values", _pv)
             phase = sync.recover_carrier_phase_pilots(
-                self.samples, debug_plot=debug_plot, **kwargs
+                self.samples,
+                pilot_indices=pilot_indices,
+                pilot_values=pilot_values,
+                interpolation=interpolation,
+                debug_plot=debug_plot,
+                **kwargs,
             )
         else:
             raise ValueError(
@@ -2047,6 +1681,7 @@ class Signal(BaseModel):
             )
 
         self.samples = sync.correct_carrier_phase(self.samples, phase)
+        logger.info(f"CPR ({method}): phase correction applied.")
         return phase
 
     def fir_filter(self, taps: ArrayType) -> "Signal":
@@ -2185,6 +1820,11 @@ class Signal(BaseModel):
         # ── ZF/MMSE-specific ───────────────────────────────────────────────
         channel_estimate: Optional[ArrayType] = None,
         noise_variance: float = 0.0,
+        # ── pilot-aided hybrid (cma / rde only) ────────────────────────────
+        pilot_ref: Optional[ArrayType] = None,
+        pilot_mask: Optional[ArrayType] = None,
+        # ── warm-start ────────────────────────────────────────────────────
+        w_init: Optional[ArrayType] = None,
         debug_plot: bool = False,
     ) -> "Signal":
         """
@@ -2313,6 +1953,25 @@ class Signal(BaseModel):
             Rule of thumb: set to the estimated noise variance of the
             received signal (e.g. ``10 ** (-SNR_dB / 10)``).
             *Applies to: zf.*
+        pilot_ref : array_like, optional
+            Dense pilot reference array of shape ``(C, N_sym)`` or
+            ``(N_sym,)`` for SISO, built by
+            :func:`~commstools.equalization.build_pilot_ref`.  When supplied
+            together with ``pilot_mask``, the equalizer switches into
+            **hybrid pilot-aided mode**: DA-LMS error at pilot positions,
+            blind CMA/RDE error elsewhere.  *Applies to: cma, rde.*
+        pilot_mask : array_like, optional
+            Per-symbol uint8 mask of shape ``(N_sym,)``: ``1`` at pilot
+            positions, ``0`` elsewhere.  Built by
+            :func:`~commstools.equalization.build_pilot_ref`.
+            *Applies to: cma, rde.*
+        w_init : array_like, optional
+            Initial tap weights for warm-starting.  Shape
+            ``(C, C, num_taps)`` complex64, or the SISO short-hand
+            ``(num_taps,)`` as returned by ``EqualizerResult.weights``.
+            Useful for handing off pre-converged weights from a preamble
+            LMS stage to the body CMA/RDE pass.
+            *Applies to: lms, rls, cma, rde.*
 
         Returns
         -------
@@ -2378,15 +2037,12 @@ class Signal(BaseModel):
         )
 
         if train is None and method in ("lms", "rls"):
-            hint = (
-                " Use sig.frame.payload_symbols or sig.frame.pilot_symbols."
-                if self.frame is not None
-                else ""
-            )
             logger.warning(
                 f"{method.upper()}: no training_symbols provided and signal has no "
                 "source_symbols — running in pure decision-directed (DD) mode from "
-                f"symbol 0. Pass training_symbols=... to equalize() for data-aided convergence.{hint}"
+                "symbol 0. Pass training_symbols=... to equalize() for data-aided "
+                "convergence. For frame signals, extract payload symbols via "
+                "frame.get_structure_map() first."
             )
 
         if method == "lms":
@@ -2404,6 +2060,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                w_init=w_init,
                 debug_plot=debug_plot,
             )
         elif method == "rls":
@@ -2423,6 +2080,7 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                w_init=w_init,
                 debug_plot=debug_plot,
             )
         elif method == "cma":
@@ -2438,6 +2096,9 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                w_init=w_init,
+                pilot_ref=pilot_ref,
+                pilot_mask=pilot_mask,
                 debug_plot=debug_plot,
             )
         elif method == "rde":
@@ -2453,6 +2114,9 @@ class Signal(BaseModel):
                 order=self.mod_order,
                 unipolar=self.mod_unipolar,
                 backend=backend,
+                w_init=w_init,
+                pilot_ref=pilot_ref,
+                pilot_mask=pilot_mask,
                 debug_plot=debug_plot,
             )
         elif method == "zf":
@@ -2482,119 +2146,6 @@ class Signal(BaseModel):
         # length; trim their tails by the same amount before metric comparisons.
         self._num_tail_trim = num_taps // 2 if method == "rls" else 0
         self.sampling_rate = self.symbol_rate
-        return self
-
-    def equalize_frame(
-        self,
-        frame: Optional["SingleCarrierFrame"] = None,
-        num_taps: int = 21,
-        lms_step_size: float = 0.01,
-        blind_step_size: float = 1e-4,
-        blind_algorithm: str = "rde",
-        modulation: Optional[str] = None,
-        order: Optional[int] = None,
-        backend: str = "numba",
-        store_weights: bool = False,
-        w_init: Optional["ArrayType"] = None,
-        debug_plot: bool = False,
-    ) -> "Signal":
-        """Frame-aware multi-stage equalization with automatic weight handoff.
-
-        Orchestrates preamble DA-LMS pre-convergence followed by a blind or
-        hybrid payload pass:
-
-        * **No pilots** — preamble LMS → blind CMA/RDE (two separate stages
-          with weight handoff via ``w_init``).
-        * **Block or comb pilots** — preamble LMS → single-pass hybrid kernel
-          (DA-LMS at pilot positions, blind CMA/RDE at data positions).
-
-        Parameters
-        ----------
-        frame : SingleCarrierFrame, optional
-            Frame structure that generated this signal. When ``None``, the
-            frame attached by :meth:`SingleCarrierFrame.to_signal` is used
-            automatically.
-        num_taps : int, default 21
-            FIR tap count for all equalizer stages.
-        lms_step_size : float, default 0.01
-            NLMS step size for the preamble (and pilot-position) DA-LMS stage.
-        blind_step_size : float, default 1e-4
-            Fixed gradient step for the blind CMA/RDE data stage.
-        blind_algorithm : {"rde", "cma"}, default "rde"
-            Blind algorithm for data positions.
-        modulation : str, optional
-            Modulation type (e.g. ``"qam"``).  Defaults to
-            ``self.mod_scheme`` when ``None``.
-        order : int, optional
-            Modulation order.  Defaults to ``self.mod_order`` when ``None``.
-        backend : str, default "numba"
-            Kernel backend (``"numba"`` or ``"jax"``).
-        store_weights : bool, default False
-            Store weight history for the payload blind stage.
-        w_init : array_like, optional
-            External initial weights passed to the preamble LMS (or directly
-            to the blind stage if there is no preamble).
-
-        Returns
-        -------
-        Signal
-            ``self`` with ``samples`` replaced by the equalized payload symbols
-            (1 SPS) and ``equalizer_result`` populated.
-        """
-        from . import equalization  # noqa: PLC0415
-
-        if frame is None:
-            frame = self.frame
-        if frame is None:
-            raise ValueError(
-                "No frame available. "
-                "Signals saved with commstools.io.save_npz() and loaded with "
-                "load_npz() have their frame restored automatically. "
-                "For signals loaded from raw .npy files, pass frame=<SingleCarrierFrame> "
-                "explicitly, or use sig.equalize(training_symbols=sig.payload_symbols) "
-                "as a frame-free alternative (DA-LMS on payload symbols only, "
-                "no preamble pre-convergence)."
-            )
-
-        _info = self.signal_info
-        _mod = (
-            modulation
-            or self.mod_scheme
-            or (_info.payload_mod_scheme if _info else None)
-        )
-        _order = order or self.mod_order or (_info.payload_mod_order if _info else None)
-        result = equalization.equalize_frame(
-            self.samples,
-            frame,
-            num_taps=num_taps,
-            lms_step_size=lms_step_size,
-            blind_step_size=blind_step_size,
-            blind_algorithm=blind_algorithm,
-            modulation=_mod,
-            order=_order,
-            sps=int(round(self.sps)),
-            backend=backend,
-            store_weights=store_weights,
-            w_init=w_init,
-            debug_plot=debug_plot,
-        )
-        # Keep the full combined (payload+pilots interleaved) equalizer output
-        # in self.samples.  Subsequent DSP steps (CPR, freq correction, …)
-        # operate on this stream without needing to know the frame structure.
-        # resolve_symbols() later recomputes the pilot/payload mask from the
-        # attached frame and writes both resolved_symbols (payload) and
-        # resolved_pilot_symbols (pilots).
-        self.samples = result.y_hat
-        self._equalizer_result = result
-        self._num_train_symbols = getattr(result, "num_train_symbols", 0)
-        self._num_preamble_symbols = getattr(result, "num_preamble_symbols", 0)
-        self._num_tail_trim = 0
-        self.sampling_rate = self.symbol_rate
-        # Populate source_symbols from the frame's payload symbols so that
-        # overlay_source in plot_constellation and training in further equalization
-        # steps reference the correct payload-only reference (no preamble, no pilots).
-        if self.frame is not None:
-            self.source_symbols = self.frame.payload_symbols
         return self
 
     # -------------------------------------------------------------------------
@@ -2659,11 +2210,10 @@ class Signal(BaseModel):
         The generated samples are normalized to **unit symbol power (Es = 1)**
         via `filtering.shape_pulse`, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
-        ``resolved_pilot_symbols`` when pilots are present) at unit average
-        power (Es = 1, 1 sps) before demapping or computing metrics.
+        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
+        average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         from . import filtering, mapping
 
@@ -2766,9 +2316,8 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
-        ``resolved_pilot_symbols`` when pilots are present) at unit average
-        power (Es = 1, 1 sps) before demapping or computing metrics.
+        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
+        average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         if rz:
             if sps % 2 != 0:
@@ -2847,9 +2396,8 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
-        ``resolved_pilot_symbols`` when pilots are present) at unit average
-        power (Es = 1, 1 sps) before demapping or computing metrics.
+        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
+        average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         return cls.generate(
             modulation="psk",
@@ -2917,9 +2465,8 @@ class Signal(BaseModel):
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
-        Call `resolve_symbols()` to populate ``resolved_symbols`` (and
-        ``resolved_pilot_symbols`` when pilots are present) at unit average
-        power (Es = 1, 1 sps) before demapping or computing metrics.
+        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
+        average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         return cls.generate(
             modulation="qam",
@@ -2940,24 +2487,10 @@ class Signal(BaseModel):
     # -------------------------------------------------------------------------
 
     def resolve_symbols(self, offset: int = 0) -> None:
-        """Decimate to symbol rate and populate resolved symbol fields.
+        """Decimate to symbol rate and populate ``resolved_symbols``.
 
         Decimates ``self.samples`` to 1 SPS and normalises to unit average
-        power ($E_s = 1$).  Results are written to fields rather than
-        returned so that the complete resolved state is always in one place.
-
-        **Frame-aware splitting** — when a :class:`SingleCarrierFrame` is
-        attached (``self.frame``) and its ``pilot_pattern`` is not ``"none"``,
-        *and* the signal is already at 1 SPS (i.e. after :meth:`equalize_frame`
-        and any subsequent DSP), the interleaved payload+pilot stream is split
-        using the frame's structure map:
-
-        * ``resolved_symbols`` — payload symbols only, normalised.
-        * ``resolved_pilot_symbols`` — pilot symbols only, normalised.
-
-        Without pilots (or when the signal has not yet been equalised to 1 SPS),
-        only ``resolved_symbols`` is populated and ``resolved_pilot_symbols`` is
-        set to ``None``.
+        power ($E_s = 1$), writing the result to ``self.resolved_symbols``.
 
         Parameters
         ----------
@@ -2967,14 +2500,33 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The normalisation step is a safety guard that absorbs any gain
-        introduced by the channel, equaliser, or matched filter.  It does not
-        change the constellation shape, only the scale.
+        The normalisation step absorbs any gain introduced by the channel,
+        equaliser, or matched filter.  It does not change the constellation
+        shape, only the scale.
 
-        Warning
-        -------
-        Only integer offsets are supported.  Use after timing correction.
+        Designed for plain (non-frame) signals at a single modulation/gain.
+        Frame signals contain preamble, pilots, and payload packed together,
+        potentially with different modulations or pilot boosts.  Calling
+        this on a frame signal is skipped with a warning; extract the
+        desired segment, create a plain ``Signal``, then call
+        ``resolve_symbols()`` on that.
+
+        Raises
+        ------
+        ValueError
+            If ``symbol_rate`` or ``sampling_rate`` are missing, or SPS is
+            not a positive integer.
         """
+        if self.signal_info is not None:
+            logger.warning(
+                "resolve_symbols() called on a frame-generated signal — skipping. "
+                "Frame signals mix preamble, pilots, and payload segments that may "
+                "have different modulations or gains. Extract the desired segment "
+                "via frame.get_structure_map(), build a plain Signal, then call "
+                "resolve_symbols() on that."
+            )
+            return
+
         sps = self.sps
         if sps is None:
             raise ValueError("Symbol rate or sampling rate missing.")
@@ -2998,52 +2550,6 @@ class Signal(BaseModel):
                 self.samples, sps=int(sps), offset=int(offset), axis=-1
             )
 
-        # When a frame with pilots is attached and the signal is at 1 SPS
-        # (post-equalization), split the interleaved payload+pilot stream into
-        # separate resolved fields.  The pilot/payload mask is recomputed from
-        # the frame structure — it is a pure function of frame parameters, so
-        # no additional state needs to be stored between equalize_frame() and
-        # resolve_symbols().
-        if (
-            self.frame is not None
-            and getattr(self.frame, "pilot_pattern", "none") != "none"
-            and sps == 1
-        ):
-            from .backend import to_device as _to_device  # noqa: PLC0415
-
-            struct = self.frame.get_structure_map(
-                unit="symbols", sps=1, include_preamble=True
-            )
-            pilot_m = struct.get("pilots")
-            payload_m = struct.get("payload")
-            if pilot_m is not None and payload_m is not None:
-                n = res.shape[-1]
-                pilot_idx = np.where(_to_device(pilot_m, "cpu").astype(bool))[0]
-                payload_idx = np.where(_to_device(payload_m, "cpu").astype(bool))[0]
-                # Only split when indices fit within res (they may not if the
-                # signal was trimmed or if this is a pre-equalization call).
-                if (
-                    len(pilot_idx) > 0
-                    and len(payload_idx) > 0
-                    and int(pilot_idx.max()) < n
-                    and int(payload_idx.max()) < n
-                ):
-                    if res.ndim == 1:
-                        pilot_res = res[pilot_idx]
-                        payload_res = res[payload_idx]
-                    else:
-                        pilot_res = res[:, pilot_idx]
-                        payload_res = res[:, payload_idx]
-                    self.resolved_symbols = helpers.normalize(
-                        payload_res, "average_power", axis=-1
-                    )
-                    self.resolved_pilot_symbols = helpers.normalize(
-                        pilot_res, "average_power", axis=-1
-                    )
-                    return
-
-        # No frame pilots (or indices out of range): resolve as a single stream.
-        self.resolved_pilot_symbols = None
         self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
 
     def demap_symbols_hard(
@@ -3069,6 +2575,14 @@ class Signal(BaseModel):
             not been called yet.
         """
         from .mapping import demap_symbols_hard
+
+        if self.signal_info is not None:
+            logger.warning(
+                "demap_symbols_hard() called on a frame-generated signal — skipping. "
+                "Extract the payload segment via frame.get_structure_map() and build "
+                "a plain Signal before demapping."
+            )
+            return
 
         if self.mod_scheme is None or self.mod_order is None:
             raise ValueError("Modulation scheme and order required for demapping.")
@@ -3096,7 +2610,6 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         discard_training: bool = True,
-        segment: Literal["payload", "pilots"] = "payload",
     ) -> Tuple[float, float]:
         """
         Computes the Error Vector Magnitude (EVM).
@@ -3107,18 +2620,11 @@ class Signal(BaseModel):
         Parameters
         ----------
         reference_symbols : array_like, optional
-            Known transmitted symbols. If None, defaults to ``source_symbols``
-            for ``segment="payload"`` or ``frame.pilot_symbols`` for
-            ``segment="pilots"``.
+            Known transmitted symbols. If None, falls back to
+            ``source_symbols`` when available.
         discard_training : bool, default True
-            If True, discards the initial DA-training symbols before computing
-            the metric (payload segment only; ignored for pilots).
-        segment : {"payload", "pilots"}, default "payload"
-            Which segment to evaluate:
-
-            - ``"payload"``: uses ``resolved_symbols`` vs payload reference.
-            - ``"pilots"``: uses ``resolved_pilot_symbols`` vs
-              ``frame.pilot_symbols`` (call ``resolve_symbols()`` first).
+            If True, discards the initial DA-training symbols before
+            computing the metric.
 
         Returns
         -------
@@ -3130,45 +2636,32 @@ class Signal(BaseModel):
         Raises
         -------
         ValueError
-            If no reference symbols are available.
+            If no reference symbols are available or ``resolved_symbols``
+            has not been set (call ``resolve_symbols()`` first).
+
+        Notes
+        -----
+        For frame-generated signals, extract the payload segment manually
+        via ``frame.get_structure_map()`` and create a plain ``Signal``
+        with the appropriate ``source_symbols`` before calling this method.
         """
         from . import metrics
 
-        if segment == "pilots":
-            if self.resolved_pilot_symbols is None:
-                raise ValueError(
-                    "No resolved_pilot_symbols available. "
-                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
-                )
-            y = self.resolved_pilot_symbols
-            ref = (
-                reference_symbols
-                if reference_symbols is not None
-                else (self.frame.pilot_symbols if self.frame is not None else None)
+        if self.signal_info is not None:
+            logger.warning(
+                "evm() called on a frame-generated signal. For accurate per-segment "
+                "metrics, extract the payload (or pilot) segment manually via "
+                "frame.get_structure_map() and create a plain Signal first."
             )
-            if ref is None:
-                raise ValueError(
-                    "No pilot reference available. Provide reference_symbols or ensure "
-                    "frame.pilot_symbols is set."
-                )
-            return metrics.evm(y, ref)
+            return
 
-        # segment == "payload"
-        # Prefer payload_symbols (no preamble, no pilot-gain bias) over
-        # source_symbols (body in wire order, may include boosted pilots).
         ref = (
-            reference_symbols
-            if reference_symbols is not None
-            else (
-                self.payload_symbols
-                if self.payload_symbols is not None
-                else self.source_symbols
-            )
+            reference_symbols if reference_symbols is not None else self.source_symbols
         )
         if ref is None:
             raise ValueError(
                 "No reference available. Provide reference_symbols or ensure "
-                "payload_symbols / source_symbols is set."
+                "source_symbols is set."
             )
 
         if self.resolved_symbols is None:
@@ -3195,7 +2688,6 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         discard_training: bool = True,
-        segment: Literal["payload", "pilots"] = "payload",
     ) -> float:
         """
         Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
@@ -3206,18 +2698,11 @@ class Signal(BaseModel):
         Parameters
         ----------
         reference_symbols : array_like, optional
-            Known transmitted symbols. If None, defaults to ``source_symbols``
-            for ``segment="payload"`` or ``frame.pilot_symbols`` for
-            ``segment="pilots"``.
+            Known transmitted symbols. If None, falls back to
+            ``source_symbols`` when available.
         discard_training : bool, default True
-            If True, discards the initial DA-training symbols before computing
-            the metric (payload segment only; ignored for pilots).
-        segment : {"payload", "pilots"}, default "payload"
-            Which segment to evaluate:
-
-            - ``"payload"``: uses ``resolved_symbols`` vs payload reference.
-            - ``"pilots"``: uses ``resolved_pilot_symbols`` vs
-              ``frame.pilot_symbols`` (call ``resolve_symbols()`` first).
+            If True, discards the initial DA-training symbols before
+            computing the metric.
 
         Returns
         -------
@@ -3227,44 +2712,32 @@ class Signal(BaseModel):
         Raises
         ------
         ValueError
-            If no reference symbols are available (neither provided
-            nor stored in metadata).
+            If no reference symbols are available or ``resolved_symbols``
+            has not been set (call ``resolve_symbols()`` first).
+
+        Notes
+        -----
+        For frame-generated signals, extract the payload segment manually
+        via ``frame.get_structure_map()`` and create a plain ``Signal``
+        with the appropriate ``source_symbols`` before calling this method.
         """
         from . import metrics
 
-        if segment == "pilots":
-            if self.resolved_pilot_symbols is None:
-                raise ValueError(
-                    "No resolved_pilot_symbols available. "
-                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
-                )
-            y = self.resolved_pilot_symbols
-            ref = (
-                reference_symbols
-                if reference_symbols is not None
-                else (self.frame.pilot_symbols if self.frame is not None else None)
+        if self.signal_info is not None:
+            logger.warning(
+                "snr() called on a frame-generated signal. For accurate per-segment "
+                "metrics, extract the payload (or pilot) segment manually via "
+                "frame.get_structure_map() and create a plain Signal first."
             )
-            if ref is None:
-                raise ValueError(
-                    "No pilot reference available. Provide reference_symbols or ensure "
-                    "frame.pilot_symbols is set."
-                )
-            return metrics.snr(y, ref)
+            return
 
-        # segment == "payload"
         ref = (
-            reference_symbols
-            if reference_symbols is not None
-            else (
-                self.payload_symbols
-                if self.payload_symbols is not None
-                else self.source_symbols
-            )
+            reference_symbols if reference_symbols is not None else self.source_symbols
         )
         if ref is None:
             raise ValueError(
                 "No reference available. Provide reference_symbols or ensure "
-                "payload_symbols / source_symbols is set."
+                "source_symbols is set."
             )
 
         if self.resolved_symbols is None:
@@ -3290,7 +2763,6 @@ class Signal(BaseModel):
         self,
         reference_bits: Optional[ArrayType] = None,
         discard_training: bool = True,
-        segment: Literal["payload", "pilots"] = "payload",
     ) -> Union[float, ArrayType]:
         """
         Computes the Bit Error Rate (BER).
@@ -3302,21 +2774,11 @@ class Signal(BaseModel):
         Parameters
         ----------
         reference_bits : array_like, optional
-            The original transmitted bits. If None, defaults to
-            ``payload_bits`` / ``source_bits`` for ``segment="payload"``, or
-            ``frame.pilot_bits`` for ``segment="pilots"``.
+            The original transmitted bits. If None, falls back to
+            ``source_bits`` when available.
         discard_training : bool, default True
             If True, discards the initial DA-training symbols (converted to
-            bits) before computing the metric (payload segment only; ignored
-            for pilots).
-        segment : {"payload", "pilots"}, default "payload"
-            Which segment to evaluate:
-
-            - ``"payload"``: uses ``resolved_bits`` (call
-              ``demap_symbols_hard()`` first) vs payload reference bits.
-            - ``"pilots"``: inline-demaps ``resolved_pilot_symbols`` using
-              ``signal_info.pilot_mod_scheme/order``; no prior
-              ``demap_symbols_hard()`` call needed.
+            bits) before computing the metric.
 
         Returns
         -------
@@ -3326,52 +2788,31 @@ class Signal(BaseModel):
         Raises
         ------
         ValueError
-            If required data or modulation metadata is missing.
+            If required data or modulation metadata is missing, or
+            ``resolved_bits`` has not been set (call
+            ``demap_symbols_hard()`` first).
+
+        Notes
+        -----
+        For frame-generated signals, extract the payload segment manually
+        via ``frame.get_structure_map()`` and create a plain ``Signal``
+        with the appropriate ``source_bits`` before calling this method.
         """
         from . import metrics
-        from .mapping import demap_symbols_hard
 
-        if segment == "pilots":
-            if self.resolved_pilot_symbols is None:
-                raise ValueError(
-                    "No resolved_pilot_symbols available. "
-                    "Call resolve_symbols() after equalize_frame() on a signal with pilots."
-                )
-            si = self.signal_info
-            if si is None or si.pilot_mod_scheme is None or si.pilot_mod_order is None:
-                raise ValueError(
-                    "pilot_mod_scheme / pilot_mod_order not set in signal_info. "
-                    "Cannot demap pilot symbols."
-                )
-            ref = (
-                reference_bits
-                if reference_bits is not None
-                else (self.frame.pilot_bits if self.frame is not None else None)
+        if self.signal_info is not None:
+            logger.warning(
+                "ber() called on a frame-generated signal. For accurate per-segment "
+                "metrics, extract the payload (or pilot) segment manually via "
+                "frame.get_structure_map() and create a plain Signal first."
             )
-            if ref is None:
-                raise ValueError(
-                    "No pilot reference bits available. Provide reference_bits or ensure "
-                    "frame.pilot_bits is set."
-                )
-            y_bits = demap_symbols_hard(
-                symbols=self.resolved_pilot_symbols,
-                modulation=si.pilot_mod_scheme,
-                order=si.pilot_mod_order,
-            )
-            return metrics.ber(y_bits, ref)
+            return
 
-        # segment == "payload"
-        ref = (
-            reference_bits
-            if reference_bits is not None
-            else (
-                self.payload_bits if self.payload_bits is not None else self.source_bits
-            )
-        )
+        ref = reference_bits if reference_bits is not None else self.source_bits
         if ref is None:
             raise ValueError(
                 "No reference bits available. Provide reference_bits or ensure "
-                "payload_bits / source_bits is set."
+                "source_bits is set."
             )
 
         if self.resolved_bits is None:
@@ -3391,7 +2832,6 @@ class Signal(BaseModel):
         trim = self._num_train_symbols if discard_training else 0
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
-            # Convert symbol trim index to bit trim index
             bps = self.bits_per_symbol
             bit_trim = trim * bps
             n = min(y.shape[-1], r.shape[-1])
@@ -3612,6 +3052,7 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_unipolar: bool = False
     preamble: Optional[Preamble] = None
     preamble_mode: Literal["same", "time_orthogonal"] = "same"
+    preamble_secondary: Optional[Preamble] = None
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = Field(default=0, ge=0)
@@ -3912,6 +3353,63 @@ class SingleCarrierFrame(BaseModel):
         return body
 
     # -------------------------------------------------------------------------
+    # Preamble Helpers
+    # -------------------------------------------------------------------------
+
+    @property
+    def preamble_length(self) -> int:
+        """
+        Effective preamble length in symbols, accounting for MIMO time-orthogonal expansion.
+
+        For ``preamble_mode="time_orthogonal"`` with ``num_streams > 1`` the transmitted
+        preamble spans ``num_symbols * num_streams`` symbol slots (one stream per slot).
+        For all other cases this equals ``preamble.num_symbols``.
+        Returns 0 if no preamble is attached.
+        """
+        if self.preamble is None:
+            return 0
+        n = self.preamble.num_symbols
+        if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
+            n *= self.num_streams
+        return n
+
+    def _get_secondary_preamble(self) -> "Preamble":
+        """
+        Return the secondary preamble (Q) used in off-diagonal time-orthogonal slots.
+
+        If ``preamble_secondary`` is set explicitly, it is returned as-is.
+        Otherwise, for ZC preambles, a secondary sequence is auto-generated with a
+        different root: ``sec_root = (primary_root % (length - 1)) + 1``.
+        Barker preambles have no standard orthogonal companion at the same length, so
+        ``preamble_secondary`` must be set explicitly in that case.
+
+        Raises
+        ------
+        ValueError
+            If ``preamble`` is None, or if the preamble type is "barker" and
+            ``preamble_secondary`` is not set.
+        """
+        if self.preamble is None:
+            raise ValueError("No preamble set on this frame.")
+
+        if self.preamble_secondary is not None:
+            return self.preamble_secondary
+
+        if self.preamble.sequence_type == "zc":
+            N = self.preamble.length
+            primary_root = self.preamble.kwargs.get("root", 1)
+            # Choose the next root cyclically, skipping the primary root
+            sec_root = (primary_root % (N - 1)) + 1
+            if sec_root == primary_root:
+                sec_root = (sec_root % (N - 1)) + 1
+            return Preamble(sequence_type="zc", length=N, kwargs={"root": sec_root})
+
+        raise ValueError(
+            "Barker preambles have no standard orthogonal companion sequence. "
+            "Set preamble_secondary explicitly to use time_orthogonal mode."
+        )
+
+    # -------------------------------------------------------------------------
     # Frame Structure Mapping
     # -------------------------------------------------------------------------
 
@@ -3947,11 +3445,7 @@ class SingleCarrierFrame(BaseModel):
         xp = cp if is_cupy_available() else np
         mask, body_length = self._generate_pilot_mask()
 
-        preamble_len = 0
-        if self.preamble is not None:
-            preamble_len = self.preamble.num_symbols
-            if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
-                preamble_len *= self.num_streams
+        preamble_len = self.preamble_length
 
         if include_preamble:
             total_len = preamble_len + body_length + self.guard_len
@@ -4135,9 +3629,35 @@ class SingleCarrierFrame(BaseModel):
             max_iq_p = xp.where(max_iq_p == 0, xp.ones_like(max_iq_p), max_iq_p)
             preamble_samples = preamble_samples / max_iq_p
 
+            # For time_orthogonal MIMO, shape and normalise the secondary (Q) waveform.
+            secondary_samples = None
+            if self.preamble_mode == "time_orthogonal" and self.num_streams > 1:
+                sec_preamble = self._get_secondary_preamble()
+                sec_signal = sec_preamble.to_signal(
+                    sps=sps,
+                    symbol_rate=symbol_rate,
+                    pulse_shape=pulse_shape,
+                    filter_span=filter_span,
+                    rrc_rolloff=rrc_rolloff,
+                    rc_rolloff=rc_rolloff,
+                    smoothrect_bt=smoothrect_bt,
+                    gaussian_bt=gaussian_bt,
+                    **kwargs,
+                )
+                sec_samples = sec_signal.samples
+                max_iq_s = xp.maximum(
+                    xp.max(xp.abs(sec_samples.real), axis=-1, keepdims=True),
+                    xp.max(xp.abs(sec_samples.imag), axis=-1, keepdims=True),
+                )
+                max_iq_s = xp.where(max_iq_s == 0, xp.ones_like(max_iq_s), max_iq_s)
+                secondary_samples = sec_samples / max_iq_s
+
             # Handle MIMO preamble structure
             preamble_samples = helpers.expand_preamble_mimo(
-                preamble_samples, self.num_streams, self.preamble_mode
+                preamble_samples,
+                self.num_streams,
+                self.preamble_mode,
+                secondary_waveform=secondary_samples,
             )
 
             # Concatenate Preamble + Body
@@ -4179,6 +3699,15 @@ class SingleCarrierFrame(BaseModel):
         else:
             preamble_base_len = None
 
+        # Resolve secondary preamble metadata for SignalInfo
+        _sec: Optional[Preamble] = None
+        if (
+            self.preamble is not None
+            and self.preamble_mode == "time_orthogonal"
+            and self.num_streams > 1
+        ):
+            _sec = self._get_secondary_preamble()
+
         signal_info = SignalInfo(
             signal_type="Single-Carrier Frame",
             payload_mod_scheme=self.payload_mod_scheme,
@@ -4188,6 +3717,8 @@ class SingleCarrierFrame(BaseModel):
             preamble_type=self.preamble.sequence_type if self.preamble else None,
             preamble_mode=self.preamble_mode if self.preamble else None,
             preamble_kwargs=self.preamble.kwargs if self.preamble else None,
+            preamble_secondary_type=_sec.sequence_type if _sec else None,
+            preamble_secondary_kwargs=_sec.kwargs if _sec else None,
             payload_len=self.payload_len,
             pilot_count=pilot_count,
             pilot_pattern=self.pilot_pattern,
@@ -4210,10 +3741,9 @@ class SingleCarrierFrame(BaseModel):
             mod_order=None,  # Moved to SignalInfo
             mod_unipolar=None,
             mod_rz=None,
-            source_bits=None,  # access via sig.frame.payload_bits
-            source_symbols=None,  # body_symbols misaligns: samples start at
-            # preamble but body starts after it.
-            # Use sig.frame.body_symbols explicitly.
+            source_bits=None,  # extract via frame.get_structure_map() after equalization
+            source_symbols=None,  # samples include full frame (preamble + body);
+            # extract payload segment via frame.get_structure_map() explicitly.
             pulse_shape=pulse_shape,
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,

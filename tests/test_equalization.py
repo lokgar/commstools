@@ -2421,474 +2421,179 @@ class TestEqualizerWInitBackend:
         assert isinstance(result, EqualizerResult)
 
 
-class TestEqualizationFrame:
-    """Tests for equalize_frame() — no-pilot and pilot-pattern variants."""
+class TestCmaPilotAided:
+    """Tests for cma()/rde() with pilot_ref/pilot_mask (hybrid PA mode)."""
 
-    def test_equalize_frame_no_pilots_output_shape(self, backend_device, xp):
-        """equalize_frame() with no pilots returns payload-length output."""
-        from commstools.equalization import equalize_frame
+    def _make_comb_frame_and_samples(self, xp):
+        from commstools.core import SingleCarrierFrame, Preamble
+        from commstools.backend import to_device
 
-        frame = _make_sc_frame_no_pilots()
+        preamble = Preamble(sequence_type="barker", length=13)
+        frame = SingleCarrierFrame(
+            num_symbols=200,
+            symbol_rate=1e6,
+            modulation_scheme="qam",
+            modulation_order=16,
+            pilot_pattern="comb",
+            pilot_period=10,
+            pilot_modulation_scheme="psk",
+            pilot_modulation_order=4,
+            preamble=preamble,
+        )
         sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
+        struct = frame.get_structure_map(unit="symbols", sps=1, include_preamble=False)
+        samples_cpu = to_device(sig.samples, "cpu")
+        pilot_syms_cpu = to_device(frame.pilot_symbols, "cpu")
+        pilot_mask_bool = to_device(struct["pilots"], "cpu")
+        n_body = int(pilot_mask_bool.size)
+        return frame, samples_cpu, pilot_syms_cpu, pilot_mask_bool, n_body
 
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
-            lms_step_size=0.05,
-            blind_step_size=5e-4,
-            blind_algorithm="rde",
+    def test_cma_pilot_aided_numba_output_shape(self, backend_device, xp):
+        """cma() with pilot_ref/pilot_mask returns correct body length."""
+        from commstools.equalization import build_pilot_ref
+
+        frame, samples_cpu, pilot_syms_cpu, pilot_mask_bool, n_body = (
+            self._make_comb_frame_and_samples(xp)
+        )
+        # Slice body samples (after preamble)
+        sps = 2
+        n_pre = frame.preamble.num_symbols * sps
+        body_samples = samples_cpu[n_pre:]
+
+        pilot_ref, pilot_mask_u8 = build_pilot_ref(
+            pilot_symbols=pilot_syms_cpu,
+            pilot_mask=pilot_mask_bool,
+            n_sym=n_body,
+            num_ch=1,
+        )
+        result = equalization.cma(
+            body_samples,
             modulation="qam",
             order=16,
+            num_taps=11,
+            step_size=1e-4,
             sps=2,
+            backend="numba",
+            pilot_ref=pilot_ref,
+            pilot_mask=pilot_mask_u8,
         )
         assert isinstance(result, EqualizerResult)
-        assert result.y_hat.shape[-1] > 0
+        assert result.y_hat.shape[-1] == n_body
 
-    def test_equalize_frame_no_pilots_signal_method(self, backend_device, xp):
-        """Signal.equalize_frame() with no pilots runs without error."""
-        frame = _make_sc_frame_no_pilots()
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
+    def test_rde_pilot_aided_numba_output_shape(self, backend_device, xp):
+        """rde() with pilot_ref/pilot_mask returns correct body length."""
+        from commstools.equalization import build_pilot_ref
 
-        sig.equalize_frame(
-            frame,
-            num_taps=13,
-            lms_step_size=0.05,
-            blind_step_size=5e-4,
-            blind_algorithm="rde",
+        frame, samples_cpu, pilot_syms_cpu, pilot_mask_bool, n_body = (
+            self._make_comb_frame_and_samples(xp)
         )
-        assert sig._equalizer_result is not None
-        assert sig.samples.shape[-1] > 0
+        sps = 2
+        n_pre = frame.preamble.num_symbols * sps
+        body_samples = samples_cpu[n_pre:]
 
-    def test_equalize_frame_num_train_symbols(self, backend_device, xp):
-        """num_preamble_symbols equals the preamble length; num_train_symbols
-        reflects payload-domain DA training only (0 for blind payload pass)."""
-        from commstools.equalization import equalize_frame
-
-        frame = _make_sc_frame_no_pilots()  # Barker-13 preamble
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
+        pilot_ref, pilot_mask_u8 = build_pilot_ref(
+            pilot_symbols=pilot_syms_cpu,
+            pilot_mask=pilot_mask_bool,
+            n_sym=n_body,
+            num_ch=1,
+        )
+        result = equalization.rde(
+            body_samples,
             modulation="qam",
             order=16,
+            num_taps=11,
+            step_size=1e-4,
             sps=2,
-        )
-        assert result.num_preamble_symbols == frame.preamble.length
-
-    def test_equalize_frame_external_w_init(self, backend_device, xp):
-        """equalize_frame() accepts w_init and uses it for warm-start."""
-        from commstools.equalization import equalize_frame
-
-        frame = _make_sc_frame_no_pilots()
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        w0 = np.zeros((1, 1, 13), dtype=np.complex64)
-        w0[0, 0, 6] = 1.0 + 0j
-
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
-            modulation="qam",
-            order=16,
-            sps=2,
-            w_init=w0,
+            backend="numba",
+            pilot_ref=pilot_ref,
+            pilot_mask=pilot_mask_u8,
         )
         assert isinstance(result, EqualizerResult)
+        assert result.y_hat.shape[-1] == n_body
 
-    def test_equalize_frame_wrong_frame_type_raises(self, backend_device, xp):
-        """equalize_frame() raises TypeError when frame is not SingleCarrierFrame."""
-        from commstools.equalization import equalize_frame
-
-        samples = xp.zeros(200, dtype=xp.complex64)
-        with pytest.raises(TypeError, match="SingleCarrierFrame"):
-            equalize_frame(samples, frame="not_a_frame", num_taps=11, sps=2)
-
-    def test_equalize_frame_jax_backend_no_pilots(self, backend_device, xp):
-        """equalize_frame() with backend='jax' and no pilots runs without error."""
+    def test_cma_pilot_aided_jax_output_shape(self, backend_device, xp):
+        """cma() with pilot_ref/pilot_mask and jax backend runs without error."""
         pytest.importorskip("jax")
-        from commstools.equalization import equalize_frame
+        from commstools.equalization import build_pilot_ref
 
-        frame = _make_sc_frame_no_pilots()
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
+        frame, samples_cpu, pilot_syms_cpu, pilot_mask_bool, n_body = (
+            self._make_comb_frame_and_samples(xp)
+        )
+        sps = 2
+        n_pre = frame.preamble.num_symbols * sps
+        body_samples = samples_cpu[n_pre:]
 
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
+        pilot_ref, pilot_mask_u8 = build_pilot_ref(
+            pilot_symbols=pilot_syms_cpu,
+            pilot_mask=pilot_mask_bool,
+            n_sym=n_body,
+            num_ch=1,
+        )
+        result = equalization.cma(
+            body_samples,
             modulation="qam",
             order=16,
+            num_taps=11,
+            step_size=1e-4,
             sps=2,
             backend="jax",
+            pilot_ref=pilot_ref,
+            pilot_mask=pilot_mask_u8,
         )
         assert isinstance(result, EqualizerResult)
-        assert result.y_hat.shape[-1] > 0
+        assert result.y_hat.shape[-1] == n_body
 
-    def test_equalize_frame_jax_backend_comb_pilots(self, backend_device, xp):
-        """equalize_frame() with backend='jax' and comb pilots uses PA hybrid kernel."""
-        pytest.importorskip("jax")
-        from commstools.core import Preamble, SingleCarrierFrame
-        from commstools.equalization import equalize_frame
+    def test_rde_pilot_aided_w_init_warm_start(self, backend_device, xp):
+        """rde() PA accepts w_init from a prior lms() call."""
+        from commstools.equalization import build_pilot_ref
 
-        preamble = Preamble(sequence_type="barker", length=13)
-        frame = SingleCarrierFrame(
-            payload_len=256,
-            payload_mod_scheme="qam",
-            payload_mod_order=16,
-            preamble=preamble,
-            pilot_pattern="comb",
-            pilot_period=8,
-            pilot_mod_scheme="qam",
-            pilot_mod_order=4,
-            payload_seed=7,
+        frame, samples_cpu, pilot_syms_cpu, pilot_mask_bool, n_body = (
+            self._make_comb_frame_and_samples(xp)
         )
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
+        sps = 2
+        n_pre = frame.preamble.num_symbols * sps
+        preamble_samples = samples_cpu[:n_pre]
+        body_samples = samples_cpu[n_pre:]
+        # Pre-converge on preamble
+        pre = equalization.lms(
+            preamble_samples,
+            training_symbols=_to_np(frame.preamble.symbols),
+            num_taps=11,
+            step_size=0.01,
+            sps=2,
+        )
+        pilot_ref, pilot_mask_u8 = build_pilot_ref(
+            pilot_symbols=pilot_syms_cpu,
+            pilot_mask=pilot_mask_bool,
+            n_sym=n_body,
+            num_ch=1,
+        )
+        result = equalization.rde(
+            body_samples,
             modulation="qam",
             order=16,
-            sps=2,
-            blind_algorithm="rde",
-            backend="jax",
-        )
-        assert isinstance(result, EqualizerResult)
-        assert result.y_hat.shape[-1] > 0
-        assert result.num_preamble_symbols == frame.preamble.length
-
-
-# -----------------------------------------------------------------------------
-# APPLY TAPS TESTS
-# -----------------------------------------------------------------------------
-
-
-class TestApplyTaps:
-    """Tests for apply_taps frozen-weight inference function."""
-
-    def _make_siso(self, xp, n_samples=2000, sps=2, num_taps=11, seed=42):
-        rng = np.random.default_rng(seed)
-        x = (
-            rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
-        ).astype(np.complex64)
-        x = xp.asarray(x)
-        result = equalization.lms(
-            x, training_symbols=x[::sps], num_taps=num_taps, sps=sps, backend="numba"
-        )
-        return x, result
-
-    def _make_mimo(self, xp, n_samples=2000, sps=2, num_taps=11, C=2, seed=7):
-        rng = np.random.default_rng(seed)
-        x = (
-            rng.standard_normal((C, n_samples))
-            + 1j * rng.standard_normal((C, n_samples))
-        ).astype(np.complex64)
-        x = xp.asarray(x)
-        result = equalization.lms(
-            x, training_symbols=x[:, ::sps], num_taps=num_taps, sps=sps, backend="numba"
-        )
-        return x, result
-
-    def test_siso_output_shape(self, backend_device, xp):
-        """SISO: output shape is (N // sps,)."""
-        N, sps = 2000, 2
-        x, result = self._make_siso(xp, n_samples=N, sps=sps)
-        y = equalization.apply_taps(x, result.weights, sps=sps)
-        assert y.shape == (N // sps,)
-
-    def test_mimo_output_shape(self, backend_device, xp):
-        """MIMO: output shape is (C, N // sps)."""
-        N, sps, C = 2000, 2, 2
-        x, result = self._make_mimo(xp, n_samples=N, sps=sps, C=C)
-        y = equalization.apply_taps(x, result.weights, sps=sps)
-        assert y.shape == (C, N // sps)
-
-    def test_siso_identity_weights(self, backend_device, xp):
-        """Center-tap identity weights decimate the input at the symbol grid."""
-        N, sps, T = 1000, 2, 11
-        rng = np.random.default_rng(0)
-        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
-            np.complex64
-        )
-        x = xp.asarray(x_np)
-
-        # Identity: single 1.0 at center tap
-        w = np.zeros(T, dtype=np.complex64)
-        w[T // 2] = 1.0
-        w = xp.asarray(w)
-
-        y = equalization.apply_taps(x, w, sps=sps, normalize=False)
-        # pad_left = T//2, so window[n, T//2] = samples_padded[n*sps + T//2]
-        # = x_np[n*sps + T//2 - T//2] = x_np[n*sps]  →  x_np[::sps]
-        np.testing.assert_allclose(_to_np(y), x_np[::sps][: N // sps], atol=1e-5)
-
-    def test_mimo_identity_weights(self, backend_device, xp):
-        """MIMO identity butterfly passes each channel through independently."""
-        N, sps, T, C = 1000, 2, 11, 2
-        rng = np.random.default_rng(1)
-        x_np = (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
-            np.complex64
-        )
-        x = xp.asarray(x_np)
-
-        # (C, C, T) identity butterfly: W[i, i, center] = 1, rest zero
-        W = np.zeros((C, C, T), dtype=np.complex64)
-        for i in range(C):
-            W[i, i, T // 2] = 1.0
-        W = xp.asarray(W)
-
-        y = equalization.apply_taps(x, W, sps=sps, normalize=False)
-        for i in range(C):
-            np.testing.assert_allclose(
-                _to_np(y[i]), x_np[i, ::sps][: N // sps], atol=1e-5
-            )
-
-    def test_frozen_taps_equalize_new_signal(self, backend_device, xp):
-        """Frozen taps trained on one frame should equalize a fresh frame of the same channel.
-
-        Train LMS on a first block through a known ISI channel, freeze weights,
-        apply to a second independent block.  The output power should be
-        concentrated near the QPSK constellation (low residual ISI).
-        """
-        from commstools.mapping import gray_constellation
-
-        rng = np.random.default_rng(99)
-        N_sym, sps, T = 600, 2, 21
-
-        # Simple 3-tap ISI channel
-        h = np.array([0.8, 0.4, 0.2], dtype=np.complex64)
-
-        # First frame: train
-        bits1 = rng.integers(0, 2, 4 * N_sym)
-        syms1 = gray_constellation("qpsk", 4)[bits1 % 4].astype(np.complex64)
-        x1 = np.repeat(syms1, sps).astype(np.complex64)
-        rx1 = np.convolve(x1, h)[: len(x1)].astype(np.complex64)
-        rx1 = xp.asarray(rx1)
-        result = equalization.lms(
-            rx1,
-            training_symbols=xp.asarray(syms1),
-            num_taps=T,
-            sps=sps,
-            backend="numba",
-        )
-
-        # Second frame: apply frozen taps
-        bits2 = rng.integers(0, 2, 4 * N_sym)
-        syms2 = gray_constellation("qpsk", 4)[bits2 % 4].astype(np.complex64)
-        x2 = np.repeat(syms2, sps).astype(np.complex64)
-        rx2 = np.convolve(x2, h)[: len(x2)].astype(np.complex64)
-        rx2 = xp.asarray(rx2)
-
-        y2 = equalization.apply_taps(rx2, result.weights, sps=sps)
-
-        # Equalized output should be close to QPSK constellation
-        # (residual MSE well below 0 dB)
-        y2_np = _to_np(y2)
-        mse = np.mean(
-            np.abs(
-                y2_np
-                - np.sign(y2_np.real + 1e-8) * 0.707
-                - 1j * np.sign(y2_np.imag + 1e-8) * 0.707
-            )
-            ** 2
-        )
-        assert mse < 0.5, f"Frozen taps produced poor equalization: MSE={mse:.3f}"
-
-    def test_sps_1_works(self, backend_device, xp):
-        """sps=1 (symbol-rate input) is accepted and produces correct length."""
-        N, sps, T = 500, 1, 7
-        rng = np.random.default_rng(3)
-        x_np = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
-            np.complex64
-        )
-        x = xp.asarray(x_np)
-        w = xp.asarray(np.zeros(T, dtype=np.complex64))
-        w_np = np.zeros(T, dtype=np.complex64)
-        w_np[T // 2] = 1.0
-        w = xp.asarray(w_np)
-        y = equalization.apply_taps(x, w, sps=sps, normalize=False)
-        assert y.shape == (N // sps,)
-
-    def test_normalize_false_preserves_scale(self, backend_device, xp):
-        """normalize=False should not rescale the output relative to the input."""
-        N, sps, T = 1000, 2, 5
-        rng = np.random.default_rng(5)
-        x_np = (10.0 * rng.standard_normal(N) + 10j * rng.standard_normal(N)).astype(
-            np.complex64
-        )
-        x = xp.asarray(x_np)
-
-        w = np.zeros(T, dtype=np.complex64)
-        w[T // 2] = 1.0
-        w = xp.asarray(w)
-
-        y_norm = equalization.apply_taps(x, w, sps=sps, normalize=True)
-        y_raw = equalization.apply_taps(x, w, sps=sps, normalize=False)
-
-        # normalized output should have much lower power than the raw 10x-scaled input
-        assert float(_to_np(xp.mean(xp.abs(y_norm) ** 2))) < float(
-            _to_np(xp.mean(xp.abs(y_raw) ** 2))
-        )
-
-
-# -----------------------------------------------------------------------------
-# EQUALIZE_FRAME — ADDITIONAL BRANCH COVERAGE
-# -----------------------------------------------------------------------------
-
-
-class TestEqualizeFrameBranches:
-    """Additional equalize_frame branches: cma pilot, MIMO time_orthogonal preamble, empty payload."""
-
-    def test_comb_pilots_numba_cma(self, backend_device, xp):
-        """equalize_frame with comb pilots, numba backend, blind_algorithm='cma'."""
-        from commstools.core import Preamble, SingleCarrierFrame
-        from commstools.equalization import equalize_frame
-
-        preamble = Preamble(sequence_type="barker", length=13)
-        frame = SingleCarrierFrame(
-            payload_len=128,
-            payload_mod_scheme="qam",
-            payload_mod_order=4,
-            preamble=preamble,
-            pilot_pattern="comb",
-            pilot_period=8,
-            pilot_mod_scheme="qam",
-            pilot_mod_order=4,
-            payload_seed=3,
-        )
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=13,
-            blind_algorithm="cma",
-            modulation="qam",
-            order=4,
-            sps=2,
-            backend="numba",
-        )
-        assert isinstance(result, EqualizerResult)
-        assert result.y_hat.shape[-1] > 0
-
-    def test_mimo_same_mode_preamble_warns(self, backend_device, xp):
-        """equalize_frame with MIMO and same-mode preamble runs without raising."""
-        from commstools.core import Preamble, SingleCarrierFrame
-        from commstools.equalization import equalize_frame
-
-        preamble = Preamble(sequence_type="barker", length=13)
-        frame = SingleCarrierFrame(
-            payload_len=64,
-            payload_mod_scheme="qam",
-            payload_mod_order=4,
-            preamble=preamble,
-            num_streams=2,
-            preamble_mode="same",
-            payload_seed=9,
-        )
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        # sig.samples is already (2, N) for a 2-stream frame
-        samples = xp.asarray(
-            sig.samples.get() if hasattr(sig.samples, "get") else sig.samples
-        )
-
-        # Run without crash; stream-ordering warning is logged not raised
-        result = equalize_frame(samples, frame, num_taps=11, sps=2, backend="numba")
-        assert isinstance(result, EqualizerResult)
-
-
-# -----------------------------------------------------------------------------
-# EQUALIZE_FRAME — PAYLOAD BRANCH AND PROPERTY COVERAGE
-# -----------------------------------------------------------------------------
-
-
-class TestEqualizeFramePayloadBranches:
-    """Cover equalize_frame payload-stage branches and Signal.equalizer_result."""
-
-    def _make_frame_no_preamble(self, mod="qam", order=16, n=128, seed=5):
-        """SingleCarrierFrame with no preamble — w_0 is None at payload stage."""
-        from commstools.core import SingleCarrierFrame
-
-        return SingleCarrierFrame(
-            payload_len=n,
-            payload_mod_scheme=mod,
-            payload_mod_order=order,
-            pilot_pattern="none",
-            payload_seed=seed,
-        )
-
-    def test_no_preamble_w0_none_path(self, backend_device, xp):
-        """equalize_frame without preamble hits w_0=None initialisation at payload stage."""
-        from commstools.equalization import equalize_frame
-
-        frame = self._make_frame_no_preamble()
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        result = equalize_frame(
-            samples,
-            frame,
             num_taps=11,
+            step_size=1e-4,
             sps=2,
-            modulation="qam",
-            order=16,
             backend="numba",
+            w_init=pre.weights,
+            pilot_ref=pilot_ref,
+            pilot_mask=pilot_mask_u8,
         )
         assert isinstance(result, EqualizerResult)
-        assert result.y_hat.shape[-1] > 0
+        assert result.y_hat.shape[-1] == n_body
 
-    def test_cma_no_modulation_r2_fallback(self, backend_device, xp):
-        """CMA without modulation/order uses r2=1.0 fallback (Godard constant)."""
-        from commstools.equalization import equalize_frame
+    def test_build_pilot_ref_shape(self, backend_device, xp):
+        """build_pilot_ref returns correct shapes."""
+        from commstools.equalization import build_pilot_ref
 
-        frame = self._make_frame_no_preamble(mod="qam", order=4)
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        # Omit modulation/order → hits r2=1.0 fallback branch
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=11,
-            sps=2,
-            blind_algorithm="cma",
-            backend="numba",
-        )
-        assert isinstance(result, EqualizerResult)
-
-    def test_rde_no_modulation_radii_fallback(self, backend_device, xp):
-        """RDE without modulation/order uses radii=[1.0] fallback."""
-        from commstools.equalization import equalize_frame
-
-        frame = self._make_frame_no_preamble(mod="qam", order=4)
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        samples = xp.asarray(sig.samples)
-
-        # Omit modulation/order → hits radii=[1.0] fallback branch
-        result = equalize_frame(
-            samples,
-            frame,
-            num_taps=11,
-            sps=2,
-            blind_algorithm="rde",
-            backend="numba",
-        )
-        assert isinstance(result, EqualizerResult)
-
-    def test_signal_equalizer_result_property(self, backend_device, xp):
-        """Signal.equalizer_result returns the EqualizerResult after equalize_frame."""
-        frame = _make_sc_frame_no_pilots()
-        sig = frame.to_signal(sps=2, symbol_rate=1e6)
-        assert sig.equalizer_result is None  # before equalization
-        sig.equalize_frame(frame, num_taps=11)
-        assert isinstance(sig.equalizer_result, EqualizerResult)
+        n_sym, n_pilots, num_ch = 100, 10, 2
+        positions = np.linspace(0, n_sym - 1, n_pilots, dtype=int)
+        mask = np.zeros(n_sym, dtype=bool)
+        mask[positions] = True
+        pilot_syms = np.ones((num_ch, n_pilots), dtype=np.complex64)
+        ref, mask_u8 = build_pilot_ref(pilot_syms, mask, n_sym, num_ch)
+        assert ref.shape == (num_ch, n_sym)
+        assert mask_u8.shape == (n_sym,)
+        assert mask_u8.dtype == np.uint8
+        assert int(mask_u8.sum()) == n_pilots
