@@ -743,6 +743,7 @@ def estimate_timing(
         if fallback_applied:
             peak_vals = xp.max(corr_incoherent, axis=-1)
             metrics = xp.clip(peak_vals / norm_factors, 0.0, 1.0)
+            corr_mag = xp.abs(corr)
 
     # === Threshold Check ===
     max_metric = float(xp.max(metrics))
