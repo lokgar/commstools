@@ -1180,8 +1180,12 @@ def estimate_frequency_offset_differential(
     order : int, optional
         Modulation order.  Required with ``modulation`` for blind mode.
     ref_signal : array_like, optional
-        Known reference signal at the same sample rate. Shape: (N,) or
-        (C, N).  Used to derotate ``signal`` before estimation.
+        Known reference signal. Shape: ``(N,)``, ``(1, N)`` (broadcast to
+        all channels), or ``(C, N)`` for per-channel derotation. The caller
+        is responsible for ensuring the signal and reference are already
+        aligned (same start sample, same length).  For MIMO with
+        independent per-stream pilots (e.g. ZC preamble), pass shape
+        ``(C, N)`` with each row containing the reference for that channel.
     weighted : bool, default True
         If ``True``, applies Kay's sinc-weighted estimator for improved
         low-SNR performance.  If ``False``, uses an unweighted sum.
@@ -1190,7 +1194,9 @@ def estimate_frequency_offset_differential(
     -------
     float
         Estimated frequency offset in Hz.  For MIMO, the per-channel
-        estimates are averaged.
+        complex differential sums are first combined coherently (summed
+        as complex numbers before taking the angle), which is the ML
+        estimate under equal-power independent noise.
 
     Notes
     -----
@@ -1246,21 +1252,40 @@ def estimate_frequency_offset_differential(
         w_np = np.maximum(w_np, 0.0)
         w_np /= w_np.sum()
         w = xp.asarray(w_np)
-        # Coherent MIMO combining: sum weighted complex y_diff across all
-        # channels before taking the angle.  Every channel observes the
-        # same frequency offset Δf; their complex differential products
-        # add coherently while incoherent per-channel noise averages down
-        # as 1/√C.  Taking angle(sum_channels) is equivalent to a
-        # maximum-likelihood estimate under equal-power, independent noise.
-        # This is far better than angle(sum_c) per channel → mean(angle),
-        # where a single noisy channel can pull the mean-of-angles off.
-        combined_sum = xp.sum(w * y_diff, axis=(-2, -1))  # scalar complex
+        # Per-channel complex sum: z[c] = Σ_n w[n]·y_diff[c,n]  → (C,)
+        z_per_ch = xp.sum(w * y_diff, axis=-1)
     else:
-        combined_sum = xp.sum(y_diff)  # scalar complex, sum over C and N-1
+        z_per_ch = xp.sum(y_diff, axis=-1)  # (C,)
+
+    # Coherent MIMO combining: sum complex phasors across channels before
+    # taking the angle.  The differential removes the static phase offset
+    # φ₀[c] for each channel, so every z[c] points at the same angle
+    # M·2π·Δf/fs regardless of polarisation rotation.  Summing the
+    # complex values (not averaging angles) is the ML estimate under
+    # equal-power independent noise, giving √C SNR gain vs single channel.
+    combined_sum = xp.sum(z_per_ch)  # scalar complex
 
     f_est = float(xp.angle(combined_sum)) * (fs / (2 * np.pi)) / M
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
-    logger.info(f"FOE (differential, {mode_str}): {f_est:.2f} Hz")
+
+    if C > 1:
+        f_per_ch = [
+            float(xp.angle(z_per_ch[c])) * (fs / (2 * np.pi)) / M
+            for c in range(C)
+        ]
+        spread = max(f_per_ch) - min(f_per_ch)
+        logger.info(
+            f"FOE (differential, {mode_str}): {f_est:.2f} Hz "
+            f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz]"
+        )
+        if spread > fs / (4 * M):
+            logger.warning(
+                f"FOE (differential): large per-channel spread {spread:.2f} Hz "
+                f"(>{fs/(4*M):.2f} Hz = fs/4M). Possible wrong ref assignment "
+                f"for one or more channels."
+            )
+    else:
+        logger.info(f"FOE (differential, {mode_str}): {f_est:.2f} Hz")
 
     if debug_plot:
         from . import plotting as _plotting
