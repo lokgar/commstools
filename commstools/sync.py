@@ -683,7 +683,9 @@ def estimate_timing(
     # For MIMO use the incoherent sum (consistent with peak_indices); for SISO
     # corr_incoherent is not computed so fall back to the coherent magnitude.
     if C_tx > 1:
-        peak_vals = xp.max(corr_incoherent, axis=-1)  # (C,) incoherent — matches peak detection
+        peak_vals = xp.max(
+            corr_incoherent, axis=-1
+        )  # (C,) incoherent — matches peak detection
     else:
         peak_vals = xp.max(corr_mag, axis=-1)  # (C,)
     metrics = peak_vals / norm_factors
@@ -2063,7 +2065,7 @@ def recover_carrier_phase_decision_directed(
     (``@njit``) for CPU performance.  When the input lives on a GPU
     (CuPy), samples are transparently moved to CPU for processing and
     the result is moved back — acceptable because the CPR loop is not
-    the throughput bottleneck.  Install ``numba`` for a 10–100× speedup
+    the throughput bottleneck.  Install ``numba`` for a 10-100x speedup
     over the pure-Python fallback.
 
     **M-fold phase ambiguity:** Like VV and BPS, the DD-PLL may converge
@@ -2074,11 +2076,11 @@ def recover_carrier_phase_decision_directed(
     ----------
     I. Fatadin, D. Ives, and S. J. Savory, "Blind equalization and
     carrier phase recovery in a 16-QAM optical coherent system," *J.
-    Lightw. Technol.*, vol. 27, no. 15, pp. 3042–3049, Aug. 2009.
+    Lightw. Technol.*, vol. 27, no. 15, pp. 3042-3049, Aug. 2009.
 
     Md. S. Faruk and S. J. Savory, "Digital signal processing for coherent
     transceivers employing multilevel formats," *J. Lightw. Technol.*,
-    vol. 35, no. 5, pp. 1125–1141, Mar. 2017, Sec. VIII.A, refs [65, 108].
+    vol. 35, no. 5, pp. 1125-1141, Mar. 2017, Sec. VIII.A, refs [65, 108].
 
     J. G. Proakis, *Digital Communications*, 4th ed., McGraw-Hill, 2001,
     ch. 6 (carrier phase synchronisation).

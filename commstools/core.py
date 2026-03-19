@@ -1524,6 +1524,14 @@ class Signal(BaseModel):
                 debug_plot=debug_plot,
                 **kwargs,
             )
+        elif method == "dd_pll":
+            phase = sync.recover_carrier_phase_decision_directed(
+                self.samples,
+                debug_plot=debug_plot,
+                modulation=self.mod_scheme,
+                order=self.mod_order,
+                **kwargs,
+            )
         else:
             raise ValueError(
                 f"Unknown CPR method: {method!r}. "
@@ -2533,7 +2541,11 @@ class Signal(BaseModel):
         trim = (
             num_train_symbols
             if num_train_symbols is not None
-            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+            else (
+                getattr(self._equalizer_result, "num_train_symbols", 0)
+                if discard_training
+                else 0
+            )
         )
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for EVM calculation.")
@@ -2614,7 +2626,11 @@ class Signal(BaseModel):
         trim = (
             num_train_symbols
             if num_train_symbols is not None
-            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+            else (
+                getattr(self._equalizer_result, "num_train_symbols", 0)
+                if discard_training
+                else 0
+            )
         )
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for SNR calculation.")
@@ -2696,7 +2712,11 @@ class Signal(BaseModel):
         trim = (
             num_train_symbols
             if num_train_symbols is not None
-            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+            else (
+                getattr(self._equalizer_result, "num_train_symbols", 0)
+                if discard_training
+                else 0
+            )
         )
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
