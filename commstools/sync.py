@@ -460,13 +460,8 @@ def estimate_timing(
     signal : array_like or Signal
         Received signal samples.
 
-        .. note::
-            When ``signal`` is a raw array (not a :class:`~commstools.core.Signal`),
-            ``info`` always wins over ``preamble`` for template reconstruction, and
-            ``sps`` must be supplied explicitly.
-
     preamble : array_like or Preamble, optional
-        Known preamble (used only when ``info`` is not provided).
+        Known preamble.
     threshold : float, default 0.5
         Detection threshold normalized between 0 and 1.
 
@@ -544,12 +539,12 @@ def estimate_timing(
     preamble_waveform = None
 
     frame = getattr(signal, "frame", None) if isinstance(signal, Signal) else None
-    
+
     resolved_preamble = preamble
     num_streams = 1
-    
+
     if resolved_preamble is None and frame is not None:
-        if hasattr(frame, 'preamble') and frame.preamble is not None:
+        if hasattr(frame, "preamble") and frame.preamble is not None:
             resolved_preamble = frame.preamble
             num_streams = getattr(frame, "num_streams", 1)
         elif getattr(signal, "signal_type", None) == "Preamble":
@@ -588,12 +583,16 @@ def estimate_timing(
                 pulse_shape=pulse_shape or "rrc",
                 **filter_params,
             )
-            preamble_waveform = xp.tile(xp.asarray(p_sig.samples)[None, :], (num_streams, 1))
+            preamble_waveform = xp.tile(
+                xp.asarray(p_sig.samples)[None, :], (num_streams, 1)
+            )
 
     elif resolved_preamble is not None:
         preamble_waveform = xp.asarray(resolved_preamble)
     else:
-        raise ValueError("Either 'signal.frame' with a preamble, or 'preamble' argument must be provided.")
+        raise ValueError(
+            "Either 'signal.frame' with a preamble, or 'preamble' argument must be provided."
+        )
 
     # 3. Correlation Strategy
     # Signal: (C, N) or (N,)
