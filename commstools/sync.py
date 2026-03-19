@@ -724,9 +724,7 @@ def estimate_timing(
                 if tx == int(assignment[rx]):
                     continue
                 alt_peak = float(xp.max(corr_all_mag[rx, tx]))
-                alt_metric = float(
-                    xp.clip(alt_peak / float(norm_factors[rx]), 0.0, 1.0)
-                )
+                alt_metric = min(alt_peak / float(norm_factors[rx]), 1.0)
                 if alt_metric > best_alt_metric:
                     best_alt_metric, best_alt_tx = alt_metric, tx
             if best_alt_tx is not None:
