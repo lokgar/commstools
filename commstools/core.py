@@ -1450,6 +1450,9 @@ class Signal(BaseModel):
             * ``'bps'``: Blind Phase Search for QAM constellations (Pfau
               et al.).  Requires ``mod_scheme`` and ``mod_order``.
               Keyword args: ``num_test_phases``, ``block_size``.
+            * ``'dd_pll'``: Decision-Directed Phase-Locked Loop (DD-PLL).
+              Requires ``mod_scheme`` and ``mod_order``.
+              Keyword args: ``mu``, ``beta``, ``phase_init``.
             * ``'pilots'``: Pilot-aided phase estimation with interpolation.
               Requires ``pilot_indices`` and ``pilot_values``.
 
@@ -1535,7 +1538,7 @@ class Signal(BaseModel):
         else:
             raise ValueError(
                 f"Unknown CPR method: {method!r}. "
-                "Choose from 'viterbi_viterbi', 'bps', 'pilots'."
+                "Choose from 'viterbi_viterbi', 'bps', 'dd_pll', 'pilots'."
             )
 
         self.samples = sync.correct_carrier_phase(self.samples, phase)

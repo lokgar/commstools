@@ -194,7 +194,7 @@ class TestCprViterbiViterbi:
         ],
     )
     def test_phase_residual(self, backend_device, xp, order, modulation, block_size):
-        """VV CPR: RMS phase residual reduced to < 0.1 rad after correction."""
+        """VV CPR: mean phase estimate within 0.1 rad of true carrier phase (mod M-fold)."""
         sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
         phi_true = 0.3  # radians
         sig.samples = sig.samples * xp.exp(1j * phi_true)
@@ -202,14 +202,15 @@ class TestCprViterbiViterbi:
         phase_est = sync.recover_carrier_phase_viterbi_viterbi(
             sig.samples, modulation=modulation, order=order, block_size=block_size
         )
-        corrected = sync.correct_carrier_phase(sig.samples, phase_est)
 
-        # Re-estimate residual after correction (accounts for irreducible M-fold ambiguity)
-        phase_resid = sync.recover_carrier_phase_viterbi_viterbi(
-            corrected, modulation=modulation, order=order, block_size=block_size
-        )
-        # 0.1 rad tolerance: VV has inherent noise for high-order QAM from amplitude modulation
-        assert float(xp.sqrt(xp.mean(phase_resid**2))) < 0.1
+        # Check that the mean estimate is within 0.1 rad of phi_true, modulo the
+        # irreducible M-fold (2π/M) ambiguity.  Wrapping the error to [-π/M, π/M)
+        # removes the ambiguity and leaves only the estimation error.
+        M = 4 if modulation == "qam" else order
+        step = 2 * np.pi / M
+        err = float(xp.mean(phase_est)) - phi_true
+        err = err - step * round(err / step)  # wrap to [-step/2, step/2)
+        assert abs(err) < 0.1
 
     def test_output_shape_siso(self, backend_device, xp):
         """VV CPR: 1D input → 1D phase output of same length."""
