@@ -1614,6 +1614,27 @@ def recover_carrier_phase_viterbi_viterbi(
     # would lose precision during the discontinuity test (diff vs 2π threshold).
     phi_u = xp.unwrap((phi_raw * M).astype(xp.float64), axis=-1) / M  # (C, N_blocks)
 
+    # QAM bias correction.
+    # For square QAM, E[d^M] is always real and negative: every diagonal symbol
+    # d = a(1±j) gives d^4 ∝ (1+j)^4 = -4, and these corner-like points dominate
+    # the mean.  This introduces a deterministic π/M offset in phi_u that rotates
+    # the corrected constellation away from its canonical orientation.  PSK has
+    # no such bias (all d^M are real positive).  Subtracting π/M removes it.
+    if "qam" in modulation.lower():
+        phi_u = phi_u - (np.pi / M)
+
+    # MIMO M-fold alignment.
+    # VV resolves the M-fold ambiguity independently per channel, so different
+    # streams can land on different 2π/M branches.  For a coherent system with a
+    # shared local oscillator the carrier phase is common — align every channel
+    # to channel 0's branch by rounding the mean inter-channel difference to the
+    # nearest integer multiple of 2π/M.
+    if C > 1:
+        for ch in range(1, C):
+            diff = float(xp.mean(phi_u[ch] - phi_u[0]))
+            k = round(diff * M / (2 * np.pi))
+            phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
+
     # Block centre positions for interpolation (uniform spacing = block_size)
     block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
     all_positions = xp.arange(N, dtype=xp.float64)
