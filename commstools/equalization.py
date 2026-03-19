@@ -51,7 +51,7 @@ apply_taps :
 
 import functools
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -86,24 +86,26 @@ class EqualizerResult:
         Number of data-aided training symbols consumed (LMS/RLS).  Used to
         discard the DA-trained transient before computing steady-state metrics
         like EVM, SNR, and BER.
-    input_norm_factor : float
-        Global normalization factor ``rms(samples) * sqrt(sps)`` applied to
-        the input samples by ``_normalize_inputs`` before equalization.
+    input_norm_factor : float or np.ndarray
+        Normalization factor(s) ``rms(samples, axis=-1) * sqrt(sps)`` applied
+        per-channel by ``_normalize_inputs`` before equalization.  For SISO
+        this is a plain ``float``; for MIMO it is a 1-D ``np.ndarray`` of
+        shape ``(C,)`` — one factor per input stream.
         Stored so callers can apply the post-hoc power correction needed when
         passing a different capture (e.g. vacuum noise) through the same
-        frozen taps without disturbing the ratio:
+        frozen taps without disturbing the per-channel ratio:
 
         .. code-block:: python
 
-            α = signal_result.input_norm_factor
+            α = signal_result.input_norm_factor  # float or (C,) array
             β = noise_result.input_norm_factor
             P_noise_corrected = (
-                np.mean(np.abs(noise_result.y_hat) ** 2) * (β / α) ** 2
+                np.mean(np.abs(noise_result.y_hat) ** 2, axis=-1) * (β / α) ** 2
             )
 
         ``P_signal / P_noise_corrected`` is then the physically meaningful
-        signal-to-noise power ratio preserved through the DSP chain.
-        At ``sps=1`` this factor equals the plain RMS of the input symbols.
+        per-channel signal-to-noise power ratio preserved through the DSP chain.
+        At ``sps=1`` this factor equals the plain per-channel RMS of the input symbols.
     """
 
     y_hat: ArrayType
@@ -111,7 +113,7 @@ class EqualizerResult:
     error: ArrayType
     weights_history: Optional[ArrayType] = None
     num_train_symbols: int = 0
-    input_norm_factor: float = 1.0
+    input_norm_factor: Union[float, np.ndarray] = 1.0
 
 
 def _log_equalizer_exit(
@@ -123,14 +125,31 @@ def _log_equalizer_exit(
     """Log exit MSE and optionally show a debug plot for an EqualizerResult."""
     if result.error is not None:
         err = to_device(result.error, "cpu")
-        window = max(1, min(100, err.size))
-        mse_final = float(np.mean(np.abs(err.flat[-window:]) ** 2))
-        mse_db = 10.0 * np.log10(mse_final + 1e-30)
-        logger.info(f"{name}: exit MSE={mse_db:.1f} dB (final {window} symbols)")
+        n_sym = err.shape[-1]  # time axis; correct for (N_sym,) and (C, N_sym)
+        window = max(1, min(100, n_sym))
 
-        if check_convergence and err.size >= 20:
-            init_window = max(1, min(100, err.size // 10))
-            mse_init = float(np.mean(np.abs(err.flat[:init_window]) ** 2))
+        if err.ndim == 1:
+            # SISO
+            mse_final = float(np.mean(np.abs(err[-window:]) ** 2))
+            mse_db = 10.0 * np.log10(mse_final + 1e-30)
+            logger.info(f"{name}: exit MSE={mse_db:.1f} dB (final {window} symbols)")
+        else:
+            # MIMO: log per-channel MSE; keep mean for convergence check
+            per_ch_mse = [
+                float(np.mean(np.abs(err[c, -window:]) ** 2))
+                for c in range(err.shape[0])
+            ]
+            parts = ", ".join(
+                f"ch{c}={10.0 * np.log10(m + 1e-30):.1f}"
+                for c, m in enumerate(per_ch_mse)
+            )
+            logger.info(f"{name}: exit MSE (final {window} symbols): {parts} dB")
+            mse_final = float(np.mean(per_ch_mse))
+            mse_db = 10.0 * np.log10(mse_final + 1e-30)
+
+        if check_convergence and n_sym >= 20:
+            init_window = max(1, min(100, n_sym // 10))
+            mse_init = float(np.mean(np.abs(err[..., :init_window]) ** 2))
             if mse_init > 0 and mse_final > mse_init * 0.9:
                 logger.warning(
                     f"{name}: convergence may be poor — "
@@ -1383,16 +1402,25 @@ def _normalize_inputs(samples, training_symbols, sps):
     -------
     samples          : unit symbol-power, same shape/backend
     training_symbols : unit average-power, same shape/backend (or None)
-    input_norm_factor : float
-        Global normalization factor ``rms(samples) * sqrt(sps)`` that was
-        applied to *samples* before this function returned.  Stored in
+    input_norm_factor : float or np.ndarray
+        Per-channel normalization factor(s) ``rms(ch) * sqrt(sps)`` applied
+        to *samples* before this function returned.  ``float`` for SISO,
+        ``np.ndarray`` of shape ``(C,)`` for MIMO.  Stored in
         ``EqualizerResult.input_norm_factor`` so callers can reconstruct
         the physical power scale of a different capture (e.g. vacuum noise)
         passed through the same frozen taps.  See ``EqualizerResult`` docs.
     """
     from commstools.helpers import normalize as c_normalize, rms as _rms
 
-    input_norm_factor = float(_rms(samples) * (sps**0.5))
+    # Per-channel norm: rms(ch) * sqrt(sps) — matches the per-channel scaling
+    # that c_normalize("symbol_power", axis=-1) applies below.
+    # For SISO (N,): _rms(axis=-1) is a 0-d scalar → stored as float.
+    # For MIMO (C, N): _rms(axis=-1) is (C,) → stored as np.ndarray on CPU.
+    norm_vec = _rms(samples, axis=-1) * (sps**0.5)
+    if samples.ndim == 1:
+        input_norm_factor = float(norm_vec)
+    else:
+        input_norm_factor = to_device(norm_vec, "cpu")
     samples = c_normalize(samples, "symbol_power", sps=sps, axis=-1)
 
     if training_symbols is not None:
@@ -1402,7 +1430,7 @@ def _normalize_inputs(samples, training_symbols, sps):
     return samples, training_symbols, input_norm_factor
 
 
-def _init_butterfly_weights_jax(num_ch, num_taps, jnp, sps=2, center_tap=None):
+def _init_butterfly_weights_jax(num_ch, num_taps, jnp, center_tap=None):
     """Build center-tap identity butterfly weight matrix as a JAX array.
 
     Initializes a ``(C, C, num_taps)`` complex64 array where
@@ -1417,7 +1445,6 @@ def _init_butterfly_weights_jax(num_ch, num_taps, jnp, sps=2, center_tap=None):
     num_taps   : int — FIR filter length T
     jnp        : JAX numpy module (passed as argument to avoid importing at
                  module level when JAX is unavailable)
-    sps        : int — unused; retained for call-site symmetry
     center_tap : int or None — tap index for unit initialization;
                  defaults to ``num_taps // 2``
 
@@ -2021,7 +2048,7 @@ def lms(
         W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
-            num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+            num_ch, num_taps, jnp, center_tap=center_tap
         )
         W_jax = to_jax(W_jax, device=platform)
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
@@ -2390,7 +2417,7 @@ def rls(
         W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
-            num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+            num_ch, num_taps, jnp, center_tap=center_tap
         )
         W_jax = to_jax(W_jax, device=platform)
 
@@ -2767,7 +2794,7 @@ def cma(
         W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
-            num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+            num_ch, num_taps, jnp, center_tap=center_tap
         )
         W_jax = to_jax(W_jax, device=platform)
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
@@ -3092,7 +3119,7 @@ def rde(
         W_jax = to_jax(w_arr, device=platform)
     else:
         W_jax = _init_butterfly_weights_jax(
-            num_ch, num_taps, jnp, sps=sps, center_tap=center_tap
+            num_ch, num_taps, jnp, center_tap=center_tap
         )
         W_jax = to_jax(W_jax, device=platform)
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
