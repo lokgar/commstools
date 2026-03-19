@@ -710,6 +710,42 @@ def estimate_timing(
     metrics = peak_vals / norm_factors
     metrics = xp.clip(metrics, 0.0, 1.0)
 
+    # === MIMO fallback: X-Y power imbalance with polarization mixing ===
+    # Only enters when at least one channel already has a good peak — that anchor
+    # confirms the frame is present. For each failing channel, try the templates
+    # that weren't assigned to it; if a better correlation is found, borrow it.
+    if C_tx > 1 and float(xp.max(metrics)) >= threshold:
+        fallback_applied = False
+        for rx in range(num_sig_ch):
+            if float(metrics[rx]) >= threshold:
+                continue
+            best_alt_tx, best_alt_metric = None, float(metrics[rx])
+            for tx in range(C_tx):
+                if tx == int(assignment[rx]):
+                    continue
+                alt_peak = float(xp.max(corr_all_mag[rx, tx]))
+                alt_metric = float(
+                    xp.clip(alt_peak / float(norm_factors[rx]), 0.0, 1.0)
+                )
+                if alt_metric > best_alt_metric:
+                    best_alt_metric, best_alt_tx = alt_metric, tx
+            if best_alt_tx is not None:
+                logger.warning(
+                    f"Channel {rx}: assigned ZC root {int(assignment[rx])} metric "
+                    f"{float(metrics[rx]):.3f} < threshold {threshold}. "
+                    f"Possible X-Y power imbalance. "
+                    f"Falling back to ZC root {best_alt_tx} "
+                    f"(metric {best_alt_metric:.3f})."
+                )
+                assignment[rx] = best_alt_tx
+                corr_incoherent[rx] = corr_all_mag[rx, best_alt_tx]
+                corr[rx] = corr_all[rx, best_alt_tx]
+                peak_indices[rx] = xp.argmax(corr_incoherent[rx])
+                fallback_applied = True
+        if fallback_applied:
+            peak_vals = xp.max(corr_incoherent, axis=-1)
+            metrics = xp.clip(peak_vals / norm_factors, 0.0, 1.0)
+
     # === Threshold Check ===
     max_metric = float(xp.max(metrics))
     if max_metric < threshold:
