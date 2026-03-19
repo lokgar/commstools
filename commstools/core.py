@@ -363,17 +363,15 @@ class Signal(BaseModel):
 
         # ── Section 2: Structure info (content varies by signal_type) ───────
         if self.signal_type == "Preamble" and self.frame is not None:
-            preamble = self.frame
-            rows.append(("─── Preamble info", ""))
-            preamble_str = (
-                f"{preamble.sequence_type.upper()}  len={preamble.length}"
-                + (
-                    f"  kwargs={{'root': {preamble.root}}}"
-                    if preamble.sequence_type == "zc"
-                    else (f"  kwargs={preamble.kwargs}" if preamble.kwargs else "")
+            preamble = getattr(self.frame, "preamble", None)
+            if preamble is not None:
+                rows.append(("─── Preamble info", ""))
+                preamble_str = (
+                    f"{preamble.sequence_type.upper()}  len={preamble.length}"
                 )
-            )
-            rows.append(("Sequence", preamble_str))
+                if preamble.sequence_type == "zc":
+                    preamble_str += f"  root={preamble.root}"
+                rows.append(("Sequence", preamble_str))
 
         elif self.signal_type == "Single-Carrier Frame" and self.frame is not None:
             frame = self.frame
@@ -381,11 +379,9 @@ class Signal(BaseModel):
 
             if hasattr(frame, "preamble") and frame.preamble is not None:
                 p = frame.preamble
-                preamble_str = f"{p.sequence_type.upper()}  len={p.length}" + (
-                    f"  kwargs={{'root': {p.root}}}"
-                    if p.sequence_type == "zc"
-                    else (f"  kwargs={p.kwargs}" if p.kwargs else "")
-                )
+                preamble_str = f"{p.sequence_type.upper()}  len={p.length}"
+                if p.sequence_type == "zc":
+                    preamble_str += f"  root={p.root}"
                 rows.append(("Preamble", preamble_str))
             else:
                 rows.append(("Preamble", "none"))
@@ -2323,7 +2319,7 @@ class Signal(BaseModel):
         The generated samples are normalized to **unit symbol power (Es = 1)**
         via `filtering.shape_pulse`, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
         Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
         average power (Es = 1, 1 SPS) before demapping or computing metrics.
@@ -2377,7 +2373,7 @@ class Signal(BaseModel):
             If ``symbol_rate`` or ``sampling_rate`` are missing, or SPS is
             not a positive integer.
         """
-        if self.signal_type != None:
+        if self.signal_type is not None:
             logger.warning(
                 "resolve_symbols() called on a frame-generated signal — skipping. "
                 "Frame signals mix preamble, pilots, and payload segments that may "
@@ -2436,7 +2432,7 @@ class Signal(BaseModel):
         """
         from .mapping import demap_symbols_hard
 
-        if self.signal_type != None:
+        if self.signal_type is not None:
             logger.warning(
                 "demap_symbols_hard() called on a frame-generated signal — skipping. "
                 "Extract the payload segment via frame.get_structure_map() and build "
@@ -2507,7 +2503,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_type != None:
+        if self.signal_type is not None:
             logger.warning(
                 "evm() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2583,7 +2579,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_type != None:
+        if self.signal_type is not None:
             logger.warning(
                 "snr() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2660,7 +2656,7 @@ class Signal(BaseModel):
         """
         from . import metrics
 
-        if self.signal_type != None:
+        if self.signal_type is not None:
             logger.warning(
                 "ber() called on a frame-generated signal. For accurate per-segment "
                 "metrics, extract the payload (or pilot) segment manually via "
@@ -2720,8 +2716,6 @@ class Preamble(BaseModel):
     root : int, default 1
         ZC root index (only meaningful for ``sequence_type='zc'``).
         Must satisfy ``1 ≤ root < length``.
-    kwargs : dict
-        Reserved for future extension parameters.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -2735,7 +2729,6 @@ class Preamble(BaseModel):
         "ignored for Barker sequences.  Must satisfy ``1 ≤ root < length``; "
         "for prime ``length`` every root in this range yields a valid CAZAC sequence.",
     )
-    kwargs: Dict[str, Any] = Field(default_factory=dict)
 
     # Internal state managed during post-init
     _symbols: Any = PrivateAttr(default=None)
@@ -3365,7 +3358,7 @@ class SingleCarrierFrame(BaseModel):
         Returns
         -------
         Signal
-            A `Signal` object containing the IQ samples and `SignalInfo` metadata.
+            A `Signal` object containing the IQ samples and metadata.
 
         Notes
         -----

@@ -322,7 +322,7 @@ print(structure.payload_indices)
 
 | Module | Contents |
 | --- | --- |
-| `commstools.core` | `Signal`, `Preamble`, `SingleCarrierFrame`, `SignalInfo` |
+| `commstools.core` | `Signal`, `Preamble`, `SingleCarrierFrame` |
 | `commstools.backend` | `dispatch()`, `to_device()`, `to_jax()`, `from_jax()`, `use_cpu_only()` |
 | `commstools.mapping` | `gray_constellation()`, `map_bits()`, `demap_symbols_hard()`, `compute_llr()` |
 | `commstools.filtering` | `rrc_taps()`, `rc_taps()`, `gaussian_taps()`, `smoothrect_taps()`, `fir_filter()`, `shape_pulse()` |
