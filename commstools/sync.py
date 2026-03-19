@@ -679,8 +679,13 @@ def estimate_timing(
     norm_factors = xp.sqrt(e_p * e_s)
     norm_factors = xp.maximum(norm_factors, 1e-12)
 
-    # Calculate per-channel metrics
-    peak_vals = xp.max(corr_mag, axis=-1)  # (C,)
+    # Calculate per-channel metrics.
+    # For MIMO use the incoherent sum (consistent with peak_indices); for SISO
+    # corr_incoherent is not computed so fall back to the coherent magnitude.
+    if C_tx > 1:
+        peak_vals = xp.max(corr_incoherent, axis=-1)  # (C,) incoherent — matches peak detection
+    else:
+        peak_vals = xp.max(corr_mag, axis=-1)  # (C,)
     metrics = peak_vals / norm_factors
     metrics = xp.clip(metrics, 0.0, 1.0)
 
@@ -694,7 +699,7 @@ def estimate_timing(
     # === Skew Check (Robust) ===
     if num_sig_ch > 1:
         # Check skew among valid channels
-        valid_mask = metrics > (threshold * 0.8)
+        valid_mask = metrics > (threshold * 0.5)
 
         if xp.sum(valid_mask) > 1:
             valid_peaks = peak_indices[valid_mask]

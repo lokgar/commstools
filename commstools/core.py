@@ -186,12 +186,6 @@ class Signal(BaseModel):
 
     # Private: cached equalizer result for post-hoc inspection
     _equalizer_result: Any = PrivateAttr(default=None)
-    _num_train_symbols: int = PrivateAttr(default=0)
-
-    # Symbols removed from the output tail (RLS: last num_taps//2 windows overlap
-    # zero-padding, producing spurious errors — those symbols are stripped from y_hat).
-    # Metric methods must trim the same count from the reference tail before comparing.
-    _num_tail_trim: int = PrivateAttr(default=0)
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
@@ -1838,11 +1832,8 @@ class Signal(BaseModel):
               methods; unchanged rate for ZF).
             - ``signal.equalizer_result`` — full
               :class:`~commstools.equalization.EqualizerResult` including
-              ``y_hat``, ``weights``, ``error``, and optionally
-              ``weights_history``. *Not set for ZF.*
-            - ``signal._num_train_symbols`` — actual number of training
-              symbols consumed (useful for discarding transients before
-              computing EVM/BER). *Not set for ZF.*
+              ``y_hat``, ``weights``, ``error``, ``num_train_symbols``,
+              and optionally ``weights_history``. *Not set for ZF.*
 
         Raises
         ------
@@ -1995,12 +1986,18 @@ class Signal(BaseModel):
 
         self.samples = result.y_hat
         self._equalizer_result = result
-        self._num_train_symbols = getattr(result, "num_train_symbols", 0)
         # RLS truncates the last num_taps//2 symbols from y_hat to remove the
-        # terminal artifact zone (windows that overlap right zero-padding). The
-        # reference arrays (source_symbols, source_bits) still have the original
-        # length; trim their tails by the same amount before metric comparisons.
-        self._num_tail_trim = num_taps // 2 if method == "rls" else 0
+        # terminal artifact zone (windows that overlap right zero-padding).
+        # Trim the reference arrays now so Signal state is self-consistent:
+        # source_symbols and source_bits will match y_hat length from this point on.
+        if method == "rls":
+            tail_trim = num_taps // 2
+            if tail_trim > 0:
+                if self.source_symbols is not None:
+                    self.source_symbols = self.source_symbols[..., :-tail_trim]
+                if self.source_bits is not None and self.mod_order is not None:
+                    bit_trim = tail_trim * self.bits_per_symbol
+                    self.source_bits = self.source_bits[..., :-bit_trim]
         self.sampling_rate = self.symbol_rate
         return self
 
@@ -2466,6 +2463,7 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         discard_training: bool = True,
+        num_train_symbols: Optional[int] = None,
     ) -> Tuple[float, float]:
         """
         Computes the Error Vector Magnitude (EVM).
@@ -2481,6 +2479,10 @@ class Signal(BaseModel):
         discard_training : bool, default True
             If True, discards the initial DA-training symbols before
             computing the metric.
+        num_train_symbols : int, optional
+            Explicit number of symbols to discard from the front before
+            computing the metric.  When provided, overrides both
+            ``discard_training`` and the internally recorded training count.
 
         Returns
         -------
@@ -2528,10 +2530,11 @@ class Signal(BaseModel):
 
         y = self.resolved_symbols
         r = ref
-        # Trim reference tail to match RLS output (last num_taps//2 symbols removed).
-        if self._num_tail_trim > 0:
-            r = r[..., : r.shape[-1] - self._num_tail_trim]
-        trim = self._num_train_symbols if discard_training else 0
+        trim = (
+            num_train_symbols
+            if num_train_symbols is not None
+            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+        )
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for EVM calculation.")
             n = min(y.shape[-1], r.shape[-1])
@@ -2544,6 +2547,7 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         discard_training: bool = True,
+        num_train_symbols: Optional[int] = None,
     ) -> float:
         """
         Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
@@ -2559,6 +2563,10 @@ class Signal(BaseModel):
         discard_training : bool, default True
             If True, discards the initial DA-training symbols before
             computing the metric.
+        num_train_symbols : int, optional
+            Explicit number of symbols to discard from the front before
+            computing the metric.  When provided, overrides both
+            ``discard_training`` and the internally recorded training count.
 
         Returns
         -------
@@ -2603,10 +2611,11 @@ class Signal(BaseModel):
             )
         y = self.resolved_symbols
         r = ref
-        # Trim reference tail to match RLS output (last num_taps//2 symbols removed).
-        if self._num_tail_trim > 0:
-            r = r[..., : r.shape[-1] - self._num_tail_trim]
-        trim = self._num_train_symbols if discard_training else 0
+        trim = (
+            num_train_symbols
+            if num_train_symbols is not None
+            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+        )
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for SNR calculation.")
             n = min(y.shape[-1], r.shape[-1])
@@ -2619,6 +2628,7 @@ class Signal(BaseModel):
         self,
         reference_bits: Optional[ArrayType] = None,
         discard_training: bool = True,
+        num_train_symbols: Optional[int] = None,
     ) -> Union[float, ArrayType]:
         """
         Computes the Bit Error Rate (BER).
@@ -2635,6 +2645,11 @@ class Signal(BaseModel):
         discard_training : bool, default True
             If True, discards the initial DA-training symbols (converted to
             bits) before computing the metric.
+        num_train_symbols : int, optional
+            Explicit number of symbols to discard from the front before
+            computing the metric.  Converted to bits internally via
+            ``bits_per_symbol``.  When provided, overrides both
+            ``discard_training`` and the internally recorded training count.
 
         Returns
         -------
@@ -2678,14 +2693,11 @@ class Signal(BaseModel):
 
         y = self.resolved_bits
         r = ref
-        # Trim reference tail to match RLS output. RLS removes num_taps//2 symbols
-        # from y_hat; in the bit domain that is num_taps//2 * log2(M) bits.
-        if self._num_tail_trim > 0 and self.mod_order is not None:
-            bps = self.bits_per_symbol
-            bit_tail_trim = self._num_tail_trim * bps
-            if r.shape[-1] > bit_tail_trim:
-                r = r[..., : r.shape[-1] - bit_tail_trim]
-        trim = self._num_train_symbols if discard_training else 0
+        trim = (
+            num_train_symbols
+            if num_train_symbols is not None
+            else (getattr(self._equalizer_result, "num_train_symbols", 0) if discard_training else 0)
+        )
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
             bps = self.bits_per_symbol

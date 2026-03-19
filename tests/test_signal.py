@@ -536,12 +536,12 @@ def _make_psk_signal_2sps(xp, n_symbols=400, seed=0):
 
 
 def test_equalize_rls_method(backend_device, xp):
-    """Signal.equalize(method='rls') should run and set _num_tail_trim."""
-    _, rx = _make_psk_signal_2sps(xp, n_symbols=600)
+    """Signal.equalize(method='rls') trims source_symbols tail by num_taps//2."""
+    orig, rx = _make_psk_signal_2sps(xp, n_symbols=600)
     rx.equalize(method="rls", num_taps=7, backend="numba")
     assert rx.samples is not None
-    # RLS sets num_taps//2 tail trim
-    assert rx._num_tail_trim == 7 // 2
+    # RLS trims last num_taps//2 symbols from source_symbols immediately
+    assert rx.source_symbols.shape[-1] == orig.source_symbols.shape[-1] - 7 // 2
 
 
 def test_equalize_cma_method(backend_device, xp):
@@ -582,7 +582,7 @@ def test_equalize_unknown_method(backend_device, xp):
 
 
 def test_evm_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """EVM computation after RLS covers _num_tail_trim and _num_train_symbols trimming paths."""
+    """EVM computation after RLS: source_symbols tail is pre-trimmed; training discard tested."""
     n_symbols = 600
     orig = Signal.psk(
         symbol_rate=1e6,
@@ -615,14 +615,14 @@ def test_evm_with_rls_tail_trim_and_training_discard(backend_device, xp):
     assert np.isfinite(float(evm_db))
     assert float(evm_pct) > 0
 
-    # EVM with discard_training=False still applies _num_tail_trim
+    # EVM with discard_training=False: source_symbols already trimmed at equalize() time
     evm_pct2, evm_db2 = rx.evm(discard_training=False)
     assert np.isfinite(float(evm_db2))
     assert float(evm_pct2) > 0
 
 
 def test_snr_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """SNR computation after RLS covers _num_tail_trim and _num_train_symbols trimming paths."""
+    """SNR computation after RLS: source_symbols tail is pre-trimmed; training discard tested."""
     n_symbols = 600
     orig = Signal.psk(
         symbol_rate=1e6,
@@ -657,7 +657,7 @@ def test_snr_with_rls_tail_trim_and_training_discard(backend_device, xp):
 
 
 def test_ber_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """BER computation after RLS covers _num_tail_trim and _num_train_symbols trimming in bits."""
+    """BER computation after RLS: source_bits tail is pre-trimmed; training discard tested."""
     n_symbols = 600
     orig = Signal.psk(
         symbol_rate=1e6,
@@ -690,7 +690,7 @@ def test_ber_with_rls_tail_trim_and_training_discard(backend_device, xp):
     assert np.isfinite(float(ber_val))
     assert 0.0 <= float(ber_val) <= 1.0
 
-    # discard_training=False: only trims tail symbols (tests the bit_tail_trim path)
+    # discard_training=False: source_bits already trimmed at equalize() time
     ber_notrim = rx.ber(discard_training=False)
     assert np.isfinite(float(ber_notrim))
     assert 0.0 <= float(ber_notrim) <= 1.0
