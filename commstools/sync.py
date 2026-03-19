@@ -546,9 +546,11 @@ def estimate_timing(
     if resolved_preamble is None and frame is not None:
         if hasattr(frame, "preamble") and frame.preamble is not None:
             resolved_preamble = frame.preamble
-            num_streams = getattr(frame, "num_streams", 1)
         elif getattr(signal, "signal_type", None) == "Preamble":
             resolved_preamble = frame
+
+    if frame is not None:
+        num_streams = getattr(frame, "num_streams", 1)
 
     if isinstance(resolved_preamble, Preamble):
         if sps is None:
