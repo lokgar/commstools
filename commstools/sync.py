@@ -636,6 +636,8 @@ def estimate_timing(
     C_tx = preamble_waveform.shape[0]
 
     if C_tx > 1:
+        from scipy.optimize import linear_sum_assignment
+
         # MIMO unique-root: correlate every TX template against every RX channel.
         # corr_all[rx, tx, lag] — shape (C_rx, C_tx, N_lag)
         corr_all = xp.stack(
@@ -647,13 +649,28 @@ def estimate_timing(
             ],
             axis=1,
         )
-        # Incoherent sum over TX templates per RX channel — robust to phase
-        # differences between ZC roots.  argmax gives independent per-channel
-        # frame start, preserving any hardware skew between RX channels.
-        corr_incoherent = xp.sum(xp.abs(corr_all), axis=1)  # (C_rx, N_lag)
+
+        # === Best-assignment peak finding ===
+        # Score matrix S[rx, tx] = max_lag |corr_all[rx, tx, :]|.
+        # Solve the linear assignment problem to find the unique TX template per
+        # RX channel that maximises the total peak score.  For a unitary optical
+        # channel this correctly identifies which ZC root each RX channel
+        # received most strongly, giving a higher peak-to-floor ratio than the
+        # incoherent sum (which adds cross-correlation floor terms from all
+        # non-matching templates).
+        corr_all_mag = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
+        S_np = to_device(xp.max(corr_all_mag, axis=-1), "cpu")  # (C_rx, C_tx)
+        _, assignment = linear_sum_assignment(-S_np)  # assignment[rx] = best tx
+
+        # Per-channel correlation uses only the assigned template.
+        corr_incoherent = xp.stack(
+            [corr_all_mag[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
+        )  # (C_rx, N_lag)
         peak_indices = xp.argmax(corr_incoherent, axis=-1)  # (C_rx,)
-        # Coherent complex sum for fractional delay interpolation.
-        corr = xp.sum(corr_all, axis=1)  # (C_rx, N_lag) complex
+        # Assigned-template complex correlation for fractional delay interpolation.
+        corr = xp.stack(
+            [corr_all[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
+        )  # (C_rx, N_lag) complex
     else:
         corr = cross_correlate_fft(
             sig_processing, preamble_waveform, mode="positive_lags"
@@ -699,11 +716,18 @@ def estimate_timing(
         raise ValueError(
             f"No correlation peak above threshold {threshold} (max: {max_metric:.3f})"
         )
+    for _ch in range(num_sig_ch):
+        _m = float(metrics[_ch])
+        if _m < threshold:
+            logger.warning(
+                f"Channel {_ch}: correlation metric {_m:.3f} is below threshold "
+                f"{threshold}. Coarse offset for this channel may be unreliable."
+            )
 
     # === Skew Check (Robust) ===
     if num_sig_ch > 1:
         # Check skew among valid channels
-        valid_mask = metrics > (threshold * 0.5)
+        valid_mask = metrics > threshold
 
         if xp.sum(valid_mask) > 1:
             valid_peaks = peak_indices[valid_mask]
