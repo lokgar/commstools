@@ -774,7 +774,6 @@ def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
     zc1 = xp.asarray(
         sync.zadoff_chu_sequence(L, root=zc_mimo_root(1, 1, L)), dtype="complex64"
     )
-    preamble_waveform = xp.stack([zc0, zc1], axis=0)  # (2, L)
 
     # Build TX: both streams transmit simultaneously at preamble_pos
     N = preamble_pos + L + 300
@@ -1109,8 +1108,6 @@ class TestDDPLL:
 
     def test_phase_init_applied(self, backend_device, xp):
         """phase_init shifts the starting phase estimate."""
-        import numpy as np
-
         syms = self._qpsk_symbols(xp, N=256)
         phi_init = 0.5
         phi = sync.recover_carrier_phase_decision_directed(
@@ -1256,7 +1253,6 @@ class TestCorrectFrequencyOffsetBranches:
 
     def test_real_float32_input(self, backend_device, xp):
         """Real float32 input is cast to complex64 and frequency-corrected."""
-        import numpy as np
 
         N = 256
         t = xp.arange(N, dtype=xp.float32) / 1e6
