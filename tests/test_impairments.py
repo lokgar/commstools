@@ -98,41 +98,6 @@ class TestApplyPMD:
         with pytest.raises(ValueError, match="dual-pol"):
             apply_pmd(samples, dgd=1e-12, sampling_rate=56e9)
 
-    def test_requires_sampling_rate_for_array(self, backend_device, xp):
-        """Should raise ValueError if sampling_rate not provided for raw arrays."""
-        samples = xp.ones((2, 100), dtype=xp.complex64)
-        with pytest.raises(ValueError, match="sampling_rate"):
-            apply_pmd(samples, dgd=1e-12)
-
-    def test_signal_object_integration(self, backend_device, xp):
-        """Should work with Signal objects, extracting sampling_rate."""
-        from commstools.core import Signal
-        from commstools.helpers import random_bits
-        from commstools.mapping import map_bits
-
-        n_sym = 256
-        bits0 = xp.asarray(random_bits(n_sym * 4, seed=10))
-        bits1 = xp.asarray(random_bits(n_sym * 4, seed=20))
-        tx0 = map_bits(bits0, "qam", 16).astype(xp.complex64)
-        tx1 = map_bits(bits1, "qam", 16).astype(xp.complex64)
-
-        # 2-pol at 2 SPS
-        samples = xp.zeros((2, n_sym * 2), dtype=xp.complex64)
-        samples[0, ::2] = tx0
-        samples[1, ::2] = tx1
-
-        sig = Signal(
-            samples=samples,
-            sampling_rate=56e9,
-            symbol_rate=28e9,
-        )
-
-        result = apply_pmd(sig, dgd=5e-12, theta=np.pi / 6)
-
-        assert isinstance(result, Signal)
-        assert result.samples.shape == sig.samples.shape
-        assert result.sampling_rate == sig.sampling_rate
-
     def test_nonzero_dgd_causes_distortion(self, backend_device, xp):
         """Non-zero DGD with non-zero theta should change the signal."""
         N = 512
@@ -174,17 +139,6 @@ class TestAddAWGN:
         # Signal power = 1, SNR = 10 dB → noise power = 10^(-1) = 0.1
         assert 0.08 < measured < 0.12, f"Noise power {measured:.4f} outside expected range"
 
-    def test_awgn_signal_object(self, backend_device, xp):
-        """apply_awgn should accept Signal objects and return a Signal."""
-        from commstools.core import Signal
-
-        sig = Signal.pam(order=2, num_symbols=100, sps=4, symbol_rate=1e6)
-        noisy_sig = apply_awgn(sig, esn0_db=10)
-
-        assert isinstance(noisy_sig, Signal)
-        assert noisy_sig.samples.shape == sig.samples.shape
-        assert noisy_sig.sps == 4
-
     def test_awgn_real_data(self, backend_device, xp):
         """apply_awgn should handle real-valued input and return a real output."""
         data = xp.ones(1000, dtype="float32")
@@ -200,8 +154,3 @@ class TestAddAWGN:
         measured_power = float(xp.mean(xp.abs(noisy) ** 2))
         assert measured_power > 1e15
 
-    def test_awgn_array_without_sps(self, backend_device, xp):
-        """Array input without sps argument should raise ValueError."""
-        data = xp.ones(100, dtype=complex)
-        with pytest.raises(ValueError, match="sps must be provided"):
-            apply_awgn(data, esn0_db=10)

@@ -21,10 +21,7 @@ SingleCarrierFrame :
 """
 
 import types
-from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Tuple, Union
-
-if TYPE_CHECKING:
-    from .equalization import EqualizerResult
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
@@ -1747,7 +1744,6 @@ class Signal(BaseModel):
     def evm(
         self,
         reference_symbols: Optional[ArrayType] = None,
-        discard_training: bool = True,
         num_train_symbols: Optional[int] = None,
     ) -> Tuple[float, float]:
         """
@@ -1761,13 +1757,9 @@ class Signal(BaseModel):
         reference_symbols : array_like, optional
             Known transmitted symbols. If None, falls back to
             ``source_symbols`` when available.
-        discard_training : bool, default True
-            If True, discards the initial DA-training symbols before
-            computing the metric.
         num_train_symbols : int, optional
-            Explicit number of symbols to discard from the front before
-            computing the metric.  When provided, overrides both
-            ``discard_training`` and the internally recorded training count.
+            Number of symbols to discard from the front before computing the
+            metric (e.g. equalizer training length).
 
         Returns
         -------
@@ -1815,15 +1807,7 @@ class Signal(BaseModel):
 
         y = self.resolved_symbols
         r = ref
-        trim = (
-            num_train_symbols
-            if num_train_symbols is not None
-            else (
-                getattr(self._equalizer_result, "num_train_symbols", 0)
-                if discard_training
-                else 0
-            )
-        )
+        trim = num_train_symbols if num_train_symbols is not None else 0
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for EVM calculation.")
             n = min(y.shape[-1], r.shape[-1])
@@ -1835,7 +1819,6 @@ class Signal(BaseModel):
     def snr(
         self,
         reference_symbols: Optional[ArrayType] = None,
-        discard_training: bool = True,
         num_train_symbols: Optional[int] = None,
     ) -> float:
         """
@@ -1849,13 +1832,9 @@ class Signal(BaseModel):
         reference_symbols : array_like, optional
             Known transmitted symbols. If None, falls back to
             ``source_symbols`` when available.
-        discard_training : bool, default True
-            If True, discards the initial DA-training symbols before
-            computing the metric.
         num_train_symbols : int, optional
-            Explicit number of symbols to discard from the front before
-            computing the metric.  When provided, overrides both
-            ``discard_training`` and the internally recorded training count.
+            Number of symbols to discard from the front before computing the
+            metric (e.g. equalizer training length).
 
         Returns
         -------
@@ -1900,15 +1879,7 @@ class Signal(BaseModel):
             )
         y = self.resolved_symbols
         r = ref
-        trim = (
-            num_train_symbols
-            if num_train_symbols is not None
-            else (
-                getattr(self._equalizer_result, "num_train_symbols", 0)
-                if discard_training
-                else 0
-            )
-        )
+        trim = num_train_symbols if num_train_symbols is not None else 0
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for SNR calculation.")
             n = min(y.shape[-1], r.shape[-1])
@@ -1920,7 +1891,6 @@ class Signal(BaseModel):
     def ber(
         self,
         reference_bits: Optional[ArrayType] = None,
-        discard_training: bool = True,
         num_train_symbols: Optional[int] = None,
     ) -> Union[float, ArrayType]:
         """
@@ -1935,14 +1905,9 @@ class Signal(BaseModel):
         reference_bits : array_like, optional
             The original transmitted bits. If None, falls back to
             ``source_bits`` when available.
-        discard_training : bool, default True
-            If True, discards the initial DA-training symbols (converted to
-            bits) before computing the metric.
         num_train_symbols : int, optional
-            Explicit number of symbols to discard from the front before
-            computing the metric.  Converted to bits internally via
-            ``bits_per_symbol``.  When provided, overrides both
-            ``discard_training`` and the internally recorded training count.
+            Number of symbols to discard from the front before computing the
+            metric.  Converted to bits internally via ``bits_per_symbol``.
 
         Returns
         -------
@@ -1986,15 +1951,7 @@ class Signal(BaseModel):
 
         y = self.resolved_bits
         r = ref
-        trim = (
-            num_train_symbols
-            if num_train_symbols is not None
-            else (
-                getattr(self._equalizer_result, "num_train_symbols", 0)
-                if discard_training
-                else 0
-            )
-        )
+        trim = num_train_symbols if num_train_symbols is not None else 0
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
             bps = self.bits_per_symbol

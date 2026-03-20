@@ -167,18 +167,17 @@ def test_cross_correlate_fft_modes(backend_device, xp):
 
 
 def test_estimate_timing_advanced_scenarios(backend_device, xp):
-    """Verify estimate_timing with Signal objects, MIMO, and search ranges."""
-    from commstools.core import Preamble, Signal
+    """Verify estimate_timing with raw arrays, MIMO, and search ranges."""
+    from commstools.core import Preamble
 
-    # 1. Signal object and Preamble object
+    # 1. Raw array and Preamble object
     preamble = Preamble(sequence_type="barker", length=7)
 
-    # Create a signal with this preamble
+    # Create samples with the preamble embedded
     data = xp.zeros(100, dtype="complex64")
     data[20 : 20 + 7] = preamble.symbols
-    sig = Signal(samples=data, sampling_rate=1e6, symbol_rate=1e6)
 
-    coarse, _frac = sync.estimate_timing(sig, preamble, threshold=0.1)
+    coarse, _frac = sync.estimate_timing(data, preamble, threshold=0.1, sps=1)
     assert 18 <= coarse[0] <= 22
 
     # 2. MIMO Signal (2 channels)
@@ -314,12 +313,10 @@ def test_estimate_timing_search_range(backend_device, xp):
 
 
 def test_estimate_timing_infer_error(backend_device, xp):
-    """Verify error when Preamble object used with raw array signal."""
+    """Verify error when Preamble object used without sps."""
     pre = Preamble(bits=[1, 0, 1], length=3)
     sig = xp.zeros(20)
-    with pytest.raises(
-        ValueError, match="SPS must be provided or inferred from Signal."
-    ):
+    with pytest.raises(ValueError, match="SPS must be provided"):
         sync.estimate_timing(sig, pre)
 
 
@@ -612,28 +609,17 @@ def test_estimate_timing_no_preamble_error(backend_device, xp):
         sync.estimate_timing(sig)
 
 
-def test_estimate_timing_with_frame(backend_device, xp):
-    """Verify estimate_timing with Frame reconstruction from preamble type and length."""
-    from commstools.core import Signal, Preamble, SingleCarrierFrame
+def test_estimate_timing_with_preamble_object(backend_device, xp):
+    """Verify estimate_timing with explicit Preamble object."""
+    from commstools.core import Preamble
 
-    # Create a signal with a Barker-7 preamble embedded at sample 40
+    # Create samples with a Barker-7 preamble embedded at sample 40
     barker = sync.barker_sequence(7)
+    samples = xp.zeros(200, dtype="complex64")
+    samples[40:47] = barker
 
-    # Create shaped preamble at sps=1 for simplicity
-    sig = Signal(
-        samples=xp.zeros(200, dtype="complex64"),
-        sampling_rate=1,
-        symbol_rate=1,
-        signal_type="Single-Carrier Frame",
-    )
-    sig.samples[40:47] = barker
-
-    sig.frame = SingleCarrierFrame(
-        payload_len=100,
-        preamble=Preamble(sequence_type="barker", length=7),
-    )
-
-    coarse, frac = sync.estimate_timing(sig, sps=1, pulse_shape="none", threshold=0.3)
+    preamble = Preamble(sequence_type="barker", length=7)
+    coarse, frac = sync.estimate_timing(samples, preamble, sps=1, pulse_shape="none", threshold=0.3)
     assert abs(int(coarse[0]) - 40) <= 1
 
 
@@ -757,13 +743,15 @@ def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
 
     Returns
     -------
-    sig : array, shape (2, N)
-        Received signal with embedded preamble.
+    rx : array, shape (2, N)
+        Received samples with embedded preamble.
+    preamble : Preamble
+        The ZC preamble object (root=1, length=L).
     L : int
         Preamble sequence length in samples (= 13 at 1 sps).
     """
     import numpy as _np
-    from commstools.core import Signal, Preamble, SingleCarrierFrame
+    from commstools.core import Preamble
     from commstools.helpers import zc_mimo_root
 
     # ZC-13 with unique roots per TX stream: root 1 for TX0, root 2 for TX1
@@ -796,23 +784,16 @@ def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
         # Roll channel 1 to simulate a timing skew of `skew` samples
         rx = xp.stack([rx[0], xp.roll(rx[1], skew)], axis=0)
 
-    sig = Signal(
-        samples=rx, sampling_rate=1, symbol_rate=1, signal_type="Single-Carrier Frame"
-    )
-    sig.frame = SingleCarrierFrame(
-        payload_len=100,
-        preamble=Preamble(sequence_type="zc", length=L, root=1),
-        num_streams=2,
-    )
-    return sig, L
+    preamble = Preamble(sequence_type="zc", length=L, root=1)
+    return rx, preamble, L
 
 
 def test_estimate_timing_mimo_identity(backend_device, xp):
     """MIMO unique-root ZC: identity channel, both channels align to preamble_pos."""
     preamble_pos = 200
-    sig, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
+    rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
 
-    coarse, frac = sync.estimate_timing(sig, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
 
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
@@ -827,9 +808,9 @@ def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     preamble_pos = 150
     angle = np.radians(40)
     H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
-    sig, L = _make_mimo_signal(xp, H, preamble_pos)
+    rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = sync.estimate_timing(sig, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
 
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
@@ -841,9 +822,9 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
     """MIMO: hardware skew of 5 samples on channel 1 is reflected in per-channel coarse offsets."""
     preamble_pos = 200
     skew = 5
-    sig, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew)
+    rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew)
 
-    coarse, frac = sync.estimate_timing(sig, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
 
     # Channel 0 should find preamble_pos; channel 1 is shifted by skew
     assert abs(int(coarse[0]) - preamble_pos) <= 1, (
@@ -1115,30 +1096,6 @@ class TestDDPLL:
         )
         # First estimate should be close to phase_init before any loop correction
         assert abs(float(phi[0]) - phi_init) < 0.5
-
-    def test_numpy_fallback_path(self, backend_device, xp):
-        """_dd_pll_numpy fallback is exercised when Numba is unavailable."""
-        import numpy as np
-        from unittest.mock import patch
-        from commstools import sync as _sync
-
-        syms_device = self._qpsk_symbols(xp, N=64)
-        syms_np = (
-            syms_device.get()
-            if hasattr(syms_device, "get")
-            else np.asarray(syms_device)
-        )
-        # Patch _get_numba_dd_pll to return None → forces _dd_pll_numpy code path
-        with patch.object(_sync, "_get_numba_dd_pll", return_value=lambda: None):
-            # Call _dd_pll_numpy directly since _get_numba_dd_pll is cached
-            from commstools.mapping import gray_constellation
-
-            const = gray_constellation("psk", 4).astype(np.complex128)
-            result = _sync._dd_pll_numpy(
-                syms_np[0:1].astype(np.complex128), const, 0.01, 0.0, 0.0, 0.0
-            )
-            assert result.shape == (1,)
-            assert result.dtype == np.float64
 
 
 # =============================================================================

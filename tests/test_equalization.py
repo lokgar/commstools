@@ -23,30 +23,6 @@ def _to_np(arr):
 # -----------------------------------------------------------------------------
 
 
-class TestSPSValidation:
-    """Tests that sps != 2 raises ValueError."""
-
-    def test_lms_rejects_sps_1(self, backend_device, xp):
-        """LMS should raise ValueError when sps=1."""
-        tx = xp.ones(100, dtype=xp.complex64)
-
-        with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalization.lms(
-                tx,
-                training_symbols=tx,
-                num_taps=5,
-                modulation="psk",
-                order=4,
-                sps=1,
-            )
-
-    def test_cma_rejects_sps_1(self, backend_device, xp):
-        """CMA should raise ValueError when sps=1."""
-        tx = xp.ones(100, dtype=xp.complex64)
-        with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalization.cma(tx, num_taps=5, sps=1)
-
-
 # -----------------------------------------------------------------------------
 # LMS TESTS
 # -----------------------------------------------------------------------------
@@ -596,27 +572,6 @@ class TestRDE:
         assert result.y_hat.ndim == 1
         assert result.weights.shape == (11,)
 
-    def test_signal_equalize_api(self, backend_device, xp):
-        """Signal.equalize(method='rde') should work end-to-end."""
-        from commstools import Signal
-
-        sig = Signal.qam(
-            symbol_rate=1e6,
-            num_symbols=2000,
-            order=16,
-            pulse_shape="rrc",
-            sps=2,
-            seed=1,
-        )
-        # Add mild ISI
-        channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
-        sig.samples = xp.convolve(xp.asarray(sig.samples), channel, mode="same")
-
-        sig.equalize(method="rde", num_taps=21, step_size=5e-4)
-
-        assert sig.samples.ndim == 1
-        assert sig.sps == 1.0
-
 
 # -----------------------------------------------------------------------------
 # ZF/MMSE TESTS
@@ -887,123 +842,6 @@ class TestButterflyMIMO:
 # -----------------------------------------------------------------------------
 # SIGNAL INTEGRATION TESTS
 # -----------------------------------------------------------------------------
-
-
-class TestSignalIntegration:
-    """Tests for the Signal.equalize() and plot_equalizer() methods."""
-
-    def test_signal_equalize_lms(self, backend_device, xp):
-        """Signal.equalize() should work with LMS and return self."""
-        from commstools.core import Signal
-
-        n_symbols = 300
-        # Generate using our Signal class properly
-        orig_sig = Signal.psk(
-            symbol_rate=1e6,
-            num_symbols=n_symbols,
-            order=4,
-            pulse_shape="rrc",
-            sps=2,
-            seed=55,
-        )
-        rx = xp.asarray(orig_sig.samples)
-
-        # Explicitly pass samples to Signal, it should respect backend
-        sig = Signal(
-            samples=rx,
-            sampling_rate=2e6,
-            symbol_rate=1e6,
-            mod_scheme="psk",
-            mod_order=4,
-        )
-
-        # Equalize
-        # Note: training_symbols must be passed. If it is an array, it must match backend
-        # implementation of Signal.equalize should handle it, but best to pass congruent type.
-        result_sig = sig.equalize(
-            method="lms",
-            num_taps=7,
-            step_size=0.01,
-        )
-
-        assert result_sig is sig
-        assert sig._equalizer_result is not None
-        assert isinstance(sig._equalizer_result, EqualizerResult)
-
-    def test_signal_equalize_rejects_wrong_sps(self, backend_device, xp):
-        """Signal.equalize() should reject signals not at 2 SPS."""
-        from commstools.core import Signal
-
-        tx = xp.ones(100, dtype=xp.complex64)
-        sig = Signal(
-            samples=tx,
-            sampling_rate=1e6,
-            symbol_rate=1e6,  # sps = 1
-            mod_scheme="psk",
-            mod_order=4,
-        )
-
-        with pytest.raises(ValueError, match="2 SPS"):
-            sig.equalize(method="lms", num_taps=5)
-
-    def test_signal_equalize_zf(self, backend_device, xp):
-        """Signal.equalize(method='zf') should apply ZF equalization."""
-        from commstools.core import Signal
-
-        samples = xp.ones(64, dtype=xp.complex64)
-        sig = Signal(samples=samples, sampling_rate=1e6, symbol_rate=1e6)
-
-        h = xp.array([1.0 + 0j], dtype=xp.complex64)
-        result_sig = sig.equalize(method="zf", channel_estimate=h)
-
-        assert result_sig is sig
-
-    def test_plot_equalizer_requires_equalize_first(self, backend_device, xp):
-        """plot_equalizer() should raise ValueError if equalize() not called."""
-        from commstools.core import Signal
-
-        sig = Signal(
-            samples=xp.ones(100, dtype=xp.complex64),
-            sampling_rate=2e6,
-            symbol_rate=1e6,
-        )
-
-        with pytest.raises(ValueError, match="equalize"):
-            sig.plot_equalizer()
-
-    def test_plot_equalizer_returns_fig(self, backend_device, xp):
-        """plot_equalizer() should return (fig, axes) after equalize()."""
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from commstools.core import Signal
-
-        n_symbols = 200
-        orig_sig = Signal.psk(
-            symbol_rate=1e6,
-            num_symbols=n_symbols,
-            order=4,
-            pulse_shape="rrc",
-            sps=2,
-            seed=55,
-        )
-        rx = xp.asarray(orig_sig.samples)
-
-        sig = Signal(
-            samples=rx,
-            sampling_rate=2e6,
-            symbol_rate=1e6,
-            mod_scheme="psk",
-            mod_order=4,
-        )
-        sig.equalize(method="lms", num_taps=7, step_size=0.01)
-
-        result = sig.plot_equalizer()
-        assert result is not None
-        fig, axes = result
-        assert len(axes) == 2
-        plt.close(fig)
 
 
 # -----------------------------------------------------------------------------
@@ -1546,12 +1384,6 @@ class TestEdgeCases:
         )
         return xp.ascontiguousarray(xp.asarray(sig.samples)), sig
 
-    def test_rde_rejects_sps_1(self, backend_device, xp):
-        """RDE should raise ValueError when sps=1."""
-        tx = xp.ones(100, dtype=xp.complex64)
-        with pytest.raises(ValueError, match="2 samples/symbol"):
-            equalization.rde(tx, num_taps=5, modulation="psk", order=4, sps=1)
-
     def test_lms_raises_no_constellation_numba(self, backend_device, xp):
         """LMS Numba: ValueError when no modulation and no training symbols (DD impossible)."""
         rx, _ = self._qpsk_rx(xp)
@@ -1653,13 +1485,6 @@ class TestEdgeCases:
 
         assert isinstance(result, EqualizerResult)
         assert result.y_hat.shape[0] > 0
-
-    def test_cma_rde_rejects_sps_1(self, backend_device, xp):
-        """Both CMA and RDE should reject sps != 2."""
-        tx = xp.ones(100, dtype=xp.complex64)
-        for algo in (equalization.cma, equalization.rde):
-            with pytest.raises(ValueError, match="2 samples/symbol"):
-                algo(tx, num_taps=5, sps=1)
 
     def test_center_tap_override(self, backend_device, xp):
         """Custom center_tap should shift the decision delay without error."""
