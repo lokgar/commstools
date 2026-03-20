@@ -26,10 +26,16 @@ dual-polarization demultiplexing in coherent optical, spatial MIMO demux).
 
 Input SPS Convention
 --------------------
-Adaptive equalization require T/2-spaced input (2 samples/symbol), the
-industry standard for coherent optical and many wireless systems. The
-equalizer outputs one symbol per 2 input samples, decimating to symbol rate.
-A ``ValueError`` is raised if ``sps != 2``.
+By default, adaptive equalizers expect T/2-spaced input (2 samples/symbol,
+``sps=2``), the industry standard for coherent optical and many wireless
+systems.  The equalizer decimates by ``sps``, producing one output symbol
+per ``sps`` input samples.
+
+**sps=1 (symbol-spaced mode)** is accepted for multi-stage pipelines where
+a second equalization pass is needed *after* a prior FSE stage + FOE + CPR.
+At that point the signal is already at 1 SPS and upsampling before
+re-equalization would be unnecessary.  Use a short filter (3–11 taps) for
+residual ISI cleanup in this mode.
 
 Functions
 ---------
@@ -106,6 +112,13 @@ class EqualizerResult:
         ``P_signal / P_noise_corrected`` is then the physically meaningful
         per-channel signal-to-noise power ratio preserved through the DSP chain.
         At ``sps=1`` this factor equals the plain per-channel RMS of the input symbols.
+    tail_trim : int
+        Number of symbols trimmed from the tail of ``y_hat`` to remove the
+        zero-padding contamination zone.  Non-zero only for RLS (equals
+        ``num_taps // 2``).  If non-zero, trim reference arrays to match::
+
+            source_symbols = source_symbols[..., :-result.tail_trim]
+            source_bits    = source_bits[..., :-result.tail_trim * bits_per_symbol]
     """
 
     y_hat: ArrayType
@@ -114,6 +127,7 @@ class EqualizerResult:
     weights_history: Optional[ArrayType] = None
     num_train_symbols: int = 0
     input_norm_factor: Union[float, np.ndarray] = 1.0
+    tail_trim: int = 0
 
 
 def _log_equalizer_exit(
@@ -1755,11 +1769,20 @@ def _unpack_result_numpy(
 
 
 def _validate_sps(sps, num_taps):
-    """Raise if sps != 2 (T/2-spaced only); warn if num_taps is too small."""
-    if sps != 2:
-        raise ValueError(
-            f"Adaptive equalization require 2 samples/symbol "
-            f"(T/2-spaced input). Got sps={sps}."
+    """Validate sps; warn about unusual values, check tap count minimum."""
+    if sps < 1:
+        raise ValueError(f"sps must be >= 1. Got sps={sps}.")
+    if sps == 1:
+        logger.info(
+            "sps=1: symbol-spaced equalizer mode. "
+            "No fractional-spacing benefit; suitable for residual ISI correction "
+            "after a prior FSE stage + FOE + CPR."
+        )
+    elif sps > 2:
+        logger.warning(
+            f"sps={sps}: non-standard oversampling ratio for adaptive equalization. "
+            "T/2-spaced (sps=2) is the industry standard. Higher values give "
+            "marginal benefit but require proportionally more taps."
         )
     if num_taps < 2 * sps:
         logger.warning(
@@ -1831,10 +1854,12 @@ def lms(
     unipolar : bool, default False
         If True, indicates the modulation is unipolar (e.g., unipolar PAM).
     sps : int, default 2
-        Samples per symbol at the input. Must be 2 (T/2-spaced).
-        The equalizer natively filters intermediate transition points by
-        decimating to symbol rate (shifting the mathematical window by
-        exactly ``sps`` samples) to compute robust DD slicing errors.
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for the first equalization stage.  ``sps=1`` is valid for a second
+        symbol-spaced stage after FOE + CPR; use a short filter (3-11 taps)
+        for residual ISI cleanup.  ``sps > 2`` is accepted but uncommon.
+        The equalizer decimates by ``sps`` to produce one output symbol per
+        input stride.
     store_weights : bool, default False
         If True, stores weight trajectory in ``weights_history``.
     num_train_symbols : int, optional
@@ -1885,6 +1910,10 @@ def lms(
     logger.info(
         f"LMS equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
+    )
+    logger.warning(
+        "LMS output y_hat is at 1 SPS (symbol rate). "
+        "Update sampling_rate = symbol_rate after applying this equalizer."
     )
 
     samples, xp, _ = dispatch(samples)
@@ -2226,6 +2255,10 @@ def rls(
         f"delta={delta:.2e}, leakage={leakage:.2e}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
     )
+    logger.warning(
+        "RLS output y_hat is at 1 SPS (symbol rate). "
+        "Update sampling_rate = symbol_rate after applying this equalizer."
+    )
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
@@ -2246,6 +2279,14 @@ def rls(
     # Early-halt boundary: freeze W and P once the sliding window reaches the
     # right zero-padding (last num_taps//2 symbols have contaminated windows).
     n_update_halt = max(0, n_sym - num_taps // 2)
+    tail_trim = num_taps // 2
+    if tail_trim > 0:
+        logger.warning(
+            f"RLS tail trim: last {tail_trim} symbols removed from y_hat "
+            "(zero-padding contamination zone). Trim reference arrays to match: "
+            "source_symbols = source_symbols[..., :-result.tail_trim], "
+            "source_bits = source_bits[..., :-result.tail_trim * bits_per_symbol]."
+        )
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
     pad_left = c_tap
@@ -2332,7 +2373,7 @@ def rls(
         # Truncate last num_taps//2 symbols: those windows overlap the right
         # zero-padding, producing near-zero y that the slicer maps to ~1.0
         # magnitude, creating a spurious MSE/EVM spike.
-        return _log_equalizer_exit(
+        result = _log_equalizer_exit(
             _unpack_result_numpy(
                 y_out,
                 e_out,
@@ -2348,6 +2389,8 @@ def rls(
             name="RLS",
             debug_plot=debug_plot,
         )
+        result.tail_trim = tail_trim
+        return result
 
     # JAX backend
     jax, jnp, _ = _get_jax()
@@ -2442,7 +2485,7 @@ def rls(
         n_update_halt_jax,
     )
     # Truncate last num_taps//2 symbols (zero-padding contamination).
-    return _log_equalizer_exit(
+    result = _log_equalizer_exit(
         _unpack_result_jax(
             y_jax,
             e_jax,
@@ -2458,6 +2501,8 @@ def rls(
         name="RLS",
         debug_plot=debug_plot,
     )
+    result.tail_trim = tail_trim
+    return result
 
 
 def build_pilot_ref(
@@ -2560,7 +2605,7 @@ def cma(
     When ``pilot_ref`` and ``pilot_mask`` are both supplied the equalizer
     switches to a **pilot-aided hybrid** mode: the standard Godard CMA error
     is used at data positions while an LMS residual error
-    (``pilot_ref − y``) is used at every pilot position.  This resolves the
+    (``pilot_ref - y``) is used at every pilot position.  This resolves the
     phase ambiguity at pilot locations while preserving blind adaptation
     elsewhere.  Build the dense arrays with :func:`build_pilot_ref`.
 
@@ -2583,10 +2628,10 @@ def cma(
     unipolar : bool, default False
         Use unipolar constellation for auto-computing R2.
     sps : int, default 2
-        Samples per symbol at the input. Must be 2 (T/2-spaced).
-        The equalizer natively filters intermediate transition points by
-        decimating to symbol rate (shifting the mathematical window by
-        exactly ``sps`` samples) to compute robust blind errors.
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for the standard first-stage blind equalization.  ``sps=1`` enables
+        symbol-spaced CMA, useful when input is already decimated but phase
+        ambiguity resolution is still needed.
     store_weights : bool, default False
         If True, stores weight trajectory.
     device : str, optional
@@ -2639,6 +2684,10 @@ def cma(
     logger.info(
         f"CMA equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
+    )
+    logger.warning(
+        "CMA output y_hat is at 1 SPS (symbol rate). "
+        "Update sampling_rate = symbol_rate after applying this equalizer."
     )
 
     samples, xp, _ = dispatch(samples)
@@ -2891,7 +2940,8 @@ def rde(
     unipolar : bool, default False
         Use unipolar constellation for radius extraction.
     sps : int, default 2
-        Samples per symbol at the input. Must be 2 (T/2-spaced).
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for standard blind equalization.  ``sps=1`` is accepted.
     store_weights : bool, default False
         If True, stores weight trajectory in ``result.weights_history``.
     device : str, optional
@@ -2953,6 +3003,10 @@ def rde(
     logger.info(
         f"RDE equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
+    )
+    logger.warning(
+        "RDE output y_hat is at 1 SPS (symbol rate). "
+        "Update sampling_rate = symbol_rate after applying this equalizer."
     )
 
     samples, xp, _ = dispatch(samples)

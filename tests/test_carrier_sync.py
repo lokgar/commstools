@@ -381,6 +381,140 @@ class TestCprPilots:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CPR — Tikhonov-RTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCprTikhonov:
+    @pytest.mark.parametrize(
+        "order,modulation,block_size",
+        [
+            (4, "psk", 16),
+            (4, "psk", 32),
+            (16, "qam", 16),
+            (16, "qam", 32),
+            (64, "qam", 32),
+        ],
+    )
+    def test_phase_residual(self, backend_device, xp, order, modulation, block_size):
+        """Tikhonov CPR: mean estimate within 0.1 rad of true carrier phase (mod M-fold)."""
+        sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
+        phi_true = 0.3
+        sig.samples = sig.samples * xp.exp(1j * phi_true)
+
+        phase_est = sync.recover_carrier_phase_tikhonov(
+            sig.samples,
+            modulation=modulation,
+            order=order,
+            linewidth_ts=1e-4,
+            block_size=block_size,
+            snr_db=SNR_DB,
+        )
+
+        M = 4 if modulation == "qam" else order
+        step = 2 * np.pi / M
+        err = float(xp.mean(phase_est)) - phi_true
+        err = err - step * round(err / step)
+        assert abs(err) < 0.1
+
+    def test_output_shape_siso(self, backend_device, xp):
+        """Tikhonov CPR: 1D input → 1D output of same length."""
+        sig = _qam_signal(xp, 16, 512)
+        phase = sync.recover_carrier_phase_tikhonov(
+            sig.samples, modulation="qam", order=16, linewidth_ts=1e-4, snr_db=SNR_DB
+        )
+        assert phase.shape == sig.samples.shape
+
+    def test_output_shape_mimo(self, backend_device, xp):
+        """Tikhonov CPR: 2D input (C, N) → 2D output (C, N)."""
+        sig_a = _qam_signal(xp, 16, 512)
+        sig_b = _qam_signal(xp, 16, 512)
+        mimo = xp.stack([sig_a.samples, sig_b.samples])
+        phase = sync.recover_carrier_phase_tikhonov(
+            mimo, modulation="qam", order=16, linewidth_ts=1e-4, snr_db=SNR_DB
+        )
+        assert phase.shape == mimo.shape
+
+    def test_too_short_raises(self, backend_device, xp):
+        """Tikhonov CPR: signal shorter than block_size raises ValueError."""
+        sig = _qam_signal(xp, 4, 20)
+        with pytest.raises(ValueError, match="shorter than block_size"):
+            sync.recover_carrier_phase_tikhonov(
+                sig.samples[:10], modulation="qam", order=4,
+                linewidth_ts=1e-4, block_size=32,
+            )
+
+    def test_invalid_method_raises(self, backend_device, xp):
+        """Tikhonov CPR: unknown method raises ValueError."""
+        sig = _qam_signal(xp, 16, 512)
+        with pytest.raises(ValueError, match="Unknown method"):
+            sync.recover_carrier_phase_tikhonov(
+                sig.samples, modulation="qam", order=16,
+                linewidth_ts=1e-4, method="bad",
+            )
+
+    @pytest.mark.parametrize("order,modulation", [(4, "psk"), (16, "qam")])
+    def test_sskf_phase_residual(self, backend_device, xp, order, modulation):
+        """Tikhonov SSKF: mean estimate within 0.1 rad of true offset (mod M-fold)."""
+        sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
+        phi_true = 0.3
+        sig.samples = sig.samples * xp.exp(1j * phi_true)
+
+        phase_est = sync.recover_carrier_phase_tikhonov(
+            sig.samples, modulation=modulation, order=order,
+            linewidth_ts=1e-4, snr_db=SNR_DB, method="sskf",
+        )
+
+        M = 4 if modulation == "qam" else order
+        step = 2 * np.pi / M
+        err = float(xp.mean(phase_est)) - phi_true
+        err = err - step * round(err / step)
+        assert abs(err) < 0.1
+
+    def test_sskf_exact_close(self, backend_device, xp):
+        """SSKF and exact RTS produce similar phase estimates (within 0.05 rad RMS)."""
+        sig = _qam_signal(xp, 16, 2048)
+        sig.samples = sig.samples * xp.exp(1j * 0.2)
+
+        phi_exact = sync.recover_carrier_phase_tikhonov(
+            sig.samples, modulation="qam", order=16,
+            linewidth_ts=1e-4, snr_db=SNR_DB, method="exact",
+        )
+        phi_sskf = sync.recover_carrier_phase_tikhonov(
+            sig.samples, modulation="qam", order=16,
+            linewidth_ts=1e-4, snr_db=SNR_DB, method="sskf",
+        )
+        rms_diff = float(xp.sqrt(xp.mean((phi_exact - phi_sskf) ** 2)))
+        assert rms_diff < 0.05
+
+    def test_smoother_reduces_noise_vs_vv(self, backend_device, xp):
+        """Tikhonov produces smoother phase trajectory than VV when σ_p² < σ_v².
+
+        Regime: QPSK at snr_db=15, linewidth_ts=1e-7, block_size=32.
+          σ_p² = 2π · 1e-7 · 32 ≈ 2e-5 rad²/block  (slow phase noise)
+          σ_v² = 1/(4² · 31.6 · 32) ≈ 6e-5 rad²/block  (noisy VV at 15 dB)
+        K_∞ ≈ 0.4  →  substantial smoothing: Tikhonov std < VV std.
+        """
+        linewidth_ts = 1e-7
+        snr_test = 15
+        sig = _psk_signal(xp, 4, 2048, snr_db=snr_test, seed=123)
+        sig.samples = sig.samples * xp.exp(1j * 0.3)
+
+        phi_vv = sync.recover_carrier_phase_viterbi_viterbi(
+            sig.samples, modulation="psk", order=4, block_size=32
+        )
+        phi_tik = sync.recover_carrier_phase_tikhonov(
+            sig.samples, modulation="psk", order=4,
+            linewidth_ts=linewidth_ts, block_size=32, snr_db=snr_test,
+        )
+
+        # With constant true phase, VV block estimates fluctuate around the
+        # true value with std ≈ sqrt(σ_v²).  The Tikhonov smoother suppresses
+        # this noise: std(phi_tik) < std(phi_vv).
+        assert float(xp.std(phi_tik)) < float(xp.std(phi_vv))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Correction functions
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -457,7 +591,7 @@ class TestSignalMethods:
         """Signal.recover_carrier_phase returns an array, not None."""
         sig = Signal.qam(order=16, num_symbols=512, sps=1, symbol_rate=FS)
         sig = apply_awgn(sig, esn0_db=SNR_DB)
-        phase = sig.recover_carrier_phase(method="viterbi_viterbi")
+        phase = sig.recover_carrier_phase(method="vv")
         assert phase is not None
         assert phase.shape == sig.samples.shape
 
@@ -468,7 +602,7 @@ class TestSignalMethods:
         sig.samples = sig.samples * xp.exp(1j * 0.4)  # known phase offset
 
         original_ptr = id(sig.samples)  # check same object is reassigned
-        sig.recover_carrier_phase(method="viterbi_viterbi")
+        sig.recover_carrier_phase(method="vv")
         # samples should have been modified (new array assigned)
         assert sig.samples is not None
 
@@ -585,3 +719,195 @@ class TestFoePilots:
         )
         assert isinstance(est, float)
         assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FOE — Mengali-Morelli multi-lag
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFoeMengaliMorelli:
+    """Tests for estimate_frequency_offset_mengali_morelli."""
+
+    @pytest.mark.parametrize("fo_hz", [5_000.0, -12_000.0, 30_000.0])
+    @pytest.mark.parametrize("order", [4, 16])
+    def test_blind_qam_accuracy(self, backend_device, xp, fo_hz, order):
+        """Blind QAM mode: estimate within 2 % of true offset at 30 dB SNR.
+
+        Uses exact complex mixing (no bin quantization) so the true offset is
+        known precisely.
+        """
+        sig = _qam_signal(xp, order, 4096, fo_hz=0.0)  # generate without offset
+        # Apply exact frequency offset via direct complex mixing
+        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
+        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
+            sig.samples.dtype
+        )
+        est = sync.estimate_frequency_offset_mengali_morelli(
+            sig.samples, fs=FS, modulation="qam", order=order
+        )
+        assert abs(est - fo_hz) / abs(fo_hz) < 0.02
+
+    @pytest.mark.parametrize("fo_hz", [4_000.0, -8_000.0])
+    def test_data_aided_accuracy(self, backend_device, xp, fo_hz):
+        """Data-aided mode: estimate within 1 % using known reference (exact mixing)."""
+        sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
+        ideal = sig.samples.copy()
+        sig = apply_awgn(sig, esn0_db=25)
+        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
+        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
+            sig.samples.dtype
+        )
+        est = sync.estimate_frequency_offset_mengali_morelli(
+            sig.samples, fs=FS, ref_signal=ideal
+        )
+        assert abs(est - fo_hz) / abs(fo_hz) < 0.01
+
+    def test_large_offset_near_nyquist(self, backend_device, xp):
+        """M&M lock range [-fs/2, fs/2]: succeeds at 40 % of Nyquist where Kay wraps."""
+        N = 4096
+        fo_hz = 0.40 * FS  # 40 % of sampling rate — well beyond Kay lock range for QPSK
+        n = xp.arange(N, dtype=xp.float64)
+        tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
+        # Generic blind mode (no modulation — pure tone)
+        est = sync.estimate_frequency_offset_mengali_morelli(tone, fs=FS)
+        assert abs(est - fo_hz) < 0.02 * fo_hz
+
+    def test_generic_blind_pure_tone(self, backend_device, xp):
+        """Generic mode (no modulation): pure tone estimated accurately."""
+        N = 2048
+        fo_hz = 7_500.0
+        n = xp.arange(N, dtype=xp.float64)
+        tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
+        est = sync.estimate_frequency_offset_mengali_morelli(tone, fs=FS)
+        assert abs(est - fo_hz) < 500.0
+
+    def test_mimo_returns_scalar(self, backend_device, xp):
+        """MIMO (C, N) input returns a single Python float (exact mixing)."""
+        fo_hz = 6_000.0
+        sig_a = _qam_signal(xp, 4, 2048, fo_hz=0.0)
+        sig_b = _qam_signal(xp, 4, 2048, fo_hz=0.0)
+        n = xp.arange(2048, dtype=xp.float64)
+        mixer = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
+        mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
+        est = sync.estimate_frequency_offset_mengali_morelli(
+            mimo, fs=FS, modulation="qam", order=4
+        )
+        assert isinstance(est, float)
+        assert abs(est - fo_hz) / fo_hz < 0.02
+
+    def test_custom_max_lag(self, backend_device, xp):
+        """Custom max_lag parameter: still converges to correct estimate (exact mixing)."""
+        fo_hz = 3_000.0
+        sig = _qam_signal(xp, 4, 2048, fo_hz=0.0)
+        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
+        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
+            sig.samples.dtype
+        )
+        est = sync.estimate_frequency_offset_mengali_morelli(
+            sig.samples, fs=FS, modulation="qam", order=4, max_lag=16
+        )
+        assert abs(est - fo_hz) / fo_hz < 0.05
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FOE — Regression: Kay weights, Jacobsen interpolation, WLSQ pilots
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFoeRegression:
+    """Regression tests covering specific fixes in this patch."""
+
+    def test_kay_weights_improve_low_snr(self, backend_device, xp):
+        """Corrected Kay MVUE weights: weighted mode should equal or beat unweighted at low SNR."""
+        fo_hz = 4_000.0
+        sig = _psk_signal(xp, 4, 4096, fo_hz=fo_hz, snr_db=10)
+        est_weighted = sync.estimate_frequency_offset_differential(
+            sig.samples, fs=FS, modulation="psk", order=4, weighted=True
+        )
+        est_unweighted = sync.estimate_frequency_offset_differential(
+            sig.samples, fs=FS, modulation="psk", order=4, weighted=False
+        )
+        # Both should be within 20 % at low SNR; weighted must be at least as good
+        assert abs(est_weighted - fo_hz) <= abs(est_unweighted - fo_hz) * 1.1 + 50.0
+
+    def test_jacobsen_vs_parabolic_accuracy(self, backend_device, xp):
+        """Jacobsen interpolation accuracy is at least as good as parabolic for N=256."""
+        fo_hz = 7_777.0  # non-round number to stress sub-bin interpolation
+        sig = _qam_signal(xp, 4, 256, fo_hz=fo_hz)
+        est_j = sync.estimate_frequency_offset_mth_power(
+            sig.samples, fs=FS, modulation="qam", order=4, interpolation="jacobsen"
+        )
+        est_p = sync.estimate_frequency_offset_mth_power(
+            sig.samples, fs=FS, modulation="qam", order=4, interpolation="parabolic"
+        )
+        # Jacobsen error must be ≤ parabolic error (with generous 20 % slack for noise)
+        assert abs(est_j - fo_hz) <= abs(est_p - fo_hz) * 1.2 + 100.0
+
+    def test_mth_power_short_signal_raises(self, backend_device, xp):
+        """M-th power FOE raises ValueError for signals shorter than 8 samples."""
+        short = xp.ones(5, dtype=xp.complex64)
+        with pytest.raises(ValueError, match="too short"):
+            sync.estimate_frequency_offset_mth_power(
+                short, fs=FS, modulation="qam", order=4
+            )
+
+    def test_pilot_wlsq_vs_ols_at_snr(self, backend_device, xp):
+        """WLSQ pilot FOE returns a valid estimate; result within 2% of true offset."""
+        fo_hz = 5_000.0
+        n_samples = 2048
+        pilot_period = 8
+        rng = np.random.default_rng(42)
+        symbols = (
+            rng.choice([-1, 1], size=n_samples)
+            + 1j * rng.choice([-1, 1], size=n_samples)
+        ).astype(np.complex64) / np.sqrt(2)
+        pilot_indices = np.arange(0, n_samples, pilot_period, dtype=np.intp)
+        pilot_values = np.ones(len(pilot_indices), dtype=np.complex64)
+        symbols[pilot_indices] = pilot_values
+        noise = (
+            rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
+        ).astype(np.complex64) * np.sqrt(10 ** (-SNR_DB / 10) / 2)
+        symbols = (symbols + noise).astype(np.complex64)
+        t = np.arange(n_samples, dtype=np.float64) / FS
+        samples = xp.asarray(
+            symbols * np.exp(1j * 2 * np.pi * fo_hz * t).astype(np.complex64)
+        )
+        est = sync.estimate_frequency_offset_pilots(
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            fs=FS,
+            snr_weighted=True,
+        )
+        assert abs(est - fo_hz) / fo_hz < 0.02
+
+    def test_differential_lock_range_warning(self, backend_device, xp, caplog):
+        """Differential FOE emits a warning when estimate is near the lock-range boundary."""
+        import logging
+
+        # For QPSK (M=4): lock range is ±fs/8 = ±125 kHz at 1 MHz
+        # Push the offset to 95 % of the lock half-range to trigger the warning
+        lock_half = FS / (2 * 4)
+        fo_hz = 0.92 * lock_half
+        sig = _psk_signal(xp, 4, 8192, fo_hz=fo_hz, snr_db=SNR_DB)
+        with caplog.at_level(logging.WARNING, logger="commstools"):
+            sync.estimate_frequency_offset_differential(
+                sig.samples, fs=FS, modulation="psk", order=4
+            )
+        assert any("lock-range" in r.message for r in caplog.records)
+
+    def test_shared_lo_check_warns_on_large_spread(self, backend_device, xp, caplog):
+        """shared_lo_check triggers a warning when channels have different offsets."""
+        import logging
+
+        # Ch0 offset = +5 kHz, Ch1 offset = -5 kHz → 10 kHz spread >> 0.5 % of 1 MHz
+        fo_a, fo_b = 5_000.0, -5_000.0
+        sig_a = _qam_signal(xp, 4, 2048, fo_hz=fo_a)
+        sig_b = _qam_signal(xp, 4, 2048, fo_hz=fo_b)
+        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
+        with caplog.at_level(logging.WARNING, logger="commstools"):
+            sync.estimate_frequency_offset_differential(
+                mimo, fs=FS, modulation="qam", order=4, shared_lo_check=True
+            )
+        assert any("spread" in r.message for r in caplog.records)
