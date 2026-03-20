@@ -54,7 +54,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 
 from .backend import ArrayType, dispatch, is_cupy_available, to_device
-from .core import Preamble, Signal
+from .core import Preamble
 from .logger import logger
 
 # Window length for DFT-upsampling in estimate_fractional_delay()
@@ -341,7 +341,7 @@ def estimate_fractional_delay(
 
 
 def fft_fractional_delay(
-    signal: ArrayType,
+    samples: ArrayType,
     delay: Union[float, ArrayType],
 ) -> ArrayType:
     """
@@ -355,7 +355,7 @@ def fft_fractional_delay(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Input signal. Shape: (N,) or (C, N).
     delay : float or array_like
         Fractional delay in samples. Positive = delay (shift right).
@@ -388,23 +388,23 @@ def fft_fractional_delay(
     T. I. Laakso et al., "Splitting the unit delay," IEEE Signal
     Processing Magazine, 1996.
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]  # (1, N)
+        samples = samples[None, :]  # (1, N)
 
-    C, N = signal.shape
+    C, N = samples.shape
 
     # Convert delay to array
     if isinstance(delay, (int, float)):
-        delay_arr = xp.full(C, delay, dtype=signal.real.dtype)
+        delay_arr = xp.full(C, delay, dtype=samples.real.dtype)
     else:
-        delay_arr = xp.asarray(delay, dtype=signal.real.dtype)
+        delay_arr = xp.asarray(delay, dtype=samples.real.dtype)
         if delay_arr.ndim == 0:
             delay_arr = delay_arr[None]
 
     # FFT
-    spec = xp.fft.fft(signal, axis=-1)
+    spec = xp.fft.fft(samples, axis=-1)
 
     # Frequency axis: normalized frequencies in cycles/sample
     freqs = xp.fft.fftfreq(N, d=1.0)
@@ -423,12 +423,12 @@ def fft_fractional_delay(
     result = xp.fft.ifft(spec_delayed, axis=-1)
 
     # Dtype restoration: mirrors the impairments.py pattern.
-    if not xp.iscomplexobj(signal):
+    if not xp.iscomplexobj(samples):
         # Real input: fractional delay is a real-valued operation
         result = result.real
-    elif result.dtype != signal.dtype:
+    elif result.dtype != samples.dtype:
         # Complex input: ifft may return complex128 from complex64 input
-        result = result.astype(signal.dtype)
+        result = result.astype(samples.dtype)
 
     if was_1d:
         return result[0]
@@ -436,7 +436,7 @@ def fft_fractional_delay(
 
 
 def estimate_timing(
-    signal: Union[ArrayType, "Signal"],
+    samples: ArrayType,
     preamble: Optional[Union[ArrayType, "Preamble"]] = None,
     threshold: float = 0.5,
     sps: Optional[int] = None,
@@ -457,13 +457,15 @@ def estimate_timing(
 
     For MIMO ZC preambles each TX stream uses a unique root (assigned by
     :func:`~commstools.helpers.zc_mimo_root`).  All templates are correlated
-    against all RX channels; the incoherent sum over templates is used to
-    find each channel's peak independently, so **hardware skew between RX
-    channels is preserved in the returned per-channel offsets**.
+    against all RX channels; the Hungarian assignment algorithm maps each TX
+    root to the RX channel it matches best, and only that template's
+    correlation is used to find each channel's peak independently, so
+    **hardware skew between RX channels is preserved in the returned
+    per-channel offsets**.
 
     Parameters
     ----------
-    signal : array_like or Signal
+    samples : array_like
         Received signal samples.
 
     preamble : array_like or Preamble, optional
@@ -472,11 +474,12 @@ def estimate_timing(
         Detection threshold normalized between 0 and 1.
 
     sps : int, optional
-        Samples per symbol. Inferred from ``signal`` if not provided.
+        Samples per symbol. Must be provided explicitly.
     pulse_shape : str, optional
-        Pulse shaping filter. Inferred from ``signal`` if not provided.
+        Pulse shaping filter. Defaults to ``'rrc'`` if not provided.
     filter_params : dict, optional
-        Additional filter parameters (beta, span, etc.). Inferred if None.
+        Additional filter parameters (beta, span, etc.). Defaults to ``{}``
+        if None.
     search_range : tuple of int, optional
         A ``(start, end)`` sample range to restrict detection.
         Defaults to the full signal length.
@@ -511,56 +514,24 @@ def estimate_timing(
       correlating with a shaped/oversampled preamble (e.g., generated via
       ``Preamble.to_signal(...)``) typically yields superior timing precision
       and SNR compared to correlating with 1 SPS symbols. Ensure the
-      ``preamble`` argument matches the sampling rate of the input ``signal``.
+      ``preamble`` argument matches the sampling rate of the input ``samples``.
     """
     from .helpers import cross_correlate_fft, zc_mimo_root
 
     # 1. Resolve Inputs & Metadata
-    sig_array = None
-
-    if isinstance(signal, Signal):
-        sig_array = signal.samples
-        if sps is None:
-            sps = int(round(signal.sps))
-        if pulse_shape is None:
-            pulse_shape = signal.pulse_shape or "rrc"
-        if filter_params is None:
-            filter_params = {
-                "filter_span": signal.filter_span,
-                "rrc_rolloff": signal.rrc_rolloff,
-                "rc_rolloff": signal.rc_rolloff,
-                "gaussian_bt": signal.gaussian_bt,
-                "smoothrect_bt": signal.smoothrect_bt,
-            }
-    else:
-        sig_array = signal
-
     if filter_params is None:
         filter_params = {}
 
-    sig_array, xp, _ = dispatch(sig_array)
+    sig_array, xp, _ = dispatch(samples)
 
     # 2. Reconstruct/Get Preamble Waveform
-    # We prioritize reconstructing from signal.frame to get correct MIMO structure.
     preamble_waveform = None
-
-    frame = getattr(signal, "frame", None) if isinstance(signal, Signal) else None
-
     resolved_preamble = preamble
-    num_streams = 1
-
-    if resolved_preamble is None and frame is not None:
-        if hasattr(frame, "preamble") and frame.preamble is not None:
-            resolved_preamble = frame.preamble
-        elif getattr(signal, "signal_type", None) == "Preamble":
-            resolved_preamble = frame
-
-    if frame is not None:
-        num_streams = getattr(frame, "num_streams", 1)
+    num_streams = sig_array.shape[0] if sig_array.ndim > 1 else 1
 
     if isinstance(resolved_preamble, Preamble):
         if sps is None:
-            raise ValueError("SPS must be provided or inferred from Signal.")
+            raise ValueError("SPS must be provided when using a Preamble object.")
 
         primary = resolved_preamble
 
@@ -668,7 +639,7 @@ def estimate_timing(
         S_np = to_device(xp.max(corr_all_mag, axis=-1), "cpu")  # (C_rx, C_tx)
         _, assignment = linear_sum_assignment(-S_np)  # assignment[rx] = best tx
 
-        # Per-channel correlation uses only the assigned template.
+        # Per-channel correlation magnitude using only the assigned template.
         corr_incoherent = xp.stack(
             [corr_all_mag[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
         )  # (C_rx, N_lag)
@@ -705,8 +676,9 @@ def estimate_timing(
     norm_factors = xp.maximum(norm_factors, 1e-12)
 
     # Calculate per-channel metrics.
-    # For MIMO use the incoherent sum (consistent with peak_indices); for SISO
-    # corr_incoherent is not computed so fall back to the coherent magnitude.
+    # For MIMO use the assigned-template correlation magnitude (consistent with
+    # peak_indices); for SISO corr_incoherent is not computed so fall back to
+    # the coherent magnitude.
     if C_tx > 1:
         peak_vals = xp.max(
             corr_incoherent, axis=-1
@@ -813,7 +785,7 @@ def estimate_timing(
 
 
 def correct_timing(
-    signal: ArrayType,
+    samples: ArrayType,
     coarse_offset: Union[int, ArrayType],
     fractional_offset: Union[float, ArrayType] = 0.0,
     mode: str = "circular",
@@ -826,7 +798,7 @@ def correct_timing(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Input signal. Shape: (N,) or (C, N).
     coarse_offset : int or array_like
         Integer sample offset(s) to correct. Positive values shift
@@ -871,13 +843,13 @@ def correct_timing(
     is mathematically ideal for bandlimited signals and perfectly preserves
     signal power (unlike polynomial interpolators).
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]
+        samples = samples[None, :]
 
-    num_ch = signal.shape[0]
-    N = signal.shape[-1]
+    num_ch = samples.shape[0]
+    N = samples.shape[-1]
 
     # === Coarse correction (integer shift) ===
     coarse_offset = xp.asarray(coarse_offset)
@@ -886,16 +858,16 @@ def correct_timing(
         # --- Scalar: same shift for all channels ---
         shift = int(coarse_offset)
         if mode == "circular":
-            signal = xp.roll(signal, -shift, axis=-1)
+            samples = xp.roll(samples, -shift, axis=-1)
         elif mode == "zero":
-            result = xp.zeros_like(signal)
+            result = xp.zeros_like(samples)
             if shift > 0:
-                result[..., : N - shift] = signal[..., shift:]
+                result[..., : N - shift] = samples[..., shift:]
             elif shift < 0:
-                result[..., -shift:] = signal[..., : N + shift]
-            signal = result
+                result[..., -shift:] = samples[..., : N + shift]
+            samples = result
         elif mode == "slice":
-            signal = signal[..., shift:]
+            samples = samples[..., shift:]
         else:
             raise ValueError(
                 f"Unknown mode {mode!r}. Choose 'circular', 'zero', or 'slice'."
@@ -909,12 +881,12 @@ def correct_timing(
 
         if mode == "circular":
             col_idx = (col_base + coarse_int[:, None]) % N  # (C, N)
-            signal = signal[row_idx, col_idx]
+            samples = samples[row_idx, col_idx]
 
         elif mode == "zero":
             col_raw = col_base + coarse_int[:, None]  # (C, N)
-            gathered = signal[row_idx, xp.clip(col_raw, 0, N - 1)]
-            signal = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
+            gathered = samples[row_idx, xp.clip(col_raw, 0, N - 1)]
+            samples = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
 
         elif mode == "slice":
             # Align all channels to common overlap: N - max(offset) samples
@@ -923,7 +895,7 @@ def correct_timing(
             col_idx_s = (
                 xp.arange(common_len, dtype=xp.int64)[None, :] + coarse_int[:, None]
             )  # (C, common_len)
-            signal = signal[row_idx, col_idx_s]
+            samples = samples[row_idx, col_idx_s]
 
         else:
             raise ValueError(
@@ -939,7 +911,7 @@ def correct_timing(
         apply_frac = bool(xp.any(xp.abs(fractional_offset) > 1e-9))
 
     if apply_frac:
-        signal = fft_fractional_delay(signal, -fractional_offset)
+        samples = fft_fractional_delay(samples, -fractional_offset)
 
     if mode == "slice":
         logger.warning(
@@ -953,8 +925,8 @@ def correct_timing(
     )
 
     if was_1d:
-        return signal[0]
-    return signal
+        return samples[0]
+    return samples
 
 
 # -----------------------------------------------------------------------------
@@ -1022,7 +994,7 @@ def _modulation_power_m(modulation: str, order: int) -> int:
 
 
 def estimate_frequency_offset_mth_power(
-    signal: ArrayType,
+    samples: ArrayType,
     fs: float,
     modulation: str,
     order: int,
@@ -1042,7 +1014,7 @@ def estimate_frequency_offset_mth_power(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Complex IQ samples. Shape: (N,) or (C, N). For MIMO, channel
         spectra are summed before peak detection (coherent accumulation).
     fs : float
@@ -1056,7 +1028,7 @@ def estimate_frequency_offset_mth_power(
         The spectral search is mapped to ``[M·f_min, M·f_max]``.
         Default: full spectrum.
     nfft : int, optional
-        FFT size. Default: next power of 2 ≥ len(signal).
+        FFT size. Default: next power of 2 ≥ len(samples).
     interpolation : {'jacobsen', 'parabolic'}, default 'jacobsen'
         Sub-bin interpolation method.
 
@@ -1113,11 +1085,11 @@ def estimate_frequency_offset_mth_power(
     E. Jacobsen and P. Kootsookos, "Fast, accurate frequency estimators,"
     IEEE Signal Process. Mag., vol. 24, no. 3, pp. 123–125, May 2007.
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]  # (1, N)
-    C, N = signal.shape
+        samples = samples[None, :]  # (1, N)
+    C, N = samples.shape
 
     if N < 8:
         raise ValueError(
@@ -1131,7 +1103,7 @@ def estimate_frequency_offset_mth_power(
         nfft = 1 << int(np.ceil(np.log2(N)))  # guaranteed Python int
 
     # Promote for numerical accuracy during power computation: (C, N)
-    s_c = signal.astype(xp.complex128 if signal.dtype == xp.complex64 else signal.dtype)
+    s_c = samples.astype(xp.complex128 if samples.dtype == xp.complex64 else samples.dtype)
 
     # M-th power removes modulation → tone at M·Δf; shape stays (C, N)
     x_M = s_c**M
@@ -1254,7 +1226,7 @@ def estimate_frequency_offset_mth_power(
 
 
 def estimate_frequency_offset_differential(
-    signal: ArrayType,
+    samples: ArrayType,
     fs: float,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
@@ -1269,7 +1241,7 @@ def estimate_frequency_offset_differential(
 
     Three modes, selected automatically based on the supplied arguments:
 
-    1. **Data-aided** (``ref_signal`` provided): derotates ``signal`` by
+    1. **Data-aided** (``ref_signal`` provided): derotates ``samples`` by
        ``conj(ref_signal)`` before applying the estimator.  Unaffected by
        modulation, highest-accuracy mode.
     2. **Blind M-PSK/QAM** (``modulation`` and ``order`` provided, no
@@ -1280,7 +1252,7 @@ def estimate_frequency_offset_differential(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Received complex samples. Shape: (N,) or (C, N).
     fs : float
         Sampling rate in Hz.
@@ -1346,11 +1318,11 @@ def estimate_frequency_offset_differential(
     Trans. Acoust. Speech Signal Process., vol. 37, no. 12, pp. 1987–1990,
     Dec. 1989.
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]  # (1, N)
-    C, N = signal.shape
+        samples = samples[None, :]  # (1, N)
+    C, N = samples.shape
 
     # Determine pre-processing mode and M
     if ref_signal is not None:
@@ -1358,13 +1330,13 @@ def estimate_frequency_offset_differential(
         if ref.ndim == 1:
             ref = ref[None, :]
         ref = xp.asarray(ref)
-        y = signal * xp.conj(ref)  # derotate → complex tone at Δf
+        y = samples * xp.conj(ref)  # derotate → complex tone at Δf
         M = 1
     elif modulation is not None and order is not None:
         M = _modulation_power_m(modulation, order)
-        y = signal**M  # M-th power removes PSK/QAM modulation
+        y = samples**M  # M-th power removes PSK/QAM modulation
     else:
-        y = signal
+        y = samples
         M = 1
 
     # Differential product: y[n+1] · conj(y[n])  → (C, N-1)
@@ -1512,7 +1484,7 @@ def _get_numba_mm_bootstrap():
 
 
 def estimate_frequency_offset_mengali_morelli(
-    signal: ArrayType,
+    samples: ArrayType,
     fs: float,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
@@ -1533,7 +1505,7 @@ def estimate_frequency_offset_mengali_morelli(
 
     Three input modes (identical to :func:`estimate_frequency_offset_differential`):
 
-    1. **Data-aided** (``ref_signal`` provided): derotates signal by the
+    1. **Data-aided** (``ref_signal`` provided): derotates samples by the
        known reference before estimating.
     2. **Blind M-PSK/QAM** (``modulation`` + ``order``): applies M-th power
        pre-processing.  Lock range remains ``[-fs/2, fs/2]`` for all lags
@@ -1542,7 +1514,7 @@ def estimate_frequency_offset_mengali_morelli(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Complex IQ samples. Shape: (N,) or (C, N).
     fs : float
         Sampling rate in Hz.
@@ -1627,11 +1599,11 @@ def estimate_frequency_offset_mengali_morelli(
     S. M. Kay, "A fast and accurate single-frequency estimator," *IEEE
     Trans. Acoust. Speech Signal Process.*, vol. 37, no. 12, Dec. 1989.
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]  # (1, N)
-    C, N = signal.shape
+        samples = samples[None, :]  # (1, N)
+    C, N = samples.shape
 
     # Pre-process: same three modes as estimate_frequency_offset_differential
     if ref_signal is not None:
@@ -1639,13 +1611,13 @@ def estimate_frequency_offset_mengali_morelli(
         if ref.ndim == 1:
             ref = ref[None, :]
         ref = xp.asarray(ref)
-        y = signal * xp.conj(ref)  # derotate → complex tone at Δf
+        y = samples * xp.conj(ref)  # derotate → complex tone at Δf
         M = 1
     elif modulation is not None and order is not None:
         M = _modulation_power_m(modulation, order)
-        y = signal**M  # removes PSK/QAM modulation
+        y = samples**M  # removes PSK/QAM modulation
     else:
-        y = signal
+        y = samples
         M = 1
 
     # Choose max_lag L
@@ -1717,7 +1689,7 @@ def estimate_frequency_offset_mengali_morelli(
 
 
 def estimate_frequency_offset_pilots(
-    signal: ArrayType,
+    samples: ArrayType,
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
     fs: float,
@@ -1737,7 +1709,7 @@ def estimate_frequency_offset_pilots(
 
     Parameters
     ----------
-    signal : array_like
+    samples : array_like
         Received complex samples. Shape: (N,) or (C, N).
     pilot_indices : array_like of int
         Sample indices of pilot positions in increasing order. Shape: (P,).
@@ -1832,11 +1804,11 @@ def estimate_frequency_offset_pilots(
     regression," *IEEE Trans. Inf. Theory*, vol. 31, no. 6, pp. 832–835,
     Nov. 1985.
     """
-    signal, xp, _ = dispatch(signal)
-    was_1d = signal.ndim == 1
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]
-    C, N = signal.shape
+        samples = samples[None, :]
+    C, N = samples.shape
 
     pilot_indices_np = to_device(pilot_indices, "cpu").astype(np.intp)
     pilot_values_xp = xp.asarray(pilot_values)
@@ -1846,7 +1818,7 @@ def estimate_frequency_offset_pilots(
         pilot_values_xp = xp.broadcast_to(pilot_values_xp[None, :], (C, P))
 
     # Extract and demodulate: phase = angle(r · conj(s)) = 2π·Δf·t + φ₀ + noise
-    r_pilots = signal[:, pilot_indices_np]  # (C, P)
+    r_pilots = samples[:, pilot_indices_np]  # (C, P)
     phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
 
     # Unwrap in float64; cp.unwrap preserves input dtype so cast before calling

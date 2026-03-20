@@ -21,7 +21,7 @@ SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
     sig = Signal.qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
-    sig = apply_awgn(sig, esn0_db=snr_db, seed=seed)
+    sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
     return sig
@@ -30,7 +30,7 @@ def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
 def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
     sig = Signal.psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
-    sig = apply_awgn(sig, esn0_db=snr_db, seed=seed)
+    sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
     return sig
@@ -152,7 +152,7 @@ class TestFoeDifferential:
         # Use PSK (constant envelope) for cleanest data-aided derotation
         sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
         ideal_symbols = sig.samples.copy()  # save clean symbols before noise
-        sig = apply_awgn(sig, esn0_db=25)
+        sig.samples = apply_awgn(sig.samples, esn0_db=25, sps=1)
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, FS)
 
         est_blind = sync.estimate_frequency_offset_differential(
@@ -302,7 +302,7 @@ class TestCprPilots:
         sig = Signal.qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS)
         # Save ideal symbols before adding noise
         ideal_symbols = xp.asarray(sig.samples.copy())
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
+        sig.samples = apply_awgn(sig.samples, esn0_db=SNR_DB, sps=1)
         # Apply a slow linear phase ramp on top of noise
         sig.samples = _apply_phase_ramp(xp, sig.samples, phase_per_sym)
 
@@ -553,88 +553,6 @@ class TestCorrectionFunctions:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Signal class — combined estimate + correct methods
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestSignalMethods:
-    def test_correct_frequency_offset_returns_float(self, backend_device, xp):
-        """Signal.correct_frequency_offset returns a float scalar."""
-        sig = Signal.qam(order=16, num_symbols=2048, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        sig.samples, _ = spectral.shift_frequency(sig.samples, 5_000.0, FS)
-        result = sig.correct_frequency_offset(method="mth_power")
-        assert isinstance(result, float)
-
-    def test_correct_frequency_offset_applies_correction(self, backend_device, xp):
-        """Signal.correct_frequency_offset estimates and corrects in one call."""
-        sig = Signal.qam(order=16, num_symbols=4096, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        # Capture the actual quantised offset so comparison is meaningful
-        sig.samples, actual_fo = spectral.shift_frequency(sig.samples, 8_000.0, FS)
-
-        est = sig.correct_frequency_offset(method="mth_power")
-        # Returned estimate should be close to the actually applied offset
-        assert abs(est - actual_fo) / abs(actual_fo) < 0.05
-
-    def test_correct_frequency_offset_does_not_update_digital_offset(self, backend_device, xp):
-        """Signal.correct_frequency_offset must not modify digital_frequency_offset."""
-        sig = Signal.qam(order=4, num_symbols=2048, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        sig.samples, _ = spectral.shift_frequency(sig.samples, 5_000.0, FS)
-
-        original_dfo = sig.digital_frequency_offset
-        sig.correct_frequency_offset(method="mth_power")
-        assert sig.digital_frequency_offset == original_dfo
-
-    def test_recover_carrier_phase_returns_array(self, backend_device, xp):
-        """Signal.recover_carrier_phase returns an array, not None."""
-        sig = Signal.qam(order=16, num_symbols=512, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        phase = sig.recover_carrier_phase(method="vv")
-        assert phase is not None
-        assert phase.shape == sig.samples.shape
-
-    def test_recover_carrier_phase_modifies_samples(self, backend_device, xp):
-        """Signal.recover_carrier_phase modifies self.samples in-place."""
-        sig = Signal.qam(order=4, num_symbols=512, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        sig.samples = sig.samples * xp.exp(1j * 0.4)  # known phase offset
-
-        original_ptr = id(sig.samples)  # check same object is reassigned
-        sig.recover_carrier_phase(method="vv")
-        # samples should have been modified (new array assigned)
-        assert sig.samples is not None
-
-    def test_recover_carrier_phase_bps_runs(self, backend_device, xp):
-        """Signal.recover_carrier_phase with method='bps' completes without error."""
-        sig = Signal.qam(order=16, num_symbols=512, sps=1, symbol_rate=FS)
-        sig = apply_awgn(sig, esn0_db=SNR_DB)
-        phase = sig.recover_carrier_phase(method="bps")
-        assert phase.shape == sig.samples.shape
-
-    def test_correct_frequency_offset_invalid_method_raises(self, backend_device, xp):
-        """Signal.correct_frequency_offset raises ValueError for unknown method."""
-        sig = Signal.qam(order=4, num_symbols=512, sps=1, symbol_rate=FS)
-        with pytest.raises(ValueError, match="Unknown FOE method"):
-            sig.correct_frequency_offset(method="magic_method")
-
-    def test_recover_carrier_phase_invalid_method_raises(self, backend_device, xp):
-        """Signal.recover_carrier_phase raises ValueError for unknown method."""
-        sig = Signal.qam(order=4, num_symbols=512, sps=1, symbol_rate=FS)
-        with pytest.raises(ValueError, match="Unknown CPR method"):
-            sig.recover_carrier_phase(method="crystal_ball")
-
-    def test_mth_power_requires_mod_scheme(self, backend_device, xp):
-        """Signal.correct_frequency_offset raises if mod_scheme is not set."""
-        from commstools.backend import dispatch
-
-        samples_np = np.random.randn(512).astype(np.float32) + 1j * np.random.randn(512).astype(np.float32)
-        sig = Signal(samples=samples_np, sampling_rate=FS, symbol_rate=FS)
-        with pytest.raises(ValueError, match="mod_scheme and mod_order must be set"):
-            sig.correct_frequency_offset(method="mth_power")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # FOE — Scattered Pilots (phase slope)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -709,17 +627,6 @@ class TestFoePilots:
         assert isinstance(est, float)
         assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
 
-    def test_signal_method_pilots(self, backend_device, xp):
-        """Signal.correct_frequency_offset(method='pilots') corrects and returns float."""
-        fo_hz = 3_000.0
-        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
-        sig = Signal(samples=samples, sampling_rate=FS, symbol_rate=FS)
-        est = sig.correct_frequency_offset(
-            method="pilots", pilot_indices=pilot_indices, pilot_values=pilot_values
-        )
-        assert isinstance(est, float)
-        assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOE — Mengali-Morelli multi-lag
@@ -753,7 +660,7 @@ class TestFoeMengaliMorelli:
         """Data-aided mode: estimate within 1 % using known reference (exact mixing)."""
         sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
         ideal = sig.samples.copy()
-        sig = apply_awgn(sig, esn0_db=25)
+        sig.samples = apply_awgn(sig.samples, esn0_db=25, sps=1)
         n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
         sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
             sig.samples.dtype

@@ -347,25 +347,25 @@ def validate_array(
 
 
 def cross_correlate_fft(
-    signal: ArrayType,
+    samples: ArrayType,
     template: ArrayType,
     mode: str = "full",
 ) -> ArrayType:
     """
     Vectorized FFT-based cross-correlation.
 
-    Computes the cross-correlation of ``signal`` with ``template`` using
+    Computes the cross-correlation of ``samples`` with ``template`` using
     the frequency-domain multiplication approach. Handles 1D and 2D
     (multichannel) inputs natively via ``axis=-1`` broadcasting — no
     Python loops over channels.
 
     Parameters
     ----------
-    signal : array_like
-        Input signal. Shape: ``(N,)`` or ``(C, N)``.
+    samples : array_like
+        Input samples. Shape: ``(N,)`` or ``(C, N)``.
     template : array_like
         Reference sequence. Shape: ``(L,)`` or ``(C, L)``.
-        If ``(1, L)`` and signal is ``(C, N)``, the template is
+        If ``(1, L)`` and samples is ``(C, N)``, the template is
         broadcast across all channels.
     mode : {"full", "same", "valid", "positive_lags"}, default "full"
         Output size:
@@ -383,16 +383,16 @@ def cross_correlate_fft(
         Complex cross-correlation with shape matching the input
         dimensionality and the selected ``mode``.
     """
-    signal, xp, _ = dispatch(signal)
+    samples, xp, _ = dispatch(samples)
     template = xp.asarray(template)
 
-    was_1d = signal.ndim == 1
+    was_1d = samples.ndim == 1
     if was_1d:
-        signal = signal[None, :]
+        samples = samples[None, :]
     if template.ndim == 1:
         template = template[None, :]
 
-    N = signal.shape[-1]
+    N = samples.shape[-1]
     L = template.shape[-1]
     full_len = N + L - 1
 
@@ -401,11 +401,11 @@ def cross_correlate_fft(
     # `full_len.bit_length()` would round up even when full_len is already a power of 2.
     n_fft = 1 << (full_len - 1).bit_length()
 
-    # FFT-based correlation: R[k] = IFFT(FFT(signal) * conj(FFT(template)))
+    # FFT-based correlation: R[k] = IFFT(FFT(samples) * conj(FFT(template)))
     # Circular correlation places positive lags at 0..N-1 and negative lags
     # wrap to n_fft-(L-1)..n_fft-1.  Rearrange to match scipy layout:
     # lags [-(L-1), ..., -1, 0, 1, ..., N-1]  (total = N + L - 1).
-    SIG = xp.fft.fft(signal, n_fft, axis=-1)
+    SIG = xp.fft.fft(samples, n_fft, axis=-1)
     TPL = xp.fft.fft(template, n_fft, axis=-1)
     corr_circ = xp.fft.ifft(SIG * xp.conj(TPL), axis=-1)
 

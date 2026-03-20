@@ -14,29 +14,17 @@ ber :
     Computes Bit Error Rate between bit sequences.
 """
 
-from typing import TYPE_CHECKING, Tuple, Union
+from typing import Tuple, Union
 
 import numpy as np
 
 from .backend import ArrayType, dispatch
 from .logger import logger
 
-if TYPE_CHECKING:
-    from .core import Signal
-
-
-def _extract_symbols(s: Union[ArrayType, "Signal"]) -> ArrayType:
-    """Return the array from a Signal (preferring source_symbols) or pass through."""
-    from .core import Signal
-
-    if isinstance(s, Signal):
-        return s.source_symbols if s.source_symbols is not None else s.samples
-    return s
-
 
 def evm(
-    rx_symbols: Union[ArrayType, "Signal"],
-    tx_symbols: Union[ArrayType, "Signal"],
+    rx_symbols: ArrayType,
+    tx_symbols: ArrayType,
 ) -> Tuple[Union[float, ArrayType], Union[float, ArrayType]]:
     """
     Computes Error Vector Magnitude (EVM) between received and reference symbols.
@@ -67,8 +55,8 @@ def evm(
     """
     from . import helpers
 
-    rx, xp, _ = dispatch(_extract_symbols(rx_symbols))
-    tx = xp.asarray(_extract_symbols(tx_symbols))
+    rx, xp, _ = dispatch(rx_symbols)
+    tx = xp.asarray(tx_symbols)
 
     # Ensure shape consistency
     if rx.shape != tx.shape:
@@ -139,8 +127,8 @@ def evm(
 
 
 def snr(
-    rx_symbols: Union[ArrayType, "Signal"],
-    tx_symbols: Union[ArrayType, "Signal"],
+    rx_symbols: ArrayType,
+    tx_symbols: ArrayType,
 ) -> Union[float, ArrayType]:
     """
     Estimates SNR from received symbols using a known reference (Data-Aided).
@@ -165,8 +153,8 @@ def snr(
     """
     from . import helpers
 
-    rx, xp, _ = dispatch(_extract_symbols(rx_symbols))
-    tx = xp.asarray(_extract_symbols(tx_symbols))
+    rx, xp, _ = dispatch(rx_symbols)
+    tx = xp.asarray(tx_symbols)
 
     if rx.shape != tx.shape:
         raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")

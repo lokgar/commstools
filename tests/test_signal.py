@@ -509,219 +509,161 @@ def test_signal_rz_modscheme_flags(backend_device, xp):
 
 
 # -----------------------------------------------------------------------------
-# SIGNAL.EQUALIZE METHODS — COVERAGE GAPS
+# SIGNAL EVM / SNR / BER — num_train_symbols explicit discard
 # -----------------------------------------------------------------------------
 
 
-def _make_psk_signal_2sps(xp, n_symbols=400, seed=0):
-    """Helper: make a 2-SPS PSK signal and return (sig, rx_sig)."""
-    orig = Signal.psk(
-        symbol_rate=1e6,
-        num_symbols=n_symbols,
-        order=4,
-        pulse_shape="rrc",
-        sps=2,
-        seed=seed,
-    )
-    rx = Signal(
-        samples=xp.asarray(orig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
-        mod_scheme="psk",
-        mod_order=4,
-        source_symbols=orig.source_symbols,
-        source_bits=orig.source_bits,
-    )
-    return orig, rx
+def test_evm_with_explicit_num_train_symbols(backend_device, xp):
+    """evm(num_train_symbols=N) discards leading symbols from resolved_symbols."""
+    from commstools import equalization
 
-
-def test_equalize_rls_method(backend_device, xp):
-    """Signal.equalize(method='rls') trims source_symbols tail by num_taps//2."""
-    orig, rx = _make_psk_signal_2sps(xp, n_symbols=600)
-    rx.equalize(method="rls", num_taps=7, backend="numba")
-    assert rx.samples is not None
-    # RLS trims last num_taps//2 symbols from source_symbols immediately
-    assert rx.source_symbols.shape[-1] == orig.source_symbols.shape[-1] - 7 // 2
-
-
-def test_equalize_cma_method(backend_device, xp):
-    """Signal.equalize(method='cma') should work without training symbols."""
-    _, rx = _make_psk_signal_2sps(xp, n_symbols=400)
-    rx.equalize(method="cma", num_taps=7, backend="numba")
-    assert rx.samples is not None
-
-
-def test_equalize_rde_method(backend_device, xp):
-    """Signal.equalize(method='rde') should run on a QAM signal."""
-    orig = Signal.qam(
-        symbol_rate=1e6, num_symbols=400, order=16, pulse_shape="rrc", sps=2, seed=0
-    )
-    rx = Signal(
-        samples=xp.asarray(orig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
-        mod_scheme="qam",
-        mod_order=16,
-    )
-    rx.equalize(method="rde", num_taps=7, backend="numba")
-    assert rx.samples is not None
-
-
-def test_equalize_zf_missing_channel_estimate(backend_device, xp):
-    """Signal.equalize(method='zf') without channel_estimate should raise ValueError."""
-    _, rx = _make_psk_signal_2sps(xp)
-    with pytest.raises(ValueError, match="channel_estimate"):
-        rx.equalize(method="zf")
-
-
-def test_equalize_unknown_method(backend_device, xp):
-    """Signal.equalize with an unknown method should raise ValueError."""
-    _, rx = _make_psk_signal_2sps(xp)
-    with pytest.raises(ValueError, match="Unknown equalization method"):
-        rx.equalize(method="superequal")
-
-
-def test_evm_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """EVM computation after RLS: source_symbols tail is pre-trimmed; training discard tested."""
     n_symbols = 600
+    n_train = 100
     orig = Signal.psk(
-        symbol_rate=1e6,
-        num_symbols=n_symbols,
-        order=4,
-        pulse_shape="rrc",
-        sps=2,
-        seed=7,
+        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=7
     )
-
+    result = equalization.lms(
+        xp.asarray(orig.samples),
+        training_symbols=orig.source_symbols,
+        sps=2,
+        num_taps=7,
+        num_train_symbols=n_train,
+        backend="numba",
+    )
+    n_train = result.num_train_symbols
     rx = Signal(
-        samples=xp.asarray(orig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
+        samples=result.y_hat,
+        sampling_rate=orig.symbol_rate,
+        symbol_rate=orig.symbol_rate,
         mod_scheme="psk",
         mod_order=4,
-        source_symbols=orig.source_symbols,
-        source_bits=orig.source_bits,
-    )
-    rx.equalize(
-        method="rls",
-        num_taps=7,
-        backend="numba",
-        training_symbols=orig.source_symbols[:100],
+        source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
     )
     rx.resolve_symbols()
 
-    # EVM with discard_training=True triggers the trim path
-    evm_pct, evm_db = rx.evm(discard_training=True)
+    evm_pct, evm_db = rx.evm(num_train_symbols=n_train)
     assert np.isfinite(float(evm_db))
     assert float(evm_pct) > 0
 
-    # EVM with discard_training=False: source_symbols already trimmed at equalize() time
-    evm_pct2, evm_db2 = rx.evm(discard_training=False)
+    evm_pct2, evm_db2 = rx.evm()
     assert np.isfinite(float(evm_db2))
-    assert float(evm_pct2) > 0
 
 
-def test_snr_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """SNR computation after RLS: source_symbols tail is pre-trimmed; training discard tested."""
+def test_snr_with_explicit_num_train_symbols(backend_device, xp):
+    """snr(num_train_symbols=N) discards leading symbols before computing SNR."""
+    from commstools import equalization
+
     n_symbols = 600
     orig = Signal.psk(
-        symbol_rate=1e6,
-        num_symbols=n_symbols,
-        order=4,
-        pulse_shape="rrc",
+        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=8
+    )
+    result = equalization.lms(
+        xp.asarray(orig.samples),
+        training_symbols=orig.source_symbols,
         sps=2,
-        seed=8,
+        num_taps=7,
+        num_train_symbols=100,
+        backend="numba",
     )
     rx = Signal(
-        samples=xp.asarray(orig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
+        samples=result.y_hat,
+        sampling_rate=orig.symbol_rate,
+        symbol_rate=orig.symbol_rate,
         mod_scheme="psk",
         mod_order=4,
-        source_symbols=orig.source_symbols,
-        source_bits=orig.source_bits,
-    )
-    rx.equalize(
-        method="rls",
-        num_taps=7,
-        backend="numba",
-        training_symbols=orig.source_symbols[:100],
+        source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
     )
     rx.resolve_symbols()
 
-    snr_val = rx.snr(discard_training=True)
+    snr_val = rx.snr(num_train_symbols=result.num_train_symbols)
     assert np.isfinite(snr_val)
 
-    snr_notrim = rx.snr(discard_training=False)
+    snr_notrim = rx.snr()
     assert np.isfinite(snr_notrim)
 
 
-def test_ber_with_rls_tail_trim_and_training_discard(backend_device, xp):
-    """BER computation after RLS: source_bits tail is pre-trimmed; training discard tested."""
+def test_ber_with_explicit_num_train_symbols(backend_device, xp):
+    """ber(num_train_symbols=N) discards leading bits before computing BER."""
+    from commstools import equalization
+
     n_symbols = 600
     orig = Signal.psk(
-        symbol_rate=1e6,
-        num_symbols=n_symbols,
-        order=4,
-        pulse_shape="rrc",
+        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=11
+    )
+    result = equalization.lms(
+        xp.asarray(orig.samples),
+        training_symbols=orig.source_symbols,
         sps=2,
-        seed=11,
+        num_taps=7,
+        num_train_symbols=100,
+        backend="numba",
     )
     rx = Signal(
-        samples=xp.asarray(orig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
+        samples=result.y_hat,
+        sampling_rate=orig.symbol_rate,
+        symbol_rate=orig.symbol_rate,
         mod_scheme="psk",
         mod_order=4,
-        source_symbols=orig.source_symbols,
-        source_bits=orig.source_bits,
-    )
-    rx.equalize(
-        method="rls",
-        num_taps=7,
-        backend="numba",
-        training_symbols=orig.source_symbols[:100],
+        source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
+        source_bits=orig.source_bits[..., : result.y_hat.shape[-1] * 2],
     )
     rx.resolve_symbols()
     rx.demap_symbols_hard()
 
-    # discard_training=True: trims both tail symbols and training symbols
-    ber_val = rx.ber(discard_training=True)
+    ber_val = rx.ber(num_train_symbols=result.num_train_symbols)
     assert np.isfinite(float(ber_val))
     assert 0.0 <= float(ber_val) <= 1.0
 
-    # discard_training=False: source_bits already trimmed at equalize() time
-    ber_notrim = rx.ber(discard_training=False)
+    ber_notrim = rx.ber()
     assert np.isfinite(float(ber_notrim))
     assert 0.0 <= float(ber_notrim) <= 1.0
 
 
-def test_plot_constellation_after_equalize(backend_device, xp):
-    """plot_constellation on equalised 1-SPS Signal should succeed."""
+def test_rls_tail_trim_field(backend_device, xp):
+    """rls() tail_trim field equals num_taps // 2 and y_hat is shortened accordingly."""
+    from commstools import equalization
+
+    n_symbols = 400
+    num_taps = 7
+    orig = Signal.psk(
+        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=3
+    )
+    result = equalization.rls(
+        xp.asarray(orig.samples),
+        training_symbols=orig.source_symbols,
+        sps=2,
+        num_taps=num_taps,
+        modulation="psk",
+        order=4,
+        backend="numba",
+    )
+    assert result.tail_trim == num_taps // 2
+    assert result.y_hat.shape[-1] == n_symbols - result.tail_trim
+
+
+def test_plot_constellation_at_symbol_rate(backend_device, xp):
+    """plot_constellation on a 1-SPS Signal (built from lms y_hat) should succeed."""
+    from commstools import equalization
+
     sig = Signal.psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
-    rx = Signal(
-        samples=xp.asarray(sig.samples),
-        sampling_rate=2e6,
-        symbol_rate=1e6,
-        mod_scheme="psk",
-        mod_order=4,
+    result = equalization.lms(
+        xp.asarray(sig.samples),
+        training_symbols=sig.source_symbols,
+        sps=2,
+        num_taps=7,
+        backend="numba",
     )
-    rx.equalize(
-        method="lms", num_taps=7, backend="numba", training_symbols=sig.source_symbols
-    )
-    rx.resolve_symbols()
-    # Build a plain Signal at 1 SPS for plotting
     rx_1sps = Signal(
-        samples=rx.resolved_symbols,
-        sampling_rate=rx.symbol_rate,
-        symbol_rate=rx.symbol_rate,
+        samples=result.y_hat,
+        sampling_rate=sig.symbol_rate,
+        symbol_rate=sig.symbol_rate,
         mod_scheme="psk",
         mod_order=4,
     )
-    result = rx_1sps.plot_constellation(show=False)
-    assert result is not None
+    plot_result = rx_1sps.plot_constellation(show=False)
+    assert plot_result is not None
     plt.close("all")
 
 

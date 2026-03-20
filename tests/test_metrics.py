@@ -177,19 +177,6 @@ def test_evm_near_zero_ref(backend_device, xp):
     assert db == float("inf")
 
 
-def test_metrics_signal_objects(backend_device, xp):
-    """Verify metrics work with Signal objects and resolve metadata."""
-    from commstools.core import Signal
-
-    tx = Signal.qam(order=4, num_symbols=100, sps=1, symbol_rate=1e6)
-    rx = tx.copy()
-
-    # Test EVM
-    metrics.evm(rx, tx)
-
-    # Test SNR
-    metrics.snr(rx, tx)
-
 
 def test_evm_shape_mismatch(backend_device, xp):
     """Verify error on shape mismatch in evm."""
@@ -202,18 +189,6 @@ def test_snr_shape_mismatch(backend_device, xp):
     with pytest.raises(ValueError, match="Shape mismatch"):
         metrics.snr(xp.zeros(10), xp.zeros(11))
 
-
-def test_evm_signal_extraction(backend_device, xp):
-    """Verify evm correctly extracts data from Signal objects."""
-    from commstools.core import Signal
-
-    s1 = Signal(samples=xp.ones(10), sampling_rate=1, symbol_rate=1)
-    s2 = Signal(samples=xp.ones(10), sampling_rate=1, symbol_rate=1)
-
-    # Symbols match, EVM should be 0
-    ep, edb = metrics.evm(s1, s2)
-    assert ep == 0
-    assert edb == float("-inf")
 
 
 def test_evm_array_handling(backend_device, xp):

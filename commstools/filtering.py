@@ -772,7 +772,10 @@ def shape_pulse(
         else:
             logger.debug("Pulse shaping disabled, expanding symbols by sps")
             return normalize(
-                expand(symbols, int(sps), axis=-1), "symbol_power", sps=int(sps), axis=-1
+                expand(symbols, int(sps), axis=-1),
+                "symbol_power",
+                sps=int(sps),
+                axis=-1,
             )
 
     if pulse_shape == "rect":
