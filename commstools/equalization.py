@@ -1809,7 +1809,7 @@ def lms(
     num_train_symbols: Optional[int] = None,
     device: Optional[str] = "cpu",
     center_tap: Optional[int] = None,
-    backend: str = "jax",
+    backend: str = "numba",
     w_init: Optional[ArrayType] = None,
     debug_plot: bool = False,
 ) -> EqualizerResult:
