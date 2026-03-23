@@ -995,7 +995,7 @@ def _modulation_power_m(modulation: str, order: int) -> int:
 
 def estimate_frequency_offset_mth_power(
     samples: ArrayType,
-    fs: float,
+    sampling_rate: float,
     modulation: str,
     order: int,
     search_range: Optional[Tuple[float, float]] = None,
@@ -1017,7 +1017,7 @@ def estimate_frequency_offset_mth_power(
     samples : array_like
         Complex IQ samples. Shape: (N,) or (C, N). For MIMO, channel
         spectra are summed before peak detection (coherent accumulation).
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
     modulation : str
         Modulation scheme (case-insensitive): 'psk', 'qam', 'bpsk', etc.
@@ -1043,7 +1043,7 @@ def estimate_frequency_offset_mth_power(
         coherent optical).  Set to ``False`` for independent-LO systems.
     shared_lo_tol_hz : float, optional
         Spread threshold for the shared-LO sanity check.
-        Default: ``0.005 * fs`` (0.5 % of sampling rate).
+        Default: ``0.005 * sampling_rate`` (0.5 % of sampling rate).
 
     Returns
     -------
@@ -1115,7 +1115,7 @@ def estimate_frequency_offset_mth_power(
     # Batched FFT across all channels: single kernel call on GPU → (C, nfft)
     X_M = xp.fft.fft(x_M, n=nfft, axis=-1)
     # CPU freq array; device version allocated only when search_range masking is needed.
-    freqs_np = np.fft.fftfreq(nfft, d=1.0 / fs)  # (nfft,) — always on CPU
+    freqs_np = np.fft.fftfreq(nfft, d=1.0 / sampling_rate)  # (nfft,) — always on CPU
 
     mag = xp.abs(X_M)  # (C, nfft)
 
@@ -1163,11 +1163,11 @@ def estimate_frequency_offset_mth_power(
         mu = 0.5 * (a - c_) / denom_p if abs(denom_p) > 1e-15 else 0.0
 
     mu = max(-0.5, min(0.5, mu))
-    f_est = (freqs_np[k_peak] + mu * (fs / nfft)) / M
+    f_est = (freqs_np[k_peak] + mu * (sampling_rate / nfft)) / M
 
     # Per-channel shared-LO sanity check for MIMO
     if C > 1 and shared_lo_check:
-        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * fs
+        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
         f_per_ch = []
         for c_idx in range(C):
             k_c = int(xp.argmax(mag[c_idx]))
@@ -1189,7 +1189,7 @@ def estimate_frequency_offset_mth_power(
                 d_c = a_c - 2 * b_c + c_c
                 mu_c = 0.5 * (a_c - c_c) / d_c if abs(d_c) > 1e-15 else 0.0
             mu_c = max(-0.5, min(0.5, mu_c))
-            f_per_ch.append((freqs_np[k_c] + mu_c * (fs / nfft)) / M)
+            f_per_ch.append((freqs_np[k_c] + mu_c * (sampling_rate / nfft)) / M)
         spread = max(f_per_ch) - min(f_per_ch)
         logger.info(
             f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
@@ -1227,7 +1227,7 @@ def estimate_frequency_offset_mth_power(
 
 def estimate_frequency_offset_differential(
     samples: ArrayType,
-    fs: float,
+    sampling_rate: float,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     ref_signal: Optional[ArrayType] = None,
@@ -1254,7 +1254,7 @@ def estimate_frequency_offset_differential(
     ----------
     samples : array_like
         Received complex samples. Shape: (N,) or (C, N).
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
     modulation : str, optional
         Modulation type (case-insensitive). Required for blind M-th power
@@ -1280,7 +1280,7 @@ def estimate_frequency_offset_differential(
         systems with independent per-channel LOs.
     shared_lo_tol_hz : float, optional
         Spread threshold for the shared-LO sanity check.  Default:
-        ``0.005 * fs`` (0.5 % of sampling rate).
+        ``0.005 * sampling_rate`` (0.5 % of sampling rate).
 
     Returns
     -------
@@ -1363,11 +1363,11 @@ def estimate_frequency_offset_differential(
     # is the ML estimate under equal-power independent noise (√C SNR gain).
     combined_sum = xp.sum(z_per_ch)  # scalar complex
 
-    f_est = float(xp.angle(combined_sum)) * (fs / (2 * np.pi)) / M
+    f_est = float(xp.angle(combined_sum)) * (sampling_rate / (2 * np.pi)) / M
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
 
     # Lock-range proximity warning (blind M-th power mode only)
-    lock_half = fs / (2.0 * M)
+    lock_half = sampling_rate / (2.0 * M)
     if M > 1 and abs(f_est) > 0.9 * lock_half:
         logger.warning(
             f"FOE (differential, {mode_str}): estimate {f_est:.2f} Hz is within "
@@ -1378,7 +1378,7 @@ def estimate_frequency_offset_differential(
 
     if C > 1:
         f_per_ch = [
-            float(xp.angle(z_per_ch[c])) * (fs / (2 * np.pi)) / M for c in range(C)
+            float(xp.angle(z_per_ch[c])) * (sampling_rate / (2 * np.pi)) / M for c in range(C)
         ]
         spread = max(f_per_ch) - min(f_per_ch)
         logger.info(
@@ -1386,7 +1386,7 @@ def estimate_frequency_offset_differential(
             f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz]"
         )
         if shared_lo_check:
-            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * fs
+            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
             if spread > tol:
                 logger.warning(
                     f"FOE (differential): per-channel spread {spread:.2f} Hz "
@@ -1404,7 +1404,7 @@ def estimate_frequency_offset_differential(
         _plotting.differential_phase_trajectory(
             y_diff=to_device(y_diff, "cpu"),
             f_est=f_est,
-            fs=fs,
+            sampling_rate=sampling_rate,
             M=M,
             show=True,
         )
@@ -1485,13 +1485,14 @@ def _get_numba_mm_bootstrap():
 
 def estimate_frequency_offset_mengali_morelli(
     samples: ArrayType,
-    fs: float,
+    sampling_rate: float,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     ref_signal: Optional[ArrayType] = None,
     max_lag: Optional[int] = None,
     shared_lo_check: bool = True,
     shared_lo_tol_hz: Optional[float] = None,
+    debug_plot: bool = False,
 ) -> float:
     """
     Estimates frequency offset via the Mengali-Morelli multi-lag autocorrelation.
@@ -1516,7 +1517,7 @@ def estimate_frequency_offset_mengali_morelli(
     ----------
     samples : array_like
         Complex IQ samples. Shape: (N,) or (C, N).
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
     modulation : str, optional
         Modulation type (case-insensitive). Required for blind M-th power mode.
@@ -1535,7 +1536,11 @@ def estimate_frequency_offset_mengali_morelli(
         ``shared_lo_tol_hz`` (shared-LO assumption check).
     shared_lo_tol_hz : float, optional
         Spread threshold for shared-LO sanity check.
-        Default: ``0.005 * fs``.
+        Default: ``0.005 * sampling_rate``.
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the autocorrelation
+        magnitude ``|R[m]|`` and wrapped phase ``∠R[m]`` vs lag, with the
+        expected phase ramp overlaid.
 
     Returns
     -------
@@ -1653,25 +1658,36 @@ def estimate_frequency_offset_mengali_morelli(
     # Iterative bootstrap — see _mm_bootstrap_loop docstring for the algorithm.
     # Weights: w[m] ∝ m² · |R[m]|²  (M&M MVUE × SNR proxy)
     _mm_kernel = _get_numba_mm_bootstrap()
-    f_est = float(_mm_kernel(theta_np, amp_np, float(M), float(fs)))
+    f_est = float(_mm_kernel(theta_np, amp_np, float(M), float(sampling_rate)))
 
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
     logger.info(
         f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz [L={L} lags, N={N}]"
     )
 
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.mm_autocorrelation(
+            R_np=R_np,
+            f_est=f_est,
+            sampling_rate=sampling_rate,
+            M=M,
+            show=True,
+        )
+
     # Per-channel shared-LO sanity check for MIMO.
     # R_per_ch[c, :] was already computed above — transfer (C, L) once, then
     # run the same Numba kernel per channel (no extra GPU work).
     if C > 1 and shared_lo_check:
-        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * fs
+        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
         f_per_ch = []
         R_per_ch_np = to_device(R_per_ch, "cpu")  # (C, L) — single transfer
         for c_idx in range(C):
             R_c_np = R_per_ch_np[c_idx]  # (L,) — already on CPU
             theta_c = np.angle(R_c_np)
             amp_c = np.abs(R_c_np)
-            f_per_ch.append(float(_mm_kernel(theta_c, amp_c, float(M), float(fs))))
+            f_per_ch.append(float(_mm_kernel(theta_c, amp_c, float(M), float(sampling_rate))))
         spread = max(f_per_ch) - min(f_per_ch)
         logger.info(
             f"FOE (Mengali-Morelli): per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, "
@@ -1692,7 +1708,7 @@ def estimate_frequency_offset_pilots(
     samples: ArrayType,
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
-    fs: float,
+    sampling_rate: float,
     snr_weighted: bool = True,
     shared_lo_check: bool = True,
     shared_lo_tol_hz: Optional[float] = None,
@@ -1728,7 +1744,7 @@ def estimate_frequency_offset_pilots(
         Known transmitted pilot symbols at the corresponding indices.
         Shape: (P,) for shared pilots (broadcast to all MIMO channels),
         or (C, P) for per-channel pilots.
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
     snr_weighted : bool, default True
         If ``True``, weights each pilot by its received power ``|r|²``
@@ -1743,7 +1759,7 @@ def estimate_frequency_offset_pilots(
         Set to ``False`` for independent-LO systems.
     shared_lo_tol_hz : float, optional
         Spread threshold for the shared-LO sanity check.
-        Default: ``0.005 * fs`` (0.5 % of sampling rate).
+        Default: ``0.005 * sampling_rate`` (0.5 % of sampling rate).
 
     Returns
     -------
@@ -1824,7 +1840,7 @@ def estimate_frequency_offset_pilots(
     # Unwrap in float64; cp.unwrap preserves input dtype so cast before calling
     phi_pilots_u = xp.unwrap(phi_pilots.astype(xp.float64), axis=-1)  # (C, P)
 
-    t_xp = xp.asarray(pilot_indices_np.astype(np.float64)) / fs  # (P,)
+    t_xp = xp.asarray(pilot_indices_np.astype(np.float64)) / sampling_rate  # (P,)
 
     if snr_weighted:
         # WLSQ: weight each pilot by received power |r|² (averaged across channels).
@@ -1855,7 +1871,7 @@ def estimate_frequency_offset_pilots(
     f_est = float(xp.mean(slopes)) / (2.0 * np.pi)
 
     max_gap = int(np.max(np.diff(pilot_indices_np))) if P > 1 else 0
-    lock_range = fs / (2 * max_gap) if max_gap > 0 else float("inf")
+    lock_range = sampling_rate / (2 * max_gap) if max_gap > 0 else float("inf")
     wt_str = "WLSQ" if snr_weighted else "OLS"
 
     if C > 1:
@@ -1867,7 +1883,7 @@ def estimate_frequency_offset_pilots(
             f"P={P}, max_gap={max_gap}, lock_range=±{lock_range:.1f} Hz]"
         )
         if shared_lo_check:
-            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * fs
+            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
             if spread > tol:
                 logger.warning(
                     f"FOE (pilots): per-channel spread {spread:.2f} Hz "
@@ -1888,7 +1904,7 @@ def estimate_frequency_offset_pilots(
             pilot_indices=pilot_indices_np,
             phi_pilots_u=to_device(phi_pilots_u, "cpu"),
             f_est=f_est,
-            fs=fs,
+            sampling_rate=sampling_rate,
             show=True,
         )
 
@@ -1898,7 +1914,7 @@ def estimate_frequency_offset_pilots(
 def correct_frequency_offset(
     samples: ArrayType,
     offset: float,
-    fs: float,
+    sampling_rate: float,
 ) -> ArrayType:
     """
     Applies frequency offset correction by exact complex mixing.
@@ -1915,7 +1931,7 @@ def correct_frequency_offset(
     offset : float
         Estimated frequency offset in Hz (as returned by the
         ``estimate_frequency_offset_*`` functions).
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
 
     Returns
@@ -1925,10 +1941,10 @@ def correct_frequency_offset(
     """
     samples, xp, _ = dispatch(samples)
     logger.debug(
-        f"Applying frequency offset correction: {offset:.4f} Hz (fs={fs:.0f} Hz)"
+        f"Applying frequency offset correction: {offset:.4f} Hz (sampling_rate={sampling_rate:.0f} Hz)"
     )
     n = samples.shape[-1]
-    t = xp.arange(n) / fs
+    t = xp.arange(n) / sampling_rate
 
     # Negate offset: correction reverses the carrier frequency error
     phase = -2.0 * np.pi * float(offset) * t

@@ -63,7 +63,7 @@ class TestFoeMthPower:
         """Estimated offset within 5% of true value for QAM at SNR=30 dB."""
         sig = _qam_signal(xp, order, 4096, fo_hz=fo_hz)
         est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, fs=FS, modulation="qam", order=order
+            sig.samples, sampling_rate=FS, modulation="qam", order=order
         )
         assert abs(est - fo_hz) / abs(fo_hz) < 0.05
 
@@ -73,7 +73,7 @@ class TestFoeMthPower:
         """Estimated offset within 5% of true value for PSK at SNR=30 dB."""
         sig = _psk_signal(xp, order, 4096, fo_hz=fo_hz)
         est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, fs=FS, modulation="psk", order=order
+            sig.samples, sampling_rate=FS, modulation="psk", order=order
         )
         assert abs(est - fo_hz) / abs(fo_hz) < 0.05
 
@@ -81,7 +81,7 @@ class TestFoeMthPower:
         """With no frequency offset, estimate stays within the lock range [-fs/2M, fs/2M]."""
         sig = _qam_signal(xp, 16, 4096, fo_hz=0.0)
         est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, fs=FS, modulation="qam", order=16
+            sig.samples, sampling_rate=FS, modulation="qam", order=16
         )
         # Lock range for QAM with M=4: [-fs/8, fs/8] = ±125 kHz at 1 MHz
         assert abs(est) < FS / (2 * 4)
@@ -92,7 +92,7 @@ class TestFoeMthPower:
         sig = _qam_signal(xp, 4, 8192, fo_hz=20_000.0)
         est = sync.estimate_frequency_offset_mth_power(
             sig.samples,
-            fs=FS,
+            sampling_rate=FS,
             modulation="qam",
             order=4,
             search_range=(-5_000.0, 5_000.0),
@@ -108,7 +108,7 @@ class TestFoeMthPower:
         with pytest.raises(ValueError, match="empty search window"):
             sync.estimate_frequency_offset_mth_power(
                 sig.samples,
-                fs=FS,
+                sampling_rate=FS,
                 modulation="qam",
                 order=4,
                 search_range=(400_000.0, 500_000.0),
@@ -120,7 +120,7 @@ class TestFoeMthPower:
         sig_b = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)  # (2, N)
         est = sync.estimate_frequency_offset_mth_power(
-            mimo, fs=FS, modulation="qam", order=4
+            mimo, sampling_rate=FS, modulation="qam", order=4
         )
         assert isinstance(est, float)
         assert abs(est - 5_000.0) / 5_000.0 < 0.05
@@ -139,7 +139,7 @@ class TestFoeDifferential:
         sig = _psk_signal(xp, 4, 4096, fo_hz=fo_hz)
         est = sync.estimate_frequency_offset_differential(
             sig.samples,
-            fs=FS,
+            sampling_rate=FS,
             modulation="psk",
             order=4,
             weighted=weighted,
@@ -156,10 +156,10 @@ class TestFoeDifferential:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, FS)
 
         est_blind = sync.estimate_frequency_offset_differential(
-            sig.samples, fs=FS, modulation="psk", order=4
+            sig.samples, sampling_rate=FS, modulation="psk", order=4
         )
         est_da = sync.estimate_frequency_offset_differential(
-            sig.samples, fs=FS, ref_signal=ideal_symbols
+            sig.samples, sampling_rate=FS, ref_signal=ideal_symbols
         )
 
         # Data-aided estimate should be within 5% of the true offset
@@ -171,7 +171,7 @@ class TestFoeDifferential:
         fo_hz = 5_000.0
         n = xp.arange(N, dtype=xp.float64)
         tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        est = sync.estimate_frequency_offset_differential(tone, fs=FS)
+        est = sync.estimate_frequency_offset_differential(tone, sampling_rate=FS)
         assert abs(est - fo_hz) < 200.0
 
 
@@ -524,7 +524,7 @@ class TestCorrectionFunctions:
         """correct_frequency_offset: complex64 input → complex64 output."""
         sig = _qam_signal(xp, 4, 1024)
         assert sig.samples.dtype == xp.complex64
-        corrected = sync.correct_frequency_offset(sig.samples, offset=5_000.0, fs=FS)
+        corrected = sync.correct_frequency_offset(sig.samples, offset=5_000.0, sampling_rate=FS)
         assert corrected.dtype == xp.complex64
 
     def test_correct_frequency_offset_roundtrip(self, backend_device, xp):
@@ -534,7 +534,7 @@ class TestCorrectionFunctions:
         # shift_frequency quantizes to the nearest bin; capture actual offset so
         # the correction can cancel it exactly (no residual due to quantization)
         shifted, actual_fo = spectral.shift_frequency(sig.samples, 10_000.0, FS)
-        restored = sync.correct_frequency_offset(shifted, offset=actual_fo, fs=FS)
+        restored = sync.correct_frequency_offset(shifted, offset=actual_fo, sampling_rate=FS)
         assert float(xp.max(xp.abs(restored - original))) < 1e-4
 
     def test_correct_carrier_phase_dtype_preserved(self, backend_device, xp):
@@ -600,7 +600,7 @@ class TestFoePilots:
         """Estimated offset within 1 % of true offset at 30 dB SNR."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
         est = sync.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, fs=FS
+            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
         )
         assert abs(est - fo_hz) < 0.01 * abs(fo_hz) + 1.0
 
@@ -608,7 +608,7 @@ class TestFoePilots:
         """Zero frequency offset: estimate is within ±20 Hz."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz=0.0)
         est = sync.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, fs=FS
+            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
         )
         assert abs(est) < 20.0
 
@@ -622,7 +622,7 @@ class TestFoePilots:
             samples_mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
-            fs=FS,
+            sampling_rate=FS,
         )
         assert isinstance(est, float)
         assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
@@ -651,7 +651,7 @@ class TestFoeMengaliMorelli:
             sig.samples.dtype
         )
         est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, fs=FS, modulation="qam", order=order
+            sig.samples, sampling_rate=FS, modulation="qam", order=order
         )
         assert abs(est - fo_hz) / abs(fo_hz) < 0.02
 
@@ -666,7 +666,7 @@ class TestFoeMengaliMorelli:
             sig.samples.dtype
         )
         est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, fs=FS, ref_signal=ideal
+            sig.samples, sampling_rate=FS, ref_signal=ideal
         )
         assert abs(est - fo_hz) / abs(fo_hz) < 0.01
 
@@ -677,7 +677,7 @@ class TestFoeMengaliMorelli:
         n = xp.arange(N, dtype=xp.float64)
         tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
         # Generic blind mode (no modulation — pure tone)
-        est = sync.estimate_frequency_offset_mengali_morelli(tone, fs=FS)
+        est = sync.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
         assert abs(est - fo_hz) < 0.02 * fo_hz
 
     def test_generic_blind_pure_tone(self, backend_device, xp):
@@ -686,7 +686,7 @@ class TestFoeMengaliMorelli:
         fo_hz = 7_500.0
         n = xp.arange(N, dtype=xp.float64)
         tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        est = sync.estimate_frequency_offset_mengali_morelli(tone, fs=FS)
+        est = sync.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
         assert abs(est - fo_hz) < 500.0
 
     def test_mimo_returns_scalar(self, backend_device, xp):
@@ -698,7 +698,7 @@ class TestFoeMengaliMorelli:
         mixer = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
         mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
         est = sync.estimate_frequency_offset_mengali_morelli(
-            mimo, fs=FS, modulation="qam", order=4
+            mimo, sampling_rate=FS, modulation="qam", order=4
         )
         assert isinstance(est, float)
         assert abs(est - fo_hz) / fo_hz < 0.02
@@ -712,7 +712,7 @@ class TestFoeMengaliMorelli:
             sig.samples.dtype
         )
         est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, fs=FS, modulation="qam", order=4, max_lag=16
+            sig.samples, sampling_rate=FS, modulation="qam", order=4, max_lag=16
         )
         assert abs(est - fo_hz) / fo_hz < 0.05
 
@@ -730,10 +730,10 @@ class TestFoeRegression:
         fo_hz = 4_000.0
         sig = _psk_signal(xp, 4, 4096, fo_hz=fo_hz, snr_db=10)
         est_weighted = sync.estimate_frequency_offset_differential(
-            sig.samples, fs=FS, modulation="psk", order=4, weighted=True
+            sig.samples, sampling_rate=FS, modulation="psk", order=4, weighted=True
         )
         est_unweighted = sync.estimate_frequency_offset_differential(
-            sig.samples, fs=FS, modulation="psk", order=4, weighted=False
+            sig.samples, sampling_rate=FS, modulation="psk", order=4, weighted=False
         )
         # Both should be within 20 % at low SNR; weighted must be at least as good
         assert abs(est_weighted - fo_hz) <= abs(est_unweighted - fo_hz) * 1.1 + 50.0
@@ -743,10 +743,10 @@ class TestFoeRegression:
         fo_hz = 7_777.0  # non-round number to stress sub-bin interpolation
         sig = _qam_signal(xp, 4, 256, fo_hz=fo_hz)
         est_j = sync.estimate_frequency_offset_mth_power(
-            sig.samples, fs=FS, modulation="qam", order=4, interpolation="jacobsen"
+            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="jacobsen"
         )
         est_p = sync.estimate_frequency_offset_mth_power(
-            sig.samples, fs=FS, modulation="qam", order=4, interpolation="parabolic"
+            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="parabolic"
         )
         # Jacobsen error must be ≤ parabolic error (with generous 20 % slack for noise)
         assert abs(est_j - fo_hz) <= abs(est_p - fo_hz) * 1.2 + 100.0
@@ -756,7 +756,7 @@ class TestFoeRegression:
         short = xp.ones(5, dtype=xp.complex64)
         with pytest.raises(ValueError, match="too short"):
             sync.estimate_frequency_offset_mth_power(
-                short, fs=FS, modulation="qam", order=4
+                short, sampling_rate=FS, modulation="qam", order=4
             )
 
     def test_pilot_wlsq_vs_ols_at_snr(self, backend_device, xp):
@@ -784,7 +784,7 @@ class TestFoeRegression:
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
-            fs=FS,
+            sampling_rate=FS,
             snr_weighted=True,
         )
         assert abs(est - fo_hz) / fo_hz < 0.02
@@ -800,7 +800,7 @@ class TestFoeRegression:
         sig = _psk_signal(xp, 4, 8192, fo_hz=fo_hz, snr_db=SNR_DB)
         with caplog.at_level(logging.WARNING, logger="commstools"):
             sync.estimate_frequency_offset_differential(
-                sig.samples, fs=FS, modulation="psk", order=4
+                sig.samples, sampling_rate=FS, modulation="psk", order=4
             )
         assert any("lock-range" in r.message for r in caplog.records)
 
@@ -815,6 +815,6 @@ class TestFoeRegression:
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
         with caplog.at_level(logging.WARNING, logger="commstools"):
             sync.estimate_frequency_offset_differential(
-                mimo, fs=FS, modulation="qam", order=4, shared_lo_check=True
+                mimo, sampling_rate=FS, modulation="qam", order=4, shared_lo_check=True
             )
         assert any("spread" in r.message for r in caplog.records)

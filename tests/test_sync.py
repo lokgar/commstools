@@ -1216,7 +1216,7 @@ class TestCorrectFrequencyOffsetBranches:
         # Simple real cosine as stand-in for a real-baseband signal
         sig = xp.cos(t)
         sig = sig.astype(xp.float32)
-        out = sync.correct_frequency_offset(sig, offset=5000.0, fs=1e6)
+        out = sync.correct_frequency_offset(sig, offset=5000.0, sampling_rate=1e6)
         assert out.dtype == xp.complex64
         assert out.shape == sig.shape
 
@@ -1231,6 +1231,6 @@ class TestCorrectFrequencyOffsetBranches:
                 np.complex64
             )
         )
-        out = sync.correct_frequency_offset(sig, offset=3000.0, fs=1e6)
+        out = sync.correct_frequency_offset(sig, offset=3000.0, sampling_rate=1e6)
         assert out.shape == (C, N)
         assert out.dtype == xp.complex64

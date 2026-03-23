@@ -77,7 +77,7 @@ def test_shift_frequency(backend_device, xp):
     # Signal at 20 Hz
     s = xp.exp(1j * 2 * xp.pi * 20 * t)
 
-    shifted, actual = spectral.shift_frequency(s, offset=10.0, fs=fs)
+    shifted, actual = spectral.shift_frequency(s, offset=10.0, sampling_rate=fs)
     assert actual == 10.0
 
     # New frequency should be 30 Hz
@@ -88,7 +88,7 @@ def test_shift_frequency(backend_device, xp):
 
     # 2. Quantized shift
     # Shift by 10.5 Hz. Should be quantized to integer multiple of df.
-    shifted_q, actual_q = spectral.shift_frequency(s, offset=10.5, fs=fs)
+    shifted_q, actual_q = spectral.shift_frequency(s, offset=10.5, sampling_rate=fs)
     # Check it is integer multiple of df=1
     assert actual_q % 1.0 == 0.0
     assert abs(actual_q - 10.5) <= 0.5
@@ -104,7 +104,7 @@ def test_shift_frequency_preserves_complex64_dtype(backend_device, xp):
     import numpy as np
     rng = np.random.default_rng(20)
     s = xp.asarray((rng.standard_normal(512) + 1j * rng.standard_normal(512)).astype(np.complex64))
-    out, _ = spectral.shift_frequency(s, offset=100.0, fs=1000.0)
+    out, _ = spectral.shift_frequency(s, offset=100.0, sampling_rate=1000.0)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
 
 
@@ -113,5 +113,5 @@ def test_shift_frequency_preserves_float32_dtype(backend_device, xp):
     import numpy as np
     rng = np.random.default_rng(21)
     s = xp.asarray(rng.standard_normal(512).astype(np.float32))
-    out, _ = spectral.shift_frequency(s, offset=100.0, fs=1000.0)
+    out, _ = spectral.shift_frequency(s, offset=100.0, sampling_rate=1000.0)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"

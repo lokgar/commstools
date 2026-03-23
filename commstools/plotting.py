@@ -1562,7 +1562,7 @@ def timing_correlation(
 def differential_phase_trajectory(
     y_diff,
     f_est: float,
-    fs: float,
+    sampling_rate: float,
     M: int = 1,
     ax=None,
     show: bool = False,
@@ -1582,7 +1582,7 @@ def differential_phase_trajectory(
         Differential product ``y[n+1]·y*[n]``. Shape: ``(C, N-1)`` or ``(N-1,)``.
     f_est : float
         Scalar frequency offset estimate in Hz.
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
     M : int, default 1
         Pre-processing exponent applied before differential (M>1 for blind
@@ -1609,7 +1609,7 @@ def differential_phase_trajectory(
     else:
         fig = ax.figure
 
-    ref_rad = 2.0 * np.pi * f_est / fs  # rad/sample (scaled by M internally)
+    ref_rad = 2.0 * np.pi * f_est / sampling_rate  # rad/sample (scaled by M internally)
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for ch in range(C):
@@ -1640,6 +1640,98 @@ def differential_phase_trajectory(
         plt.show()
         return None
     return fig, ax
+
+
+def mm_autocorrelation(
+    R_np,
+    f_est: float,
+    sampling_rate: float,
+    M: int = 1,
+    ax=None,
+    show: bool = False,
+    title: str = "FOE — Mengali-Morelli",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the Mengali-Morelli autocorrelation diagnostics.
+
+    Two-panel figure:
+
+    * **Top** — Normalised autocorrelation magnitude ``|R[m]|`` vs lag ``m``.
+      The magnitude encodes the per-lag SNR; it decays with lag and is used
+      as the weight proxy ``w[m] ∝ m² |R[m]|²``.
+    * **Bottom** — Wrapped phase ``∠R[m]`` vs lag ``m``, with the expected
+      linear ramp ``2π·f_est·M·m/fs`` overlaid and ``±π`` wrap boundaries
+      marked.  Phase wraps are the primary failure mode for high-order QAM;
+      this plot reveals where they occur.
+
+    Parameters
+    ----------
+    R_np : (L,) complex128
+        Normalised combined autocorrelation at lags ``m = 1 … L``
+        (output of ``np.fft.ifft`` normalised by ``N-m``).
+    f_est : float
+        Scalar frequency offset estimate in Hz.
+    sampling_rate : float
+        Sampling rate in Hz.
+    M : int, default 1
+        Modulation pre-processing exponent (1 for data-aided / generic,
+        ``order`` for PSK, 4 for QAM).
+    ax : array of Axes, optional
+        Pre-existing pair of Axes ``[ax_amp, ax_phase]``.
+        A new figure with two subplots is created when ``None``.
+    show : bool, default False
+        If ``True``, calls ``plt.show()`` and returns ``None``.
+    title : str, default "FOE — Mengali-Morelli"
+
+    Returns
+    -------
+    (fig, axes) or None
+        ``axes`` is a length-2 array ``[ax_amp, ax_phase]``.
+    """
+    amp = np.abs(R_np)
+    theta = np.angle(R_np)
+    L = len(amp)
+    lags = np.arange(1, L + 1)
+
+    expected_phase = 2.0 * np.pi * f_est * M * lags / sampling_rate
+
+    if ax is None:
+        fig, axes = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True)
+    else:
+        axes = ax
+        fig = axes[0].figure
+
+    ax_amp, ax_phase = axes
+
+    # Top: autocorrelation magnitude
+    ax_amp.plot(lags, amp, linewidth=1.0, color="steelblue")
+    ax_amp.set_ylabel("|R[m]|")
+    ax_amp.set_title(f"{title}  (Δf={f_est:.2f} Hz, M={M})")
+    ax_amp.grid(True, alpha=0.3)
+
+    # Bottom: wrapped phase vs expected ramp
+    ax_phase.scatter(lags, theta, s=6, color="steelblue", label="∠R[m]  (wrapped)", zorder=3)
+    ax_phase.plot(
+        lags,
+        (expected_phase + np.pi) % (2 * np.pi) - np.pi,  # wrap expected for visual alignment
+        color="red",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"Expected 2π·Δf·M·m/fs  (Δf={f_est:.2f} Hz)",
+    )
+    ax_phase.axhline(np.pi, color="gray", linestyle=":", linewidth=0.9, label="±π wrap boundary")
+    ax_phase.axhline(-np.pi, color="gray", linestyle=":", linewidth=0.9)
+    ax_phase.set_xlabel("Lag m")
+    ax_phase.set_ylabel("Phase (rad)")
+    ax_phase.set_ylim(-np.pi - 0.3, np.pi + 0.3)
+    ax_phase.legend(fontsize="small")
+    ax_phase.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axes
 
 
 def frequency_offset_spectrum(
@@ -1836,7 +1928,7 @@ def pilot_phase_estimate(
     phi_pilots_u,
     phi_full=None,
     f_est: float = 0.0,
-    fs: float = 1.0,
+    sampling_rate: float = 1.0,
     ax=None,
     show: bool = False,
     title: str = "Pilot Phase Estimate",
@@ -1860,7 +1952,7 @@ def pilot_phase_estimate(
         If provided, a second panel shows the full trajectory per channel.
     f_est : float, default 0.0
         Estimated frequency offset in Hz (annotation on the fit line).
-    fs : float, default 1.0
+    sampling_rate : float, default 1.0
         Sampling rate in Hz.
     ax : array_like of Axes, optional
         Shape ``(C, 1)`` when ``phi_full`` is ``None``, else ``(C, 2)``.
@@ -1901,7 +1993,7 @@ def pilot_phase_estimate(
             axes = [[ax]]
         fig = axes[0][0].figure
 
-    t_pilots = pilot_indices / fs
+    t_pilots = pilot_indices / sampling_rate
     for i in range(C):
         phi_p = phi_pilots_u[i]
         ch_suffix = f" — Ch {i}" if C > 1 else ""
@@ -1968,7 +2060,7 @@ def zf_equalizer_response(
     channel_estimate,
     noise_variance: float = 0.0,
     nfft: int = 1024,
-    fs: float = 1.0,
+    sampling_rate: float = 1.0,
     ax=None,
     show: bool = False,
     title: str = "ZF/MMSE Equalizer Response",
@@ -1991,7 +2083,7 @@ def zf_equalizer_response(
         Noise variance ``σ²`` for MMSE regularization. ``0.0`` gives pure ZF.
     nfft : int, default 1024
         FFT size for the frequency response computation.
-    fs : float, default 1.0
+    sampling_rate : float, default 1.0
         Sampling rate in Hz for frequency-axis scaling.
     ax : array_like of Axes, optional
         For SISO: 3 Axes. For MIMO: ``(C_rx * C_tx, 3)`` Axes.
@@ -2007,7 +2099,7 @@ def zf_equalizer_response(
     reg = max(noise_variance, 1e-12)
     siso = h.ndim == 1
 
-    freqs = np.fft.fftfreq(nfft, d=1.0 / fs)
+    freqs = np.fft.fftfreq(nfft, d=1.0 / sampling_rate)
     sort_idx = np.argsort(freqs)
     f_sorted = freqs[sort_idx]
 

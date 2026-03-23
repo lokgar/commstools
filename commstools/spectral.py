@@ -20,7 +20,7 @@ from .logger import logger
 
 
 def shift_frequency(
-    samples: ArrayType, offset: float, fs: float
+    samples: ArrayType, offset: float, sampling_rate: float
 ) -> Tuple[ArrayType, float]:
     """
     Applies a frequency offset (complex mixing) to a signal.
@@ -41,7 +41,7 @@ def shift_frequency(
     offset : float
         Target frequency shift in Hz. Positive values shift the spectrum
         towards higher frequencies.
-    fs : float
+    sampling_rate : float
         Sampling rate in Hz.
 
     Returns
@@ -61,7 +61,7 @@ def shift_frequency(
 
     # Axis -1 is time
     n = samples.shape[-1]
-    df = fs / n
+    df = sampling_rate / n
 
     # Quantize offset to nearest bin to ensure phase continuity
     k = xp.round(offset / df)
@@ -76,7 +76,7 @@ def shift_frequency(
         logger.debug(f"Applying frequency offset: {actual_offset:.3f} Hz.")
 
     # Time vector
-    t = xp.arange(n) / fs
+    t = xp.arange(n) / sampling_rate
 
     # Apply mixing
     # exp(j * 2 * pi * f * t)
