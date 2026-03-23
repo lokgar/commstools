@@ -47,6 +47,10 @@ recover_carrier_phase_pilots :
     Single-carrier only; for OFDM CPE tracking see 5G NR PTRS / DVB-T2.
 correct_carrier_phase :
     Applies per-symbol phase correction by complex rotation.
+compensate_iq_imbalance_lowdin :
+    Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
+compensate_iq_imbalance_gram_schmidt :
+    Blind IQ imbalance compensation via Gram-Schmidt sequential orthogonalisation.
 """
 
 from typing import Optional, Tuple, Union
@@ -1103,7 +1107,9 @@ def estimate_frequency_offset_mth_power(
         nfft = 1 << int(np.ceil(np.log2(N)))  # guaranteed Python int
 
     # Promote for numerical accuracy during power computation: (C, N)
-    s_c = samples.astype(xp.complex128 if samples.dtype == xp.complex64 else samples.dtype)
+    s_c = samples.astype(
+        xp.complex128 if samples.dtype == xp.complex64 else samples.dtype
+    )
 
     # M-th power removes modulation → tone at M·Δf; shape stays (C, N)
     x_M = s_c**M
@@ -1167,7 +1173,9 @@ def estimate_frequency_offset_mth_power(
 
     # Per-channel shared-LO sanity check for MIMO
     if C > 1 and shared_lo_check:
-        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
+        tol = (
+            shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
+        )
         f_per_ch = []
         for c_idx in range(C):
             k_c = int(xp.argmax(mag[c_idx]))
@@ -1262,12 +1270,22 @@ def estimate_frequency_offset_differential(
     order : int, optional
         Modulation order.  Required with ``modulation`` for blind mode.
     ref_signal : array_like, optional
-        Known reference signal. Shape: ``(N,)``, ``(1, N)`` (broadcast to
-        all channels), or ``(C, N)`` for per-channel derotation. The caller
-        is responsible for ensuring the signal and reference are already
-        aligned (same start sample, same length).  For MIMO with
-        independent per-stream pilots (e.g. ZC preamble), pass shape
-        ``(C, N)`` with each row containing the reference for that channel.
+        Ideal transmitted reference at **zero frequency offset and zero
+        carrier phase**.  Shape: ``(N,)``, ``(1, N)`` (broadcast to all
+        channels), or ``(C, N)`` for per-channel derotation.
+
+        .. warning::
+            **Timing alignment is critical.**  Even a 1-sample offset
+            between ``samples`` and ``ref_signal`` causes the estimate to
+            collapse to ≈ 0 Hz for i.i.d. QAM symbols, because
+            ``E[s[n] · conj(s[n-d])] = 0`` for all ``d ≠ 0``.  Run
+            :func:`estimate_timing` first to find the integer timing offset,
+            slice ``samples`` to align it with the reference, then call
+            this function.
+
+        For MIMO with independent per-stream pilots (e.g. ZC preamble),
+        pass shape ``(C, N)`` with each row containing the reference for
+        that channel.
     weighted : bool, default True
         If ``True``, applies Kay's MVUE weights for improved low-SNR
         performance.  If ``False``, uses an unweighted sum (Lovell-
@@ -1378,7 +1396,8 @@ def estimate_frequency_offset_differential(
 
     if C > 1:
         f_per_ch = [
-            float(xp.angle(z_per_ch[c])) * (sampling_rate / (2 * np.pi)) / M for c in range(C)
+            float(xp.angle(z_per_ch[c])) * (sampling_rate / (2 * np.pi)) / M
+            for c in range(C)
         ]
         spread = max(f_per_ch) - min(f_per_ch)
         logger.info(
@@ -1386,7 +1405,11 @@ def estimate_frequency_offset_differential(
             f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz]"
         )
         if shared_lo_check:
-            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
+            tol = (
+                shared_lo_tol_hz
+                if shared_lo_tol_hz is not None
+                else 0.005 * sampling_rate
+            )
             if spread > tol:
                 logger.warning(
                     f"FOE (differential): per-channel spread {spread:.2f} Hz "
@@ -1525,8 +1548,15 @@ def estimate_frequency_offset_mengali_morelli(
     order : int, optional
         Modulation order. Required with ``modulation`` for blind mode.
     ref_signal : array_like, optional
-        Known reference signal. Shape: ``(N,)``, ``(1, N)`` (broadcast to all
+        Ideal transmitted reference at **zero frequency offset and zero
+        carrier phase**.  Shape: ``(N,)``, ``(1, N)`` (broadcast to all
         channels), or ``(C, N)`` for per-channel derotation.
+
+        .. warning::
+            **Timing alignment is critical.**  Even a 1-sample offset
+            causes the estimate to collapse to ≈ 0 Hz for i.i.d. QAM
+            symbols.  Run :func:`estimate_timing` first and align
+            ``samples`` before calling this function.
     max_lag : int, optional
         Maximum autocorrelation lag L.  Default: ``N // 4``, clamped to
         ``[1, N // 2]``.  Increasing L improves noise averaging at the cost
@@ -1661,9 +1691,45 @@ def estimate_frequency_offset_mengali_morelli(
     f_est = float(_mm_kernel(theta_np, amp_np, float(M), float(sampling_rate)))
 
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
-    logger.info(
-        f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz [L={L} lags, N={N}]"
-    )
+
+    # Per-channel shared-LO sanity check for MIMO.
+    # R_per_ch[c, :] was already computed above — transfer (C, L) once, then
+    # run the same Numba kernel per channel (no extra GPU work).
+    spread = None
+    f_per_ch = None
+    if C > 1 and shared_lo_check:
+        tol = (
+            shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
+        )
+        f_per_ch = []
+        R_per_ch_np = to_device(R_per_ch, "cpu")  # (C, L) — single transfer
+        for c_idx in range(C):
+            R_c_np = R_per_ch_np[c_idx]  # (L,) — already on CPU
+            theta_c = np.angle(R_c_np)
+            amp_c = np.abs(R_c_np)
+            f_per_ch.append(
+                float(_mm_kernel(theta_c, amp_c, float(M), float(sampling_rate)))
+            )
+        spread = max(f_per_ch) - min(f_per_ch)
+
+    if f_per_ch is not None:
+        logger.info(
+            f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz "
+            f"[L={L} lags, N={N}, per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, "
+            f"spread: {spread:.2f} Hz]"
+        )
+    else:
+        logger.info(
+            f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz [L={L} lags, N={N}]"
+        )
+
+    if spread is not None and spread > tol:
+        logger.warning(
+            f"FOE (Mengali-Morelli): per-channel spread {spread:.2f} Hz "
+            f"exceeds shared-LO tolerance {tol:.2f} Hz. "
+            f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
+            "Possible timing misalignment or independent LOs per channel."
+        )
 
     if debug_plot:
         from . import plotting as _plotting
@@ -1675,31 +1741,6 @@ def estimate_frequency_offset_mengali_morelli(
             M=M,
             show=True,
         )
-
-    # Per-channel shared-LO sanity check for MIMO.
-    # R_per_ch[c, :] was already computed above — transfer (C, L) once, then
-    # run the same Numba kernel per channel (no extra GPU work).
-    if C > 1 and shared_lo_check:
-        tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
-        f_per_ch = []
-        R_per_ch_np = to_device(R_per_ch, "cpu")  # (C, L) — single transfer
-        for c_idx in range(C):
-            R_c_np = R_per_ch_np[c_idx]  # (L,) — already on CPU
-            theta_c = np.angle(R_c_np)
-            amp_c = np.abs(R_c_np)
-            f_per_ch.append(float(_mm_kernel(theta_c, amp_c, float(M), float(sampling_rate))))
-        spread = max(f_per_ch) - min(f_per_ch)
-        logger.info(
-            f"FOE (Mengali-Morelli): per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, "
-            f"spread: {spread:.2f} Hz"
-        )
-        if spread > tol:
-            logger.warning(
-                f"FOE (Mengali-Morelli): per-channel spread {spread:.2f} Hz "
-                f"exceeds shared-LO tolerance {tol:.2f} Hz. "
-                f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
-                "Possible timing misalignment or independent LOs per channel."
-            )
 
     return f_est
 
@@ -1883,7 +1924,11 @@ def estimate_frequency_offset_pilots(
             f"P={P}, max_gap={max_gap}, lock_range=±{lock_range:.1f} Hz]"
         )
         if shared_lo_check:
-            tol = shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
+            tol = (
+                shared_lo_tol_hz
+                if shared_lo_tol_hz is not None
+                else 0.005 * sampling_rate
+            )
             if spread > tol:
                 logger.warning(
                     f"FOE (pilots): per-channel spread {spread:.2f} Hz "
@@ -3115,3 +3160,160 @@ def correct_carrier_phase(
     if phasor.dtype != symbols.dtype:
         phasor = phasor.astype(symbols.dtype)
     return symbols * phasor
+
+
+def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
+    """
+    Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
+
+    Treats the I and Q components as a 2-D real vector and applies the
+    symmetric whitening transform :math:`W = M^{-1/2}` (where *M* is the
+    :math:`2 \\times 2` second-moment matrix) so that the corrected I and Q
+    channels have equal power and zero cross-correlation.  Unlike
+    Gram-Schmidt, the transform is symmetric: both branches are adjusted
+    equally, minimising the total distortion introduced.
+
+    The output power equals the input power.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+
+    Returns
+    -------
+    array_like
+        IQ-corrected signal, same shape and dtype as input.
+
+    Notes
+    -----
+    *Algorithm* (per channel):
+
+    1. Form the :math:`2 \\times N` real data matrix :math:`X = [I;\\ Q]`.
+    2. Compute the :math:`2 \\times 2` second-moment matrix
+       :math:`M = X X^\\top / N`.
+    3. Factorise :math:`M = V \\Lambda V^\\top` (symmetric eigendecomposition).
+    4. Apply the whitening matrix :math:`W = V \\operatorname{diag}(\\lambda^{-1/2}) V^\\top`.
+    5. Rescale the output to restore the original signal power.
+
+    Examples
+    --------
+    >>> r = apply_iq_imbalance(s, amplitude_imbalance_db=1.5, phase_imbalance_deg=4.0)
+    >>> s_hat = compensate_iq_imbalance_lowdin(r)
+    """
+    logger.info("Applying Löwdin IQ imbalance compensation.")
+
+    samples, xp, _ = dispatch(samples)
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[xp.newaxis, :]  # (1, N)
+
+    C, N = samples.shape
+    result = xp.empty_like(samples)
+
+    for ch in range(C):
+        r = samples[ch]  # (N,)
+        P_in = xp.mean(xp.abs(r) ** 2)
+
+        # 2×N real data matrix: rows = [I, Q]
+        X = xp.stack([r.real, r.imag])  # (2, N)
+
+        # 2×2 second-moment matrix
+        M = (X @ X.T) / N  # (2, 2)
+
+        # Symmetric whitening: W = M^{-1/2} = V @ diag(1/sqrt(lam)) @ V.T
+        lam, V = xp.linalg.eigh(M)  # lam: (2,), V: (2, 2)
+        W = (V * (1.0 / xp.sqrt(lam))) @ V.T  # (2, 2)
+
+        # Apply whitening — X_corr has identity second-moment matrix
+        X_corr = W @ X  # (2, N)
+
+        # Restore input power: E[|s_hat|^2] = P_in
+        s_corr = (X_corr[0] + 1j * X_corr[1]) * xp.sqrt(P_in / 2.0)
+
+        if s_corr.dtype != samples.dtype:
+            s_corr = s_corr.astype(samples.dtype)
+
+        result[ch] = s_corr
+
+    if was_1d:
+        return result[0]
+    return result
+
+
+def compensate_iq_imbalance_gram_schmidt(samples: ArrayType) -> ArrayType:
+    """
+    Blind IQ imbalance compensation via Gram-Schmidt sequential orthogonalisation.
+
+    Uses the I branch as the reference axis.  The Q branch is orthogonalised
+    against I and both are normalised to unit RMS before being recombined.
+    This is the classical GSOP approach used in analogue front-end calibration.
+
+    The output power equals the input power.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+
+    Returns
+    -------
+    array_like
+        IQ-corrected signal, same shape and dtype as input.
+
+    Notes
+    -----
+    *Algorithm* (per channel):
+
+    1. Normalise I to unit RMS: :math:`\\hat{I} = I / \\sigma_I`.
+    2. Remove I-projection from Q: :math:`Q_\\perp = Q - \\langle \\hat{I}, Q \\rangle \\hat{I}`.
+    3. Normalise :math:`Q_\\perp` to unit RMS: :math:`\\hat{Q} = Q_\\perp / \\sigma_{Q_\\perp}`.
+    4. Recombine and rescale to preserve input power.
+
+    Examples
+    --------
+    >>> r = apply_iq_imbalance(s, amplitude_imbalance_db=1.5, phase_imbalance_deg=4.0)
+    >>> s_hat = compensate_iq_imbalance_gram_schmidt(r)
+    """
+    logger.info("Applying Gram-Schmidt IQ imbalance compensation.")
+
+    samples, xp, _ = dispatch(samples)
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[xp.newaxis, :]  # (1, N)
+
+    C, N = samples.shape
+    result = xp.empty_like(samples)
+
+    for ch in range(C):
+        r = samples[ch]  # (N,)
+        P_in = xp.mean(xp.abs(r) ** 2)
+
+        I = r.real
+        Q = r.imag
+
+        # Step 1: Normalise I (reference branch)
+        sigma_I = xp.sqrt(xp.mean(I**2))
+        I_norm = I / sigma_I
+
+        # Step 2: Orthogonalise Q against I
+        rho = xp.mean(I_norm * Q)  # scalar projection coefficient
+        Q_orth = Q - rho * I_norm
+
+        # Step 3: Normalise orthogonalised Q
+        sigma_Q = xp.sqrt(xp.mean(Q_orth**2))
+        Q_norm = Q_orth / sigma_Q
+
+        # Step 4: Recombine and restore input power
+        s_corr = (I_norm + 1j * Q_norm) * xp.sqrt(P_in / 2.0)
+
+        if s_corr.dtype != samples.dtype:
+            s_corr = s_corr.astype(samples.dtype)
+
+        result[ch] = s_corr
+
+    if was_1d:
+        return result[0]
+    return result

@@ -11,8 +11,11 @@ apply_awgn :
     Adds Additive White Gaussian Noise based on Es/N0.
 apply_pmd :
     Applies first-order Polarization Mode Dispersion to a dual-pol signal.
+apply_iq_imbalance :
+    Applies IQ imbalance (amplitude and phase mismatch) to a complex signal.
 """
 
+import math
 from typing import Optional
 
 from .backend import ArrayType, dispatch
@@ -112,6 +115,73 @@ def apply_awgn(
     return noisy_samples
 
 
+def apply_iq_imbalance(
+    samples: ArrayType,
+    amplitude_imbalance_db: float,
+    phase_imbalance_deg: float,
+) -> ArrayType:
+    """
+    Applies IQ imbalance to a complex baseband signal.
+
+    Models the widely linear mixing that occurs when the I and Q branches of a
+    receiver have mismatched gain and/or non-orthogonal phase:
+
+    .. math::
+
+        r[n] = K_1 \\, s[n] + K_2 \\, s^*[n]
+
+    where
+
+    .. math::
+
+        K_1 = \\frac{1 + g \\, e^{j\\phi}}{2}, \\quad
+        K_2 = \\frac{1 - g \\, e^{-j\\phi}}{2}
+
+    and :math:`g = 10^{A / 20}` is the I/Q amplitude ratio and :math:`\\phi`
+    is the phase error in radians.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+    amplitude_imbalance_db : float
+        Amplitude imbalance between I and Q branches in dB.  Positive values
+        mean Q has higher gain than I.  Use ``0.0`` for no amplitude mismatch.
+    phase_imbalance_deg : float
+        Phase error between I and Q branches in degrees.  Use ``0.0`` for no
+        phase mismatch.
+
+    Returns
+    -------
+    array_like
+        Imbalanced signal, same shape and dtype as input.
+
+    Examples
+    --------
+    >>> r = apply_iq_imbalance(s, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0)
+    """
+    logger.info(
+        f"Applying IQ imbalance "
+        f"(amplitude={amplitude_imbalance_db:.2f} dB, phase={phase_imbalance_deg:.2f} deg)."
+    )
+
+    samples, xp, _ = dispatch(samples)
+
+    g = 10.0 ** (amplitude_imbalance_db / 20.0)
+    phi = math.radians(phase_imbalance_deg)
+
+    # Mixing coefficients: r = K1*s + K2*conj(s)
+    K1 = complex(0.5 * (1.0 + g * math.cos(phi)),  0.5 * g * math.sin(phi))
+    K2 = complex(0.5 * (1.0 - g * math.cos(phi)), -0.5 * g * math.sin(phi))
+
+    result = K1 * samples + K2 * xp.conj(samples)
+
+    if result.dtype != samples.dtype:
+        result = result.astype(samples.dtype)
+
+    return result
+
+
 def apply_pmd(
     samples: ArrayType,
     dgd: float,
@@ -174,8 +244,8 @@ def apply_pmd(
     N = samples.shape[1]
     freqs = xp.fft.fftfreq(N, d=1.0 / sampling_rate)
 
-    c = float(xp.cos(theta))
-    s = float(xp.sin(theta))
+    c = math.cos(theta)
+    s = math.sin(theta)
     R = xp.array([[c, -s], [s, c]], dtype=samples.dtype)
 
     phase = xp.pi * freqs * dgd

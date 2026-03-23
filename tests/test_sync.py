@@ -7,6 +7,7 @@ import pytest
 from commstools import sync
 from commstools.core import Preamble
 from commstools.helpers import cross_correlate_fft
+from commstools.impairments import apply_iq_imbalance
 
 
 def test_barker_sequences(backend_device, xp):
@@ -1233,4 +1234,120 @@ class TestCorrectFrequencyOffsetBranches:
         )
         out = sync.correct_frequency_offset(sig, offset=3000.0, sampling_rate=1e6)
         assert out.shape == (C, N)
+        assert out.dtype == xp.complex64
+
+
+class TestIQImbalanceCompensation:
+    """Tests for compensate_iq_imbalance_lowdin and compensate_iq_imbalance_gram_schmidt."""
+
+    # κ = |E[r²]| / E[|r|²]: zero for a circular signal, positive for improper
+    def _kappa(self, xp, x):
+        return float(xp.abs(xp.mean(x ** 2))) / float(xp.mean(xp.abs(x) ** 2))
+
+    def _make_imbalanced(self, xp, N=8192, seed=42):
+        rng = xp.random.RandomState(seed)
+        s = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+        r = apply_iq_imbalance(s, amplitude_imbalance_db=2.0, phase_imbalance_deg=5.0)
+        return s, r
+
+    # --- Löwdin ---
+
+    def test_lowdin_restores_circularity(self, backend_device, xp):
+        """Löwdin compensation should drive κ to near zero."""
+        _, r = self._make_imbalanced(xp)
+        kappa_before = self._kappa(xp, r)
+        out = sync.compensate_iq_imbalance_lowdin(r)
+        kappa_after = self._kappa(xp, out)
+        assert kappa_after < 0.03
+        assert kappa_after < kappa_before / 5
+
+    def test_lowdin_iq_balance(self, backend_device, xp):
+        """After Löwdin, I and Q should have equal power and be orthogonal."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_lowdin(r)
+        I, Q = out.real, out.imag
+        power_ratio = float(xp.mean(I ** 2)) / float(xp.mean(Q ** 2))
+        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
+        assert abs(power_ratio - 1.0) < 0.05
+        assert cross_corr < 0.02
+
+    def test_lowdin_preserves_power(self, backend_device, xp):
+        """Löwdin output power should equal input power."""
+        _, r = self._make_imbalanced(xp)
+        P_in = float(xp.mean(xp.abs(r) ** 2))
+        out = sync.compensate_iq_imbalance_lowdin(r)
+        P_out = float(xp.mean(xp.abs(out) ** 2))
+        assert abs(P_out - P_in) / P_in < 0.01
+
+    def test_lowdin_identity_on_balanced_signal(self, backend_device, xp, xpt):
+        """Löwdin applied to a balanced signal should return it unchanged."""
+        N = 8192
+        rng = xp.random.RandomState(0)
+        s = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+        out = sync.compensate_iq_imbalance_lowdin(s)
+        xpt.assert_allclose(xp.abs(out), xp.abs(s), atol=0.05)
+
+    def test_lowdin_siso_shape(self, backend_device, xp):
+        """Löwdin: SISO (N,) input should return (N,)."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_lowdin(r)
+        assert out.shape == r.shape
+
+    def test_lowdin_mimo_shape(self, backend_device, xp):
+        """Löwdin: MIMO (C, N) input should return (C, N)."""
+        _, r = self._make_imbalanced(xp)
+        r_mimo = xp.stack([r, r])  # (2, N)
+        out = sync.compensate_iq_imbalance_lowdin(r_mimo)
+        assert out.shape == r_mimo.shape
+
+    def test_lowdin_dtype_preserved(self, backend_device, xp):
+        """Löwdin output dtype should match input."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_lowdin(r)
+        assert out.dtype == xp.complex64
+
+    # --- Gram-Schmidt ---
+
+    def test_gram_schmidt_restores_circularity(self, backend_device, xp):
+        """Gram-Schmidt compensation should drive κ to near zero."""
+        _, r = self._make_imbalanced(xp)
+        kappa_before = self._kappa(xp, r)
+        out = sync.compensate_iq_imbalance_gram_schmidt(r)
+        kappa_after = self._kappa(xp, out)
+        assert kappa_after < 0.03
+        assert kappa_after < kappa_before / 5
+
+    def test_gram_schmidt_iq_orthogonality(self, backend_device, xp):
+        """After Gram-Schmidt, I and Q should be orthogonal."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_gram_schmidt(r)
+        I, Q = out.real, out.imag
+        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
+        assert cross_corr < 0.02
+
+    def test_gram_schmidt_preserves_power(self, backend_device, xp):
+        """Gram-Schmidt output power should equal input power."""
+        _, r = self._make_imbalanced(xp)
+        P_in = float(xp.mean(xp.abs(r) ** 2))
+        out = sync.compensate_iq_imbalance_gram_schmidt(r)
+        P_out = float(xp.mean(xp.abs(out) ** 2))
+        assert abs(P_out - P_in) / P_in < 0.01
+
+    def test_gram_schmidt_siso_shape(self, backend_device, xp):
+        """Gram-Schmidt: SISO (N,) input should return (N,)."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_gram_schmidt(r)
+        assert out.shape == r.shape
+
+    def test_gram_schmidt_mimo_shape(self, backend_device, xp):
+        """Gram-Schmidt: MIMO (C, N) input should return (C, N)."""
+        _, r = self._make_imbalanced(xp)
+        r_mimo = xp.stack([r, r])  # (2, N)
+        out = sync.compensate_iq_imbalance_gram_schmidt(r_mimo)
+        assert out.shape == r_mimo.shape
+
+    def test_gram_schmidt_dtype_preserved(self, backend_device, xp):
+        """Gram-Schmidt output dtype should match input."""
+        _, r = self._make_imbalanced(xp)
+        out = sync.compensate_iq_imbalance_gram_schmidt(r)
         assert out.dtype == xp.complex64
