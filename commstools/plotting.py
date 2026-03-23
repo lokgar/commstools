@@ -1374,17 +1374,23 @@ def equalizer_result(
     ax_conv = axes[0]
 
     def _smooth_mse(mse, smoothing):
-        """Return (x_coords, smoothed_mse_db) in raw-symbol-index space."""
-        if smoothing > 1 and len(mse) > smoothing:
-            kernel = np.ones(smoothing) / smoothing
+        """Return (x_coords, smoothed_mse_db) in raw-symbol-index space.
+
+        The smoothing window is clipped to at most n//3 so the curve always
+        spans at least 2/3 of the data range even for short sequences.
+        """
+        n = len(mse)
+        effective = max(1, min(smoothing, n // 3))
+        if effective > 1 and n > effective:
+            kernel = np.ones(effective) / effective
             mse_smooth = np.convolve(mse, kernel, mode="valid")
-            # Element k of mode="valid" output averages mse[k : k+smoothing].
+            # Element k of mode="valid" output averages mse[k : k+effective].
             # Place it at the centre of that window so the x-axis is in
             # actual symbol-index space, not smoothed-bin-index space.
-            x = np.arange(len(mse_smooth)) + (smoothing - 1) / 2.0
+            x = np.arange(len(mse_smooth)) + (effective - 1) / 2.0
         else:
             mse_smooth = mse
-            x = np.arange(len(mse_smooth))
+            x = np.arange(n)
         return x, 10 * np.log10(mse_smooth + 1e-30)
 
     if is_mimo:
