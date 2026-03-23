@@ -1373,37 +1373,36 @@ def equalizer_result(
     # --- Panel 1: MSE convergence ---
     ax_conv = axes[0]
 
+    def _smooth_mse(mse, smoothing):
+        """Return (x_coords, smoothed_mse_db) in raw-symbol-index space."""
+        if smoothing > 1 and len(mse) > smoothing:
+            kernel = np.ones(smoothing) / smoothing
+            mse_smooth = np.convolve(mse, kernel, mode="valid")
+            # Element k of mode="valid" output averages mse[k : k+smoothing].
+            # Place it at the centre of that window so the x-axis is in
+            # actual symbol-index space, not smoothed-bin-index space.
+            x = np.arange(len(mse_smooth)) + (smoothing - 1) / 2.0
+        else:
+            mse_smooth = mse
+            x = np.arange(len(mse_smooth))
+        return x, 10 * np.log10(mse_smooth + 1e-30)
+
     if is_mimo:
         num_ch = error.shape[0]
         for ch in range(num_ch):
             mse = np.abs(error[ch]) ** 2
-            if smoothing > 1 and len(mse) > smoothing:
-                kernel = np.ones(smoothing) / smoothing
-                mse_smooth = np.convolve(mse, kernel, mode="valid")
-            else:
-                mse_smooth = mse
-            mse_db = 10 * np.log10(mse_smooth + 1e-30)
-            ax_conv.plot(mse_db, label=f"ch {ch}")
+            x_smooth, mse_db = _smooth_mse(mse, smoothing)
+            ax_conv.plot(x_smooth, mse_db, label=f"ch {ch}")
         ax_conv.legend(fontsize=8)
     else:
         mse = np.abs(error) ** 2
-        if smoothing > 1 and len(mse) > smoothing:
-            kernel = np.ones(smoothing) / smoothing
-            mse_smooth = np.convolve(mse, kernel, mode="valid")
-        else:
-            mse_smooth = mse
-        mse_db = 10 * np.log10(mse_smooth + 1e-30)
-        ax_conv.plot(mse_db)
+        x_smooth, mse_db = _smooth_mse(mse, smoothing)
+        ax_conv.plot(x_smooth, mse_db)
 
     n_train = getattr(result, "num_train_symbols", 0)
     if n_train and n_train > 0:
-        # mode="valid" convolution shifts the x-axis: index k of mse_smooth
-        # represents the mean over raw symbols [k … k+smoothing-1], so the
-        # training boundary at raw symbol n_train maps to smoothed index
-        # max(0, n_train - smoothing + 1).
-        vline_x = max(0, n_train - smoothing + 1)
         ax_conv.axvline(
-            vline_x,
+            n_train,
             color="black",
             linestyle="--",
             linewidth=1,

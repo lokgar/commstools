@@ -262,7 +262,7 @@ def _get_numba_lms():
             # training      : (C, N_sym)           complex64
             # constellation : (M,)                 complex64
             # W             : (C, C, num_taps)      complex64 — modified in-place
-            # step_size     : float32              — NLMS mu ∈ (0, 2)
+            # step_size     : float32              — LMS step size μ; stable when 0 < μ < 2/(C·num_taps·P_x)
             # n_train       : int32                — training/DD boundary
             # stride        : int                  — sps (== 2 for T/2-spaced)
             # store_weights : bool
@@ -312,20 +312,12 @@ def _get_numba_lms():
                     e[i] = d_i - y[i]
                     e_out[idx, i] = e[i]
 
-                # NLMS: normalise by instantaneous input power
-                power = np.float32(1e-10)
-                for j in range(C):
-                    for t in range(num_taps):
-                        v = X_wins[j, t]
-                        power = power + v.real * v.real + v.imag * v.imag
-                mu_eff = step_size / power
-
-                # Weight update: W[i,j,t] += mu_eff * conj(e[i]) * X_wins[j,t]
+                # Weight update: W[i,j,t] += μ * conj(e[i]) * X_wins[j,t]
                 for i in range(C):
                     ce_i = np.conj(e[i])
                     for j in range(C):
                         for t in range(num_taps):
-                            W[i, j, t] = W[i, j, t] + mu_eff * ce_i * X_wins[j, t]
+                            W[i, j, t] = W[i, j, t] + step_size * ce_i * X_wins[j, t]
 
                 if store_weights:
                     for i in range(C):
@@ -454,9 +446,8 @@ def _get_numba_rls():
                                     leak_term * W[i, j, t] + k[j * num_taps + t] * ce_i
                                 )
 
-                    # Hermitian symmetry reduction: P is Hermitian, so x^H P = (P^H x)^H = (P x)^H
-                    # We already computed Px = P @ x_bar. Thus xH_P is simply conj(Px),
-                    # reducing the Riccati rank-1 update complexity by O(N^2).
+                    # Exploit Hermitian symmetry P = P^H: for each j, (x^H P)[j] = conj((Px)[j]).
+                    # Reuse the already-computed Px to avoid a second O(N²) mat-vec.
                     for jj in range(N):
                         xH_P[jj] = np.conj(Px[jj])
 
@@ -773,13 +764,7 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
 
                 e = d - y  # (C,)
 
-                # NLMS: normalize by instantaneous input power for convergence
-                # robustness across input-power variations. step_size interpreted
-                # as normalized mu in (0, 2) — typical range: 0.01 to 0.1.
-                power = jnp.real(jnp.sum(X_wins * jnp.conj(X_wins))) + 1e-10
-                mu_eff = step_size / power
-
-                W_new = W + mu_eff * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
+                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
                 return W_new, (y, e, W_new)
 
             n_sym = training_padded.shape[1]
@@ -886,9 +871,8 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
                     return w_flat_new.reshape(num_ch, num_taps)
 
                 W_upd = jax.vmap(w_update)(W, e)
-                # Standard Riccati update — no diagonal loading on P.
-                # Exploit Hermitian symmetry: x^H P = (P^H x)^H = (P x)^H = conj(Px)^T
-                # Reduces Riccati update by an O(N^2) mat-vec multiplication.
+                # Riccati: exploit Hermitian symmetry P = P^H so (x^H P)[j] = conj((Px)[j]).
+                # outer(k, conj(Px)) == k ⊗ (x^H P); reuses Px to avoid a second O(N²) mat-vec.
                 P_upd = (P - jnp.outer(k, jnp.conj(Px))) / lam
                 # Hermitian re-symmetrization: P ← (P + Pᴴ)/2
                 # Prevents asymmetry drift from the 1/λ amplification.
@@ -1840,12 +1824,14 @@ def lms(
         Number of equalizer taps per FIR filter. For fractionally-spaced
         equalization (sps > 1), use at least ``4 * sps`` taps.
     step_size : float, default 0.01
-        NLMS normalized step size (mu). After dividing the gradient by
-        instantaneous input power ``||x||^2``, the effective correlation matrix
-        has unit eigenvalues, so the stability interval collapses to the fixed
-        range ``(0, 2)`` regardless of signal power. Values near 2 converge
-        fast but with high steady-state misadjustment; values near 0 converge
-        slowly but reach lower residual MSE. Typical: 0.01-0.1.
+        Plain LMS step size (mu). The gradient is applied directly without
+        input-power normalization, matching the convention in Haykin's
+        *Adaptive Filter Theory* and most published papers.  Stability
+        requires ``0 < mu < 2 / (C * num_taps * P_x)`` where ``P_x`` is the
+        mean per-tap input power.  Because inputs are normalized to unit
+        symbol-rate power by default, a safe starting range for typical
+        settings is ``1e-4`` to ``1e-2``.  Values closer to the upper bound
+        converge faster but produce higher steady-state misadjustment.
     modulation : str, optional
         Modulation scheme (e.g., 'psk', 'qam', 'pam') for DD slicing.
         Required if ``training_symbols`` is None.
@@ -1911,10 +1897,11 @@ def lms(
         f"LMS equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
     )
-    logger.warning(
-        "LMS output y_hat is at 1 SPS (symbol rate). "
-        "Update sampling_rate = symbol_rate after applying this equalizer."
-    )
+    if sps > 1:
+        logger.warning(
+            "LMS output y_hat is at 1 SPS (symbol rate). "
+            "Update sampling_rate = symbol_rate after applying this equalizer."
+        )
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
@@ -1933,8 +1920,9 @@ def lms(
     n_sym = n_samples // stride
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
-    pad_left = c_tap
-    pad_right = n_sym * stride - n_samples + num_taps - 1 - pad_left
+    pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
+    pad_left = min(c_tap, pad_total)
+    pad_right = pad_total - pad_left
 
     if backend == "numba":
         # Convert to plain NumPy (no-op for CPU NumPy; downloads for CuPy)
@@ -2255,10 +2243,11 @@ def rls(
         f"delta={delta:.2e}, leakage={leakage:.2e}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
     )
-    logger.warning(
-        "RLS output y_hat is at 1 SPS (symbol rate). "
-        "Update sampling_rate = symbol_rate after applying this equalizer."
-    )
+    if sps > 1:
+        logger.warning(
+            "RLS output y_hat is at 1 SPS (symbol rate). "
+            "Update sampling_rate = symbol_rate after applying this equalizer."
+        )
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
@@ -2289,8 +2278,9 @@ def rls(
         )
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
-    pad_left = c_tap
-    pad_right = n_sym * stride - n_samples + num_taps - 1 - pad_left
+    pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
+    pad_left = min(c_tap, pad_total)
+    pad_right = pad_total - pad_left
 
     if backend == "numba":
         numba = _get_numba()
@@ -2685,10 +2675,11 @@ def cma(
         f"CMA equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
     )
-    logger.warning(
-        "CMA output y_hat is at 1 SPS (symbol rate). "
-        "Update sampling_rate = symbol_rate after applying this equalizer."
-    )
+    if sps > 1:
+        logger.warning(
+            "CMA output y_hat is at 1 SPS (symbol rate). "
+            "Update sampling_rate = symbol_rate after applying this equalizer."
+        )
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
@@ -2714,8 +2705,9 @@ def cma(
     n_sym = n_samples // stride
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
-    pad_left = c_tap
-    pad_right = n_sym * stride - n_samples + num_taps - 1 - pad_left
+    pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
+    pad_left = min(c_tap, pad_total)
+    pad_right = pad_total - pad_left
 
     if backend == "numba":
         numba = _get_numba()
@@ -3004,10 +2996,11 @@ def rde(
         f"RDE equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
     )
-    logger.warning(
-        "RDE output y_hat is at 1 SPS (symbol rate). "
-        "Update sampling_rate = symbol_rate after applying this equalizer."
-    )
+    if sps > 1:
+        logger.warning(
+            "RDE output y_hat is at 1 SPS (symbol rate). "
+            "Update sampling_rate = symbol_rate after applying this equalizer."
+        )
 
     samples, xp, _ = dispatch(samples)
     stride = int(sps)
@@ -3042,8 +3035,9 @@ def rde(
     num_radii = len(radii)
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
-    pad_left = c_tap
-    pad_right = n_sym * stride - n_samples + num_taps - 1 - pad_left
+    pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
+    pad_left = min(c_tap, pad_total)
+    pad_right = pad_total - pad_left
 
     if backend == "numba":
         numba = _get_numba()
