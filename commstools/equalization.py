@@ -135,6 +135,7 @@ def _log_equalizer_exit(
     name: str,
     debug_plot: bool = False,
     check_convergence: bool = False,
+    plot_smoothing: int = 50,
 ) -> "EqualizerResult":
     """Log exit MSE and optionally show a debug plot for an EqualizerResult."""
     if result.error is not None:
@@ -175,7 +176,7 @@ def _log_equalizer_exit(
     if debug_plot:
         from . import plotting as _plotting  # lazy import avoids circular dep
 
-        _plotting.equalizer_result(result)
+        _plotting.equalizer_result(result, smoothing=plot_smoothing)
 
     return result
 
@@ -1796,6 +1797,7 @@ def lms(
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
     debug_plot: bool = False,
+    plot_smoothing: int = 50,
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
@@ -1919,6 +1921,17 @@ def lms(
     n_samples = samples.shape[0] if was_1d else samples.shape[1]
     n_sym = n_samples // stride
 
+    if training_symbols is not None and training_symbols.shape[-1] > n_sym:
+        logger.warning(
+            f"training_symbols length ({training_symbols.shape[-1]}) exceeds "
+            f"available symbol count ({n_sym}); excess training symbols will be ignored."
+        )
+    if num_train_symbols is not None and num_train_symbols > n_sym:
+        logger.warning(
+            f"num_train_symbols={num_train_symbols} exceeds "
+            f"available symbol count ({n_sym}); effective training count clamped to {n_sym}."
+        )
+
     c_tap = center_tap if center_tap is not None else num_taps // 2
     pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
     pad_left = min(c_tap, pad_total)
@@ -2002,6 +2015,7 @@ def lms(
             ),
             name="LMS",
             debug_plot=debug_plot,
+            plot_smoothing=plot_smoothing,
         )
 
     # JAX backend
@@ -2111,6 +2125,7 @@ def rls(
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
     debug_plot: bool = False,
+    plot_smoothing: int = 50,
 ) -> EqualizerResult:
     """
     Recursive Least Squares adaptive equalizer with butterfly MIMO support.
@@ -2265,6 +2280,18 @@ def rls(
         num_ch, n_samples = samples.shape
 
     n_sym = n_samples // stride
+
+    if training_symbols is not None and training_symbols.shape[-1] > n_sym:
+        logger.warning(
+            f"training_symbols length ({training_symbols.shape[-1]}) exceeds "
+            f"available symbol count ({n_sym}); excess training symbols will be ignored."
+        )
+    if num_train_symbols is not None and num_train_symbols > n_sym:
+        logger.warning(
+            f"num_train_symbols={num_train_symbols} exceeds "
+            f"available symbol count ({n_sym}); effective training count clamped to {n_sym}."
+        )
+
     # Early-halt boundary: freeze W and P once the sliding window reaches the
     # right zero-padding (last num_taps//2 symbols have contaminated windows).
     n_update_halt = max(0, n_sym - num_taps // 2)
@@ -2378,6 +2405,7 @@ def rls(
             ),
             name="RLS",
             debug_plot=debug_plot,
+            plot_smoothing=plot_smoothing,
         )
         result.tail_trim = tail_trim
         return result
@@ -2581,6 +2609,7 @@ def cma(
     pilot_mask: Optional[np.ndarray] = None,
     pilot_gain_db: float = 0.0,
     debug_plot: bool = False,
+    plot_smoothing: int = 50,
 ) -> EqualizerResult:
     """
     Constant Modulus Algorithm blind equalizer with butterfly MIMO support.
@@ -2789,6 +2818,7 @@ def cma(
             name="CMA" if not use_pilots else "CMA(PA)",
             debug_plot=debug_plot,
             check_convergence=True,
+            plot_smoothing=plot_smoothing,
         )
 
     # JAX backend
@@ -2889,6 +2919,7 @@ def rde(
     pilot_mask: Optional[np.ndarray] = None,
     pilot_gain_db: float = 0.0,
     debug_plot: bool = False,
+    plot_smoothing: int = 50,
 ) -> EqualizerResult:
     """
     Radius Directed Equalizer (RDE) — blind equalizer for multi-ring constellations.
@@ -3122,6 +3153,7 @@ def rde(
             name="RDE" if not use_pilots else "RDE(PA)",
             debug_plot=debug_plot,
             check_convergence=True,
+            plot_smoothing=plot_smoothing,
         )
 
     # JAX backend
