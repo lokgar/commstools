@@ -1659,7 +1659,7 @@ def mm_autocorrelation(
     * **Top** — Normalised autocorrelation magnitude ``|R[m]|`` vs lag ``m``.
       The magnitude encodes the per-lag SNR; it decays with lag and is used
       as the weight proxy ``w[m] ∝ m² |R[m]|²``.
-    * **Bottom** — Wrapped phase ``∠R[m]`` vs lag ``m``, with the expected
+    * **Bottom** — Wrapped phase ``angle(R[m])`` vs lag ``m``, with the expected
       linear ramp ``2π·f_est·M·m/fs`` overlaid and ``±π`` wrap boundaries
       marked.  Phase wraps are the primary failure mode for high-order QAM;
       this plot reveals where they occur.
@@ -1710,16 +1710,21 @@ def mm_autocorrelation(
     ax_amp.grid(True, alpha=0.3)
 
     # Bottom: wrapped phase vs expected ramp
-    ax_phase.scatter(lags, theta, s=6, color="steelblue", label="∠R[m]  (wrapped)", zorder=3)
+    ax_phase.scatter(
+        lags, theta, s=6, color="steelblue", label="angle(R[m])  (wrapped)", zorder=3
+    )
     ax_phase.plot(
         lags,
-        (expected_phase + np.pi) % (2 * np.pi) - np.pi,  # wrap expected for visual alignment
+        (expected_phase + np.pi) % (2 * np.pi)
+        - np.pi,  # wrap expected for visual alignment
         color="red",
         linestyle="--",
         linewidth=1.2,
         label=f"Expected 2π·Δf·M·m/fs  (Δf={f_est:.2f} Hz)",
     )
-    ax_phase.axhline(np.pi, color="gray", linestyle=":", linewidth=0.9, label="±π wrap boundary")
+    ax_phase.axhline(
+        np.pi, color="gray", linestyle=":", linewidth=0.9, label="±π wrap boundary"
+    )
     ax_phase.axhline(-np.pi, color="gray", linestyle=":", linewidth=0.9)
     ax_phase.set_xlabel("Lag m")
     ax_phase.set_ylabel("Phase (rad)")
