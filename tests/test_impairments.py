@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools.impairments import apply_awgn, apply_pmd
+from commstools.impairments import apply_awgn, apply_iq_imbalance, apply_pmd
 
 
 class TestApplyPMD:
@@ -154,3 +154,50 @@ class TestAddAWGN:
         measured_power = float(xp.mean(xp.abs(noisy) ** 2))
         assert measured_power > 1e15
 
+
+class TestApplyIQImbalance:
+    """Tests for apply_iq_imbalance."""
+
+    def test_identity_zero_imbalance(self, backend_device, xp, xpt):
+        """Zero imbalance (0 dB, 0 deg) should leave the signal unchanged."""
+        N = 1024
+        rng = xp.random.RandomState(42)
+        samples = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+
+        out = apply_iq_imbalance(samples, amplitude_imbalance_db=0.0, phase_imbalance_deg=0.0)
+
+        xpt.assert_allclose(out, samples, atol=1e-5)
+
+    def test_causes_impropriety(self, backend_device, xp):
+        """Imbalance should make a circular signal improper (κ > 0)."""
+        N = 4096
+        rng = xp.random.RandomState(7)
+        samples = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
+
+        # κ = |E[r²]| / E[|r|²]: zero for a circular signal
+        def kappa(x):
+            return float(xp.abs(xp.mean(x ** 2))) / float(xp.mean(xp.abs(x) ** 2))
+
+        kappa_before = kappa(samples)
+        out = apply_iq_imbalance(samples, amplitude_imbalance_db=2.0, phase_imbalance_deg=5.0)
+        kappa_after = kappa(out)
+
+        assert kappa_after > kappa_before + 0.05
+
+    def test_output_shape_siso(self, backend_device, xp):
+        """Output shape should match SISO input."""
+        samples = xp.ones(512, dtype=xp.complex64)
+        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0)
+        assert out.shape == (512,)
+
+    def test_output_shape_mimo(self, backend_device, xp):
+        """Output shape should match MIMO input."""
+        samples = xp.ones((4, 512), dtype=xp.complex64)
+        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0)
+        assert out.shape == (4, 512)
+
+    def test_output_dtype_preserved(self, backend_device, xp):
+        """Output dtype should match input dtype."""
+        samples = xp.ones(256, dtype=xp.complex64)
+        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=2.0)
+        assert out.dtype == xp.complex64
