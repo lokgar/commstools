@@ -1166,11 +1166,7 @@ def estimate_frequency_offset_mth_power(
                 xb_c = complex(X_M[c_idx, k_c_safe])
                 xc_c = complex(X_M[c_idx, k_c_safe + 1])
                 d_c = 2 * xb_c - xa_c - xc_c
-                mu_c = (
-                    float(((xa_c - xc_c) / d_c).real)
-                    if abs(d_c) > 1e-30
-                    else 0.0
-                )
+                mu_c = float(((xa_c - xc_c) / d_c).real) if abs(d_c) > 1e-30 else 0.0
             else:
                 a_c = float(mag[c_idx, k_c_safe - 1])
                 b_c = float(mag[c_idx, k_c_safe])
