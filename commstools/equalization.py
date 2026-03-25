@@ -1785,11 +1785,11 @@ def lms(
     samples: ArrayType,
     training_symbols: Optional[ArrayType] = None,
     num_taps: int = 21,
+    sps: int = 2,
     step_size: float = 0.01,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     unipolar: bool = False,
-    sps: int = 2,
     store_weights: bool = False,
     num_train_symbols: Optional[int] = None,
     device: Optional[str] = "cpu",
@@ -1825,6 +1825,13 @@ def lms(
     num_taps : int, default 21
         Number of equalizer taps per FIR filter. For fractionally-spaced
         equalization (sps > 1), use at least ``4 * sps`` taps.
+    sps : int, default 2
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for the first equalization stage.  ``sps=1`` is valid for a second
+        symbol-spaced stage after FOE + CPR; use a short filter (3-11 taps)
+        for residual ISI cleanup.  ``sps > 2`` is accepted but uncommon.
+        The equalizer decimates by ``sps`` to produce one output symbol per
+        input stride.
     step_size : float, default 0.01
         Plain LMS step size (mu). The gradient is applied directly without
         input-power normalization, matching the convention in Haykin's
@@ -1841,13 +1848,6 @@ def lms(
         Modulation order (e.g., 4, 16).
     unipolar : bool, default False
         If True, indicates the modulation is unipolar (e.g., unipolar PAM).
-    sps : int, default 2
-        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
-        for the first equalization stage.  ``sps=1`` is valid for a second
-        symbol-spaced stage after FOE + CPR; use a short filter (3-11 taps)
-        for residual ISI cleanup.  ``sps > 2`` is accepted but uncommon.
-        The equalizer decimates by ``sps`` to produce one output symbol per
-        input stride.
     store_weights : bool, default False
         If True, stores weight trajectory in ``weights_history``.
     num_train_symbols : int, optional
@@ -2111,13 +2111,13 @@ def rls(
     samples: ArrayType,
     training_symbols: Optional[ArrayType] = None,
     num_taps: int = 21,
+    sps: int = 1,
     forgetting_factor: float = 0.99,
     delta: float = 0.01,
     leakage: float = 0.0,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     unipolar: bool = False,
-    sps: int = 1,
     store_weights: bool = False,
     num_train_symbols: Optional[int] = None,
     device: Optional[str] = "cpu",
@@ -2142,6 +2142,8 @@ def rls(
         Known symbols for data-aided adaptation (at symbol rate, 1 SPS).
     num_taps : int, default 21
         Number of equalizer taps per FIR filter.
+    sps : int, default 1
+        Samples per symbol at the input.
     forgetting_factor : float, default 0.99
         RLS forgetting factor (lambda). Range: (0, 1].
         Values close to 1 give longer memory.
@@ -2208,8 +2210,6 @@ def rls(
         Modulation order (e.g., 4, 16).
     unipolar : bool, default False
         If True, indicates the modulation is unipolar (e.g., unipolar PAM).
-    sps : int, default 1
-        Samples per symbol at the input.
     store_weights : bool, default False
         If True, stores weight trajectory.
     num_train_symbols : int, optional
@@ -2595,11 +2595,11 @@ def build_pilot_ref(
 def cma(
     samples: ArrayType,
     num_taps: int = 21,
+    sps: int = 2,
     step_size: float = 1e-3,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     unipolar: bool = False,
-    sps: int = 2,
     store_weights: bool = False,
     device: Optional[str] = "cpu",
     center_tap: Optional[int] = None,
@@ -2635,6 +2635,11 @@ def cma(
         Typically at 2 samples/symbol for fractionally-spaced equalization.
     num_taps : int, default 21
         Number of equalizer taps per FIR filter.
+    sps : int, default 2
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for the standard first-stage blind equalization.  ``sps=1`` enables
+        symbol-spaced CMA, useful when input is already decimated but phase
+        ambiguity resolution is still needed.
     step_size : float, default 1e-3
         CMA step size (mu). Unlike LMS, CMA's cost surface is non-convex and
         higher-order, so input-power normalization distorts the gradient geometry.
@@ -2646,11 +2651,6 @@ def cma(
         Modulation order for auto-computing R2.
     unipolar : bool, default False
         Use unipolar constellation for auto-computing R2.
-    sps : int, default 2
-        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
-        for the standard first-stage blind equalization.  ``sps=1`` enables
-        symbol-spaced CMA, useful when input is already decimated but phase
-        ambiguity resolution is still needed.
     store_weights : bool, default False
         If True, stores weight trajectory.
     device : str, optional
@@ -2905,11 +2905,11 @@ def cma(
 def rde(
     samples: ArrayType,
     num_taps: int = 21,
+    sps: int = 2,
     step_size: float = 1e-3,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     unipolar: bool = False,
-    sps: int = 2,
     store_weights: bool = False,
     device: Optional[str] = "cpu",
     center_tap: Optional[int] = None,
@@ -2951,6 +2951,9 @@ def rde(
         Typically at 2 samples/symbol for fractionally-spaced equalization.
     num_taps : int, default 21
         Number of equalizer taps per FIR filter.
+    sps : int, default 2
+        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
+        for standard blind equalization.  ``sps=1`` is accepted.
     step_size : float, default 1e-3
         RDE step size (mu). Same non-convex gradient geometry as CMA; use a
         fixed step in the range 1e-5 to 1e-3 for stability.
@@ -2962,9 +2965,6 @@ def rde(
         Modulation order (e.g. 4, 16, 64).
     unipolar : bool, default False
         Use unipolar constellation for radius extraction.
-    sps : int, default 2
-        Samples per symbol at the input.  Use ``sps=2`` (T/2-spaced, default)
-        for standard blind equalization.  ``sps=1`` is accepted.
     store_weights : bool, default False
         If True, stores weight trajectory in ``result.weights_history``.
     device : str, optional
