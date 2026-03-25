@@ -526,6 +526,11 @@ def estimate_timing(
     if filter_params is None:
         filter_params = {}
 
+    if not hasattr(samples, "ndim"):
+        raise TypeError(
+            f"estimate_timing() expects an array of samples, got {type(samples).__name__}."
+        )
+
     sig_array, xp, _ = dispatch(samples)
 
     # 2. Reconstruct/Get Preamble Waveform
@@ -538,7 +543,10 @@ def estimate_timing(
 
         preamble_waveform = xp.asarray(
             resolved_preamble.to_signal(
-                sps=sps, symbol_rate=1.0, pulse_shape=pulse_shape or "rrc", **filter_params
+                sps=sps,
+                symbol_rate=1.0,
+                pulse_shape=pulse_shape or "rrc",
+                **filter_params,
             ).samples
         )
         # ensure 2-D (C_tx, L*sps) for the correlation engine
@@ -2086,9 +2094,7 @@ def _get_numba_dd_pll_butterworth():
         import numba  # noqa: PLC0415
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_bw_loop(
-            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2
-        ):
+        def _dd_pll_bw_loop(sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2):
             """DD-PLL inner loop with a 2nd-order Butterworth loop filter.
 
             Parameters
@@ -2380,7 +2386,9 @@ def recover_carrier_phase_decision_directed(
 
         # Design 2nd-order Butterworth lowpass at loop_bandwidth_normalized
         # (normalised by Nyquist = 0.5 symbol rate, so Wn = 2 * lbw).
-        b_arr, a_arr = _ss.butter(2, 2.0 * loop_bandwidth_normalized, btype="low", analog=False)
+        b_arr, a_arr = _ss.butter(
+            2, 2.0 * loop_bandwidth_normalized, btype="low", analog=False
+        )
         b0, b1, b2 = float(b_arr[0]), float(b_arr[1]), float(b_arr[2])
         a1, a2 = float(a_arr[1]), float(a_arr[2])
 
@@ -2388,10 +2396,16 @@ def recover_carrier_phase_decision_directed(
         for ch in range(C):
             sym = symbols_cpu[ch].astype(np.complex128)
             phi_full[ch] = bw_kernel(
-                sym.real.copy(), sym.imag.copy(),
-                const_r, const_i,
+                sym.real.copy(),
+                sym.imag.copy(),
+                const_r,
+                const_i,
                 float(phase_init),
-                b0, b1, b2, a1, a2,
+                b0,
+                b1,
+                b2,
+                a1,
+                a2,
             )
         loop_desc = f"Butterworth, BW={loop_bandwidth_normalized:.2g}"
     else:
@@ -2399,9 +2413,14 @@ def recover_carrier_phase_decision_directed(
         for ch in range(C):
             sym = symbols_cpu[ch].astype(np.complex128)
             phi_full[ch] = pi_kernel(
-                sym.real.copy(), sym.imag.copy(),
-                const_r, const_i,
-                float(mu), float(beta), float(phase_init), 0.0,
+                sym.real.copy(),
+                sym.imag.copy(),
+                const_r,
+                const_i,
+                float(mu),
+                float(beta),
+                float(phase_init),
+                0.0,
             )
         loop_order = "2nd" if beta > 0.0 else "1st"
         loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
