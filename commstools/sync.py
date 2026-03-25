@@ -520,7 +520,7 @@ def estimate_timing(
       and SNR compared to correlating with 1 SPS symbols. Ensure the
       ``preamble`` argument matches the sampling rate of the input ``samples``.
     """
-    from .helpers import cross_correlate_fft, zc_mimo_root
+    from .helpers import cross_correlate_fft
 
     # 1. Resolve Inputs & Metadata
     if filter_params is None:
@@ -531,44 +531,19 @@ def estimate_timing(
     # 2. Reconstruct/Get Preamble Waveform
     preamble_waveform = None
     resolved_preamble = preamble
-    num_streams = sig_array.shape[0] if sig_array.ndim > 1 else 1
 
     if isinstance(resolved_preamble, Preamble):
         if sps is None:
             raise ValueError("SPS must be provided when using a Preamble object.")
 
-        primary = resolved_preamble
-
-        if num_streams > 1 and primary.sequence_type == "zc":
-            # MIMO ZC: per-stream unique-root waveforms matching TX.
-            stream_waveforms = []
-            for k in range(num_streams):
-                root_k = zc_mimo_root(k, primary.root, primary.length)
-                pk_sig = Preamble(
-                    sequence_type="zc",
-                    length=primary.length,
-                    root=root_k,
-                ).to_signal(
-                    sps=sps,
-                    symbol_rate=1.0,
-                    pulse_shape=pulse_shape or "rrc",
-                    **filter_params,
-                )
-                stream_waveforms.append(pk_sig.samples)
-            preamble_waveform = xp.stack(
-                [xp.asarray(w) for w in stream_waveforms], axis=0
-            )  # (C_tx, L*sps)
-        else:
-            # SISO or non-ZC MIMO: broadcast single template.
-            p_sig = primary.to_signal(
-                sps=sps,
-                symbol_rate=1.0,
-                pulse_shape=pulse_shape or "rrc",
-                **filter_params,
-            )
-            preamble_waveform = xp.tile(
-                xp.asarray(p_sig.samples)[None, :], (num_streams, 1)
-            )
+        preamble_waveform = xp.asarray(
+            resolved_preamble.to_signal(
+                sps=sps, symbol_rate=1.0, pulse_shape=pulse_shape or "rrc", **filter_params
+            ).samples
+        )
+        # ensure 2-D (C_tx, L*sps) for the correlation engine
+        if preamble_waveform.ndim == 1:
+            preamble_waveform = preamble_waveform[None, :]
 
     elif resolved_preamble is not None:
         preamble_waveform = xp.asarray(resolved_preamble)
@@ -2095,6 +2070,95 @@ def _get_numba_dd_pll():
     return _NUMBA_PLL["dd_pll"]
 
 
+def _get_numba_dd_pll_butterworth():
+    """JIT-compile and cache the Numba DD-PLL loop with Butterworth loop filter.
+
+    The Butterworth loop filter replaces the simple PI (proportional-integral)
+    structure with a 2nd-order IIR biquad.  This gives a flatter passband and
+    sharper roll-off, improving phase noise rejection near the loop bandwidth.
+
+    Returns
+    -------
+    callable
+        Numba-compiled ``_dd_pll_bw_loop``.
+    """
+    if "dd_pll_bw" not in _NUMBA_PLL:
+        import numba  # noqa: PLC0415
+
+        @numba.njit(cache=True, fastmath=True, nogil=True)
+        def _dd_pll_bw_loop(
+            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2
+        ):
+            """DD-PLL inner loop with a 2nd-order Butterworth loop filter.
+
+            Parameters
+            ----------
+            sym_r, sym_i : (N,) float64
+                Real and imaginary parts of received symbols.
+            const_r, const_i : (M,) float64
+                Real and imaginary parts of reference constellation.
+            phi0 : float64
+                Initial phase state in radians.
+            b0, b1, b2 : float64
+                Numerator coefficients of the 2nd-order Butterworth IIR filter.
+            a1, a2 : float64
+                Denominator coefficients (a[1], a[2]; a[0] is normalised to 1).
+
+            Returns
+            -------
+            phase_est : (N,) float64
+                Per-symbol phase trajectory φ[n].
+            """
+            N = len(sym_r)
+            M = len(const_r)
+            phase_est = np.empty(N, dtype=np.float64)
+            phi = phi0
+
+            # Biquad Direct Form II Transposed state variables
+            w1 = 0.0
+            w2 = 0.0
+
+            for n in range(N):
+                # Rotate received symbol by current phase estimate
+                cos_phi = np.cos(phi)
+                sin_phi = np.sin(phi)
+                yr = sym_r[n] * cos_phi + sym_i[n] * sin_phi
+                yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
+
+                # Hard decision: argmin_{c ∈ C} |y − c|²
+                min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                d_r = const_r[0]
+                d_i = const_i[0]
+                for k in range(1, M):
+                    d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                    if d2 < min_d2:
+                        min_d2 = d2
+                        d_r = const_r[k]
+                        d_i = const_i[k]
+
+                # Cross-product phase error: e = Im(y · d*) = yi·d_r − yr·d_i
+                e = yi * d_r - yr * d_i
+
+                # Record phase before update
+                phase_est[n] = phi
+
+                # Biquad (Direct Form II Transposed):
+                #   v[n] = b0·e[n] + w1[n-1]
+                #   w1[n] = b1·e[n] - a1·v[n] + w2[n-1]
+                #   w2[n] = b2·e[n] - a2·v[n]
+                v_out = b0 * e + w1
+                w1 = b1 * e - a1 * v_out + w2
+                w2 = b2 * e - a2 * v_out
+
+                phi = phi + v_out
+
+            return phase_est
+
+        _NUMBA_PLL["dd_pll_bw"] = _dd_pll_bw_loop
+
+    return _NUMBA_PLL["dd_pll_bw"]
+
+
 _NUMBA_RTS: dict = {}
 
 
@@ -2158,6 +2222,8 @@ def recover_carrier_phase_decision_directed(
     mu: float = 1e-2,
     beta: float = 0.0,
     phase_init: float = 0.0,
+    loop_filter: str = "pi",
+    loop_bandwidth_normalized: float = 1e-3,
     debug_plot: bool = False,
 ) -> ArrayType:
     r"""
@@ -2201,6 +2267,25 @@ def recover_carrier_phase_decision_directed(
     phase_init : float, default 0.0
         Initial phase state in radians.  Use the last sample of a
         preceding BPS or pilot-aided estimate to warm-start the loop.
+    loop_filter : {"pi", "butterworth"}, default "pi"
+        Loop filter type.
+
+        * ``"pi"`` (default) — classic proportional-integral filter
+          controlled by ``mu`` and ``beta``.
+        * ``"butterworth"`` — 2nd-order Butterworth IIR loop filter
+          designed via bilinear (Tustin) transform.  Controlled by
+          ``loop_bandwidth_normalized`` instead of ``mu``/``beta``.
+          Provides a flatter passband and sharper roll-off than PI,
+          improving phase noise rejection at the cost of a small
+          transient overshoot.
+
+        When ``loop_filter='butterworth'``, ``mu`` and ``beta`` are
+        ignored.
+    loop_bandwidth_normalized : float, default 1e-3
+        Normalised one-sided loop bandwidth as a fraction of the symbol
+        rate (i.e. in the range ``(0, 0.5)``).  Only used when
+        ``loop_filter='butterworth'``.  Typical values: ``1e-4``
+        (narrow, low phase noise) to ``1e-2`` (wide, fast tracking).
 
     Returns
     -------
@@ -2250,6 +2335,21 @@ def recover_carrier_phase_decision_directed(
     from .helpers import normalize
     from .mapping import gray_constellation
 
+    if loop_filter not in ("pi", "butterworth"):
+        raise ValueError(
+            f"loop_filter must be 'pi' or 'butterworth', got {loop_filter!r}."
+        )
+    if loop_filter == "butterworth" and not (0.0 < loop_bandwidth_normalized < 0.5):
+        raise ValueError(
+            f"loop_bandwidth_normalized must be in (0, 0.5), got {loop_bandwidth_normalized}."
+        )
+    if loop_filter == "butterworth":
+        if mu != 1e-2 or beta != 0.0:
+            logger.warning(
+                "loop_filter='butterworth': mu and beta are ignored. "
+                "Use loop_bandwidth_normalized to control loop bandwidth."
+            )
+
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
     if was_1d:
@@ -2273,25 +2373,38 @@ def recover_carrier_phase_decision_directed(
     else:
         symbols_cpu = symbols
 
-    numba_kernel = _get_numba_dd_pll()
-
     phi_full = np.zeros((C, N), dtype=np.float64)
 
-    for ch in range(C):
-        sym = symbols_cpu[ch].astype(np.complex128)  # (N,)
-        sym_r = sym.real.copy()
-        sym_i = sym.imag.copy()
+    if loop_filter == "butterworth":
+        import scipy.signal as _ss  # noqa: PLC0415
 
-        phi_full[ch] = numba_kernel(
-            sym_r,
-            sym_i,
-            const_r,
-            const_i,
-            float(mu),
-            float(beta),
-            float(phase_init),
-            0.0,
-        )
+        # Design 2nd-order Butterworth lowpass at loop_bandwidth_normalized
+        # (normalised by Nyquist = 0.5 symbol rate, so Wn = 2 * lbw).
+        b_arr, a_arr = _ss.butter(2, 2.0 * loop_bandwidth_normalized, btype="low", analog=False)
+        b0, b1, b2 = float(b_arr[0]), float(b_arr[1]), float(b_arr[2])
+        a1, a2 = float(a_arr[1]), float(a_arr[2])
+
+        bw_kernel = _get_numba_dd_pll_butterworth()
+        for ch in range(C):
+            sym = symbols_cpu[ch].astype(np.complex128)
+            phi_full[ch] = bw_kernel(
+                sym.real.copy(), sym.imag.copy(),
+                const_r, const_i,
+                float(phase_init),
+                b0, b1, b2, a1, a2,
+            )
+        loop_desc = f"Butterworth, BW={loop_bandwidth_normalized:.2g}"
+    else:
+        pi_kernel = _get_numba_dd_pll()
+        for ch in range(C):
+            sym = symbols_cpu[ch].astype(np.complex128)
+            phi_full[ch] = pi_kernel(
+                sym.real.copy(), sym.imag.copy(),
+                const_r, const_i,
+                float(mu), float(beta), float(phase_init), 0.0,
+            )
+        loop_order = "2nd" if beta > 0.0 else "1st"
+        loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
 
     # Move result back to original device
     if xp is not np:
@@ -2299,10 +2412,9 @@ def recover_carrier_phase_decision_directed(
 
     phi_mean_deg = float(np.mean(phi_full)) * 180.0 / np.pi
     phi_std_deg = float(np.std(phi_full)) * 180.0 / np.pi
-    loop_order = "2nd" if beta > 0.0 else "1st"
     logger.info(
-        f"CPR (DD-PLL, {loop_order}-order): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [mu={mu}, beta={beta}, C={C}]"
+        f"CPR (DD-PLL, {loop_desc}): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [C={C}]"
     )
 
     if debug_plot:
@@ -2365,6 +2477,28 @@ def recover_carrier_phase_viterbi_viterbi(
     unwrapped in the 2π domain, then re-divided by M.  A global ``2π/M``
     phase ambiguity always remains — resolve it via a known pilot or
     preamble reference.
+
+    .. warning::
+        **Phase-unwrapping slip risk:** the unwrapper assumes consecutive block
+        phases differ by less than :math:`\pi/M`.  For high phase noise this
+        assumption can be violated, causing a persistent :math:`2\pi/M` phase
+        step in the output.
+
+        A rough safety condition is:
+
+        .. math::
+
+            \Delta\nu \cdot T_{\text{block}} < 0.05 \cdot f_s
+
+        where :math:`\Delta\nu` is the combined linewidth (Hz),
+        :math:`T_{\text{block}} = \text{block\_size} / f_s` is the block
+        duration, and :math:`f_s` is the symbol rate.  For example, 100 kHz
+        linewidth at 32 Gbaud is safe up to ``block_size ≈ 16 000``, but
+        1 MHz linewidth requires ``block_size ≤ 1 600``.
+
+        When operating near or above this limit, prefer
+        :func:`recover_carrier_phase_bps`, which uses a brute-force phase
+        search and does not require phase unwrapping.
 
     References
     ----------

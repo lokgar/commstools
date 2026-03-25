@@ -74,6 +74,8 @@ def apply_default_theme() -> None:
         font_name = "sans"
         logger.warning("Roboto font not found, falling back to default sans-serif.")
 
+    plt.style.use("dark_background")
+
     mpl.rcParams.update(
         {
             "figure.figsize": (5, 3.5),
@@ -82,10 +84,9 @@ def apply_default_theme() -> None:
             "lines.linewidth": 2,
             "axes.linewidth": 1,
             "axes.grid": True,
+            "grid.alpha": 0.5,
             "axes.titleweight": "bold",
             "figure.autolayout": True,
-            "figure.facecolor": "white",
-            "savefig.facecolor": "white",
             "savefig.dpi": 300,
             "xtick.direction": "in",
             "ytick.direction": "in",
@@ -1044,7 +1045,7 @@ def ideal_constellation(
     imag = const.imag
 
     # Plot points
-    ax.scatter(real, imag, zorder=10)
+    ax.scatter(real, imag, s=100, zorder=10)
 
     # Annotate points
     n_bits = int(np.log2(order))
@@ -1068,8 +1069,8 @@ def ideal_constellation(
     ax.set_ylabel("Quadrature (Q)")
 
     # Center lines
-    ax.axhline(0, color="black", zorder=0)
-    ax.axvline(0, color="black", zorder=0)
+    ax.axhline(0, color="white", alpha=0.5, zorder=0)
+    ax.axvline(0, color="white", alpha=0.5, zorder=0)
 
     # Limits and Aspect
     max_range = np.max(np.abs(const))
@@ -1302,7 +1303,7 @@ def constellation(
                     const.imag,
                     c="white",
                     s=10,
-                    edgecolors="black",
+                    edgecolors="white",
                     zorder=10,
                     marker="o",
                 )
@@ -1310,8 +1311,8 @@ def constellation(
                 logger.warning(f"Could not overlay ideal constellation: {e}")
 
     # Add center lines
-    ax.axhline(0, color="white", alpha=0.5, zorder=5)
-    ax.axvline(0, color="white", alpha=0.5, zorder=5)
+    ax.axhline(0, color="white", alpha=0.5, zorder=0)
+    ax.axvline(0, color="white", alpha=0.5, zorder=0)
 
     ax.set_xlabel("In-Phase (I)")
     ax.set_ylabel("Quadrature (Q)")
@@ -1409,7 +1410,7 @@ def equalizer_result(
     if n_train and n_train > 0:
         ax_conv.axvline(
             n_train,
-            color="black",
+            color="white",
             linestyle="--",
             linewidth=1,
             label=f"DD start ({n_train})",
@@ -1914,7 +1915,7 @@ def carrier_phase_trajectory(
         if n_train > 0:
             axi.axvline(
                 n_train,
-                color="black",
+                color="white",
                 linestyle="--",
                 linewidth=1,
                 label=f"DD start ({n_train})",

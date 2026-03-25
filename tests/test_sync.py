@@ -785,7 +785,7 @@ def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
         # Roll channel 1 to simulate a timing skew of `skew` samples
         rx = xp.stack([rx[0], xp.roll(rx[1], skew)], axis=0)
 
-    preamble = Preamble(sequence_type="zc", length=L, root=1)
+    preamble = Preamble(sequence_type="zc", length=L, root=1, num_streams=2)
     return rx, preamble, L
 
 
@@ -1097,6 +1097,82 @@ class TestDDPLL:
         )
         # First estimate should be close to phase_init before any loop correction
         assert abs(float(phi[0]) - phi_init) < 0.5
+
+    def test_butterworth_output_shape_siso(self, backend_device, xp):
+        """loop_filter='butterworth': SISO output shape is (N,)."""
+        syms = self._qpsk_symbols(xp, N=512)
+        phi = sync.recover_carrier_phase_decision_directed(
+            syms, "psk", 4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.shape == syms.shape
+
+    def test_butterworth_output_dtype(self, backend_device, xp):
+        """loop_filter='butterworth': output dtype is float64."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi = sync.recover_carrier_phase_decision_directed(
+            syms, "psk", 4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.dtype == xp.float64
+
+    def test_butterworth_output_finite(self, backend_device, xp):
+        """Butterworth loop output should be finite for clean QPSK symbols."""
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        N = 512
+        phase_offset = 0.15  # radians
+        const = gray_constellation("qpsk", 4)
+        rng = np.random.default_rng(42)
+        syms_clean = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
+        syms_rotated = syms_clean * np.exp(1j * phase_offset)
+
+        phi = sync.recover_carrier_phase_decision_directed(
+            syms_rotated, "psk", 4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-2,
+        )
+        # Phi should be finite everywhere (no NaN or Inf)
+        assert bool(xp.all(xp.isfinite(phi))), "Butterworth PLL output contains non-finite values"
+
+    def test_butterworth_mimo_output_shape(self, backend_device, xp):
+        """loop_filter='butterworth': MIMO (C, N) output shape is (C, N)."""
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        C, N = 2, 256
+        const = gray_constellation("qpsk", 4)
+        rng = np.random.default_rng(3)
+        syms = xp.asarray(
+            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
+        )
+        phi = sync.recover_carrier_phase_decision_directed(
+            syms, "psk", 4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.shape == (C, N)
+
+    def test_butterworth_invalid_bandwidth_raises(self, backend_device, xp):
+        """loop_bandwidth_normalized outside (0, 0.5) should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=64)
+        with pytest.raises(ValueError, match="loop_bandwidth_normalized"):
+            sync.recover_carrier_phase_decision_directed(
+                syms, "psk", 4,
+                loop_filter="butterworth",
+                loop_bandwidth_normalized=0.6,
+            )
+
+    def test_invalid_loop_filter_raises(self, backend_device, xp):
+        """Unknown loop_filter value should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=64)
+        with pytest.raises(ValueError, match="loop_filter"):
+            sync.recover_carrier_phase_decision_directed(
+                syms, "psk", 4, loop_filter="kalman"
+            )
 
 
 # =============================================================================

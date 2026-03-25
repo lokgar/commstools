@@ -24,7 +24,7 @@ import types
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 try:
     import cupy as cp
@@ -1995,6 +1995,13 @@ class Preamble(BaseModel):
         "ignored for Barker sequences.  Must satisfy ``1 ≤ root < length``; "
         "for prime ``length`` every root in this range yields a valid CAZAC sequence.",
     )
+    num_streams: int = Field(
+        default=1,
+        ge=1,
+        description="Number of TX streams.  For ZC preambles each stream gets a "
+        "unique root derived via :func:`~commstools.helpers.zc_mimo_root`.  "
+        "For Barker the same sequence is broadcast to all streams.",
+    )
 
     # Internal state managed during post-init
     _symbols: Any = PrivateAttr(default=None)
@@ -2009,6 +2016,12 @@ class Preamble(BaseModel):
 
         This ensures that standard sequences are generated correctly according
         to the requested sequence properties.
+
+        For ``num_streams == 1`` the internal ``_symbols`` shape is ``(length,)``.
+        For ``num_streams > 1`` it becomes ``(num_streams, length)``:
+        - ZC: each row uses the unique root returned by
+          :func:`~commstools.helpers.zc_mimo_root`.
+        - Barker: the same sequence is tiled across all streams.
         """
         from . import sync
 
@@ -2016,11 +2029,27 @@ class Preamble(BaseModel):
 
         if stype == "barker":
             # Barker symbols (-1, +1)
-            self._symbols = sync.barker_sequence(self.length)
-
+            base = sync.barker_sequence(self.length)
         elif stype in ("zc", "zadoff_chu"):
             # ZC complex symbols — use the named 'root' field directly.
-            self._symbols = sync.zadoff_chu_sequence(self.length, root=self.root)
+            base = sync.zadoff_chu_sequence(self.length, root=self.root)
+        else:
+            base = None
+
+        if base is not None and self.num_streams > 1:
+            if stype in ("zc", "zadoff_chu"):
+                rows = [
+                    sync.zadoff_chu_sequence(
+                        self.length,
+                        root=helpers.zc_mimo_root(k, self.root, self.length),
+                    )
+                    for k in range(self.num_streams)
+                ]
+                self._symbols = np.stack(rows, axis=0)  # (num_streams, length)
+            else:
+                self._symbols = np.tile(base[None, :], (self.num_streams, 1))
+        else:
+            self._symbols = base
 
         # Move to GPU if available
         if is_cupy_available():
@@ -2241,6 +2270,16 @@ class SingleCarrierFrame(BaseModel):
                     f"num_pilot_blocks == num_data_blocks == {snapped // data_per_block}."
                 )
                 self.payload_len = snapped
+
+    @model_validator(mode="after")
+    def _check_preamble_streams(self) -> "SingleCarrierFrame":
+        if self.preamble is not None and self.preamble.num_streams > 1:
+            if self.preamble.num_streams != self.num_streams:
+                raise ValueError(
+                    f"preamble.num_streams={self.preamble.num_streams} does not match "
+                    f"frame.num_streams={self.num_streams}"
+                )
+        return self
 
     # -------------------------------------------------------------------------
     # Mask Generation and Internal Data Preparation Methods
@@ -2682,56 +2721,16 @@ class SingleCarrierFrame(BaseModel):
                 gaussian_bt=gaussian_bt,
                 **kwargs,
             )
-            preamble_samples = preamble_signal.samples
+            preamble_samples = xp.asarray(preamble_signal.samples)
+            # (L*sps,) for SISO  or  (num_streams, L*sps) for MIMO — shape driven by preamble.num_streams
 
-            # Same single-scale normalisation for preamble (1D here; axis=-1 == global).
+            # I/Q peak normalisation — axis=-1, keepdims=True works for both 1-D and 2-D
             max_iq_p = xp.maximum(
                 xp.max(xp.abs(preamble_samples.real), axis=-1, keepdims=True),
                 xp.max(xp.abs(preamble_samples.imag), axis=-1, keepdims=True),
             )
             max_iq_p = xp.where(max_iq_p == 0, xp.ones_like(max_iq_p), max_iq_p)
             preamble_samples = preamble_samples / max_iq_p
-
-            # Handle MIMO preamble structure.
-            # ZC preambles: generate a unique root per TX stream for near-orthogonal
-            # simultaneous transmission — all streams transmit at the same time and
-            # each RX channel sees a mixture that can be timed independently.
-            # Non-ZC preambles: broadcast the single shaped waveform to all streams.
-            if self.num_streams > 1:
-                if self.preamble.sequence_type == "zc":
-                    stream_waveforms = []
-                    for k in range(self.num_streams):
-                        root_k = helpers.zc_mimo_root(
-                            k, self.preamble.root, self.preamble.length
-                        )
-                        pk_sig = Preamble(
-                            sequence_type="zc",
-                            length=self.preamble.length,
-                            root=root_k,
-                        ).to_signal(
-                            sps=sps,
-                            symbol_rate=symbol_rate,
-                            pulse_shape=pulse_shape,
-                            filter_span=filter_span,
-                            rrc_rolloff=rrc_rolloff,
-                            rc_rolloff=rc_rolloff,
-                            smoothrect_bt=smoothrect_bt,
-                            gaussian_bt=gaussian_bt,
-                        )
-                        pk_samples = pk_sig.samples
-                        max_iq_k = xp.maximum(
-                            xp.max(xp.abs(pk_samples.real), keepdims=True),
-                            xp.max(xp.abs(pk_samples.imag), keepdims=True),
-                        )
-                        max_iq_k = xp.where(
-                            max_iq_k == 0, xp.ones_like(max_iq_k), max_iq_k
-                        )
-                        stream_waveforms.append(pk_samples / max_iq_k)
-                    preamble_samples = xp.stack(stream_waveforms, axis=0)  # (C, L*sps)
-                else:
-                    preamble_samples = xp.tile(
-                        preamble_samples[None, :], (self.num_streams, 1)
-                    )
 
             # Concatenate Preamble + Body
             samples = xp.concatenate([preamble_samples, body_samples], axis=-1)

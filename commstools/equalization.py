@@ -233,7 +233,7 @@ _NUMBA_KERNELS: dict = {}
 
 
 def _get_numba_lms():
-    """JIT-compile and cache the Numba NLMS butterfly loop kernel.
+    """JIT-compile and cache the Numba LMS butterfly loop kernel.
 
     Returns
     -------
@@ -705,7 +705,7 @@ _JITTED_EQ = {}
 
 
 def _get_jax_lms(num_taps, stride, const_size, num_ch):
-    """JIT-compile and cache the sample-by-sample NLMS butterfly scan.
+    """JIT-compile and cache the sample-by-sample LMS butterfly scan.
 
     Static closure variables (baked into the compiled kernel; a new cache
     entry is created — not a retrace — when any of these change):
@@ -737,7 +737,7 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
             #                    zeros beyond column n_train (DD region)
             # constellation   : (M,)               complex64 — slicer lookup table
             # w_init          : (C, C, num_taps)   complex64 — initial butterfly filter
-            # step_size       : scalar float32     — NLMS mu, stable in (0, 2)
+            # step_size       : scalar float32     — LMS mu
             # n_train         : scalar int32       — training/DD boundary (dynamic)
             #
             # lax.scan carry  : W  (C, C, num_taps) — butterfly weight matrix
