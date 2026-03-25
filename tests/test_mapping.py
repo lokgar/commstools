@@ -473,3 +473,79 @@ def test_compute_llr_real_jax_symbols():
     llrs = mapping.compute_llr(symbols_jax, "pam", 4, noise_var=0.1)
     assert isinstance(llrs, jax.Array)
     assert llrs.shape == (len(bits),)
+
+
+# === output parameter tests ===
+
+
+def test_compute_llr_output_jax_is_default():
+    """output='jax' (default) should still return jax.Array — backward compat."""
+    jax = pytest.importorskip("jax")
+
+    bits = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 16)
+    llrs = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1, output="jax")
+    assert isinstance(llrs, jax.Array)
+
+
+def test_compute_llr_output_numpy_returns_numpy():
+    """output='numpy' should return a plain numpy.ndarray regardless of input backend."""
+    pytest.importorskip("jax")
+
+    bits = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 16)
+    llrs = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1, output="numpy")
+    assert isinstance(llrs, np.ndarray)
+
+
+def test_compute_llr_output_numpy_from_jax_input():
+    """output='numpy' from a JAX input should still return numpy.ndarray."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    bits = np.array([0, 1, 0, 1], dtype="int32")
+    symbols_jax = jnp.asarray(mapping.map_bits(bits, "qam", 4))
+    llrs = mapping.compute_llr(symbols_jax, "qam", 4, noise_var=0.1, output="numpy")
+    assert isinstance(llrs, np.ndarray)
+
+
+def test_compute_llr_output_input_numpy_returns_numpy():
+    """output='input' with NumPy input should return numpy.ndarray."""
+    pytest.importorskip("jax")
+
+    bits = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype="int32")
+    symbols_np = mapping.map_bits(bits, "qam", 16)
+    llrs = mapping.compute_llr(symbols_np, "qam", 16, noise_var=0.1, output="input")
+    assert isinstance(llrs, np.ndarray)
+
+
+def test_compute_llr_output_input_jax_returns_jax():
+    """output='input' with JAX input should return jax.Array."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    bits = np.array([0, 1, 1, 0], dtype="int32")
+    symbols_jax = jnp.asarray(mapping.map_bits(bits, "qam", 4))
+    llrs = mapping.compute_llr(symbols_jax, "qam", 4, noise_var=0.1, output="input")
+    assert isinstance(llrs, jax.Array)
+
+
+def test_compute_llr_output_invalid_raises():
+    """Unknown output value should raise ValueError."""
+    pytest.importorskip("jax")
+
+    bits = np.array([0, 1], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 4)
+    with pytest.raises(ValueError, match="output"):
+        mapping.compute_llr(symbols, "qam", 4, noise_var=0.1, output="cuda")
+
+
+def test_compute_llr_output_numpy_values_match_jax():
+    """output='numpy' should produce numerically identical values to output='jax'."""
+    pytest.importorskip("jax")
+
+    bits = np.array([0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0], dtype="int32")
+    symbols = mapping.map_bits(bits, "qam", 16)
+    llrs_jax = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1, output="jax")
+    llrs_np = mapping.compute_llr(symbols, "qam", 16, noise_var=0.1, output="numpy")
+    np.testing.assert_allclose(np.asarray(llrs_jax), llrs_np, atol=1e-6)

@@ -24,6 +24,8 @@ shape_pulse :
     Primary interface for applying pulse shaping to symbols.
 matched_filter :
     Matched filtering operation maximizing SNR in AWGN.
+compensate_chromatic_dispersion :
+    Electronic dispersion compensation (EDC) for chromatic dispersion.
 """
 
 from typing import Any
@@ -862,3 +864,98 @@ def matched_filter(
         )
 
     return fir_filter(samples, matched_taps, axis=axis)
+
+
+# -----------------------------------------------------------------------------
+# CHROMATIC DISPERSION
+# -----------------------------------------------------------------------------
+
+
+def compensate_chromatic_dispersion(
+    samples: ArrayType,
+    dispersion_ps_nm_km: float,
+    fiber_length_km: float,
+    center_wavelength_nm: float,
+    sampling_rate: float,
+) -> ArrayType:
+    r"""
+    Electronic dispersion compensation (EDC) for chromatic dispersion.
+
+    Applies the inverse of the CD frequency-domain transfer function to remove
+    chromatic dispersion accumulated over a fiber link:
+
+    .. math::
+
+        H_{\text{EDC}}(f) = \exp\!\left[+\tfrac{j}{2}\beta_2 (2\pi f)^2 L\right]
+
+    where
+
+    .. math::
+
+        \beta_2 = -\frac{D \lambda^2}{2\pi c}
+
+    and :math:`D` is the dispersion parameter, :math:`\lambda` is the centre
+    wavelength, :math:`c` is the speed of light, and :math:`L` is the fibre
+    length.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+    dispersion_ps_nm_km : float
+        Fibre dispersion parameter :math:`D` in ps / (nm · km).
+        Standard SMF-28: 17 ps/(nm·km) at 1550 nm.
+    fiber_length_km : float
+        Fibre span length in km.
+    center_wavelength_nm : float
+        Centre wavelength in nm (e.g. 1550 for C-band).
+    sampling_rate : float
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    array_like
+        CD-compensated signal, same shape, dtype, and backend as input.
+
+    See Also
+    --------
+    commstools.impairments.apply_chromatic_dispersion :
+        Apply the forward CD impairment (use before this function in simulation).
+
+    Examples
+    --------
+    >>> cd_free = compensate_chromatic_dispersion(
+    ...     received, dispersion_ps_nm_km=17.0, fiber_length_km=80.0,
+    ...     center_wavelength_nm=1550.0, sampling_rate=fs)
+    """
+    logger.info(
+        f"Compensating CD (D={dispersion_ps_nm_km} ps/nm/km, "
+        f"L={fiber_length_km} km, λ={center_wavelength_nm} nm)."
+    )
+
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[None, :]
+    C, N = samples.shape
+
+    # Convert to SI
+    D = dispersion_ps_nm_km * 1e-12 / (1e-9 * 1e3)  # s / m²
+    lam = center_wavelength_nm * 1e-9                 # m
+    c = 2.998e8                                        # m/s
+    L = fiber_length_km * 1e3                          # m
+    beta2 = -(D * lam**2) / (2.0 * np.pi * c) * L    # s²  (β₂·L product)
+
+    omega = 2.0 * np.pi * xp.fft.fftfreq(N, d=1.0 / sampling_rate)
+    H = xp.exp(1j * (beta2 / 2.0) * omega**2)
+
+    S_F = xp.fft.fft(samples, axis=-1)
+    out_F = S_F * H[None, :]
+    result = xp.fft.ifft(out_F, axis=-1)
+
+    if result.dtype != samples.dtype:
+        result = result.astype(samples.dtype)
+
+    if was_1d:
+        return result[0]
+    return result

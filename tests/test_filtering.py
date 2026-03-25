@@ -349,3 +349,74 @@ def test_ols_fir_filter_preserves_complex64_dtype(backend_device, xp):
     taps = np.hanning(64)  # float64
     out = filtering.ols_fir_filter(x, taps)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
+
+
+# -----------------------------------------------------------------------------
+# CHROMATIC DISPERSION COMPENSATION TESTS
+# -----------------------------------------------------------------------------
+
+
+class TestCompensateChromaticDispersion:
+    """Tests for compensate_chromatic_dispersion (EDC)."""
+
+    def test_round_trip_siso(self, backend_device, xp, xpt):
+        """Apply CD then compensate: SISO output should recover input."""
+        from commstools.impairments import apply_chromatic_dispersion
+
+        N = 1024
+        rng = np.random.default_rng(42)
+        samples = xp.asarray(
+            (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(np.complex64)
+        )
+        fs = 64e9
+        D, L, lam = 17.0, 80.0, 1550.0
+
+        distorted = apply_chromatic_dispersion(samples, D, L, lam, fs)
+        recovered = filtering.compensate_chromatic_dispersion(distorted, D, L, lam, fs)
+
+        xpt.assert_allclose(recovered, samples, atol=1e-3)
+
+    def test_round_trip_mimo(self, backend_device, xp, xpt):
+        """Apply CD then compensate: MIMO output should recover input."""
+        from commstools.impairments import apply_chromatic_dispersion
+
+        C, N = 2, 512
+        rng = np.random.default_rng(7)
+        samples = xp.asarray(
+            (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
+                np.complex64
+            )
+        )
+        fs = 64e9
+        D, L, lam = 17.0, 80.0, 1550.0
+
+        distorted = apply_chromatic_dispersion(samples, D, L, lam, fs)
+        recovered = filtering.compensate_chromatic_dispersion(distorted, D, L, lam, fs)
+
+        xpt.assert_allclose(recovered, samples, atol=1e-3)
+
+    def test_output_shape_siso(self, backend_device, xp):
+        """SISO output shape matches input."""
+        samples = xp.ones(512, dtype=xp.complex64)
+        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        assert out.shape == (512,)
+
+    def test_output_shape_mimo(self, backend_device, xp):
+        """MIMO output shape matches input."""
+        samples = xp.ones((2, 512), dtype=xp.complex64)
+        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        assert out.shape == (2, 512)
+
+    def test_energy_preserved(self, backend_device, xp, xpt):
+        """EDC is an all-pass filter: energy must be preserved."""
+        rng = np.random.default_rng(11)
+        samples = xp.asarray(
+            (rng.standard_normal(1024) + 1j * rng.standard_normal(1024)).astype(
+                np.complex64
+            )
+        )
+        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        power_in = float(xp.sum(xp.abs(samples) ** 2))
+        power_out = float(xp.sum(xp.abs(out) ** 2))
+        xpt.assert_allclose(power_out, power_in, rtol=1e-4)
+

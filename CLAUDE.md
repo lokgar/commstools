@@ -72,7 +72,7 @@ Generation flows: bits → symbols → samples. `Signal.source_bits` is the grou
 | `filtering.py` | Pulse shaping (RRC, RC, Gaussian, smoothrect), FIR filter application |
 | `multirate.py` | Resampling, decimation, polyphase filtering |
 | `sync.py` | Barker/ZC sequences, cross-correlation timing; frequency offset estimation (M-th power, Kay, data-aided, pilot-aided); carrier phase recovery (Viterbi-Viterbi, BPS, pilot-aided) |
-| `equalization.py` | LMS/NLMS, RLS, CMA (blind), ZF/MMSE block equalizers; butterfly MIMO topology; Numba + JAX backends |
+| `equalization.py` | LMS, RLS, CMA (blind), RDE (blind), ZF/MMSE block equalizers; butterfly MIMO topology; Numba + JAX backends |
 | `metrics.py` | EVM, SNR, BER computation |
 | `impairments.py` | AWGN channel (Es/N0 aware with SPS handling), PMD (differential group delay, Jones matrix) |
 | `spectral.py` | Frequency shifting, Welch PSD |

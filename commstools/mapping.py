@@ -667,6 +667,7 @@ def compute_llr(
     noise_var: float,
     method: str = "maxlog",
     unipolar: bool = False,
+    output: str = "jax",
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
@@ -677,7 +678,7 @@ def compute_llr(
 
     Implemented as a JAX JIT-compiled kernel with ``jax.vmap`` over bit
     positions. Input arrays (NumPy, CuPy, or JAX) are converted to JAX
-    internally. **Always returns a JAX array** regardless of input backend.
+    internally.
 
     Fully differentiable: ``jax.grad`` through LLRs w.r.t. input symbols is
     supported, enabling end-to-end gradient flow through the demapping step
@@ -700,27 +701,33 @@ def compute_llr(
         bit); ``"exact"`` uses log-sum-exp for a tighter result.
     unipolar : bool, default False
         Use unipolar constellation for ASK/PAM.
+    output : {"jax", "input", "numpy"}, default "jax"
+        Controls the array type of the returned LLRs.
+
+        * ``"jax"`` (default) — always returns a :class:`jax.Array`.
+          Preserves differentiability for gradient-based pipelines
+          (autograd, LDPC/turbo neural decoders).
+        * ``"input"`` — returns the same backend as the *input* array:
+          JAX input → JAX output; NumPy input → NumPy output;
+          CuPy input → CuPy output.
+        * ``"numpy"`` — always returns a plain :class:`numpy.ndarray`.
+          Convenient for downstream code that expects NumPy.
 
     Returns
     -------
-    jax.Array
+    array_like
         LLR values. Shape: (..., N_symbols * log2(order)).
-        Always a JAX array — call ``np.asarray(llr)`` if a NumPy array is
-        needed for a non-JAX consumer.
+        Array type determined by ``output`` parameter.
 
     Warnings
     --------
-    This function **always returns a JAX array**, even when the input is
-    NumPy or CuPy. This is intentional: LLRs are the natural input to
-    soft-decision decoders (LDPC, turbo, neural) which benefit from JAX's
-    JIT compilation and autograd. Converting back to NumPy would discard
-    that capability.
+    When ``output='jax'`` (default), the computation runs inside JAX and the
+    result is returned asynchronously.  Call ``result.block_until_ready()``
+    before timing measurements.  Conversion to NumPy (``np.asarray(result)``)
+    blocks implicitly.
 
-    JAX arrays are returned asynchronously — the computation may not have
-    completed when the Python call returns. For accurate timing, call
-    ``result.block_until_ready()`` before stopping the timer. For
-    consuming the result (e.g. ``np.asarray(result)``), blocking happens
-    implicitly.
+    Choosing ``output='input'`` or ``output='numpy'`` forces a synchronous
+    device→host copy and discards differentiability.
 
     Notes
     -----
@@ -735,7 +742,7 @@ def compute_llr(
     - \\log \\sum_{s \\in S_1^k} e^{-|r-s|^2/\\sigma^2}$
     """
     logger.debug(
-        f"Computing LLRs for {modulation.upper()} {order}-level (method={method})."
+        f"Computing LLRs for {modulation.upper()} {order}-level (method={method}, output={output})."
     )
 
     k = int(np.log2(order))
@@ -743,6 +750,8 @@ def compute_llr(
         raise ValueError(f"Order must be a power of 2, got {order}")
     if method not in ("maxlog", "exact"):
         raise ValueError(f"Unknown method: {method}. Use 'maxlog' or 'exact'.")
+    if output not in ("jax", "input", "numpy"):
+        raise ValueError(f"Unknown output: {output!r}. Use 'jax', 'input', or 'numpy'.")
 
     # Convert to JAX if not already
     jax, jnp, _ = _get_jax()
@@ -806,11 +815,20 @@ def compute_llr(
     else:
         llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
 
-    # Reshape to match input structure and return as JAX array
+    # Reshape to match input structure
     flat_llrs = llrs.flatten()
     if len(original_shape) > 1:
         new_shape = list(original_shape)
         new_shape[-1] = new_shape[-1] * k
         flat_llrs = flat_llrs.reshape(new_shape)
 
-    return flat_llrs
+    # Convert output to the requested backend
+    if output == "jax":
+        return flat_llrs
+    elif output == "numpy":
+        return np.asarray(flat_llrs)
+    else:  # output == "input"
+        if is_jax_array(symbols):
+            return flat_llrs  # already JAX
+        # xp is NumPy or CuPy — convert via NumPy intermediate
+        return xp.asarray(np.asarray(flat_llrs))

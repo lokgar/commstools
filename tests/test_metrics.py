@@ -1,5 +1,6 @@
 """Tests for performance metrics module."""
 
+import numpy as np
 import pytest
 
 from commstools import metrics
@@ -251,3 +252,157 @@ def test_ber_multichannel(backend_device, xp):
     assert ber_values.shape == (2,)
     assert float(ber_values[0]) == pytest.approx(1 / 10)
     assert float(ber_values[1]) == pytest.approx(2 / 10)
+
+
+# =============================================================================
+# GMI TESTS
+# =============================================================================
+
+
+def test_gmi_high_snr_approaches_log2m(backend_device, xp):
+    """At infinite SNR (perfect LLRs), GMI → log2(M)."""
+    from commstools.mapping import map_bits, compute_llr
+
+    k = 4  # bits per symbol for QAM-16
+    M = 16
+    N = 200
+    rng = np.random.default_rng(42)
+    bits = rng.integers(0, 2, N * k).astype("int32")
+    symbols = map_bits(xp.asarray(bits), "qam", M)
+
+    # Very low noise → large LLR magnitudes → GMI ≈ log2(M)
+    # Use (N, k) shape so gmi() knows k and returns b/cu in [0, log2(M)]
+    llrs = compute_llr(symbols, "qam", M, noise_var=1e-6, output="numpy").reshape(N, k)
+    gmi_val = metrics.gmi(llrs, bits.reshape(N, k))
+
+    assert gmi_val > np.log2(M) - 0.05, f"High-SNR GMI {gmi_val:.4f} too low"
+
+
+def test_gmi_low_snr_approaches_zero(backend_device, xp):
+    """At very low SNR, LLRs collapse to zero → GMI → 0."""
+    from commstools.mapping import map_bits, compute_llr
+
+    k = 4
+    M = 16
+    N = 500
+    rng = np.random.default_rng(7)
+    bits = rng.integers(0, 2, N * k).astype("int32")
+    symbols = map_bits(xp.asarray(bits), "qam", M)
+
+    # Huge noise → all LLRs ≈ 0 → log2(1+1)=1 for every bit → GMI ≈ 0
+    llrs = compute_llr(symbols, "qam", M, noise_var=1e6, output="numpy").reshape(N, k)
+    gmi_val = metrics.gmi(llrs, bits.reshape(N, k))
+
+    assert gmi_val < 0.2, f"Low-SNR GMI {gmi_val:.4f} should be near 0"
+
+
+def test_gmi_flat_input_returns_per_bit(backend_device, xp):
+    """Flat 1D input: gmi() treats k=1 and returns per-bit GMI in [0, 1]."""
+    from commstools.mapping import map_bits, compute_llr
+
+    bits = np.array([0, 1, 1, 0, 0, 1, 1, 0], dtype="int32")
+    symbols = map_bits(xp.asarray(bits), "qam", 4)
+    # Flat (N*k,) LLRs — k not known, so gmi() treats as k=1
+    llrs = compute_llr(symbols, "qam", 4, noise_var=0.1, output="numpy")
+    gmi_val = metrics.gmi(llrs, bits)
+
+    assert 0.0 <= gmi_val <= 1.0
+
+
+def test_gmi_returns_scalar_float(backend_device, xp):
+    """gmi() must return a Python float."""
+    from commstools.mapping import map_bits, compute_llr
+
+    k = 2
+    N = 4
+    bits = np.array([0, 1, 1, 0, 0, 1, 1, 0], dtype="int32")
+    symbols = map_bits(xp.asarray(bits), "qam", 4)
+    llrs = compute_llr(symbols, "qam", 4, noise_var=0.1, output="numpy").reshape(N, k)
+    gmi_val = metrics.gmi(llrs, bits.reshape(N, k))
+
+    assert isinstance(gmi_val, float)
+
+
+def test_gmi_shape_mismatch_raises(backend_device, xp):
+    """gmi() should raise ValueError when llrs and tx_bits have different sizes."""
+    llrs = np.array([1.0, -1.0, 2.0])
+    bits = np.array([0, 1])
+    with pytest.raises(ValueError, match="same number of elements"):
+        metrics.gmi(llrs, bits)
+
+
+def test_gmi_2d_bounded_by_log2m(backend_device, xp):
+    """For (N, k) input, GMI ∈ [0, k]."""
+    from commstools.mapping import map_bits, compute_llr
+
+    k = 2  # QPSK
+    N = 100
+    rng = np.random.default_rng(55)
+    bits = rng.integers(0, 2, N * k).astype("int32")
+    symbols = map_bits(xp.asarray(bits), "qam", 4)
+    llrs = compute_llr(symbols, "qam", 4, noise_var=0.1, output="numpy").reshape(N, k)
+    bits_2d = bits.reshape(N, k)
+    gmi_val = metrics.gmi(llrs, bits_2d)
+    assert 0.0 <= gmi_val <= np.log2(4)
+
+
+# =============================================================================
+# MI TESTS
+# =============================================================================
+
+
+def test_mi_high_snr_approaches_log2m(backend_device, xp):
+    """At high SNR, MI → log2(M)."""
+    from commstools.mapping import gray_constellation
+
+    M = 16
+    const = gray_constellation("qam", M)
+    rng = np.random.default_rng(42)
+    # Sample uniformly from constellation (no noise)
+    symbols = const[rng.integers(0, M, 500)]
+
+    mi_val = metrics.mi(xp.asarray(symbols), "qam", M, noise_var=1e-8)
+
+    assert mi_val > np.log2(M) - 0.1, f"High-SNR MI {mi_val:.4f} too low"
+
+
+def test_mi_never_exceeds_log2m(backend_device, xp):
+    """MI ≤ log2(M) always (capacity bound)."""
+    from commstools.mapping import gray_constellation
+
+    M = 4
+    const = gray_constellation("qam", M)
+    rng = np.random.default_rng(7)
+    symbols = const[rng.integers(0, M, 200)]
+
+    for noise_var in [1e-4, 0.1, 1.0, 10.0]:
+        mi_val = metrics.mi(xp.asarray(symbols), "qam", M, noise_var=noise_var)
+        assert mi_val <= np.log2(M) + 1e-6, (
+            f"MI={mi_val:.4f} exceeded log2(M)={np.log2(M):.4f} at noise_var={noise_var}"
+        )
+
+
+def test_mi_returns_scalar_float(backend_device, xp):
+    """mi() must return a Python float."""
+    from commstools.mapping import gray_constellation
+
+    M = 4
+    const = gray_constellation("qam", M)
+    symbols = const[:10]
+    mi_val = metrics.mi(xp.asarray(symbols), "qam", M, noise_var=0.1)
+    assert isinstance(mi_val, float)
+
+
+def test_mi_decreases_with_noise(backend_device, xp):
+    """MI should decrease as noise increases."""
+    from commstools.mapping import gray_constellation
+
+    M = 16
+    const = gray_constellation("qam", M)
+    rng = np.random.default_rng(99)
+    symbols = const[rng.integers(0, M, 500)]
+
+    mi_low_noise = metrics.mi(xp.asarray(symbols), "qam", M, noise_var=0.01)
+    mi_high_noise = metrics.mi(xp.asarray(symbols), "qam", M, noise_var=1.0)
+
+    assert mi_low_noise > mi_high_noise
