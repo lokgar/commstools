@@ -357,7 +357,7 @@ class TestCprTikhonov:
             sig.samples,
             modulation=modulation,
             order=order,
-            linewidth_ts=1e-4,
+            linewidth_symbol_periods=1e-4,
             block_size=block_size,
             snr_db=SNR_DB,
         )
@@ -372,7 +372,7 @@ class TestCprTikhonov:
         """Tikhonov CPR: 1D input → 1D output of same length."""
         sig = _qam_signal(xp, 16, 512)
         phase = sync.recover_carrier_phase_tikhonov(
-            sig.samples, modulation="qam", order=16, linewidth_ts=1e-4, snr_db=SNR_DB
+            sig.samples, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
         )
         assert phase.shape == sig.samples.shape
 
@@ -382,7 +382,7 @@ class TestCprTikhonov:
         sig_b = _qam_signal(xp, 16, 512)
         mimo = xp.stack([sig_a.samples, sig_b.samples])
         phase = sync.recover_carrier_phase_tikhonov(
-            mimo, modulation="qam", order=16, linewidth_ts=1e-4, snr_db=SNR_DB
+            mimo, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
         )
         assert phase.shape == mimo.shape
 
@@ -392,7 +392,7 @@ class TestCprTikhonov:
         with pytest.raises(ValueError, match="shorter than block_size"):
             sync.recover_carrier_phase_tikhonov(
                 sig.samples[:10], modulation="qam", order=4,
-                linewidth_ts=1e-4, block_size=32,
+                linewidth_symbol_periods=1e-4, block_size=32,
             )
 
     def test_invalid_method_raises(self, backend_device, xp):
@@ -401,7 +401,7 @@ class TestCprTikhonov:
         with pytest.raises(ValueError, match="Unknown method"):
             sync.recover_carrier_phase_tikhonov(
                 sig.samples, modulation="qam", order=16,
-                linewidth_ts=1e-4, method="bad",
+                linewidth_symbol_periods=1e-4, method="bad",
             )
 
     @pytest.mark.parametrize("order,modulation", [(4, "psk"), (16, "qam")])
@@ -413,7 +413,7 @@ class TestCprTikhonov:
 
         phase_est = sync.recover_carrier_phase_tikhonov(
             sig.samples, modulation=modulation, order=order,
-            linewidth_ts=1e-4, snr_db=SNR_DB, method="sskf",
+            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
         )
 
         M = 4 if modulation == "qam" else order
@@ -429,11 +429,11 @@ class TestCprTikhonov:
 
         phi_exact = sync.recover_carrier_phase_tikhonov(
             sig.samples, modulation="qam", order=16,
-            linewidth_ts=1e-4, snr_db=SNR_DB, method="exact",
+            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="exact",
         )
         phi_sskf = sync.recover_carrier_phase_tikhonov(
             sig.samples, modulation="qam", order=16,
-            linewidth_ts=1e-4, snr_db=SNR_DB, method="sskf",
+            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
         )
         rms_diff = float(xp.sqrt(xp.mean((phi_exact - phi_sskf) ** 2)))
         assert rms_diff < 0.05
@@ -441,12 +441,12 @@ class TestCprTikhonov:
     def test_smoother_reduces_noise_vs_vv(self, backend_device, xp):
         """Tikhonov produces smoother phase trajectory than VV when σ_p² < σ_v².
 
-        Regime: QPSK at snr_db=15, linewidth_ts=1e-7, block_size=32.
+        Regime: QPSK at snr_db=15, linewidth_symbol_periods=1e-7, block_size=32.
           σ_p² = 2π · 1e-7 · 32 ≈ 2e-5 rad²/block  (slow phase noise)
           σ_v² = 1/(4² · 31.6 · 32) ≈ 6e-5 rad²/block  (noisy VV at 15 dB)
         K_∞ ≈ 0.4  →  substantial smoothing: Tikhonov std < VV std.
         """
-        linewidth_ts = 1e-7
+        linewidth_symbol_periods = 1e-7
         snr_test = 15
         sig = _psk_signal(xp, 4, 2048, snr_db=snr_test, seed=123)
         sig.samples = sig.samples * xp.exp(1j * 0.3)
@@ -456,7 +456,7 @@ class TestCprTikhonov:
         )
         phi_tik = sync.recover_carrier_phase_tikhonov(
             sig.samples, modulation="psk", order=4,
-            linewidth_ts=linewidth_ts, block_size=32, snr_db=snr_test,
+            linewidth_symbol_periods=linewidth_symbol_periods, block_size=32, snr_db=snr_test,
         )
 
         # With constant true phase, VV block estimates fluctuate around the

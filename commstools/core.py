@@ -907,10 +907,10 @@ class Signal(BaseModel):
                 ax.scatter(
                     symbols.real,
                     symbols.imag,
-                    c="black",
-                    edgecolors="gray",
+                    c="green",
+                    edgecolors="dimgray",
                     linewidths=1.5,
-                    s=15,
+                    s=30,
                     zorder=10,
                     marker="o",
                 )

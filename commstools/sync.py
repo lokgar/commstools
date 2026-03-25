@@ -1327,15 +1327,42 @@ def estimate_frequency_offset_mengali_morelli(
     order : int, optional
         Modulation order. Required with ``modulation`` for blind mode.
     ref_signal : array_like, optional
-        Ideal transmitted reference at **zero frequency offset and zero
-        carrier phase**.  Shape: ``(N,)``, ``(1, N)`` (broadcast to all
-        channels), or ``(C, N)`` for per-channel derotation.
+        Ideal transmitted waveform used to derotate ``samples`` before
+        autocorrelation.  The function computes ``y[n] = samples[n] *
+        conj(ref[n])``, which cancels the data modulation and leaves a
+        complex tone at Δf.
+
+        **What to pass:** the noiseless baseband waveform as it would
+        appear at the receiver input *without* any frequency offset or
+        carrier phase — i.e. the output of your pulse shaper / DAC model,
+        at the same sampling rate and the same number of samples-per-symbol
+        as ``samples``.  Concretely:
+
+        * If ``samples`` is pulse-shaped at ``sps`` samples/symbol, pass
+          the corresponding pulse-shaped reference (e.g. ``Signal.samples``
+          from a freshly generated :class:`~commstools.core.Signal` with no
+          impairments).
+        * If ``samples`` has already been matched-filtered and decimated to
+          1 SPS, pass the 1-SPS symbol sequence (``Signal.source_symbols``).
+        * Do **not** pass raw bits or a preamble sequence of different
+          length — ``ref_signal`` must be sample-aligned and have the same
+          length ``N`` as ``samples``.
+
+        Amplitude normalisation does not affect the estimate (only the
+        phase of each lag is used), so there is no need to normalise
+        ``ref_signal`` to unit power.
+
+        Shape: ``(N,)``, ``(1, N)`` (broadcast to all MIMO channels), or
+        ``(C, N)`` for independent per-channel references.
 
         .. warning::
-            **Timing alignment is critical.**  Even a 1-sample offset
-            causes the estimate to collapse to ≈ 0 Hz for i.i.d. QAM
-            symbols.  Run :func:`estimate_timing` first and align
-            ``samples`` before calling this function.
+            **Sample-exact timing alignment is required.**  The product
+            ``samples[n] * conj(ref[n])`` must refer to the *same* symbol
+            period at every index ``n``.  A single-sample misalignment
+            causes the autocorrelation to average over mismatched symbol
+            pairs, collapsing the phase ramp to ≈ 0 Hz for i.i.d. data.
+            Call :func:`estimate_timing` and trim / interpolate ``samples``
+            to integer-sample alignment before passing to this function.
     max_lag : int, optional
         Maximum autocorrelation lag L.  Default: ``N // 4``, clamped to
         ``[1, N // 2]``.  Increasing L improves noise averaging at the cost
@@ -1525,9 +1552,9 @@ def estimate_frequency_offset_mengali_morelli(
 
 def estimate_frequency_offset_pilots(
     samples: ArrayType,
+    sampling_rate: float,
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
-    sampling_rate: float,
     snr_weighted: bool = True,
     shared_lo_check: bool = True,
     shared_lo_tol_hz: Optional[float] = None,
@@ -1546,6 +1573,8 @@ def estimate_frequency_offset_pilots(
     ----------
     samples : array_like
         Received complex samples. Shape: (N,) or (C, N).
+    sampling_rate : float
+        Sampling rate in Hz.
     pilot_indices : array_like of int
         Sample indices of pilot positions in increasing order. Shape: (P,).
         Must be unique and sorted.  Supports any pilot arrangement:
@@ -1560,8 +1589,6 @@ def estimate_frequency_offset_pilots(
         Known transmitted pilot symbols at the corresponding indices.
         Shape: (P,) for shared pilots (broadcast to all MIMO channels),
         or (C, P) for per-channel pilots.
-    sampling_rate : float
-        Sampling rate in Hz.
     snr_weighted : bool, default True
         If ``True``, weights each pilot by its received power ``|r|²``
         (SNR proxy) in the least-squares phase-slope fit.  This is the
@@ -1733,8 +1760,8 @@ def estimate_frequency_offset_pilots(
 
 def correct_frequency_offset(
     samples: ArrayType,
-    offset: float,
     sampling_rate: float,
+    offset: float,
 ) -> ArrayType:
     """
     Applies frequency offset correction by exact complex mixing.
@@ -1748,11 +1775,11 @@ def correct_frequency_offset(
     ----------
     samples : array_like
         Input signal samples. Shape: (..., N).
+    sampling_rate : float
+        Sampling rate in Hz.
     offset : float
         Estimated frequency offset in Hz (as returned by the
         ``estimate_frequency_offset_*`` functions).
-    sampling_rate : float
-        Sampling rate in Hz.
 
     Returns
     -------
@@ -2720,7 +2747,7 @@ def recover_carrier_phase_tikhonov(
     symbols: ArrayType,
     modulation: str,
     order: int,
-    linewidth_ts: float,
+    linewidth_symbol_periods: float,
     block_size: int = 32,
     snr_db: Optional[float] = None,
     method: str = "exact",
@@ -2750,7 +2777,7 @@ def recover_carrier_phase_tikhonov(
         Modulation scheme (case-insensitive): ``'psk'``, ``'qam'``, etc.
     order : int
         Modulation order.
-    linewidth_ts : float
+    linewidth_symbol_periods : float
         Combined linewidth-symbol-time product :math:`\Delta\nu \cdot T_s`.
         Typical values: ``1e-5`` (narrow laser, 32 GBd), ``5e-4`` (wide
         laser / high baud rate).  Sets the Kalman process noise variance:
@@ -2842,7 +2869,7 @@ def recover_carrier_phase_tikhonov(
     else:
         snr_lin = 10.0 ** (snr_db / 10.0)
 
-    sigma_p2 = float(2.0 * np.pi * linewidth_ts * block_size)
+    sigma_p2 = float(2.0 * np.pi * linewidth_symbol_periods * block_size)
     sigma_v2 = float(1.0 / (M**2 * snr_lin * block_size))
 
     # VV block phase estimation with unit-circle normalisation for QAM

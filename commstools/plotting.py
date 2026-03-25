@@ -1299,10 +1299,10 @@ def constellation(
                 ax.scatter(
                     const.real,
                     const.imag,
-                    c="black",
-                    s=15,
-                    edgecolors="gray",
+                    c="green",
+                    edgecolors="dimgray",
                     linewidths=1.5,
+                    s=30,
                     zorder=10,
                     marker="o",
                 )

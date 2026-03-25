@@ -213,12 +213,12 @@ _print_sep("6. FOE — mth-power law  (on 1 SPS symbols from Stage 1b)")
 
 fo_est = sync.estimate_frequency_offset_mth_power(
     y_s1b,
-    fs=SYMBOL_RATE,        # symbols are at 1 SPS → fs = symbol_rate
+    sampling_rate=SYMBOL_RATE,  # symbols are at 1 SPS → fs = symbol_rate
     modulation=MOD,
     order=ORDER,
 )
 
-y_foe = sync.correct_frequency_offset(y_s1b, fo_est, fs=SYMBOL_RATE)
+y_foe = sync.correct_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
 
 print(f"  True FO : {FO_TRUE_HZ/1e6:.4f} MHz")
 print(f"  Est  FO : {fo_est/1e6:.4f} MHz")
