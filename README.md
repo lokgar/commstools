@@ -31,7 +31,7 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 | **Signal Generation** | PAM, PSK, QAM factory methods with Gray-coded constellations and configurable pulse shaping |
 | **Pulse Shaping** | RRC, RC, Gaussian, Smooth-Rectangle — tap generators + filtering pipeline |
 | **Filtering** | FFT-based FIR convolution, matched filter, Overlap-Save, polyphase multirate |
-| **Synchronization** | Barker / Zadoff-Chu sequences, cross-correlation timing, M-th power & Kay FOE, Viterbi-Viterbi & BPS carrier phase recovery |
+| **Synchronization** | Barker / Zadoff-Chu sequences, cross-correlation timing, M-th power (Jacobsen) & Mengali-Morelli & pilot-aided FOE, Viterbi-Viterbi / BPS / DD-PLL carrier phase recovery |
 | **Equalization** | LMS / NLMS, RLS, CMA (blind), ZF / MMSE block — butterfly MIMO topology, Numba + JAX backends |
 | **Channel Models** | AWGN (Es/N0 with SPS correction), PMD (differential group delay, Jones matrix) |
 | **Soft Demapping** | LLR computation via max-log and exact log-sum-exp (JAX JIT compiled) |
@@ -248,18 +248,29 @@ from commstools.sync import (
     barker_sequence,
     estimate_timing,
     estimate_frequency_offset_mth_power,
+    estimate_frequency_offset_mengali_morelli,
     recover_carrier_phase_viterbi_viterbi,
     correct_frequency_offset,
     correct_carrier_phase,
 )
 
-# Frequency offset estimation and correction (blind, M-th power law)
-fo_hz = estimate_frequency_offset_mth_power(rx_symbols, modulation_order=4)
+# Coarse FOE via M-th power spectral method (Jacobsen sub-bin interpolation)
+fo_hz = estimate_frequency_offset_mth_power(
+    samples, fs=sampling_rate, modulation="qam", order=16
+)
+
+# Fine / data-aided FOE via Mengali-Morelli multi-lag autocorrelation
+# Works at any SPS; lock range is full [-fs/2, fs/2]
+fo_hz = estimate_frequency_offset_mengali_morelli(
+    samples, fs=sampling_rate, modulation="qam", order=16
+)
 corrected = correct_frequency_offset(samples, fo_hz, fs=sampling_rate)
 
 # Carrier phase recovery (Viterbi & Viterbi)
-phase_est = recover_carrier_phase_viterbi_viterbi(rx_symbols, modulation_order=4)
-recovered  = correct_carrier_phase(rx_symbols, phase_est)
+phase_est = recover_carrier_phase_viterbi_viterbi(
+    corrected, modulation="qam", order=16
+)
+recovered = correct_carrier_phase(corrected, phase_est)
 ```
 
 ### Adaptive Equalization
