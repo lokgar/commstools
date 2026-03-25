@@ -2442,7 +2442,7 @@ def recover_carrier_phase_decision_directed(
         _plotting.carrier_phase_trajectory(
             phi_full=phi_full if xp is np else to_device(phi_full, "cpu"),
             show=True,
-            title=f"CPR — DD-PLL ({loop_order}-order)",
+            title=f"CPR — DD-PLL ({loop_desc})",
         )
 
     if was_1d:
@@ -2499,18 +2499,18 @@ def recover_carrier_phase_viterbi_viterbi(
 
     .. warning::
         **Phase-unwrapping slip risk:** the unwrapper assumes consecutive block
-        phases differ by less than :math:`\pi/M`.  For high phase noise this
-        assumption can be violated, causing a persistent :math:`2\pi/M` phase
+        phases differ by less than `pi/M`.  For high phase noise this
+        assumption can be violated, causing a persistent `2*pi/M` phase
         step in the output.
 
         A rough safety condition is:
 
         .. math::
 
-            \Delta\nu \cdot T_{\text{block}} < 0.05 \cdot f_s
+            \\Delta\\nu \\cdot T_{\\text{block}} < 0.05 \\cdot f_s
 
-        where :math:`\Delta\nu` is the combined linewidth (Hz),
-        :math:`T_{\text{block}} = \text{block\_size} / f_s` is the block
+        where :math:`\\Delta\\nu` is the combined linewidth (Hz),
+        :math:`T_{\\text{block}} = \\text{block\\_size} / f_s` is the block
         duration, and :math:`f_s` is the symbol rate.  For example, 100 kHz
         linewidth at 32 Gbaud is safe up to ``block_size ≈ 16 000``, but
         1 MHz linewidth requires ``block_size ≤ 1 600``.
