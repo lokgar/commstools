@@ -315,7 +315,7 @@ def test_estimate_timing_search_range(backend_device, xp):
 
 def test_estimate_timing_infer_error(backend_device, xp):
     """Verify error when Preamble object used without sps."""
-    pre = Preamble(bits=[1, 0, 1], length=3)
+    pre = Preamble(sequence_type="barker", length=3)
     sig = xp.zeros(20)
     with pytest.raises(ValueError, match="SPS must be provided"):
         sync.estimate_timing(sig, pre)
@@ -839,6 +839,27 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
     assert int(coarse[0]) != int(coarse[1]), (
         "Skew channels must have different coarse offsets"
     )
+
+
+def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
+    """MIMO: pure polarization swap (H = [[0,1],[1,0]]) — RX-0 receives TX-1 and vice versa.
+
+    This is the worst-case for the Hungarian assignment: the initial assignment
+    based on cross-correlation peak scores must correctly un-swap the streams.
+    The fallback path (X-Y power imbalance recovery) is also exercised here
+    when one channel's assigned template has low correlation.
+    """
+    preamble_pos = 200
+    # Permutation channel: RX-0 sees TX-1, RX-1 sees TX-0
+    H = [[0.0, 1.0], [1.0, 0.0]]
+    rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
+
+    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
+
+    for ch in range(2):
+        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        )
 
 
 # -----------------------------------------------------------------------------
