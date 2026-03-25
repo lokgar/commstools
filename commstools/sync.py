@@ -24,8 +24,6 @@ correct_timing :
     Combined coarse (integer) and fine (fractional) timing correction.
 estimate_frequency_offset_mth_power :
     Blind FOE via M-th power spectral method with Jacobsen sub-bin interpolation.
-estimate_frequency_offset_differential :
-    Blind or data-aided FOE via differential auto-correlation (Kay MVUE estimator).
 estimate_frequency_offset_mengali_morelli :
     Blind or data-aided FOE via multi-lag autocorrelation (Mengali-Morelli); lock range
     extends to full Nyquist [-fs/2, fs/2] regardless of block length.
@@ -1142,7 +1140,7 @@ def estimate_frequency_offset_mth_power(
         xb = complex(X_combined[k_safe])
         xc = complex(X_combined[k_safe + 1])
         denom_j = 2 * xb - xa - xc
-        mu = float((xa - xc).real / denom_j.real) if abs(denom_j.real) > 1e-30 else 0.0
+        mu = float(((xa - xc) / denom_j).real) if abs(denom_j) > 1e-30 else 0.0
     else:
         # Parabolic fallback on magnitudes (legacy, biased for small nfft)
         a = float(mag_combined[k_safe - 1])
@@ -1152,7 +1150,7 @@ def estimate_frequency_offset_mth_power(
         mu = 0.5 * (a - c_) / denom_p if abs(denom_p) > 1e-15 else 0.0
 
     mu = max(-0.5, min(0.5, mu))
-    f_est = (freqs_np[k_peak] + mu * (sampling_rate / nfft)) / M
+    f_est = (freqs_np[k_safe] + mu * (sampling_rate / nfft)) / M
 
     # Per-channel shared-LO sanity check for MIMO
     if C > 1 and shared_lo_check:
@@ -1169,8 +1167,8 @@ def estimate_frequency_offset_mth_power(
                 xc_c = complex(X_M[c_idx, k_c_safe + 1])
                 d_c = 2 * xb_c - xa_c - xc_c
                 mu_c = (
-                    float((xa_c - xc_c).real / d_c.real)
-                    if abs(d_c.real) > 1e-30
+                    float(((xa_c - xc_c) / d_c).real)
+                    if abs(d_c) > 1e-30
                     else 0.0
                 )
             else:
@@ -1180,7 +1178,7 @@ def estimate_frequency_offset_mth_power(
                 d_c = a_c - 2 * b_c + c_c
                 mu_c = 0.5 * (a_c - c_c) / d_c if abs(d_c) > 1e-15 else 0.0
             mu_c = max(-0.5, min(0.5, mu_c))
-            f_per_ch.append((freqs_np[k_c] + mu_c * (sampling_rate / nfft)) / M)
+            f_per_ch.append((freqs_np[k_c_safe] + mu_c * (sampling_rate / nfft)) / M)
         spread = max(f_per_ch) - min(f_per_ch)
         logger.info(
             f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
@@ -1213,209 +1211,7 @@ def estimate_frequency_offset_mth_power(
             show=True,
         )
 
-    return f_est
-
-
-def estimate_frequency_offset_differential(
-    samples: ArrayType,
-    sampling_rate: float,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-    ref_signal: Optional[ArrayType] = None,
-    weighted: bool = True,
-    shared_lo_check: bool = True,
-    shared_lo_tol_hz: Optional[float] = None,
-    debug_plot: bool = False,
-) -> float:
-    """
-    Estimates frequency offset via differential phase (auto-correlation).
-
-    Three modes, selected automatically based on the supplied arguments:
-
-    1. **Data-aided** (``ref_signal`` provided): derotates ``samples`` by
-       ``conj(ref_signal)`` before applying the estimator.  Unaffected by
-       modulation, highest-accuracy mode.
-    2. **Blind M-PSK/QAM** (``modulation`` and ``order`` provided, no
-       ``ref_signal``): applies M-th power pre-processing to remove
-       modulation before estimating.
-    3. **Generic blind** (neither provided): estimates frequency directly
-       from raw differential phases. Best for constant-envelope signals.
-
-    Parameters
-    ----------
-    samples : array_like
-        Received complex samples. Shape: (N,) or (C, N).
-    sampling_rate : float
-        Sampling rate in Hz.
-    modulation : str, optional
-        Modulation type (case-insensitive). Required for blind M-th power
-        mode.  Ignored when ``ref_signal`` is provided.
-    order : int, optional
-        Modulation order.  Required with ``modulation`` for blind mode.
-    ref_signal : array_like, optional
-        Ideal transmitted reference at **zero frequency offset and zero
-        carrier phase**.  Shape: ``(N,)``, ``(1, N)`` (broadcast to all
-        channels), or ``(C, N)`` for per-channel derotation.
-
-        .. warning::
-            **Timing alignment is critical.**  Even a 1-sample offset
-            between ``samples`` and ``ref_signal`` causes the estimate to
-            collapse to ≈ 0 Hz for i.i.d. QAM symbols, because
-            ``E[s[n] · conj(s[n-d])] = 0`` for all ``d ≠ 0``.  Run
-            :func:`estimate_timing` first to find the integer timing offset,
-            slice ``samples`` to align it with the reference, then call
-            this function.
-
-        For MIMO with independent per-stream pilots (e.g. ZC preamble),
-        pass shape ``(C, N)`` with each row containing the reference for
-        that channel.
-    weighted : bool, default True
-        If ``True``, applies Kay's MVUE weights for improved low-SNR
-        performance.  If ``False``, uses an unweighted sum (Lovell-
-        Williamson estimator).
-    shared_lo_check : bool, default True
-        For MIMO inputs (C > 1): compute per-channel estimates and warn
-        if the inter-channel spread exceeds ``shared_lo_tol_hz``.  Assumes
-        a shared local oscillator (e.g. dual-polarisation coherent optical)
-        so that all channels should see the same Δf.  Set to ``False`` for
-        systems with independent per-channel LOs.
-    shared_lo_tol_hz : float, optional
-        Spread threshold for the shared-LO sanity check.  Default:
-        ``0.005 * sampling_rate`` (0.5 % of sampling rate).
-
-    Returns
-    -------
-    float
-        Estimated frequency offset in Hz.  For MIMO, the per-channel
-        complex differential sums are first combined coherently (summed
-        as complex numbers before taking the angle), which is the ML
-        estimate under equal-power independent noise.
-
-    Notes
-    -----
-    The core estimator computes:
-
-    .. math::
-        \\hat{f} = \\frac{f_s}{2\\pi} \\angle\\!
-            \\left[\\sum_{n=0}^{N-2} w[n]\\, y[n+1]\\, y^*[n]\\right]
-
-    where ``y`` is the pre-processed signal and ``w[n]`` are Kay's MVUE
-    weights:
-
-    .. math::
-
-        w[k] = \\frac{6(k+1)(N-k-1)}{N(N^2-1)}, \\quad k = 0, \\ldots, N-2
-
-    (``w[n] = 1`` when ``weighted=False``).
-
-    **Lock range (blind M-th power mode):** ``[-fs/(2M), fs/(2M)]``.
-    A warning is emitted when the estimate is within 10 % of the lock-range
-    boundary.  Use :func:`estimate_frequency_offset_mth_power` as a coarse
-    stage first if the offset may exceed this range.
-
-    References
-    ----------
-    S. M. Kay, "A fast and accurate single-frequency estimator," IEEE
-    Trans. Acoust. Speech Signal Process., vol. 37, no. 12, pp. 1987–1990,
-    Dec. 1989.
-    """
-    samples, xp, _ = dispatch(samples)
-    was_1d = samples.ndim == 1
-    if was_1d:
-        samples = samples[None, :]  # (1, N)
-    C, N = samples.shape
-
-    # Determine pre-processing mode and M
-    if ref_signal is not None:
-        ref, _, _ = dispatch(ref_signal)
-        if ref.ndim == 1:
-            ref = ref[None, :]
-        ref = xp.asarray(ref)
-        y = samples * xp.conj(ref)  # derotate → complex tone at Δf
-        M = 1
-    elif modulation is not None and order is not None:
-        M = _modulation_power_m(modulation, order)
-        y = samples**M  # M-th power removes PSK/QAM modulation
-    else:
-        y = samples
-        M = 1
-
-    # Differential product: y[n+1] · conj(y[n])  → (C, N-1)
-    y_diff = y[..., 1:] * xp.conj(y[..., :-1])
-
-    if weighted:
-        # Kay (1989) MVUE weights: w[k] = 6(k+1)(N-k-1) / (N(N²-1))
-        # Peaks at centre, non-zero at endpoints.  Normalising by sum is
-        # equivalent to the MVUE constant (sum = N(N²-1)/6).
-        L = N - 1
-        k_np = np.arange(L, dtype=np.float64)  # 0 … L-1
-        w_np = (k_np + 1.0) * (N - k_np - 1.0)  # ∝ (k+1)(N-k-1)
-        w_np /= w_np.sum()
-        w = xp.asarray(w_np)
-        # Per-channel complex sum: z[c] = Σ_k w[k]·y_diff[c,k]  → (C,)
-        z_per_ch = xp.sum(w * y_diff, axis=-1)
-    else:
-        z_per_ch = xp.sum(y_diff, axis=-1)  # (C,)
-
-    # Coherent MIMO combining: sum complex phasors across channels before
-    # taking the angle.  For a shared LO the differential removes the
-    # static phase offset φ₀[c] per channel, so every z[c] points at the
-    # same angle M·2π·Δf/fs.  Summing complex values (not averaging angles)
-    # is the ML estimate under equal-power independent noise (√C SNR gain).
-    combined_sum = xp.sum(z_per_ch)  # scalar complex
-
-    f_est = float(xp.angle(combined_sum)) * (sampling_rate / (2 * np.pi)) / M
-    mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
-
-    # Lock-range proximity warning (blind M-th power mode only)
-    lock_half = sampling_rate / (2.0 * M)
-    if M > 1 and abs(f_est) > 0.9 * lock_half:
-        logger.warning(
-            f"FOE (differential, {mode_str}): estimate {f_est:.2f} Hz is within "
-            f"10 % of the lock-range boundary ±{lock_half:.2f} Hz = fs/(2M). "
-            "Result may be aliased — use estimate_frequency_offset_mth_power as "
-            "a coarse stage first."
-        )
-
-    if C > 1:
-        f_per_ch = [
-            float(xp.angle(z_per_ch[c])) * (sampling_rate / (2 * np.pi)) / M
-            for c in range(C)
-        ]
-        spread = max(f_per_ch) - min(f_per_ch)
-        logger.info(
-            f"FOE (differential, {mode_str}): {f_est:.2f} Hz "
-            f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz]"
-        )
-        if shared_lo_check:
-            tol = (
-                shared_lo_tol_hz
-                if shared_lo_tol_hz is not None
-                else 0.005 * sampling_rate
-            )
-            if spread > tol:
-                logger.warning(
-                    f"FOE (differential): per-channel spread {spread:.2f} Hz "
-                    f"exceeds shared-LO tolerance {tol:.2f} Hz. "
-                    f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
-                    "Possible timing misalignment, wrong reference assignment, or "
-                    "independent LOs per channel."
-                )
-    else:
-        logger.info(f"FOE (differential, {mode_str}): {f_est:.2f} Hz")
-
-    if debug_plot:
-        from . import plotting as _plotting
-
-        _plotting.differential_phase_trajectory(
-            y_diff=to_device(y_diff, "cpu"),
-            f_est=f_est,
-            sampling_rate=sampling_rate,
-            M=M,
-            show=True,
-        )
-
-    return f_est
+    return float(f_est)
 
 
 # Lazy-compiled Numba kernel for the M&M iterative bootstrap.
@@ -1510,7 +1306,7 @@ def estimate_frequency_offset_mengali_morelli(
     lock range of ``fs/(2M)``) and a pilot or data-aided reference is
     available for pre-processing.
 
-    Three input modes (identical to :func:`estimate_frequency_offset_differential`):
+    Three input modes:
 
     1. **Data-aided** (``ref_signal`` provided): derotates samples by the
        known reference before estimating.
@@ -1564,8 +1360,7 @@ def estimate_frequency_offset_mengali_morelli(
     -----
     **Algorithm** (Mengali & Morelli, 1997):
 
-    1. Pre-process signal ``y`` (same three modes as
-       :func:`estimate_frequency_offset_differential`).
+    1. Pre-process signal ``y`` (data-aided, blind M-th power, or generic blind).
 
     2. Compute normalised autocorrelation at lags m = 1 … L:
 
@@ -1623,7 +1418,7 @@ def estimate_frequency_offset_mengali_morelli(
         samples = samples[None, :]  # (1, N)
     C, N = samples.shape
 
-    # Pre-process: same three modes as estimate_frequency_offset_differential
+    # Pre-process: data-aided, blind M-th power, or generic blind
     if ref_signal is not None:
         ref, _, _ = dispatch(ref_signal)
         if ref.ndim == 1:
@@ -1758,9 +1553,6 @@ def estimate_frequency_offset_pilots(
         * **Comb (scattered):** uniform grid, e.g. every 16th sample.
           Lock range determined by comb spacing.
         * **Block (contiguous cluster):** e.g. ``[0, 1, ..., L-1]``.
-          For contiguous blocks the differential estimator
-          (:func:`estimate_frequency_offset_differential` with
-          ``ref_signal=``) provides ML performance.
         * **Multi-block:** e.g. a front preamble and a mid-burst pilot
           cluster.  Lock range is set by the **largest gap** between any
           two consecutive pilot indices (see Notes).

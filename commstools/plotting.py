@@ -26,8 +26,6 @@ equalizer_result :
     Convergence curve and tap weight diagnostics for adaptive equalization.
 timing_correlation :
     Cross-correlation magnitude with peak and threshold for timing diagnostics.
-differential_phase_trajectory :
-    Per-sample differential phase and Kay reference line for FOE diagnostics.
 frequency_offset_spectrum :
     M-th power spectrum with detected tone for blind FOE diagnostics.
 carrier_phase_trajectory :
@@ -1303,8 +1301,8 @@ def constellation(
                     const.imag,
                     c="black",
                     s=15,
-                    edgecolors="black",
-                    linewidths=1,
+                    edgecolors="gray",
+                    linewidths=1.5,
                     zorder=10,
                     marker="o",
                 )
@@ -1564,89 +1562,6 @@ def timing_correlation(
         plt.show()
         return None
     return fig, axes
-
-
-def differential_phase_trajectory(
-    y_diff,
-    f_est: float,
-    sampling_rate: float,
-    M: int = 1,
-    ax=None,
-    show: bool = False,
-    title: str = "FOE — Differential Phase",
-) -> Optional[Tuple[Any, Any]]:
-    """
-    Plots per-sample differential phase for Kay's estimator diagnostics.
-
-    Displays the instantaneous differential phase ``angle(y[n+1]·y*[n])``
-    for each channel alongside the estimated frequency offset (horizontal
-    reference line at ``2π·Δf/fs`` rad/sample), making it easy to spot
-    non-stationarity, outliers, or insufficient SNR.
-
-    Parameters
-    ----------
-    y_diff : array_like
-        Differential product ``y[n+1]·y*[n]``. Shape: ``(C, N-1)`` or ``(N-1,)``.
-    f_est : float
-        Scalar frequency offset estimate in Hz.
-    sampling_rate : float
-        Sampling rate in Hz.
-    M : int, default 1
-        Pre-processing exponent applied before differential (M>1 for blind
-        M-th power mode). The displayed reference line is scaled by ``1/M``.
-    ax : Axes, optional
-        Pre-existing Axes. A new figure is created when ``None``.
-    show : bool, default False
-        If ``True``, calls ``plt.show()`` and returns ``None``.
-    title : str, default "FOE — Differential Phase"
-
-    Returns
-    -------
-    (fig, ax) or None
-    """
-    _y, xp, _ = dispatch(y_diff)
-    if _y.ndim == 1:
-        _y = _y[None, :]
-    C = _y.shape[0]
-    # Compute angle on-device (GPU if available), then bring small result to CPU
-    phi_all = to_device(xp.angle(_y), "cpu")
-
-    if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=(10, 3.5))
-    else:
-        fig = ax.figure
-
-    ref_rad = 2.0 * np.pi * f_est / sampling_rate  # rad/sample (scaled by M internally)
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-    for ch in range(C):
-        phi = phi_all[ch]
-        ax.plot(
-            phi,
-            linewidth=0.5,
-            alpha=0.7,
-            color=colors[ch % len(colors)],
-            label=f"Ch {ch}" if C > 1 else "Diff phase",
-        )
-
-    ax.axhline(
-        ref_rad * M,
-        color="red",
-        linestyle="--",
-        linewidth=1.4,
-        label=f"Ref 2π·Δf/fs·M = {ref_rad * M:.4f} rad",
-    )
-    ax.set_title(f"{title}  (Δf={f_est:.2f} Hz, M={M})")
-    ax.set_xlabel("Sample index")
-    ax.set_ylabel("Phase (rad)")
-    ax.legend(fontsize="small")
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    if show:
-        plt.show()
-        return None
-    return fig, ax
 
 
 def mm_autocorrelation(

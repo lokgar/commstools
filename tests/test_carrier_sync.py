@@ -127,55 +127,6 @@ class TestFoeMthPower:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOE — Differential
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoeDifferential:
-    @pytest.mark.parametrize("weighted", [True, False])
-    @pytest.mark.parametrize("fo_hz", [2_000.0, -4_000.0])
-    def test_blind_qpsk(self, backend_device, xp, weighted, fo_hz):
-        """Blind differential FOE within 10% for QPSK (small offset, high SNR)."""
-        sig = _psk_signal(xp, 4, 4096, fo_hz=fo_hz)
-        est = sync.estimate_frequency_offset_differential(
-            sig.samples,
-            sampling_rate=FS,
-            modulation="psk",
-            order=4,
-            weighted=weighted,
-        )
-        assert abs(est - fo_hz) / abs(fo_hz) < 0.10
-
-    def test_data_aided_more_accurate_than_blind(self, backend_device, xp):
-        """Data-aided mode (ref_signal) gives a good estimate regardless of blind accuracy."""
-        fo_hz = 3_000.0
-        # Use PSK (constant envelope) for cleanest data-aided derotation
-        sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
-        ideal_symbols = sig.samples.copy()  # save clean symbols before noise
-        sig.samples = apply_awgn(sig.samples, esn0_db=25, sps=1)
-        sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, FS)
-
-        est_blind = sync.estimate_frequency_offset_differential(
-            sig.samples, sampling_rate=FS, modulation="psk", order=4
-        )
-        est_da = sync.estimate_frequency_offset_differential(
-            sig.samples, sampling_rate=FS, ref_signal=ideal_symbols
-        )
-
-        # Data-aided estimate should be within 5% of the true offset
-        assert abs(est_da - fo_hz) / fo_hz < 0.05
-
-    def test_generic_blind_pure_tone(self, backend_device, xp):
-        """Generic mode (no modulation) estimates correctly for a pure complex tone."""
-        N = 4096
-        fo_hz = 5_000.0
-        n = xp.arange(N, dtype=xp.float64)
-        tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        est = sync.estimate_frequency_offset_differential(tone, sampling_rate=FS)
-        assert abs(est - fo_hz) < 200.0
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # CPR — Viterbi-Viterbi
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -718,25 +669,11 @@ class TestFoeMengaliMorelli:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOE — Regression: Kay weights, Jacobsen interpolation, WLSQ pilots
+# FOE — Regression: Jacobsen interpolation, WLSQ pilots
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestFoeRegression:
-    """Regression tests covering specific fixes in this patch."""
-
-    def test_kay_weights_improve_low_snr(self, backend_device, xp):
-        """Corrected Kay MVUE weights: weighted mode should equal or beat unweighted at low SNR."""
-        fo_hz = 4_000.0
-        sig = _psk_signal(xp, 4, 4096, fo_hz=fo_hz, snr_db=10)
-        est_weighted = sync.estimate_frequency_offset_differential(
-            sig.samples, sampling_rate=FS, modulation="psk", order=4, weighted=True
-        )
-        est_unweighted = sync.estimate_frequency_offset_differential(
-            sig.samples, sampling_rate=FS, modulation="psk", order=4, weighted=False
-        )
-        # Both should be within 20 % at low SNR; weighted must be at least as good
-        assert abs(est_weighted - fo_hz) <= abs(est_unweighted - fo_hz) * 1.1 + 50.0
 
     def test_jacobsen_vs_parabolic_accuracy(self, backend_device, xp):
         """Jacobsen interpolation accuracy is at least as good as parabolic for N=256."""
@@ -789,32 +726,3 @@ class TestFoeRegression:
         )
         assert abs(est - fo_hz) / fo_hz < 0.02
 
-    def test_differential_lock_range_warning(self, backend_device, xp, caplog):
-        """Differential FOE emits a warning when estimate is near the lock-range boundary."""
-        import logging
-
-        # For QPSK (M=4): lock range is ±fs/8 = ±125 kHz at 1 MHz
-        # Push the offset to 95 % of the lock half-range to trigger the warning
-        lock_half = FS / (2 * 4)
-        fo_hz = 0.92 * lock_half
-        sig = _psk_signal(xp, 4, 8192, fo_hz=fo_hz, snr_db=SNR_DB)
-        with caplog.at_level(logging.WARNING, logger="commstools"):
-            sync.estimate_frequency_offset_differential(
-                sig.samples, sampling_rate=FS, modulation="psk", order=4
-            )
-        assert any("lock-range" in r.message for r in caplog.records)
-
-    def test_shared_lo_check_warns_on_large_spread(self, backend_device, xp, caplog):
-        """shared_lo_check triggers a warning when channels have different offsets."""
-        import logging
-
-        # Ch0 offset = +5 kHz, Ch1 offset = -5 kHz → 10 kHz spread >> 0.5 % of 1 MHz
-        fo_a, fo_b = 5_000.0, -5_000.0
-        sig_a = _qam_signal(xp, 4, 2048, fo_hz=fo_a)
-        sig_b = _qam_signal(xp, 4, 2048, fo_hz=fo_b)
-        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
-        with caplog.at_level(logging.WARNING, logger="commstools"):
-            sync.estimate_frequency_offset_differential(
-                mimo, sampling_rate=FS, modulation="qam", order=4, shared_lo_check=True
-            )
-        assert any("spread" in r.message for r in caplog.records)

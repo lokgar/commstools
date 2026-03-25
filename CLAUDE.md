@@ -71,7 +71,7 @@ Generation flows: bits → symbols → samples. `Signal.source_bits` is the grou
 | `mapping.py` | Bits↔symbols, Gray coding, constellation generation, LLR soft demapping |
 | `filtering.py` | Pulse shaping (RRC, RC, Gaussian, smoothrect), FIR filter application |
 | `multirate.py` | Resampling, decimation, polyphase filtering |
-| `sync.py` | Barker/ZC sequences, cross-correlation timing; frequency offset estimation (M-th power, Kay, data-aided, pilot-aided); carrier phase recovery (Viterbi-Viterbi, BPS, pilot-aided) |
+| `sync.py` | Barker/ZC sequences, cross-correlation timing; frequency offset estimation (M-th power spectral with Jacobsen sub-bin interpolation, Mengali-Morelli multi-lag autocorrelation, pilot-aided WLSQ); carrier phase recovery (Viterbi-Viterbi, BPS, pilot-aided, DD-PLL) |
 | `equalization.py` | LMS, RLS, CMA (blind), RDE (blind), ZF/MMSE block equalizers; butterfly MIMO topology; Numba + JAX backends |
 | `metrics.py` | EVM, SNR, BER computation |
 | `impairments.py` | AWGN channel (Es/N0 aware with SPS handling), PMD (differential group delay, Jones matrix) |
