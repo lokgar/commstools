@@ -24,7 +24,14 @@ import types
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 try:
     import cupy as cp
@@ -900,9 +907,10 @@ class Signal(BaseModel):
                 ax.scatter(
                     symbols.real,
                     symbols.imag,
-                    c="cyan",
+                    c="black",
                     edgecolors="black",
-                    s=10,
+                    linewidths=1,
+                    s=15,
                     zorder=10,
                     marker="o",
                 )
