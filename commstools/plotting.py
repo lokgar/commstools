@@ -985,6 +985,8 @@ def filter_response(
 def ideal_constellation(
     modulation: str,
     order: int,
+    pmf: Optional[Any] = None,
+    nu: Optional[float] = None,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
     size: float = 5,
@@ -997,12 +999,27 @@ def ideal_constellation(
     Draws theoretical symbol points with their associated Gray-coded bit
     sequences. Includes concentric rings and center axes for reference.
 
+    For PS-QAM, pass either ``pmf`` or ``nu`` (not both) to activate
+    probability-weighted rendering: each marker's **area** and **colour**
+    encode the symbol probability under the Maxwell-Boltzmann distribution.
+    Inner (more probable) points appear larger and warmer.  Bit-label
+    annotations are suppressed to keep the plot readable at high orders.
+
     Parameters
     ----------
     modulation : {"psk", "qam", "ask", "pam"}
         Modulation scheme identifier.
     order : int
         Modulation order (e.g., 4, 16, 64).
+    pmf : array-like of float, optional
+        Symbol PMF of shape ``(M,)`` for PS-QAM.  Typically from
+        :func:`~commstools.mapping.maxwell_boltzmann`.
+        Mutually exclusive with ``nu``.
+    nu : float, optional
+        Maxwell-Boltzmann shaping parameter ``ν ≥ 0`` for QAM.  The PMF is
+        computed automatically via :func:`~commstools.mapping.maxwell_boltzmann`.
+        ``ν = 0`` gives a uniform distribution (equal-sized markers).
+        Mutually exclusive with ``pmf``.
     ax : matplotlib.axes.Axes, optional
         Target axis.
     title : str, optional
@@ -1020,9 +1037,20 @@ def ideal_constellation(
         The figure object.
     ax : matplotlib.axes.Axes
         The plotting axis.
+
+    Raises
+    ------
+    ValueError
+        If both ``pmf`` and ``nu`` are provided.
     """
+    if pmf is not None and nu is not None:
+        raise ValueError("Provide at most one of `pmf` or `nu`, not both.")
+
     logger.debug(f"Generating ideal constellation for {modulation} ({order}-level).")
-    from .mapping import gray_constellation
+    from .mapping import gray_constellation, maxwell_boltzmann
+
+    if nu is not None:
+        pmf = maxwell_boltzmann(order, nu)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(size, size))
@@ -1042,26 +1070,38 @@ def ideal_constellation(
     real = const.real
     imag = const.imag
 
-    # Plot points
-    ax.scatter(real, imag, s=100, zorder=10)
-
-    # Annotate points
-    n_bits = int(np.log2(order))
-    for i, point in enumerate(const):
-        x, y = point.real, point.imag
-
-        label = f"{i:0{n_bits}b} ({i})"
-        ax.annotate(
-            label,
-            (x, y),
-            xytext=(5, 5),
-            textcoords="offset points",
-            # Font settings handled by rcParams
+    if pmf is not None:
+        # PS-QAM mode
+        pmf_arr = np.asarray(pmf, dtype=np.float64)
+        sc = ax.scatter(
+            real,
+            imag,
+            s=100,
+            c=pmf_arr,
+            cmap="YlOrRd",
+            edgecolors="black",
+            linewidths=0.5,
+            zorder=10,
         )
+        plt.colorbar(sc, ax=ax, label="P(sₘ)")
+    else:
+        # Uniform mode
+        ax.scatter(real, imag, s=100, zorder=10)
+        n_bits = int(np.log2(order))
+        for i, point in enumerate(const):
+            x, y = point.real, point.imag
+            label = f"{i:0{n_bits}b} ({i})"
+            ax.annotate(
+                label,
+                (x, y),
+                xytext=(5, 5),
+                textcoords="offset points",
+            )
 
     # Titles and Labels
     if title is None:
-        title = f"Constellation: {modulation.upper()} {order}"
+        prefix = "PS-" if pmf is not None else ""
+        title = f"Constellation: {prefix}{modulation.upper()} {order}"
     ax.set_title(title)
     ax.set_xlabel("In-Phase (I)")
     ax.set_ylabel("Quadrature (Q)")
@@ -1113,6 +1153,7 @@ def constellation(
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     unipolar: Optional[bool] = None,
+    pmf: Optional[Any] = None,
     title: Optional[str] = "Constellation",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
@@ -1202,6 +1243,7 @@ def constellation(
                 overlay_ideal=overlay_ideal,
                 modulation=modulation,
                 order=order,
+                pmf=pmf,
                 title=ch_title,
                 vmin=vmin,
                 vmax=vmax,
@@ -1289,9 +1331,16 @@ def constellation(
                 const = gray_constellation(modulation, order, unipolar=unipolar)
                 const = to_device(const, "cpu")
 
-                # Scale constellation to match signal amplitude
-                # Use RMS-based scaling (robust to noise outliers)
-                const_rms = helpers.rms(const)
+                # Scale constellation to match signal amplitude.
+                # For PS-QAM: use pmf-weighted RMS so ideal points land at
+                # {s_m / sqrt(E_PS)}, matching where the received clusters
+                # sit after shape_pulse normalises to E_s = 1.
+                if pmf is not None:
+                    pmf_arr = np.asarray(pmf, dtype=np.float64)
+                    e_ps = float(np.dot(pmf_arr, np.abs(to_device(const, "cpu")) ** 2))
+                    const_rms = float(np.sqrt(e_ps)) if e_ps > 0 else helpers.rms(const)
+                else:
+                    const_rms = helpers.rms(const)
                 if const_rms > 0:
                     scale_factor = signal_rms / const_rms
                     const = const * scale_factor
@@ -1299,7 +1348,7 @@ def constellation(
                 ax.scatter(
                     const.real,
                     const.imag,
-                    c="green",
+                    c="lime",
                     edgecolors="dimgray",
                     linewidths=1.5,
                     s=30,

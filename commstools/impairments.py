@@ -32,8 +32,8 @@ from .logger import logger
 
 def apply_awgn(
     samples: ArrayType,
-    esn0_db: float,
     sps: float,
+    esn0_db: float,
     seed: Optional[int] = None,
 ) -> ArrayType:
     """
@@ -46,11 +46,11 @@ def apply_awgn(
     Parameters
     ----------
     samples : array_like
-        The input signal samples. Shape: (..., N_samples).
-    esn0_db : float
-        Symbol energy to noise spectral density ratio ($E_s/N_0$) in dB.
+        The input signal samples. Shape: (..., N_samples)
     sps : float
         Samples per symbol.
+    esn0_db : float
+        Symbol energy to noise spectral density ratio ($E_s/N_0$) in dB.
     seed : int, optional
         Random seed for reproducible noise generation. When ``None`` (default),
         the global RNG state is used.
@@ -111,9 +111,7 @@ def apply_awgn(
         real_dtype = samples.real.dtype
         noise = rng.normal(0, noise_std_component, samples.shape).astype(
             real_dtype
-        ) + 1j * rng.normal(0, noise_std_component, samples.shape).astype(
-            real_dtype
-        )
+        ) + 1j * rng.normal(0, noise_std_component, samples.shape).astype(real_dtype)
     else:
         noise_std = xp.sqrt(noise_power)
         noise = rng.normal(0, noise_std, samples.shape).astype(samples.dtype)
@@ -179,7 +177,7 @@ def apply_iq_imbalance(
     phi = math.radians(phase_imbalance_deg)
 
     # Mixing coefficients: r = K1*s + K2*conj(s)
-    K1 = complex(0.5 * (1.0 + g * math.cos(phi)),  0.5 * g * math.sin(phi))
+    K1 = complex(0.5 * (1.0 + g * math.cos(phi)), 0.5 * g * math.sin(phi))
     K2 = complex(0.5 * (1.0 - g * math.cos(phi)), -0.5 * g * math.sin(phi))
 
     result = K1 * samples + K2 * xp.conj(samples)
@@ -192,12 +190,12 @@ def apply_iq_imbalance(
 
 def apply_pmd(
     samples: ArrayType,
-    dgd: float,
     sampling_rate: float,
+    dgd: float,
     theta: float = 0.0,
 ) -> ArrayType:
     """
-    Applies a bulk rotation and first-order Polarization Mode Dispersion (PMD) to a dual-pol signal.
+    Applies first-order Polarization Mode Dispersion (PMD) to a dual-pol signal.
 
     Models an uncompensated channel segment as a frequency-dependent Jones matrix:
 
@@ -208,26 +206,39 @@ def apply_pmd(
         \\cdot R(-\\theta)
 
     where :math:`\\tau` is the differential group delay (DGD),
-    :math:`\\theta` is the polarization rotation angle, and
-    :math:`R(\\theta)` is the 2×2 rotation matrix.  The diagonal delay acts
-    on the *principal states of polarisation* (PSPs), not the lab frame:
-    :math:`R(-\\theta)` rotates the signal into the PSP frame, the DGD is
-    applied, then :math:`R(+\\theta)` rotates back.
+    :math:`\\theta` is the PSP orientation angle, and :math:`R(\\theta)` is
+    the 2×2 Jones rotation matrix.
 
-    The operation is fully vectorized in the frequency domain (no Python loops)
-    and backend-agnostic (NumPy / CuPy).
+    The DGD is applied in the *principal states of polarisation* (PSP) frame:
+    :math:`R(-\\theta)` projects the signal onto the PSPs, the differential
+    delay :math:`\\pm\\pi f\\tau` is applied to each PSP, then
+    :math:`R(+\\theta)` rotates back to the lab frame.  The two PSPs
+    experience equal and opposite group delays, giving a total differential
+    delay of :math:`\\tau` seconds.
+
+    :math:`\\theta` is **not** a separate bulk rotation — it is the PSP
+    orientation angle that is intrinsic to the PMD model.  For a
+    frequency-independent polarization rotation with no DGD use
+    :func:`apply_polarization_mixing` instead.
+
+    The operation is fully vectorised in the frequency domain and
+    backend-agnostic (NumPy / CuPy).
 
     Parameters
     ----------
     samples : array_like
         Dual-polarization signal. Shape: ``(2, N_samples)``.
-    dgd : float
-        Differential group delay in seconds. Use ``0`` to apply
-        pure rotation without DGD.
     sampling_rate : float
         Sampling rate in Hz.
+    dgd : float
+        Differential group delay :math:`\\tau` in seconds.
+        Set to ``0`` to apply pure SOP rotation with no delay (equivalent
+        to :func:`apply_polarization_mixing`).
     theta : float, default 0.0
-        Polarization rotation angle in radians.
+        PSP orientation angle :math:`\\theta` in radians.  Determines how
+        much energy couples between X and Y polarisations.
+        :math:`\\theta = 0` → PSPs aligned with lab axes (no cross-coupling);
+        :math:`\\theta = \\pi/4` → maximum coupling.
 
     Returns
     -------
@@ -242,7 +253,7 @@ def apply_pmd(
     Examples
     --------
     >>> samples = sig.samples  # shape (2, N), dual-pol
-    >>> distorted = apply_pmd(samples, dgd=5e-12, sig.sampling_rate, theta=np.pi/5)
+    >>> distorted = apply_pmd(samples, sig.sampling_rate, dgd=5e-12, theta=np.pi/5)
     """
     logger.info(f"Applying PMD (DGD={dgd:.2e} s, theta={theta:.3f} rad).")
 
@@ -261,9 +272,9 @@ def apply_pmd(
     s = math.sin(theta)
     # H(f) = R(+θ) · diag(D) · R(-θ)
     # R(-θ): rotate INTO the principal-state-of-polarisation (PSP) frame
-    Rfwd = xp.array([[ c, s], [-s, c]], dtype=samples.dtype)
+    Rfwd = xp.array([[c, s], [-s, c]], dtype=samples.dtype)
     # R(+θ): rotate back to the lab frame
-    Rinv = xp.array([[ c,-s], [ s, c]], dtype=samples.dtype)
+    Rinv = xp.array([[c, -s], [s, c]], dtype=samples.dtype)
 
     phase = xp.pi * freqs * dgd
     D = xp.stack([xp.exp(-1j * phase), xp.exp(1j * phase)])  # (2, N)
@@ -284,8 +295,8 @@ def apply_pmd(
 
 def apply_phase_noise(
     samples: ArrayType,
-    linewidth_hz: float,
     sampling_rate: float,
+    linewidth_hz: float,
     seed: Optional[int] = None,
     shared_lo: bool = False,
 ) -> ArrayType:
@@ -308,11 +319,11 @@ def apply_phase_noise(
     ----------
     samples : array_like
         Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+    sampling_rate : float
+        Sampling rate in Hz.
     linewidth_hz : float
         Combined transmitter + receiver laser linewidth :math:`\Delta\nu` in Hz.
         Typical values: 100 kHz (narrow-linewidth laser) to 10 MHz (DFB).
-    sampling_rate : float
-        Sampling rate in Hz.
     seed : int, optional
         Random seed for reproducible noise.
     shared_lo : bool, default False
@@ -374,7 +385,7 @@ def apply_polarization_mixing(
     r"""
     Applies a static or time-varying polarization rotation (pure SOP mixing).
 
-    Models a frequency-independent 2×2 Jones rotation matrix:
+    Models a frequency-independent 2x2 Jones rotation matrix:
 
     .. math::
 
@@ -448,7 +459,9 @@ def apply_polarization_mixing(
     if np.ndim(theta) == 0:
         scalar_theta = float(theta)
         if drift_rate_rad_per_sym != 0.0:
-            angles = xp.arange(N, dtype=xp.float64) * drift_rate_rad_per_sym + scalar_theta
+            angles = (
+                xp.arange(N, dtype=xp.float64) * drift_rate_rad_per_sym + scalar_theta
+            )
         else:
             # Static: scalar path — avoid building (N,) array
             c = math.cos(scalar_theta)
@@ -484,10 +497,10 @@ def apply_polarization_mixing(
 
 def apply_chromatic_dispersion(
     samples: ArrayType,
+    sampling_rate: float,
     dispersion_ps_nm_km: float,
     fiber_length_km: float,
     center_wavelength_nm: float,
-    sampling_rate: float,
 ) -> ArrayType:
     r"""
     Applies chromatic dispersion (CD) to a signal in the frequency domain.
@@ -512,6 +525,8 @@ def apply_chromatic_dispersion(
     ----------
     samples : array_like
         Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+    sampling_rate : float
+        Sampling rate in Hz.
     dispersion_ps_nm_km : float
         Fibre dispersion parameter :math:`D` in ps / (nm · km).
         Standard SMF-28: 17 ps/(nm·km) at 1550 nm.
@@ -519,8 +534,6 @@ def apply_chromatic_dispersion(
         Fibre span length in km.
     center_wavelength_nm : float
         Centre wavelength in nm (e.g. 1550 for C-band).
-    sampling_rate : float
-        Sampling rate in Hz.
 
     Returns
     -------
@@ -551,10 +564,10 @@ def apply_chromatic_dispersion(
 
     # Convert to SI
     D = dispersion_ps_nm_km * 1e-12 / (1e-9 * 1e3)  # s / m²
-    lam = center_wavelength_nm * 1e-9                 # m
-    c = 2.998e8                                        # m/s
-    L = fiber_length_km * 1e3                          # m
-    beta2 = -(D * lam**2) / (2.0 * np.pi * c) * L    # s²  (β₂·L product)
+    lam = center_wavelength_nm * 1e-9  # m
+    c = 2.998e8  # m/s
+    L = fiber_length_km * 1e3  # m
+    beta2 = -(D * lam**2) / (2.0 * np.pi * c) * L  # s²  (β₂·L product)
 
     omega = 2.0 * np.pi * xp.fft.fftfreq(N, d=1.0 / sampling_rate)
     H = xp.exp(-1j * (beta2 / 2.0) * omega**2)

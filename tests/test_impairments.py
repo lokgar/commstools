@@ -385,8 +385,8 @@ class TestApplyChomaticDispersion:
         fs = 64e9
         D, L, lam = 17.0, 80.0, 1550.0
 
-        distorted = apply_chromatic_dispersion(samples, D, L, lam, fs)
-        recovered = compensate_chromatic_dispersion(distorted, D, L, lam, fs)
+        distorted = apply_chromatic_dispersion(samples, fs, D, L, lam)
+        recovered = compensate_chromatic_dispersion(distorted, fs, D, L, lam)
 
         xpt.assert_allclose(recovered, samples, atol=1e-3)
 

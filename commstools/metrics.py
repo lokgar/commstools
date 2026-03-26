@@ -7,18 +7,20 @@ error rates, and reliability across different computational backends.
 Functions
 ---------
 evm :
-    Calculates Error Vector Magnitude between received and reference symbols.
+    Error Vector Magnitude — data-aided or blind (decision-directed) mode.
 snr :
-    Performs data-aided SNR estimation.
+    Data-aided SNR estimation.
 ber :
-    Computes Bit Error Rate between bit sequences.
+    Bit Error Rate between bit sequences.
+ser :
+    Symbol Error Rate using ML hard decisions against a known constellation.
 gmi :
-    Computes Generalised Mutual Information (GMI) from per-bit LLRs.
+    Generalised Mutual Information (GMI) from per-bit LLRs.
 mi :
-    Estimates Mutual Information (MI) under a Gaussian channel assumption.
+    Mutual Information (MI) under a Gaussian channel assumption.
 """
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -28,30 +30,60 @@ from .logger import logger
 
 def evm(
     rx_symbols: ArrayType,
-    tx_symbols: ArrayType,
+    tx_symbols: Optional[ArrayType] = None,
+    *,
+    mode: str = "data_aided",
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
 ) -> Tuple[Union[float, ArrayType], Union[float, ArrayType]]:
     """
-    Computes Error Vector Magnitude (EVM) between received and reference symbols.
+    Computes Error Vector Magnitude (EVM).
 
-    EVM is a standard measure of signal quality that quantifies the deviation
-    of received symbols from their ideal constellation points.
+    Two modes are supported:
 
-    Calculation is performed per-channel (independent gain normalization) to
+    * ``"data_aided"`` *(default)* — uses known transmitted symbols as the
+      reference (classical simulation metric, most accurate).
+    * ``"blind"`` — decision-directed: the nearest ideal constellation point
+      to each received sample is used as the reference.  No knowledge of the
+      transmitted sequence is required.  Equivalent to measuring the *blob
+      size* around each constellation cluster, as a spectrum analyser would.
+      At very low SNR the estimate is optimistically biased because erroneous
+      decisions pull the centroid toward the wrong cluster.  The caller is
+      responsible for passing a gain-corrected signal; no implicit gain
+      normalisation is applied (``gray_constellation`` always returns
+      unit-power constellations).
+
+    Calculation is performed per-channel (independent gain normalisation) to
     properly handle MIMO/multichannel signals.
 
     Parameters
     ----------
-    rx_symbols : array_like or Signal
-        Received symbols to evaluate. Shape: (..., N_symbols).
-    tx_symbols : array_like or Signal
-        Ideal reference (transmitted) symbols. Shape: (..., N_symbols).
+    rx_symbols : array_like
+        Received symbols. Shape: ``(..., N_symbols)``.
+    tx_symbols : array_like, optional
+        Ideal reference (transmitted) symbols. Shape: ``(..., N_symbols)``.
+        Required when ``mode="data_aided"``, ignored when ``mode="blind"``.
+    mode : {"data_aided", "blind"}, default "data_aided"
+        Estimation mode (keyword-only).
+    modulation : str, optional
+        Modulation type (``"psk"``, ``"qam"``, ``"ask"``).
+        Required when ``mode="blind"``.
+    order : int, optional
+        Modulation order *M*. Required when ``mode="blind"``.
 
     Returns
     -------
     evm_percent : float or ndarray
-        EVM expressed as a percentage. Returns an array if input is multichannel.
+        EVM as a percentage. Scalar for SISO, array ``(N_ch,)`` for MIMO.
     evm_db : float or ndarray
-        EVM expressed in decibels (dB).
+        EVM in decibels (dB).
+
+    Raises
+    ------
+    ValueError
+        If ``mode="data_aided"`` and ``tx_symbols`` is ``None``, or
+        ``mode="blind"`` and ``modulation``/``order`` are missing, or
+        an unknown mode string is given.
 
     Notes
     -----
@@ -59,49 +91,61 @@ def evm(
     """
     from . import helpers
 
+    _VALID_MODES = ("data_aided", "blind")
+    if mode not in _VALID_MODES:
+        raise ValueError(f"Unknown mode '{mode}'. Choose from {_VALID_MODES}.")
+
     rx, xp, _ = dispatch(rx_symbols)
-    tx = xp.asarray(tx_symbols)
-
-    # Ensure shape consistency
-    if rx.shape != tx.shape:
-        raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
-
-    # Determine axis for time/symbols
     axis = -1
 
-    # helper to check normalization
     def _is_normalized(arr, ax):
         pwr = xp.mean(xp.abs(arr) ** 2, axis=ax)
         return xp.allclose(pwr, 1.0, atol=1e-3)
 
-    # Robustness: Check if normalized, if not -> normalize per channel
-    if not _is_normalized(rx, axis):
-        rx = helpers.normalize(rx, axis=axis, mode="average_power")
+    # --- Build reference ---
+    if mode == "data_aided":
+        if tx_symbols is None:
+            raise ValueError(
+                "mode='data_aided' requires tx_symbols. "
+                "Pass tx_symbols or use mode='blind'."
+            )
+        tx = xp.asarray(tx_symbols)
+        if rx.shape != tx.shape:
+            raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
 
-    if not _is_normalized(tx, axis):
-        tx = helpers.normalize(tx, axis=axis, mode="average_power")
+        if not _is_normalized(rx, axis):
+            rx = helpers.normalize(rx, axis=axis, mode="average_power")
+        if not _is_normalized(tx, axis):
+            tx = helpers.normalize(tx, axis=axis, mode="average_power")
 
-    # Check for zero power ref
-    # If tx was zeros, normalize might have left it as zeros (safe/helpers.py behavior)
+    else:  # blind
+        if modulation is None or order is None:
+            raise ValueError(
+                "mode='blind' requires modulation and order. "
+                "Example: evm(rx, mode='blind', modulation='qam', order=16)."
+            )
+        from .mapping import gray_constellation
+
+        # gray_constellation always returns unit-average-power constellations.
+        # No gain correction of rx is applied here — the caller is responsible
+        # for passing a gain-corrected signal at the expected constellation power.
+        constellation = xp.asarray(gray_constellation(modulation, order))  # (M,) unit power
+
+        # ML hard decision: nearest constellation point per symbol.
+        # rx shape (..., N) → (..., N, 1) vs (M,) → (..., N, M)
+        dist = xp.abs(rx[..., None] - constellation) ** 2
+        tx = constellation[xp.argmin(dist, axis=-1)]  # same shape as rx
+
+    # --- EVM computation (shared) ---
     ref_pwr = xp.mean(xp.abs(tx) ** 2, axis=axis)
     low_pwr_mask = ref_pwr < 1e-20
-
     if xp.any(low_pwr_mask):
         logger.warning("Reference signal power near zero in one or more channels.")
 
-    # Error vector
     error = rx - tx
-
-    # RMS of error vector (per channel)
     error_power = xp.mean(xp.abs(error) ** 2, axis=axis)
-    error_rms = xp.sqrt(error_power)
+    evm_ratio = xp.sqrt(error_power)  # ref power is 1.0 after normalisation
 
-    # Ref RMS is 1.0 by definition (per channel)
-    evm_ratio = error_rms
-
-    # Apply infinity where reference was zero
-    # We must operate on matched types.
-    # If scalar:
     if evm_ratio.ndim == 0:
         if low_pwr_mask:
             return float("inf"), float("inf")
@@ -110,21 +154,20 @@ def evm(
             evm_db = (
                 float(20.0 * xp.log10(evm_ratio)) if evm_ratio > 0 else float("-inf")
             )
-        logger.info(f"EVM: {evm_percent:.2f}% ({evm_db:.2f} dB)")
+        logger.info(f"EVM [{mode}]: {evm_percent:.2f}% ({evm_db:.2f} dB)")
         return evm_percent, evm_db
 
-    # If array:
     evm_percent = evm_ratio * 100.0
     with np.errstate(divide="ignore"):
         evm_db = 20.0 * xp.log10(evm_ratio)
 
-    # Overwrite indices
     evm_percent[low_pwr_mask] = float("inf")
     evm_db[low_pwr_mask] = float("inf")
 
     for ch in range(evm_percent.shape[0]):
         logger.info(
-            f"EVM Ch{ch}: {float(evm_percent[ch]):.2f}% ({float(evm_db[ch]):.2f} dB)"
+            f"EVM [{mode}] Ch{ch}: {float(evm_percent[ch]):.2f}%"
+            f" ({float(evm_db[ch]):.2f} dB)"
         )
 
     return evm_percent, evm_db
@@ -273,6 +316,80 @@ def ber(
     return ber_values
 
 
+def ser(
+    rx_symbols: ArrayType,
+    tx_symbols: ArrayType,
+    modulation: str,
+    order: int,
+) -> Union[float, ArrayType]:
+    """
+    Computes the Symbol Error Rate (SER) using ML hard decisions.
+
+    Each received symbol is decided to its nearest constellation point
+    (minimum Euclidean distance).  The decision is then compared to the
+    corresponding transmitted symbol.  SER measures symbol-level errors
+    before bit demapping and does not assume Gray coding, making it
+    distinct from BER.
+
+    Computation is fully vectorised and backend-agnostic (NumPy / CuPy).
+
+    Parameters
+    ----------
+    rx_symbols : array_like
+        Received (noisy) symbols. Shape: ``(..., N_symbols)``.
+    tx_symbols : array_like
+        Transmitted (ideal) symbols. Shape: ``(..., N_symbols)``.
+    modulation : str
+        Modulation type: ``"psk"``, ``"qam"``, or ``"ask"``.
+    order : int
+        Modulation order *M*.
+
+    Returns
+    -------
+    float or ndarray
+        SER as a ratio in ``[0, 1]``. Scalar for SISO input,
+        array of shape ``(N_ch,)`` for MIMO input.
+
+    Notes
+    -----
+    Both ``rx_symbols`` and ``tx_symbols`` are decided against the same
+    constellation so the function is robust to any floating-point rounding
+    in the reference values.
+    """
+    from .mapping import gray_constellation
+
+    rx, xp, _ = dispatch(rx_symbols)
+    tx = xp.asarray(tx_symbols)
+
+    if rx.shape != tx.shape:
+        raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
+
+    constellation = xp.asarray(gray_constellation(modulation, order))  # (M,)
+
+    # Broadcast: rx/tx (..., N) → (..., N, 1) vs constellation (M,) → (..., N, M)
+    dist_rx = xp.abs(rx[..., None] - constellation) ** 2   # (..., N, M)
+    dist_tx = xp.abs(tx[..., None] - constellation) ** 2   # (..., N, M)
+
+    dec_rx = xp.argmin(dist_rx, axis=-1)  # (..., N) — index into constellation
+    dec_tx = xp.argmin(dist_tx, axis=-1)  # (..., N)
+
+    errors = xp.sum(dec_rx != dec_tx, axis=-1)
+    total = rx.shape[-1]
+    ser_values = errors / total
+
+    if ser_values.ndim == 0:
+        ser_val = float(ser_values)
+        logger.info(f"SER: {ser_val:.2e} ({int(errors)}/{total} errors)")
+        return ser_val
+
+    for ch in range(ser_values.shape[0]):
+        logger.info(
+            f"SER Ch{ch}: {float(ser_values[ch]):.2e} "
+            f"({int(errors[ch])}/{total} errors)"
+        )
+    return ser_values
+
+
 def gmi(
     llrs: ArrayType,
     tx_bits: ArrayType,
@@ -336,35 +453,36 @@ def gmi(
     >>> llrs = compute_llr(rx_symbols, "qam", 16, noise_var=0.1, output='numpy')
     >>> gmi_value = gmi(llrs, tx_bits)
     """
-    llrs_arr = np.asarray(llrs, dtype=np.float64)
-    bits_arr = np.asarray(tx_bits, dtype=np.float64)
+    llrs_arr, xp, _ = dispatch(llrs)
+    llrs_arr = llrs_arr.astype(xp.float64)
+    bits_arr = xp.asarray(tx_bits, dtype=xp.float64)
 
     # Detect k (bits per symbol) from 2D shape before flattening.
     # For (N, k) input: sum over k bit positions → GMI ∈ [0, k].
     # For 1D (N·k,) input: k=1, returns per-bit GMI ∈ [0, 1].
     k = llrs_arr.shape[1] if llrs_arr.ndim == 2 else 1
 
-    llrs_np = llrs_arr.ravel()
-    bits_np = bits_arr.ravel()
+    llrs_flat = llrs_arr.ravel()
+    bits_flat = bits_arr.ravel()
 
-    if llrs_np.shape != bits_np.shape:
+    if llrs_flat.shape != bits_flat.shape:
         raise ValueError(
             f"llrs and tx_bits must have the same number of elements. "
-            f"Got {llrs_np.shape} vs {bits_np.shape}."
+            f"Got {llrs_flat.shape} vs {bits_flat.shape}."
         )
 
     # Signed LLR: positive when transmitted bit is 0, negative when bit is 1.
     # The argument to log2(1 + exp(·)) is: -LLR * (1 - 2*bit)
     # = -LLR when bit=0  (should be positive → small loss)
     # = +LLR when bit=1  (should be negative → small loss at high SNR)
-    x = -llrs_np * (1.0 - 2.0 * bits_np)
+    x = -llrs_flat * (1.0 - 2.0 * bits_flat)
 
     # Numerically stable softplus: log2(1 + exp(x)) = log1p(exp(-|x|))/ln2 + max(0,x)/ln2
-    ln2 = np.log(2.0)
-    softplus = (np.log1p(np.exp(-np.abs(x))) + np.maximum(0.0, x)) / ln2
+    ln2 = xp.log(xp.asarray(2.0, dtype=xp.float64))
+    softplus = (xp.log1p(xp.exp(-xp.abs(x))) + xp.maximum(xp.asarray(0.0, dtype=xp.float64), x)) / ln2
 
     # GMI = Σ_{b=0}^{k-1} (1 - mean_n[softplus_b]) = k * (1 - mean_all[softplus])
-    gmi_value = float(k * (1.0 - np.mean(softplus)))
+    gmi_value = float(k * (1.0 - xp.mean(softplus)))
     logger.info(f"GMI: {gmi_value:.4f} b/cu")
     return gmi_value
 
@@ -374,6 +492,7 @@ def mi(
     modulation: str,
     order: int,
     noise_var: float,
+    pmf: Optional[np.ndarray] = None,
 ) -> float:
     r"""
     Estimates the Mutual Information (MI) under a Gaussian channel assumption.
@@ -406,14 +525,44 @@ def mi(
     order : int
         Modulation order *M*.
     noise_var : float
-        Complex noise variance :math:`\sigma^2` of the AWGN model.
+        Complex noise variance :math:`\sigma^2` of the AWGN model
+        **referenced to the normalised constellation** (unit average power
+        under the uniform distribution, i.e. the same scale as
+        :func:`~commstools.mapping.gray_constellation`).
         For unit-power symbols at :math:`E_s/N_0` (dB):
         :math:`\sigma^2 = 10^{-E_s/N_0 / 10}`.
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(M,)`` for PS-QAM. When provided, the
+        non-uniform prior ``P(sₘ)`` is incorporated into the likelihood
+        computation and the result is clipped to ``[0, H(X)]`` instead of
+        ``[0, log₂M]``. Pass ``signal.ps_pmf`` for PS-QAM signals.
+        ``None`` (default) assumes uniform prior.
 
     Returns
     -------
     float
-        MI in bits per channel use (b/cu). In the range ``[0, log₂(M)]``.
+        MI in bits per channel use (b/cu). In the range ``[0, H(X)]``
+        where ``H(X) = log₂M`` for uniform and ``H(X) < log₂M`` for PS.
+
+    .. warning:: **PS-QAM scale convention**
+
+        ``symbols_rx`` must be on the **same scale** as the normalised
+        :func:`~commstools.mapping.gray_constellation` (unit average power
+        under the uniform distribution).
+
+        :meth:`~commstools.core.Signal.ps_qam` transmits at unit symbol
+        power (``shape_pulse`` normalises), so samples from
+        :attr:`~commstools.core.Signal.samples` and from
+        :func:`~commstools.impairments.apply_awgn` are already on the
+        correct scale and can be passed directly.
+
+        However, after :meth:`~commstools.core.Signal.resolve_symbols`
+        the receiver re-normalises to unit average power, which shifts the
+        PS symbols from the :math:`\{s_m\}` grid to
+        :math:`\{c \cdot s_m\}` (where :math:`c = 1/\sqrt{E_{PS}}`).
+        Passing ``resolved_symbols`` directly will give slightly incorrect
+        MI values.  Use :meth:`~commstools.core.Signal.mi` instead —
+        it applies the :math:`E_{PS}` scale correction automatically.
 
     References
     ----------
@@ -427,32 +576,41 @@ def mi(
     """
     from .mapping import gray_constellation
 
-    # Move to CPU first (handles CuPy arrays via .get())
-    symbols_cpu, _, _ = dispatch(symbols_rx)
-    rx = np.asarray(
-        symbols_cpu.get() if hasattr(symbols_cpu, "get") else symbols_cpu,
-        dtype=np.complex128,
-    ).ravel()  # (N,)
-    constellation = gray_constellation(modulation, order).astype(np.complex128)  # (M,)
+    rx, xp, _ = dispatch(symbols_rx)
+    rx = rx.ravel().astype(xp.complex128)             # (N,)
+    constellation = xp.asarray(
+        gray_constellation(modulation, order), dtype=xp.complex128
+    )                                                  # (M,)
     M = len(constellation)
+    ln2 = float(xp.log(xp.asarray(2.0, dtype=xp.float64)))
+    log2_M = float(xp.log2(xp.asarray(float(M), dtype=xp.float64)))
 
-    # Log-likelihoods: log p(r | s_m) = -|r - s_m|² / σ²  (drop constant)
+    # Prior: uniform or PS-shaped
+    if pmf is not None:
+        pmf_arr = np.asarray(pmf, dtype=np.float64).clip(1e-300, None)
+        log_prior = xp.asarray(np.log(pmf_arr), dtype=xp.float64)  # (M,) nats
+        nz = pmf_arr > 0
+        h_x_bits = float(-np.sum(pmf_arr[nz] * np.log2(pmf_arr[nz])))
+    else:
+        log_prior = xp.full(M, -xp.log(xp.asarray(float(M), dtype=xp.float64)),
+                            dtype=xp.float64)          # log(1/M)
+        h_x_bits = log2_M
+
+    # Log-joint: log P(sₘ) + log p(r | sₘ)   (drop noise-normalisation constant)
     # Shape: (N, M)
-    diff = rx[:, None] - constellation[None, :]       # (N, M)
-    log_liks = -(diff.real**2 + diff.imag**2) / noise_var
+    diff = rx[:, None] - constellation[None, :]        # (N, M)
+    log_liks = log_prior[None, :] - (diff.real**2 + diff.imag**2) / noise_var
 
-    # log p(s_m | r) = log_liks - log(sum_m exp(log_liks))  [log-sum-exp]
-    log_sum = np.log(np.sum(np.exp(log_liks - log_liks.max(axis=1, keepdims=True)), axis=1))
-    log_sum += log_liks.max(axis=1)                   # undo the shift
+    # log p(s_m | r) via log-sum-exp for numerical stability
+    lse_shift = log_liks.max(axis=1, keepdims=True)    # (N, 1)
+    log_sum = xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
 
     log_posterior = log_liks - log_sum[:, None]        # (N, M), log base e
-    posterior = np.exp(log_posterior)                  # (N, M), sum-to-1 per row
+    posterior = xp.exp(log_posterior)                  # (N, M), sum-to-1 per row
 
-    # MI = log2(M) + (1/N) Σ_n Σ_m p(s_m|r_n) · log2 p(s_m|r_n)
-    # Entropy of posterior (negative cross-entropy with uniform prior)
-    mi_nats = np.sum(posterior * log_posterior, axis=1).mean()  # Σ_m p·log_e(p)
-    mi_value = float(np.log2(M) + mi_nats / np.log(2.0))
-    mi_value = float(np.clip(mi_value, 0.0, np.log2(M)))
+    # MI = H(X) + (1/N) Σ_n Σ_m p(s_m|r_n) · log2 p(s_m|r_n)
+    mi_nats = float(xp.sum(posterior * log_posterior, axis=1).mean())
+    mi_value = float(np.clip(h_x_bits + mi_nats / ln2, 0.0, h_x_bits))
 
-    logger.info(f"MI: {mi_value:.4f} b/cu  (max {np.log2(M):.2f} b/cu)")
+    logger.info(f"MI: {mi_value:.4f} b/cu  (max {h_x_bits:.2f} b/cu)")
     return mi_value
