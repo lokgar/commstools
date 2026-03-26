@@ -26,6 +26,7 @@ compute_llr :
 import numpy as np
 
 from functools import lru_cache
+from typing import Optional
 
 from .backend import ArrayType, dispatch, is_jax_array, to_jax, _get_jax
 from .logger import logger
@@ -50,29 +51,47 @@ def _get_jitted_soft_demap():
             )
 
         @jax.jit
-        def maxlog(symbols, constellation, bits_table_t, sigma_sq):
-            """Max-log LLR: symbols (N,), constellation (M,), bits_table_t (k, M)."""
+        def maxlog(symbols, constellation, bits_table_t, sigma_sq, log_pmf):
+            """Max-log LLR with PS prior.
+
+            symbols (N,), constellation (M,), bits_table_t (k, M), log_pmf (M,).
+            Uniform case: pass log_pmf = jnp.zeros(M) — constant offset cancels.
+            PS case: log_pmf = log P(sₘ).
+
+            Effective metric: eff_m = d_m/σ² − log P(sₘ)
+            LLR_k = min_{b=1} eff − min_{b=0} eff
+            """
             distances_sq = (
                 jnp.abs(symbols[:, None] - constellation[None, :]) ** 2
             )  # (N, M)
+            eff = distances_sq / sigma_sq - log_pmf[None, :]  # (N, M)
 
             def bit_llr(bit_row):  # (M,)
-                d0 = jnp.where(bit_row == 0, distances_sq, jnp.inf)  # (N, M)
-                d1 = jnp.where(bit_row == 1, distances_sq, jnp.inf)  # (N, M)
-                return (jnp.min(d1, axis=1) - jnp.min(d0, axis=1)) / sigma_sq  # (N,)
+                d0 = jnp.where(bit_row == 0, eff, jnp.inf)  # (N, M)
+                d1 = jnp.where(bit_row == 1, eff, jnp.inf)  # (N, M)
+                return jnp.min(d1, axis=1) - jnp.min(d0, axis=1)  # (N,)
 
             return jax.vmap(bit_llr)(bits_table_t).T  # (k, N) -> (N, k)
 
         @jax.jit
-        def exact(symbols, constellation, bits_table_t, sigma_sq):
-            """Exact LLR via log-sum-exp: symbols (N,), constellation (M,), bits_table_t (k, M)."""
-            neg_exp = (
-                -(jnp.abs(symbols[:, None] - constellation[None, :]) ** 2) / sigma_sq
+        def exact(symbols, constellation, bits_table_t, sigma_sq, log_pmf):
+            """Exact LLR with PS prior via log-sum-exp.
+
+            symbols (N,), constellation (M,), bits_table_t (k, M), log_pmf (M,).
+            Uniform case: pass log_pmf = jnp.zeros(M).
+            PS case: log_pmf = log P(sₘ).
+
+            log_terms_m = log P(sₘ) − d_m/σ²
+            LLR_k = LSE_{b=0}(log_terms) − LSE_{b=1}(log_terms)
+            """
+            distances_sq = (
+                jnp.abs(symbols[:, None] - constellation[None, :]) ** 2
             )  # (N, M)
+            log_terms = log_pmf[None, :] - distances_sq / sigma_sq  # (N, M)
 
             def bit_llr(bit_row):  # (M,)
-                e0 = jnp.where(bit_row == 0, neg_exp, -jnp.inf)  # (N, M)
-                e1 = jnp.where(bit_row == 1, neg_exp, -jnp.inf)  # (N, M)
+                e0 = jnp.where(bit_row == 0, log_terms, -jnp.inf)  # (N, M)
+                e1 = jnp.where(bit_row == 1, log_terms, -jnp.inf)  # (N, M)
                 return jax.scipy.special.logsumexp(
                     e0, axis=1
                 ) - jax.scipy.special.logsumexp(e1, axis=1)  # (N,)
@@ -668,6 +687,7 @@ def compute_llr(
     method: str = "maxlog",
     unipolar: bool = False,
     output: str = "jax",
+    pmf: Optional[np.ndarray] = None,
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
@@ -693,9 +713,12 @@ def compute_llr(
     order : int
         Modulation order.
     noise_var : float
-        Total complex noise variance ($\\sigma^2$) of the CN(0, $\\sigma^2$)
-        AWGN model. For unit-power symbols at $E_s/N_0$ (dB):
-        $\\sigma^2 = 10^{-E_s/N_0 / 10}$.
+        Total complex noise variance (:math:`\\sigma^2`) of the
+        :math:`\\mathcal{CN}(0, \\sigma^2)` AWGN model, **referenced to the
+        normalised constellation** (unit average power under the uniform
+        distribution, matching :func:`gray_constellation`).
+        For unit-power symbols at :math:`E_s/N_0` (dB):
+        :math:`\\sigma^2 = 10^{-E_s/N_0 / 10}`.
     method : {"maxlog", "exact"}, default "maxlog"
         LLR computation algorithm. ``"maxlog"`` is faster (single min per
         bit); ``"exact"`` uses log-sum-exp for a tighter result.
@@ -712,6 +735,12 @@ def compute_llr(
           CuPy input → CuPy output.
         * ``"numpy"`` — always returns a plain :class:`numpy.ndarray`.
           Convenient for downstream code that expects NumPy.
+    pmf : np.ndarray, optional
+        Symbol probability mass function (shape ``(order,)``). When provided,
+        computes PS-aware LLRs that incorporate the non-uniform prior
+        ``P(sₘ)`` from a Maxwell-Boltzmann shaped constellation.
+        Pass ``maxwell_boltzmann(order, nu)`` here for PS-QAM signals.
+        When ``None`` (default), assumes uniform prior (standard QAM).
 
     Returns
     -------
@@ -733,13 +762,31 @@ def compute_llr(
     -----
     Max-Log approximation:
 
-    $LLR_k \\approx \\frac{1}{\\sigma^2}
-    \\left(\\min_{s \\in S_1^k} |r-s|^2 - \\min_{s \\in S_0^k} |r-s|^2\\right)$
+    :math:`LLR_k \\approx \\frac{1}{\\sigma^2}
+    \\left(\\min_{s \\in S_1^k} |r-s|^2 - \\min_{s \\in S_0^k} |r-s|^2\\right)`
 
     Exact LLR:
 
-    $LLR_k = \\log \\sum_{s \\in S_0^k} e^{-|r-s|^2/\\sigma^2}
-    - \\log \\sum_{s \\in S_1^k} e^{-|r-s|^2/\\sigma^2}$
+    :math:`LLR_k = \\log \\sum_{s \\in S_0^k} e^{-|r-s|^2/\\sigma^2}
+    - \\log \\sum_{s \\in S_1^k} e^{-|r-s|^2/\\sigma^2}`
+
+    .. warning:: **PS-QAM scale convention**
+
+        ``symbols`` and ``noise_var`` must be on the **same scale** as the
+        normalised :func:`gray_constellation` (unit average power under the
+        uniform distribution).
+
+        :meth:`~commstools.core.Signal.ps_qam` transmits at unit symbol
+        power (``shape_pulse`` normalises), so samples from
+        :attr:`~commstools.core.Signal.samples` and after
+        :func:`~commstools.impairments.apply_awgn` are already correct.
+
+        After :meth:`~commstools.core.Signal.resolve_symbols` the receiver
+        re-normalises, shifting PS symbols from :math:`\\{s_m\\}` to
+        :math:`\\{c \\cdot s_m\\}` (where :math:`c = 1/\\sqrt{E_{PS}}`).
+        Passing ``resolved_symbols`` directly will give slightly incorrect
+        LLRs.  Use :meth:`~commstools.core.Signal.gmi` instead — it applies
+        the :math:`E_{PS}` scale correction automatically.
     """
     logger.debug(
         f"Computing LLRs for {modulation.upper()} {order}-level (method={method}, output={output})."
@@ -778,6 +825,12 @@ def compute_llr(
     )
     sigma_np = np.float32(max(noise_var, 1e-20))
 
+    # Build log_pmf: zeros = uniform (constant offset cancels in LLR difference).
+    if pmf is not None:
+        log_pmf_np = np.log(np.clip(np.asarray(pmf, dtype=np.float32), 1e-40, None))
+    else:
+        log_pmf_np = np.zeros(order, dtype=np.float32)
+
     # JAX path
     if is_jax_array(symbols):
         if hasattr(symbols, "shape"):
@@ -790,6 +843,7 @@ def compute_llr(
         constellation_jax = jnp.asarray(const)
         bits_table_t_jax = jnp.asarray(bits_table_np)
         sigma_sq = jnp.asarray(sigma_np)
+        log_pmf_jax = jnp.asarray(log_pmf_np)
 
     # NumPy/CuPy path
     else:
@@ -805,15 +859,16 @@ def compute_llr(
         constellation_jax = jax.device_put(const, device)
         bits_table_t_jax = jax.device_put(bits_table_np, device)
         sigma_sq = jax.device_put(jnp.asarray(sigma_np), device)
+        log_pmf_jax = jax.device_put(log_pmf_np, device)
 
     # Compute LLRs via JIT-compiled kernels
     maxlog_fn, exact_fn = _get_jitted_soft_demap()
     if method == "maxlog":
         llrs = maxlog_fn(
-            jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq
+            jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq, log_pmf_jax
         )
     else:
-        llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq)
+        llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq, log_pmf_jax)
 
     # Reshape to match input structure
     flat_llrs = llrs.flatten()
@@ -832,3 +887,173 @@ def compute_llr(
             return flat_llrs  # already JAX
         # xp is NumPy or CuPy — convert via NumPy intermediate
         return xp.asarray(np.asarray(flat_llrs))
+
+
+# =============================================================================
+# Probabilistic Shaping (PS-QAM)
+# =============================================================================
+
+
+@lru_cache(maxsize=256)
+def maxwell_boltzmann(order: int, nu: float) -> np.ndarray:
+    r"""
+    Computes the Maxwell-Boltzmann PMF over a QAM constellation.
+
+    .. math::
+
+        P(s_m) = \frac{\exp(-\nu |s_m|^2)}{Z(\nu)}, \quad
+        Z(\nu) = \sum_m \exp(-\nu |s_m|^2)
+
+    where :math:`|s_m|^2` is measured on the **unnormalized** integer grid
+    (e.g. :math:`\{(\pm 1 \pm j), (\pm 1 \pm 3j), \ldots\}` for 16-QAM),
+    making :math:`\nu` directly comparable to values in the literature
+    (e.g. Böcherer 2015, Schulte 2016).
+
+    The returned PMF is indexed consistently with the **normalized**
+    :func:`gray_constellation` used everywhere else in the library, so
+    ``pmf[i]`` is the probability of the symbol at ``gray_constellation(...)[i]``.
+
+    Parameters
+    ----------
+    order : int
+        QAM modulation order (must be a power of 2, e.g. 16, 64, 256).
+    nu : float
+        Shaping parameter ``ν ≥ 0``.
+        ``ν = 0`` returns the uniform distribution ``1/M``.
+        Larger ``ν`` concentrates probability on lower-energy inner points.
+        Values are on the unnormalized grid scale (typical range 0.001–0.5
+        depending on order; see :func:`optimal_nu`).
+
+    Returns
+    -------
+    np.ndarray
+        PMF array of shape ``(order,)``, dtype float64, summing to 1.
+
+    Notes
+    -----
+    Results are cached by ``(order, nu)``; call once and reuse the array.
+
+    The unnormalized grid has average power :math:`P_\\text{avg}` (10 for
+    16-QAM, 42 for 64-QAM, 170 for 256-QAM).  To convert a
+    ``ν_normalized`` value from an older version of this library:
+    ``ν = ν_normalized / P_avg``.
+    """
+    # Energies computed on the unnormalized integer grid for literature-compatible ν.
+    # The PMF index ordering matches gray_constellation (normalized), since both
+    # use the same Gray-code index assignment.
+    unnorm_constellation = gray_constellation("qam", order, normalize=False)
+    if nu == 0.0:
+        return np.full(order, 1.0 / order, dtype=np.float64)
+    energies = np.abs(unnorm_constellation) ** 2  # (M,) unnormalized energies
+    log_p = -nu * energies
+    log_p -= log_p.max()  # shift for numerical stability before exp
+    p = np.exp(log_p)
+    return p / p.sum()
+
+
+def ps_entropy(order: int, nu: float) -> float:
+    r"""
+    Computes the per-symbol Shannon entropy under a Maxwell-Boltzmann distribution.
+
+    .. math::
+
+        H(X) = -\sum_m P(s_m) \log_2 P(s_m) \quad [\text{bits/symbol}]
+
+    Parameters
+    ----------
+    order : int
+        QAM modulation order.
+    nu : float
+        MB shaping parameter ``ν ≥ 0``. ``ν = 0`` returns ``log₂(order)``.
+
+    Returns
+    -------
+    float
+        Entropy in bits per symbol. In the range ``(0, log₂(order)]``.
+    """
+    pmf = maxwell_boltzmann(order, nu)
+    nonzero = pmf > 0
+    return float(-np.sum(pmf[nonzero] * np.log2(pmf[nonzero])))
+
+
+def optimal_nu(order: int, entropy_bits: float) -> tuple:
+    r"""
+    Finds the MB shaping parameter ``ν`` that achieves a target per-symbol entropy.
+
+    Uses ``scipy.optimize.brentq`` to bisect on
+    ``ps_entropy(order, ν) − entropy_bits = 0``.
+
+    Parameters
+    ----------
+    order : int
+        QAM modulation order.
+    entropy_bits : float
+        Target per-symbol entropy in bits. Must be in ``(0, log₂(order)]``.
+
+    Returns
+    -------
+    nu : float
+        Shaping parameter achieving the target entropy.
+    achieved_entropy : float
+        Actual entropy at the returned ``nu`` (may differ by ``< 1e-6`` bits).
+
+    Raises
+    ------
+    ValueError
+        If ``entropy_bits`` is outside ``(0, log₂(order)]``.
+    """
+    from scipy.optimize import brentq
+
+    max_h = np.log2(order)
+    if not (0 < entropy_bits <= max_h):
+        raise ValueError(
+            f"entropy_bits must be in (0, {max_h:.3f}] for {order}-QAM, "
+            f"got {entropy_bits:.4f}"
+        )
+    if np.isclose(entropy_bits, max_h, atol=1e-8):
+        return 0.0, float(max_h)
+
+    def _obj(nu):
+        return ps_entropy(order, nu) - entropy_bits
+
+    # Grow upper bound until entropy drops below target
+    nu_hi = 0.01
+    while ps_entropy(order, nu_hi) > entropy_bits:
+        nu_hi *= 10.0
+
+    nu_opt = float(brentq(_obj, 0.0, nu_hi, xtol=1e-9, rtol=1e-9))
+    return nu_opt, ps_entropy(order, nu_opt)
+
+
+def sample_ps_symbols(
+    num_symbols: int,
+    order: int,
+    pmf: np.ndarray,
+    seed: Optional[int] = None,
+) -> np.ndarray:
+    """
+    Draws QAM symbols from a Maxwell-Boltzmann distribution.
+
+    Parameters
+    ----------
+    num_symbols : int
+        Number of symbols to generate.
+    order : int
+        QAM modulation order.
+    pmf : np.ndarray
+        Symbol PMF of shape ``(order,)``. Typically from
+        :func:`maxwell_boltzmann`.
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray
+        Complex-valued symbols drawn from the MB distribution.
+        Shape: ``(num_symbols,)``, dtype ``complex64``.
+        All values lie exactly on the normalized QAM constellation grid.
+    """
+    rng = np.random.default_rng(seed)
+    constellation = gray_constellation("qam", order).astype(np.complex64)
+    indices = rng.choice(order, size=num_symbols, p=np.asarray(pmf, dtype=np.float64))
+    return constellation[indices]

@@ -255,6 +255,173 @@ def test_ber_multichannel(backend_device, xp):
 
 
 # =============================================================================
+# EVM BLIND TESTS
+# =============================================================================
+
+
+def test_evm_blind_perfect_signal(backend_device, xp):
+    """Blind EVM should be 0% when rx sits exactly on constellation points.
+
+    Uses a perfectly balanced sample (each point appears equally many times)
+    so sample average power == population average power == 1.0, avoiding any
+    finite-sample gain-estimation artefact.
+    """
+    from commstools.mapping import gray_constellation
+
+    const = xp.asarray(gray_constellation("qam", 16))
+    rx = xp.tile(const, 32)  # 512 symbols, each of the 16 points exactly 32×
+
+    pct, db = metrics.evm(rx, mode="blind", modulation="qam", order=16)
+
+    assert pct < 1e-6
+
+
+def test_evm_blind_decreases_with_snr(backend_device, xp):
+    """Blind EVM at high SNR should be lower than at low SNR."""
+    from commstools.mapping import gray_constellation
+    from commstools.impairments import apply_awgn
+
+    const = np.asarray(gray_constellation("qam", 16))
+    rng = np.random.default_rng(7)
+    tx = const[rng.integers(0, 16, 2000)]
+
+    rx_high = apply_awgn(xp.asarray(tx), esn0_db=30.0, sps=1)
+    rx_low = apply_awgn(xp.asarray(tx), esn0_db=10.0, sps=1)
+
+    pct_high, _ = metrics.evm(rx_high, mode="blind", modulation="qam", order=16)
+    pct_low, _ = metrics.evm(rx_low, mode="blind", modulation="qam", order=16)
+
+    assert pct_high < pct_low
+
+
+def test_evm_blind_vs_data_aided_converge(backend_device, xp):
+    """At high SNR blind and data-aided EVM should agree closely."""
+    from commstools.mapping import gray_constellation, map_bits
+    from commstools.impairments import apply_awgn
+
+    rng = np.random.default_rng(42)
+    bits = rng.integers(0, 2, 4000).astype("int32")
+    tx = map_bits(xp.asarray(bits), "qam", 16)
+    rx = apply_awgn(tx, esn0_db=30.0, sps=1)
+
+    pct_da, _ = metrics.evm(rx, tx)
+    pct_bl, _ = metrics.evm(rx, mode="blind", modulation="qam", order=16)
+
+    assert abs(pct_da - pct_bl) < 0.5  # within 0.5 pp at 30 dB SNR
+
+
+def test_evm_blind_multichannel(backend_device, xp):
+    """Blind EVM returns array of shape (N_ch,) for MIMO input."""
+    from commstools.mapping import gray_constellation
+
+    const = xp.asarray(gray_constellation("qam", 4))
+    rng = np.random.default_rng(1)
+    rx = xp.stack([const[rng.integers(0, 4, 200)] for _ in range(3)])  # (3, 200)
+
+    pct, db = metrics.evm(rx, mode="blind", modulation="qam", order=4)
+
+    assert pct.shape == (3,)
+    assert xp.all(pct < 1e-6)
+
+
+def test_evm_blind_missing_args_raises(backend_device, xp):
+    """Blind mode without modulation/order raises ValueError."""
+    with pytest.raises(ValueError, match="modulation and order"):
+        metrics.evm(xp.zeros(10), mode="blind")
+
+
+def test_evm_data_aided_missing_tx_raises(backend_device, xp):
+    """data_aided mode without tx_symbols raises ValueError."""
+    with pytest.raises(ValueError, match="tx_symbols"):
+        metrics.evm(xp.zeros(10))
+
+
+def test_evm_unknown_mode_raises(backend_device, xp):
+    """Unknown mode string raises ValueError."""
+    with pytest.raises(ValueError, match="Unknown mode"):
+        metrics.evm(xp.zeros(10), xp.zeros(10), mode="magic")
+
+
+def test_signal_evm_blind(backend_device, xp):
+    """Signal.evm(mode='blind') returns near-zero EVM for a clean signal.
+
+    resolve_symbols() normalises by the empirical symbol-average power of the
+    specific N-symbol draw, which differs slightly from the theoretical
+    constellation average power (1.0).  For 16-QAM with Var(|c|²) ≈ 0.32 and
+    N=2000, the std of the empirical mean is ≈ 1.3%, so blind EVM can be up to
+    ~0.65%.  The tolerance of 3% safely covers 3σ without masking real errors.
+    """
+    from commstools.core import Signal
+
+    sig = Signal.qam(order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none")
+    sig.resolve_symbols()
+
+    pct, db = sig.evm(mode="blind")
+    assert pct < 3.0
+
+
+# =============================================================================
+# SER TESTS
+# =============================================================================
+
+
+def test_ser_perfect_signal(backend_device, xp):
+    """SER = 0 when rx equals tx exactly."""
+    from commstools.mapping import map_bits
+
+    rng = np.random.default_rng(0)
+    bits = rng.integers(0, 2, 800).astype("int32")
+    tx = map_bits(xp.asarray(bits), "qam", 16)
+
+    assert metrics.ser(tx, tx, "qam", 16) == 0.0
+
+
+def test_ser_high_snr_near_zero(backend_device, xp):
+    """SER should be negligible at very high SNR."""
+    from commstools.mapping import map_bits
+    from commstools.impairments import apply_awgn
+
+    rng = np.random.default_rng(1)
+    bits = rng.integers(0, 2, 2000).astype("int32")
+    tx = map_bits(xp.asarray(bits), "qam", 4)
+    rx = apply_awgn(tx, esn0_db=40.0, sps=1)
+
+    assert metrics.ser(rx, tx, "qam", 4) < 1e-3
+
+
+def test_ser_multichannel(backend_device, xp):
+    """SER returns array (N_ch,) for 2D input."""
+    from commstools.mapping import map_bits
+
+    rng = np.random.default_rng(2)
+    bits = rng.integers(0, 2, 400).astype("int32")
+    tx_row = map_bits(xp.asarray(bits), "qam", 4)
+    tx = xp.stack([tx_row, tx_row])  # (2, 200)
+
+    result = metrics.ser(tx, tx, "qam", 4)
+
+    assert result.shape == (2,)
+    assert float(result[0]) == 0.0
+    assert float(result[1]) == 0.0
+
+
+def test_ser_shape_mismatch_raises(backend_device, xp):
+    """SER raises ValueError on shape mismatch."""
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        metrics.ser(xp.zeros(10), xp.zeros(11), "qam", 4)
+
+
+def test_signal_ser_method(backend_device, xp):
+    """Signal.ser() returns 0 for a clean signal."""
+    from commstools.core import Signal
+
+    sig = Signal.qam(order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none")
+    sig.resolve_symbols()
+
+    assert sig.ser() == 0.0
+
+
+# =============================================================================
 # GMI TESTS
 # =============================================================================
 

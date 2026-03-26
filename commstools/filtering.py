@@ -293,9 +293,9 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
 
 
 def lowpass_taps(
+    sampling_rate: float,
     num_taps: int,
     cutoff: float,
-    sampling_rate: float = 1.0,
     window: str = "hamming",
 ) -> ArrayType:
     """
@@ -303,12 +303,12 @@ def lowpass_taps(
 
     Parameters
     ----------
+    sampling_rate : float
+        The sampling rate of the signal in Hz.
     num_taps : int
         Number of filter coefficients.
     cutoff : float
         Cutoff frequency in Hz.
-    sampling_rate : float, default 1.0
-        The sampling rate of the signal in Hz.
     window : str, default "hamming"
         Type of window function to apply (e.g., 'hamming', 'blackman').
 
@@ -326,9 +326,9 @@ def lowpass_taps(
 
 
 def highpass_taps(
+    sampling_rate: float,
     num_taps: int,
     cutoff: float,
-    sampling_rate: float = 1.0,
     window: str = "hamming",
 ) -> ArrayType:
     """
@@ -336,13 +336,13 @@ def highpass_taps(
 
     Parameters
     ----------
+    sampling_rate : float
+        The sampling rate of the signal in Hz.
     num_taps : int
         Number of filter coefficients. For highpass filters, this should
         typically be an odd integer to avoid a zero at the Nyquist frequency.
     cutoff : float
         Cutoff frequency in Hz.
-    sampling_rate : float, default 1.0
-        The sampling rate of the signal in Hz.
     window : str, default "hamming"
         Type of window function to apply.
 
@@ -361,10 +361,10 @@ def highpass_taps(
 
 
 def bandpass_taps(
+    sampling_rate: float,
     num_taps: int,
     low_cutoff: float,
     high_cutoff: float,
-    sampling_rate: float = 1.0,
     window: str = "hamming",
 ) -> ArrayType:
     """
@@ -372,14 +372,14 @@ def bandpass_taps(
 
     Parameters
     ----------
+    sampling_rate : float
+        The sampling rate of the signal in Hz.
     num_taps : int
         Number of filter coefficients.
     low_cutoff : float
         Lower cutoff frequency in Hz.
     high_cutoff : float
         Upper cutoff frequency in Hz.
-    sampling_rate : float, default 1.0
-        The sampling rate of the signal in Hz.
     window : str, default "hamming"
         Type of window function to apply.
 
@@ -404,10 +404,10 @@ def bandpass_taps(
 
 
 def bandstop_taps(
+    sampling_rate: float,
     num_taps: int,
     low_cutoff: float,
     high_cutoff: float,
-    sampling_rate: float = 1.0,
     window: str = "hamming",
 ) -> ArrayType:
     """
@@ -415,14 +415,14 @@ def bandstop_taps(
 
     Parameters
     ----------
+    sampling_rate : float
+        The sampling rate of the signal in Hz.
     num_taps : int
         Number of filter coefficients. Should typically be odd.
     low_cutoff : float
         Lower cutoff frequency in Hz.
     high_cutoff : float
         Upper cutoff frequency in Hz.
-    sampling_rate : float, default 1.0
-        The sampling rate of the signal in Hz.
     window : str, default "hamming"
         Type of window function to apply.
 
@@ -873,10 +873,10 @@ def matched_filter(
 
 def compensate_chromatic_dispersion(
     samples: ArrayType,
+    sampling_rate: float,
     dispersion_ps_nm_km: float,
     fiber_length_km: float,
     center_wavelength_nm: float,
-    sampling_rate: float,
 ) -> ArrayType:
     r"""
     Electronic dispersion compensation (EDC) for chromatic dispersion.
@@ -902,6 +902,8 @@ def compensate_chromatic_dispersion(
     ----------
     samples : array_like
         Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+    sampling_rate : float
+        Sampling rate in Hz.
     dispersion_ps_nm_km : float
         Fibre dispersion parameter :math:`D` in ps / (nm · km).
         Standard SMF-28: 17 ps/(nm·km) at 1550 nm.
@@ -909,8 +911,6 @@ def compensate_chromatic_dispersion(
         Fibre span length in km.
     center_wavelength_nm : float
         Centre wavelength in nm (e.g. 1550 for C-band).
-    sampling_rate : float
-        Sampling rate in Hz.
 
     Returns
     -------
@@ -941,10 +941,10 @@ def compensate_chromatic_dispersion(
 
     # Convert to SI
     D = dispersion_ps_nm_km * 1e-12 / (1e-9 * 1e3)  # s / m²
-    lam = center_wavelength_nm * 1e-9                 # m
-    c = 2.998e8                                        # m/s
-    L = fiber_length_km * 1e3                          # m
-    beta2 = -(D * lam**2) / (2.0 * np.pi * c) * L    # s²  (β₂·L product)
+    lam = center_wavelength_nm * 1e-9  # m
+    c = 2.998e8  # m/s
+    L = fiber_length_km * 1e3  # m
+    beta2 = -(D * lam**2) / (2.0 * np.pi * c) * L  # s²  (β₂·L product)
 
     omega = 2.0 * np.pi * xp.fft.fftfreq(N, d=1.0 / sampling_rate)
     H = xp.exp(1j * (beta2 / 2.0) * omega**2)

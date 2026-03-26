@@ -95,6 +95,13 @@ class Signal(BaseModel):
     source_symbols : array_like, optional
         The mapped constellation symbols before pulse shaping (full wire
         order). Same scoping note as ``source_bits``.
+    ps_pmf : array_like of float, optional
+        Maxwell-Boltzmann PMF of shape ``(M,)`` for PS-QAM signals.
+        Set automatically by :meth:`Signal.psqam`.  When present, the
+        normalization of ``source_symbols`` is skipped (PS symbols have
+        intentionally lower average energy than uniform QAM), and
+        :meth:`mi`, :meth:`gmi`, and :meth:`plot_constellation` use the
+        non-uniform prior automatically.  ``None`` for all other modulations.
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
         ``'gaussian'``).
@@ -158,6 +165,7 @@ class Signal(BaseModel):
 
     source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
+    ps_pmf: Optional[Any] = None  # (M,) PMF over constellation; set only for PS-QAM
 
     pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
@@ -273,11 +281,13 @@ class Signal(BaseModel):
                     self.mod_unipolar,
                 )
 
-        # Ensure source_symbols are normalized to unit average power for consistent metrics
-        # Ensure source_symbols are normalized to unit average power for consistent metrics
+        # Ensure source_symbols are normalized to unit average power for consistent metrics.
         # For MIMO (multichannel), we normalize per-stream (axis=-1) to ensure each stream
         # independently adheres to E_s=1, facilitating per-stream metric calculation.
-        if self.source_symbols is not None:
+        # Skip for PS-QAM: symbols are exact constellation points whose sample average
+        # power is intentionally < 1 (MB weights inner points more). Scaling them would
+        # break the correspondence with ps_pmf.
+        if self.source_symbols is not None and self.ps_pmf is None:
             self.source_symbols = helpers.normalize(
                 self.source_symbols, mode="average_power", axis=-1
             )
@@ -345,6 +355,17 @@ class Signal(BaseModel):
             ("Sampling rate", helpers.format_si(self.sampling_rate, "Hz")),
             ("Samples per symbol", f"{self.sps:.2f}"),
             ("Pulse shape", self.pulse_shape.upper() if self.pulse_shape else "None"),
+        ]
+
+        if self.ps_pmf is not None and self.mod_order:
+            _pmf = np.asarray(self.ps_pmf)
+            _nz = _pmf > 0
+            _h = float(-np.sum(_pmf[_nz] * np.log2(_pmf[_nz])))
+            rows.append(
+                ("PS entropy", f"{_h:.4f} b/sym  (max {np.log2(self.mod_order):.2f})")
+            )
+
+        rows += [
             ("Duration", helpers.format_si(self.duration, "s")),
             ("Center frequency", helpers.format_si(self.center_frequency, "Hz")),
             ("Freq. offset", helpers.format_si(self.digital_frequency_offset, "Hz")),
@@ -892,6 +913,7 @@ class Signal(BaseModel):
             modulation=self.mod_scheme,
             order=self.mod_order,
             unipolar=self.mod_unipolar,
+            pmf=self.ps_pmf,
             title=title,
             vmin=vmin,
             vmax=vmax,
@@ -903,11 +925,22 @@ class Signal(BaseModel):
             fig, axes = result
             src = to_device(self.source_symbols, "cpu")
 
+            # PS-QAM: source_symbols are on the {s_m} grid (average power E_PS < 1)
+            # but received samples normalise to unit power ({s_m/sqrt(E_PS)}).
+            # Scale source symbols to match the received symbol scale.
+            if self.ps_pmf is not None and self.mod_scheme is not None and self.mod_order is not None:
+                from .mapping import gray_constellation as _gc_src
+                _const_src = _gc_src(self.mod_scheme, self.mod_order)
+                _pmf_src = np.asarray(self.ps_pmf, dtype=np.float64)
+                _e_ps = float(np.dot(_pmf_src, np.abs(_const_src) ** 2))
+                if _e_ps > 0 and _e_ps < 1.0 - 1e-6:
+                    src = src / np.sqrt(_e_ps)
+
             def _scatter_source(ax, symbols):
                 ax.scatter(
                     symbols.real,
                     symbols.imag,
-                    c="green",
+                    c="lime",
                     edgecolors="dimgray",
                     linewidths=1.5,
                     s=30,
@@ -1625,6 +1658,133 @@ class Signal(BaseModel):
             **kwargs,
         )
 
+    @classmethod
+    def psqam(
+        cls,
+        num_symbols: int,
+        sps: float,
+        symbol_rate: float,
+        order: int,
+        *,
+        nu: Optional[float] = None,
+        entropy: Optional[float] = None,
+        pulse_shape: str = "rrc",
+        num_streams: int = 1,
+        seed: Optional[int] = None,
+        **kwargs: Any,
+    ) -> "Signal":
+        """
+        Generates a Probabilistically Shaped QAM (PS-QAM) baseband waveform.
+
+        Symbols are drawn from a Maxwell-Boltzmann (MB) distribution over the
+        normalized QAM constellation, giving inner (low-energy) points higher
+        probability. This recovers up to 1.53 dB shaping gain over uniform QAM.
+
+        Exactly one of ``nu`` or ``entropy`` must be specified.
+
+        Parameters
+        ----------
+        num_symbols : int
+            Number of symbols to generate per stream.
+        sps : float
+            Samples per symbol.
+        symbol_rate : float
+            Symbol rate in symbols per second (Baud).
+        order : int
+            QAM modulation order (e.g. 16, 64, 256).
+        nu : float, optional
+            MB shaping parameter ``ν ≥ 0``. ``ν = 0`` is uniform QAM.
+            Larger values apply stronger shaping (lower entropy, lower power).
+        entropy : float, optional
+            Target per-symbol entropy in bits, in the range ``(0, log₂(order)]``.
+            ``optimal_nu`` is called to solve for the corresponding ``ν``.
+        pulse_shape : str, default "rrc"
+            Pulse shaping filter type.
+        num_streams : int, default 1
+            Number of independent streams (MIMO).
+        seed : int, optional
+            Random seed for reproducible symbol generation.
+        **kwargs : Any
+            Additional filter parameters (e.g. ``filter_span``, ``rrc_rolloff``).
+
+        Returns
+        -------
+        Signal
+            A ``Signal`` with ``mod_scheme="PS-QAM"``, ``ps_pmf`` set to the MB
+            distribution, and both ``source_symbols`` and ``source_bits`` populated.
+
+        Notes
+        -----
+        ``source_bits`` are obtained by hard-demapping the clean shaped symbols —
+        they carry the non-uniform statistics of the MB distribution, not uniform
+        bits. This is correct for uncoded physical-layer BER and GMI estimation
+        but does not model a full coded PAS transmitter.
+
+        The average symbol energy is below 1 by design (``E_ps[|s|²] < 1`` for
+        ``ν > 0``). Pass ``pmf=signal.ps_pmf`` to :func:`~commstools.metrics.mi`
+        and :func:`~commstools.mapping.compute_llr` to account for the non-uniform
+        prior in capacity and soft-demapping computations.
+
+        Examples
+        --------
+        Generate 64-PS-QAM at 6 bits/symbol effective rate::
+
+            sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, entropy=6.0)
+
+        Generate with explicit shaping parameter::
+
+            sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, nu=0.3)
+        """
+        from . import filtering, mapping
+
+        if (nu is None) == (entropy is None):
+            raise ValueError("Exactly one of `nu` or `entropy` must be specified.")
+
+        if entropy is not None:
+            nu_val, _ = mapping.optimal_nu(order, entropy)
+        else:
+            nu_val = float(nu)
+            if nu_val < 0:
+                raise ValueError("`nu` must be non-negative.")
+
+        pmf = mapping.maxwell_boltzmann(order, nu_val)
+        k = int(np.log2(order))
+        total_symbols = num_symbols * num_streams
+
+        # Sample symbols from MB distribution (NumPy, CPU)
+        symbols_flat = mapping.sample_ps_symbols(total_symbols, order, pmf, seed=seed)
+
+        # Derive source bits by demapping noiseless shaped symbols (lossless)
+        bits_flat = mapping.demap_symbols_hard(symbols_flat, "qam", order)
+
+        if num_streams > 1:
+            symbols = symbols_flat.reshape(num_streams, num_symbols)
+            bits = bits_flat.reshape(num_streams, num_symbols * k)
+        else:
+            symbols = symbols_flat
+            bits = bits_flat
+
+        if is_cupy_available():
+            symbols = to_device(symbols, "gpu")
+            bits = to_device(bits, "gpu")
+
+        samples = filtering.shape_pulse(
+            symbols=symbols, sps=sps, pulse_shape=pulse_shape, **kwargs
+        )
+
+        return cls(
+            samples=samples,
+            sampling_rate=symbol_rate * sps,
+            symbol_rate=symbol_rate,
+            mod_scheme="PS-QAM",
+            mod_order=order,
+            source_bits=bits,
+            source_symbols=symbols,
+            pulse_shape=pulse_shape,
+            ps_pmf=pmf,
+            **kwargs,
+        )
+
     # -------------------------------------------------------------------------
     # Resolving and Demapping Methods
     # -------------------------------------------------------------------------
@@ -1753,34 +1913,45 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         num_train_symbols: Optional[int] = None,
+        *,
+        mode: str = "data_aided",
+        modulation: Optional[str] = None,
+        order: Optional[int] = None,
     ) -> Tuple[float, float]:
         """
         Computes the Error Vector Magnitude (EVM).
 
-        EVM is a measure of the difference between the received symbols and
-        the ideal reference symbols.
-
         Parameters
         ----------
         reference_symbols : array_like, optional
-            Known transmitted symbols. If None, falls back to
-            ``source_symbols`` when available.
+            Known transmitted symbols. Falls back to ``source_symbols`` when
+            not provided.  Ignored when ``mode="blind"``.
         num_train_symbols : int, optional
             Number of symbols to discard from the front before computing the
             metric (e.g. equalizer training length).
+        mode : {"data_aided", "blind"}, default "data_aided"
+            Estimation mode (keyword-only).  ``"blind"`` uses ML hard
+            decisions against the constellation as the reference — no
+            knowledge of the transmitted sequence is required.
+        modulation : str, optional
+            Modulation type for blind mode (``"psk"``, ``"qam"``, ``"ask"``).
+            Falls back to ``self.mod_scheme`` when not provided.
+        order : int, optional
+            Modulation order for blind mode.  Falls back to
+            ``self.mod_order`` when not provided.
 
         Returns
         -------
         evm_percent : float
-            EVM expressed as a percentage of the average symbol power.
+            EVM as a percentage.
         evm_db : float
-            EVM expressed in decibels (dB).
+            EVM in decibels (dB).
 
         Raises
-        -------
+        ------
         ValueError
-            If no reference symbols are available or ``resolved_symbols``
-            has not been set (call ``resolve_symbols()`` first).
+            If ``resolved_symbols`` is not set, or required arguments for
+            the chosen mode are missing.
 
         Notes
         -----
@@ -1798,6 +1969,29 @@ class Signal(BaseModel):
             )
             return
 
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
+
+        y = self.resolved_symbols
+        trim = num_train_symbols if num_train_symbols is not None else 0
+
+        if mode == "blind":
+            mod = modulation or self.mod_scheme
+            ord_ = order or self.mod_order
+            if mod is None or ord_ is None:
+                raise ValueError(
+                    "mode='blind' requires modulation and order. "
+                    "Pass them explicitly or ensure mod_scheme/mod_order are set on the Signal."
+                )
+            if trim > 0:
+                logger.info(f"Discarding {trim} training symbols for EVM calculation.")
+                y = y[..., trim:]
+            return metrics.evm(y, mode="blind", modulation=mod, order=ord_)
+
+        # data_aided
         ref = (
             reference_symbols if reference_symbols is not None else self.source_symbols
         )
@@ -1806,16 +2000,7 @@ class Signal(BaseModel):
                 "No reference available. Provide reference_symbols or ensure "
                 "source_symbols is set."
             )
-
-        if self.resolved_symbols is None:
-            raise ValueError(
-                "No resolved symbols available. Please call `resolve_symbols()` "
-                "first to decimate the signal to symbol rate."
-            )
-
-        y = self.resolved_symbols
         r = ref
-        trim = num_train_symbols if num_train_symbols is not None else 0
         if trim > 0:
             logger.info(f"Discarding {trim} training symbols for EVM calculation.")
             n = min(y.shape[-1], r.shape[-1])
@@ -1969,6 +2154,252 @@ class Signal(BaseModel):
             r = r[..., bit_trim:n]
 
         return metrics.ber(y, r)
+
+    def ser(
+        self,
+        reference_symbols: Optional[ArrayType] = None,
+        num_train_symbols: Optional[int] = None,
+        *,
+        modulation: Optional[str] = None,
+        order: Optional[int] = None,
+    ) -> Union[float, ArrayType]:
+        """
+        Computes the Symbol Error Rate (SER) using ML hard decisions.
+
+        Each received symbol is decided to its nearest constellation point.
+        The decision is then compared to the corresponding transmitted symbol.
+
+        Parameters
+        ----------
+        reference_symbols : array_like, optional
+            Known transmitted symbols. Falls back to ``source_symbols`` when
+            not provided.
+        num_train_symbols : int, optional
+            Number of symbols to discard from the front before computing the
+            metric.
+        modulation : str, optional
+            Modulation type (``"psk"``, ``"qam"``, ``"ask"``).
+            Falls back to ``self.mod_scheme`` when not provided.
+        order : int, optional
+            Modulation order *M*. Falls back to ``self.mod_order`` when not
+            provided.
+
+        Returns
+        -------
+        float or ndarray
+            SER as a ratio in ``[0, 1]``. Scalar for SISO, array for MIMO.
+
+        Raises
+        ------
+        ValueError
+            If ``resolved_symbols`` is not set, no reference is available,
+            or modulation metadata is missing.
+
+        Notes
+        -----
+        For frame-generated signals, extract the payload segment manually
+        via ``frame.get_structure_map()`` and create a plain ``Signal``
+        with the appropriate ``source_symbols`` before calling this method.
+        """
+        from . import metrics
+
+        if self.signal_type is not None:
+            logger.warning(
+                "ser() called on a frame-generated signal. For accurate per-segment "
+                "metrics, extract the payload (or pilot) segment manually via "
+                "frame.get_structure_map() and create a plain Signal first."
+            )
+            return
+
+        ref = (
+            reference_symbols if reference_symbols is not None else self.source_symbols
+        )
+        if ref is None:
+            raise ValueError(
+                "No reference available. Provide reference_symbols or ensure "
+                "source_symbols is set."
+            )
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Please call `resolve_symbols()` "
+                "first to decimate the signal to symbol rate."
+            )
+
+        mod = modulation or self.mod_scheme
+        ord_ = order or self.mod_order
+        if mod is None or ord_ is None:
+            raise ValueError(
+                "SER requires modulation and order. Pass them explicitly or "
+                "ensure mod_scheme/mod_order are set on the Signal."
+            )
+
+        y = self.resolved_symbols
+        r = ref
+        trim = num_train_symbols if num_train_symbols is not None else 0
+        if trim > 0:
+            logger.info(f"Discarding {trim} training symbols for SER calculation.")
+            n = min(y.shape[-1], r.shape[-1])
+            y = y[..., trim:n]
+            r = r[..., trim:n]
+
+        return metrics.ser(y, r, mod, ord_)
+
+    def mi(
+        self,
+        noise_var: float,
+        *,
+        pmf=None,
+    ) -> float:
+        """
+        Computes Mutual Information (MI) under a Gaussian channel assumption.
+
+        Delegates to :func:`commstools.metrics.mi`.  For PS-QAM signals,
+        ``self.ps_pmf`` is passed automatically unless overridden via *pmf*.
+
+        Parameters
+        ----------
+        noise_var : float
+            Complex noise variance :math:`\\sigma^2` of the AWGN channel.
+            For unit-power symbols at :math:`E_s/N_0` (dB):
+            :math:`\\sigma^2 = 10^{-E_s/N_0 / 10}`.
+        pmf : array-like, optional
+            Symbol PMF of shape ``(M,)``.  Defaults to ``self.ps_pmf`` when
+            set, otherwise uniform (``None``) is assumed.
+
+        Returns
+        -------
+        float
+            MI in bits per channel use (b/cu).
+
+        Raises
+        ------
+        ValueError
+            If ``resolved_symbols`` is not set or modulation metadata is
+            missing.
+        """
+        from . import metrics
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Call `resolve_symbols()` first."
+            )
+
+        mod = self.mod_scheme
+        ord_ = self.mod_order
+        if mod is None or ord_ is None:
+            raise ValueError(
+                "MI requires modulation and order. Ensure mod_scheme/mod_order "
+                "are set on the Signal."
+            )
+
+        effective_pmf = pmf if pmf is not None else self.ps_pmf
+
+        resolved = self.resolved_symbols
+        adj_noise_var = noise_var
+
+        if effective_pmf is not None:
+            # shape_pulse normalises samples to unit symbol power (E_s = 1).
+            # For PS-QAM, source symbols have E_PS = Σ P(sₘ)|sₘ|² < 1 on the
+            # normalised QAM grid, so shape_pulse scales them by c = 1/√E_PS.
+            # resolved_symbols therefore lives on {c·sₘ}, not {sₘ}.
+            # Rescale back to {sₘ} so distances against gray_constellation are
+            # correct; noise_var scales by the same factor (c² = 1/E_PS).
+            from .mapping import gray_constellation as _gc
+            const = _gc(mod, ord_)
+            pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
+            e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
+            if e_ps < 1.0 - 1e-6:
+                xp = get_array_module(resolved)
+                scale = xp.asarray(np.sqrt(e_ps), dtype=resolved.real.dtype)
+                resolved = resolved * scale
+                adj_noise_var = noise_var * e_ps
+
+        return metrics.mi(resolved, mod, ord_, adj_noise_var, pmf=effective_pmf)
+
+    def gmi(
+        self,
+        noise_var: float,
+        *,
+        pmf=None,
+        method: str = "maxlog",
+    ) -> float:
+        """
+        Computes Generalised Mutual Information (GMI) from per-bit LLRs.
+
+        LLRs are computed via :func:`commstools.mapping.compute_llr` using
+        ``self.ps_pmf`` automatically for PS-QAM signals.  GMI is then
+        evaluated against ``self.source_bits``.
+
+        Parameters
+        ----------
+        noise_var : float
+            Complex noise variance :math:`\\sigma^2` of the AWGN channel.
+        pmf : array-like, optional
+            Symbol PMF of shape ``(M,)``.  Defaults to ``self.ps_pmf`` when
+            set, otherwise uniform is assumed.
+        method : {"maxlog", "exact"}, default "maxlog"
+            LLR computation method passed to :func:`~commstools.mapping.compute_llr`.
+
+        Returns
+        -------
+        float
+            GMI in bits per channel use (b/cu).
+
+        Raises
+        ------
+        ValueError
+            If ``resolved_symbols`` or ``source_bits`` is not set, or
+            modulation metadata is missing.
+        """
+        from . import metrics
+        from .mapping import compute_llr
+        from .backend import to_device
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Call `resolve_symbols()` first."
+            )
+        if self.source_bits is None:
+            raise ValueError(
+                "GMI requires source_bits. Ensure the Signal was created via a "
+                "factory method (e.g. Signal.qam(), Signal.psqam())."
+            )
+
+        mod = self.mod_scheme
+        ord_ = self.mod_order
+        if mod is None or ord_ is None:
+            raise ValueError(
+                "GMI requires modulation and order. Ensure mod_scheme/mod_order "
+                "are set on the Signal."
+            )
+
+        effective_pmf = pmf if pmf is not None else self.ps_pmf
+
+        resolved = self.resolved_symbols
+        adj_noise_var = noise_var
+
+        if effective_pmf is not None:
+            # Same scale correction as Signal.mi(): shape_pulse normalises to
+            # unit symbol power, placing resolved_symbols on {c·sₘ} with
+            # c = 1/√E_PS.  Rescale to {sₘ} before LLR computation so that
+            # distances against gray_constellation are correct.
+            from .mapping import gray_constellation as _gc
+            const = _gc(mod, ord_)
+            pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
+            e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
+            if e_ps < 1.0 - 1e-6:
+                xp = get_array_module(resolved)
+                scale = xp.asarray(np.sqrt(e_ps), dtype=resolved.real.dtype)
+                resolved = resolved * scale
+                adj_noise_var = noise_var * e_ps
+
+        llrs = compute_llr(
+            resolved, mod, ord_, adj_noise_var,
+            method=method, pmf=effective_pmf, output="numpy",
+        )
+        src_bits = to_device(self.source_bits, "cpu")
+        return metrics.gmi(llrs, src_bits)
 
 
 class Preamble(BaseModel):
@@ -2172,6 +2603,16 @@ class SingleCarrierFrame(BaseModel):
         Modulation order for payload (e.g., 16 for 16-QAM).
     payload_seed : int, default 42
         Seed for reproducible payload data generation.
+    payload_nu : float, optional
+        Maxwell-Boltzmann shaping parameter :math:`\\nu \\geq 0` for a
+        probabilistically shaped QAM payload.  Mutually exclusive with
+        ``payload_entropy``.  Requires ``payload_mod_scheme`` to contain
+        ``"qam"`` (case-insensitive).  :math:`\\nu = 0` → uniform QAM.
+    payload_entropy : float, optional
+        Target entropy in bits per symbol for a PS-QAM payload.  The
+        optimal :math:`\\nu` is solved numerically via
+        :func:`~commstools.mapping.optimal_nu`.  Mutually exclusive with
+        ``payload_nu``.  Same QAM-only constraint as ``payload_nu``.
     preamble : Preamble, optional
         Structured preamble for synchronization.  For MIMO with ZC sequences,
         each TX stream automatically receives a unique root via
@@ -2199,6 +2640,13 @@ class SingleCarrierFrame(BaseModel):
         Length of the guard interval in symbols.
     num_streams : int, default 1
         Number of independent spatial streams (MIMO).
+
+    Notes
+    -----
+    **PS-QAM payload**: set either ``payload_nu`` or ``payload_entropy`` (not
+    both) together with a QAM ``payload_mod_scheme``.  The MB distribution is
+    solved once and cached; access the resulting PMF via the read-only
+    :attr:`payload_ps_pmf` property after the frame has been generated.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -2208,6 +2656,8 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = Field(default=4, ge=1)
     payload_mod_unipolar: bool = False
+    payload_nu: Optional[float] = Field(default=None, ge=0)
+    payload_entropy: Optional[float] = Field(default=None, gt=0)
 
     preamble: Optional[Preamble] = None
 
@@ -2228,6 +2678,7 @@ class SingleCarrierFrame(BaseModel):
     # Internal cache
     _payload_bits: Optional[Any] = PrivateAttr(default=None)
     _payload_symbols: Optional[Any] = PrivateAttr(default=None)
+    _payload_ps_pmf: Optional[Any] = PrivateAttr(default=None)
     _pilot_bits: Optional[Any] = PrivateAttr(default=None)
     _pilot_symbols: Optional[Any] = PrivateAttr(default=None)
 
@@ -2278,6 +2729,20 @@ class SingleCarrierFrame(BaseModel):
                     f"num_pilot_blocks == num_data_blocks == {snapped // data_per_block}."
                 )
                 self.payload_len = snapped
+
+    @model_validator(mode="after")
+    def _check_psqam_fields(self) -> "SingleCarrierFrame":
+        if self.payload_nu is not None and self.payload_entropy is not None:
+            raise ValueError(
+                "payload_nu and payload_entropy are mutually exclusive — specify one or neither."
+            )
+        if self.payload_nu is not None or self.payload_entropy is not None:
+            if "qam" not in self.payload_mod_scheme.lower():
+                raise ValueError(
+                    f"payload_nu / payload_entropy require a QAM payload modulation, "
+                    f"got payload_mod_scheme='{self.payload_mod_scheme}'."
+                )
+        return self
 
     @model_validator(mode="after")
     def _check_preamble_streams(self) -> "SingleCarrierFrame":
@@ -2355,44 +2820,73 @@ class SingleCarrierFrame(BaseModel):
 
     def _ensure_payload_generated(self) -> None:
         """
-        Generates and caches payload bits and symbols.
+        Generates and caches payload bits and symbols via the appropriate Signal factory.
 
-        This internal method ensures that the bit-first representations are available
-        and correctly mapped to the target modulation scheme.
+        Dispatches to ``Signal.psqam``, ``Signal.qam``, ``Signal.psk``, or
+        ``Signal.pam`` based on ``payload_mod_scheme`` and the PS parameters.
+        Using factory methods as the single source of generation logic avoids
+        duplicating bit/symbol generation code here.
         """
         if self._payload_bits is not None:
             return
 
-        from . import mapping
+        scheme = self.payload_mod_scheme.lower()
+        is_ps = self.payload_nu is not None or self.payload_entropy is not None
 
-        k = int(np.log2(self.payload_mod_order))
-        total_symbols = self.payload_len * self.num_streams
-        bits = helpers.random_bits(total_symbols * k, seed=self.payload_seed)
-        symbols = mapping.map_bits(
-            bits=bits,
-            modulation=self.payload_mod_scheme,
-            order=self.payload_mod_order,
-            unipolar=self.payload_mod_unipolar,
+        common = dict(
+            num_symbols=self.payload_len,
+            sps=1,
+            symbol_rate=1.0,
+            pulse_shape="none",
+            num_streams=self.num_streams,
+            seed=self.payload_seed,
         )
 
-        if self.num_streams > 1:
-            bits = bits.reshape(self.num_streams, self.payload_len * k)
-            symbols = symbols.reshape(self.num_streams, self.payload_len)
+        if is_ps:
+            sig = Signal.psqam(
+                order=self.payload_mod_order,
+                nu=self.payload_nu,
+                entropy=self.payload_entropy,
+                **common,
+            )
+            self._payload_ps_pmf = sig.ps_pmf
+        elif "qam" in scheme:
+            sig = Signal.qam(
+                order=self.payload_mod_order,
+                unipolar=self.payload_mod_unipolar,
+                **common,
+            )
+        elif "psk" in scheme:
+            sig = Signal.psk(
+                order=self.payload_mod_order,
+                **common,
+            )
+        elif "pam" in scheme or "ask" in scheme:
+            sig = Signal.pam(
+                order=self.payload_mod_order,
+                unipolar=self.payload_mod_unipolar,
+                **common,
+            )
+        else:
+            sig = Signal.generate(
+                modulation=self.payload_mod_scheme,
+                order=self.payload_mod_order,
+                unipolar=self.payload_mod_unipolar,
+                **common,
+            )
 
-        self._payload_bits = bits
-        self._payload_symbols = symbols
+        self._payload_bits = sig.source_bits
+        self._payload_symbols = sig.source_symbols
 
     def _ensure_pilot_generated(self) -> None:
         """
-        Generates and caches pilot bits and symbols.
+        Generates and caches pilot bits and symbols via the appropriate Signal factory.
 
-        This internal method ensuring pilots are generated with the correct
-        seed and modulation before frame assembly.
+        Pilots are always generated with a uniform distribution — PS on pilots
+        would destroy the known-reference property required for channel estimation.
         """
         if self._pilot_bits is not None or self.pilot_pattern == "none":
             return
-
-        from . import mapping
 
         xp = cp if is_cupy_available() else np
         mask, _ = self._generate_pilot_mask()
@@ -2400,22 +2894,44 @@ class SingleCarrierFrame(BaseModel):
         if pilot_count == 0:
             return
 
-        k = int(np.log2(self.pilot_mod_order))
-        total_pilots = pilot_count * self.num_streams
-        bits = helpers.random_bits(total_pilots * k, seed=self.pilot_seed)
-        symbols = mapping.map_bits(
-            bits=bits,
-            modulation=self.pilot_mod_scheme,
-            order=self.pilot_mod_order,
-            unipolar=self.pilot_mod_unipolar,
+        scheme = self.pilot_mod_scheme.lower()
+
+        common = dict(
+            num_symbols=pilot_count,
+            sps=1,
+            symbol_rate=1.0,
+            pulse_shape="none",
+            num_streams=self.num_streams,
+            seed=self.pilot_seed,
         )
 
-        if self.num_streams > 1:
-            bits = bits.reshape(self.num_streams, pilot_count * k)
-            symbols = symbols.reshape(self.num_streams, pilot_count)
+        if "qam" in scheme:
+            sig = Signal.qam(
+                order=self.pilot_mod_order,
+                unipolar=self.pilot_mod_unipolar,
+                **common,
+            )
+        elif "psk" in scheme:
+            sig = Signal.psk(
+                order=self.pilot_mod_order,
+                **common,
+            )
+        elif "pam" in scheme or "ask" in scheme:
+            sig = Signal.pam(
+                order=self.pilot_mod_order,
+                unipolar=self.pilot_mod_unipolar,
+                **common,
+            )
+        else:
+            sig = Signal.generate(
+                modulation=self.pilot_mod_scheme,
+                order=self.pilot_mod_order,
+                unipolar=self.pilot_mod_unipolar,
+                **common,
+            )
 
-        self._pilot_bits = bits
-        self._pilot_symbols = symbols
+        self._pilot_bits = sig.source_bits
+        self._pilot_symbols = sig.source_symbols
 
     # -------------------------------------------------------------------------
     # Properties for Accessing Payload and Pilot Data
@@ -2446,6 +2962,24 @@ class SingleCarrierFrame(BaseModel):
         """
         self._ensure_payload_generated()
         return self._payload_symbols
+
+    @property
+    def payload_ps_pmf(self) -> Optional[Any]:
+        """
+        Returns the Maxwell-Boltzmann PMF used for PS-QAM payload generation.
+
+        ``None`` for uniform (non-PS) payloads.  Pass this to
+        :func:`~commstools.metrics.mi` and
+        :func:`~commstools.mapping.compute_llr` after frame equalization
+        to compute PS-aware capacity and soft-decision metrics.
+
+        Returns
+        -------
+        np.ndarray or None
+            PMF array of shape ``(payload_mod_order,)`` summing to 1, or ``None``.
+        """
+        self._ensure_payload_generated()
+        return self._payload_ps_pmf
 
     @property
     def pilot_bits(self) -> Optional[ArrayType]:
