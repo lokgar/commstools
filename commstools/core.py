@@ -695,7 +695,7 @@ class Signal(BaseModel):
         detrend: Optional[Union[str, bool]] = False,
         average: Optional[str] = "mean",
         ax: Optional[Any] = None,
-        title: Optional[str] = "Spectrum",
+        title: Optional[str] = "Power Spectral Density",
         x_axis: Optional[str] = "frequency",
         show: bool = False,
         **kwargs: Any,
@@ -928,8 +928,13 @@ class Signal(BaseModel):
             # PS-QAM: source_symbols are on the {s_m} grid (average power E_PS < 1)
             # but received samples normalise to unit power ({s_m/sqrt(E_PS)}).
             # Scale source symbols to match the received symbol scale.
-            if self.ps_pmf is not None and self.mod_scheme is not None and self.mod_order is not None:
+            if (
+                self.ps_pmf is not None
+                and self.mod_scheme is not None
+                and self.mod_order is not None
+            ):
                 from .mapping import gray_constellation as _gc_src
+
                 _const_src = _gc_src(self.mod_scheme, self.mod_order)
                 _pmf_src = np.asarray(self.ps_pmf, dtype=np.float64)
                 _e_ps = float(np.dot(_pmf_src, np.abs(_const_src) ** 2))
@@ -2306,6 +2311,7 @@ class Signal(BaseModel):
             # Rescale back to {sₘ} so distances against gray_constellation are
             # correct; noise_var scales by the same factor (c² = 1/E_PS).
             from .mapping import gray_constellation as _gc
+
             const = _gc(mod, ord_)
             pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
             e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
@@ -2385,6 +2391,7 @@ class Signal(BaseModel):
             # c = 1/√E_PS.  Rescale to {sₘ} before LLR computation so that
             # distances against gray_constellation are correct.
             from .mapping import gray_constellation as _gc
+
             const = _gc(mod, ord_)
             pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
             e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
@@ -2395,8 +2402,13 @@ class Signal(BaseModel):
                 adj_noise_var = noise_var * e_ps
 
         llrs = compute_llr(
-            resolved, mod, ord_, adj_noise_var,
-            method=method, pmf=effective_pmf, output="numpy",
+            resolved,
+            mod,
+            ord_,
+            adj_noise_var,
+            method=method,
+            pmf=effective_pmf,
+            output="numpy",
         )
         src_bits = to_device(self.source_bits, "cpu")
         return metrics.gmi(llrs, src_bits)
