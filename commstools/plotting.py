@@ -1615,7 +1615,7 @@ def timing_correlation(
 
 def mm_autocorrelation(
     R_np,
-    f_est: float,
+    f_est,
     sampling_rate: float,
     M: int = 1,
     ax=None,
@@ -1625,31 +1625,29 @@ def mm_autocorrelation(
     """
     Plots the Mengali-Morelli autocorrelation diagnostics.
 
-    Two-panel figure:
+    Per-channel two-panel layout:
 
-    * **Top** — Normalised autocorrelation magnitude ``|R[m]|`` vs lag ``m``.
-      The magnitude encodes the per-lag SNR; it decays with lag and is used
-      as the weight proxy ``w[m] ∝ m² |R[m]|²``.
-    * **Bottom** — Wrapped phase ``angle(R[m])`` vs lag ``m``, with the expected
-      linear ramp ``2π·f_est·M·m/fs`` overlaid and ``±π`` wrap boundaries
-      marked.  Phase wraps are the primary failure mode for high-order QAM;
-      this plot reveals where they occur.
+    * **Left / Top** — Normalised autocorrelation magnitude ``|R[m]|`` vs lag
+      ``m``.  Encodes per-lag SNR; used as weight proxy ``w[m] ∝ m²|R[m]|²``.
+    * **Right / Bottom** — Wrapped phase ``angle(R[m])`` vs lag, with the
+      expected linear ramp overlaid and ``±π`` wrap boundaries marked.
 
     Parameters
     ----------
-    R_np : (L,) complex128
-        Normalised combined autocorrelation at lags ``m = 1 … L``
-        (output of ``np.fft.ifft`` normalised by ``N-m``).
-    f_est : float
-        Scalar frequency offset estimate in Hz.
+    R_np : (L,) or (C, L) complex128
+        Normalised per-channel autocorrelation at lags ``m = 1 … L``.
+        A 1-D input is treated as a single channel.
+    f_est : float or list of float
+        Frequency offset estimate(s) in Hz.  Scalar for a single channel;
+        list/array of length ``C`` for multi-channel input.
     sampling_rate : float
         Sampling rate in Hz.
     M : int, default 1
-        Modulation pre-processing exponent (1 for data-aided / generic,
-        ``order`` for PSK, 4 for QAM).
-    ax : array of Axes, optional
-        Pre-existing pair of Axes ``[ax_amp, ax_phase]``.
-        A new figure with two subplots is created when ``None``.
+        Modulation pre-processing exponent.
+    ax : Axes or array of Axes, optional
+        For a single channel: pair ``[ax_amp, ax_phase]``.
+        For multiple channels: array of shape ``(C, 2)``.
+        A new figure is created when ``None``.
     show : bool, default False
         If ``True``, calls ``plt.show()`` and returns ``None``.
     title : str, default "FOE — Mengali-Morelli"
@@ -1657,57 +1655,75 @@ def mm_autocorrelation(
     Returns
     -------
     (fig, axes) or None
-        ``axes`` is a length-2 array ``[ax_amp, ax_phase]``.
+        Single channel: ``axes`` is ``[ax_amp, ax_phase]``.
+        Multi-channel: ``axes`` is a list of ``[ax_amp_c, ax_phase_c]`` pairs.
     """
-    amp = np.abs(R_np)
-    theta = np.angle(R_np)
-    L = len(amp)
+    R_np = np.asarray(R_np)
+    if R_np.ndim == 1:
+        R_np = R_np[None, :]  # (1, L)
+    C, L = R_np.shape
+
+    if hasattr(f_est, "__len__"):
+        f_ests = [float(f) for f in f_est]
+    else:
+        f_ests = [float(f_est)] * C
+
     lags = np.arange(1, L + 1)
 
-    expected_phase = 2.0 * np.pi * f_est * M * lags / sampling_rate
-
     if ax is None:
-        fig, axes = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True)
+        if C == 1:
+            fig, raw_axes = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True)
+            axes_per_ch = [raw_axes]  # list of (ax_amp, ax_phase)
+        else:
+            fig, raw_axes = plt.subplots(C, 2, figsize=(10, 3.5 * C), squeeze=False)
+            axes_per_ch = [(raw_axes[c, 0], raw_axes[c, 1]) for c in range(C)]
     else:
-        axes = ax
-        fig = axes[0].figure
+        ax_arr = np.asarray(ax, dtype=object)
+        if ax_arr.ndim == 1 and ax_arr.shape[0] == 2:
+            axes_per_ch = [ax_arr]
+        else:
+            axes_per_ch = [ax_arr[c] for c in range(C)]
+        fig = axes_per_ch[0][0].figure
 
-    ax_amp, ax_phase = axes
+    for c in range(C):
+        ax_amp, ax_phase = axes_per_ch[c]
+        amp = np.abs(R_np[c])
+        theta = np.angle(R_np[c])
+        f_c = f_ests[c]
+        ch_suffix = f" — Ch {c}" if C > 1 else ""
+        expected_phase = 2.0 * np.pi * f_c * M * lags / sampling_rate
 
-    # Top: autocorrelation magnitude
-    ax_amp.plot(lags, amp, linewidth=1.0, color="steelblue")
-    ax_amp.set_ylabel("|R[m]|")
-    ax_amp.set_title(f"{title}  (Δf={f_est:.2f} Hz, M={M})")
-    ax_amp.grid(True, alpha=0.3)
+        ax_amp.plot(lags, amp, linewidth=1.0, color=f"C{c}")
+        ax_amp.set_ylabel("|R[m]|")
+        ax_amp.set_title(f"{title}{ch_suffix}  (Δf={f_c:.2f} Hz, M={M})")
+        ax_amp.grid(True, alpha=0.3)
 
-    # Bottom: wrapped phase vs expected ramp
-    ax_phase.scatter(
-        lags, theta, s=6, color="steelblue", label="angle(R[m])  (wrapped)", zorder=3
-    )
-    ax_phase.plot(
-        lags,
-        (expected_phase + np.pi) % (2 * np.pi)
-        - np.pi,  # wrap expected for visual alignment
-        color="red",
-        linestyle="--",
-        linewidth=1.2,
-        label=f"Expected 2π·Δf·M·m/fs  (Δf={f_est:.2f} Hz)",
-    )
-    ax_phase.axhline(
-        np.pi, color="gray", linestyle=":", linewidth=0.9, label="±π wrap boundary"
-    )
-    ax_phase.axhline(-np.pi, color="gray", linestyle=":", linewidth=0.9)
-    ax_phase.set_xlabel("Lag m")
-    ax_phase.set_ylabel("Phase (rad)")
-    ax_phase.set_ylim(-np.pi - 0.3, np.pi + 0.3)
-    ax_phase.legend(fontsize="small")
-    ax_phase.grid(True, alpha=0.3)
+        ax_phase.scatter(
+            lags, theta, s=6, color=f"C{c}", label="angle(R[m])  (wrapped)", zorder=3
+        )
+        ax_phase.plot(
+            lags,
+            (expected_phase + np.pi) % (2 * np.pi) - np.pi,
+            color="red",
+            linestyle="--",
+            linewidth=1.2,
+            label=f"Expected 2π·Δf·M·m/fs  (Δf={f_c:.2f} Hz)",
+        )
+        ax_phase.axhline(
+            np.pi, color="gray", linestyle=":", linewidth=0.9, label="±π wrap boundary"
+        )
+        ax_phase.axhline(-np.pi, color="gray", linestyle=":", linewidth=0.9)
+        ax_phase.set_xlabel("Lag m")
+        ax_phase.set_ylabel("Phase (rad)")
+        ax_phase.set_ylim(-np.pi - 0.3, np.pi + 0.3)
+        ax_phase.legend(fontsize="small")
+        ax_phase.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if show:
         plt.show()
         return None
-    return fig, axes
+    return fig, (axes_per_ch[0] if C == 1 else axes_per_ch)
 
 
 def frequency_offset_spectrum(
@@ -1926,8 +1942,10 @@ def pilot_phase_estimate(
     phi_full : array_like, optional
         Interpolated per-symbol phase in radians. Shape: ``(C, N)`` or ``(N,)``.
         If provided, a second panel shows the full trajectory per channel.
-    f_est : float, default 0.0
+    f_est : float or list of float, default 0.0
         Estimated frequency offset in Hz (annotation on the fit line).
+        Scalar applies the same label to all channels; list of length ``C``
+        annotates each channel independently.
     sampling_rate : float, default 1.0
         Sampling rate in Hz.
     ax : array_like of Axes, optional
@@ -1945,6 +1963,11 @@ def pilot_phase_estimate(
     if phi_pilots_u.ndim == 1:
         phi_pilots_u = phi_pilots_u[None, :]
     C, P = phi_pilots_u.shape
+
+    if hasattr(f_est, "__len__"):
+        f_ests = [float(f) for f in f_est]
+    else:
+        f_ests = [float(f_est)] * C
 
     has_full = phi_full is not None
     if has_full:
@@ -1994,7 +2017,7 @@ def pilot_phase_estimate(
             label="Pilot φ (unwrapped)",
         )
         ax1.plot(
-            pilot_indices, np.degrees(phi_fit), "r--", label=f"Fit  Δf={f_est:.3f} Hz"
+            pilot_indices, np.degrees(phi_fit), "r--", label=f"Fit  Δf={f_ests[i]:.3f} Hz"
         )
         ax1.set_title(f"{title}{ch_suffix} — Pilots")
         ax1.set_xlabel("Sample Index")

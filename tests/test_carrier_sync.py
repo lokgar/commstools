@@ -114,13 +114,25 @@ class TestFoeMthPower:
                 search_range=(400_000.0, 500_000.0),
             )
 
-    def test_mimo_returns_scalar(self, backend_device, xp):
-        """MIMO input (C, N) returns a single scalar estimate."""
+    def test_mimo_returns_per_channel(self, backend_device, xp):
+        """MIMO input (C, N) returns ndarray(C,) by default."""
         sig_a = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
         sig_b = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)  # (2, N)
         est = sync.estimate_frequency_offset_mth_power(
             mimo, sampling_rate=FS, modulation="qam", order=4
+        )
+        assert isinstance(est, np.ndarray)
+        assert est.shape == (2,)
+        assert all(abs(e - 5_000.0) / 5_000.0 < 0.05 for e in est)
+
+    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
+        """MIMO + combine_channels=True returns a single Python float."""
+        sig_a = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
+        sig_b = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
+        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
+        est = sync.estimate_frequency_offset_mth_power(
+            mimo, sampling_rate=FS, modulation="qam", order=4, combine_channels=True
         )
         assert isinstance(est, float)
         assert abs(est - 5_000.0) / 5_000.0 < 0.05
@@ -563,8 +575,8 @@ class TestFoePilots:
         )
         assert abs(est) < 20.0
 
-    def test_mimo_returns_scalar(self, backend_device, xp):
-        """MIMO input: per-channel estimates averaged to a Python float."""
+    def test_mimo_returns_per_channel(self, backend_device, xp):
+        """MIMO input returns ndarray(C,) by default."""
         fo_hz = 2_000.0
         s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
         s1, _, _ = self._setup(xp, fo_hz)
@@ -574,6 +586,23 @@ class TestFoePilots:
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
             sampling_rate=FS,
+        )
+        assert isinstance(est, np.ndarray)
+        assert est.shape == (2,)
+        assert all(abs(e - fo_hz) < 0.01 * fo_hz + 1.0 for e in est)
+
+    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
+        """MIMO + combine_channels=True returns a single Python float."""
+        fo_hz = 2_000.0
+        s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
+        s1, _, _ = self._setup(xp, fo_hz)
+        samples_mimo = xp.stack([s0, s1], axis=0)
+        est = sync.estimate_frequency_offset_pilots(
+            samples_mimo,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            sampling_rate=FS,
+            combine_channels=True,
         )
         assert isinstance(est, float)
         assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
@@ -640,8 +669,8 @@ class TestFoeMengaliMorelli:
         est = sync.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
         assert abs(est - fo_hz) < 500.0
 
-    def test_mimo_returns_scalar(self, backend_device, xp):
-        """MIMO (C, N) input returns a single Python float (exact mixing)."""
+    def test_mimo_returns_per_channel(self, backend_device, xp):
+        """MIMO (C, N) input returns ndarray(C,) by default."""
         fo_hz = 6_000.0
         sig_a = _qam_signal(xp, 4, 2048, fo_hz=0.0)
         sig_b = _qam_signal(xp, 4, 2048, fo_hz=0.0)
@@ -650,6 +679,21 @@ class TestFoeMengaliMorelli:
         mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
         est = sync.estimate_frequency_offset_mengali_morelli(
             mimo, sampling_rate=FS, modulation="qam", order=4
+        )
+        assert isinstance(est, np.ndarray)
+        assert est.shape == (2,)
+        assert all(abs(e - fo_hz) / fo_hz < 0.02 for e in est)
+
+    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
+        """MIMO + combine_channels=True returns a single Python float."""
+        fo_hz = 6_000.0
+        sig_a = _qam_signal(xp, 4, 2048, fo_hz=0.0)
+        sig_b = _qam_signal(xp, 4, 2048, fo_hz=0.0)
+        n = xp.arange(2048, dtype=xp.float64)
+        mixer = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
+        mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
+        est = sync.estimate_frequency_offset_mengali_morelli(
+            mimo, sampling_rate=FS, modulation="qam", order=4, combine_channels=True
         )
         assert isinstance(est, float)
         assert abs(est - fo_hz) / fo_hz < 0.02
@@ -726,3 +770,221 @@ class TestFoeRegression:
         )
         assert abs(est - fo_hz) / fo_hz < 0.02
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Joint channels — BPS, VV, Tikhonov
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestJointChannels:
+    """joint_channels=True produces identical rows and zero inter-channel spread."""
+
+    N = 4096
+    PHASE = 0.3  # rad constant carrier phase offset
+
+    def _make_mimo(self, xp, order=16, phase=PHASE, snr_db=SNR_DB):
+        sig_a = _qam_signal(xp, order, self.N, snr_db=snr_db, seed=1)
+        sig_b = _qam_signal(xp, order, self.N, snr_db=snr_db, seed=2)
+        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
+        mimo = mimo * xp.exp(1j * phase).astype(mimo.dtype)
+        return mimo
+
+    def test_bps_joint_rows_identical(self, backend_device, xp):
+        """joint_channels=True: both phi_full rows are bitwise identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_bps(
+            mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_vv_joint_rows_identical(self, backend_device, xp):
+        """VV joint_channels=True: both phi_full rows are bitwise identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_viterbi_viterbi(
+            mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_tikhonov_joint_rows_identical(self, backend_device, xp):
+        """Tikhonov joint_channels=True: both phi_full rows are bitwise identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_tikhonov(
+            mimo, "qam", 16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
+            joint_channels=True,
+            cycle_slip_correction=False,
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_bps_joint_zero_spread(self, backend_device, xp):
+        """Joint BPS: inter-channel spread is exactly zero."""
+        mimo = self._make_mimo(xp, snr_db=20)
+        phi_joint = sync.recover_carrier_phase_bps(
+            mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        phi_np = phi_joint if xp is np else phi_joint.get()
+        assert float(np.std(phi_np[0] - phi_np[1])) == 0.0
+
+    def test_siso_joint_noop(self, backend_device, xp):
+        """joint_channels=True on SISO returns identical result to False."""
+        sig = _qam_signal(xp, 16, self.N, seed=7)
+        phi_a = sync.recover_carrier_phase_bps(
+            sig.samples, "qam", 16, joint_channels=False, cycle_slip_correction=False
+        )
+        phi_b = sync.recover_carrier_phase_bps(
+            sig.samples, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        phi_a_np = phi_a if xp is np else phi_a.get()
+        phi_b_np = phi_b if xp is np else phi_b.get()
+        np.testing.assert_allclose(phi_a_np, phi_b_np, atol=1e-10)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cycle-slip correction
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCycleSlipCorrection:
+    """correct_cycle_slips() detects and corrects injected slips."""
+
+    def test_standalone_no_slip(self, backend_device, xp):
+        """Smooth linear ramp with no slips is returned unchanged."""
+        B = 200
+        phi_u = np.linspace(0.0, 2.0, B)
+        phi_out = sync.correct_cycle_slips(phi_u.copy(), symmetry=4, history_length=50)
+        np.testing.assert_allclose(phi_out, phi_u, atol=1e-10)
+
+    def test_standalone_single_slip(self, backend_device, xp):
+        """A single injected pi/2 slip is corrected back to the original ramp."""
+        B = 300
+        phi_u = np.linspace(0.0, 1.0, B)
+        phi_slipped = phi_u.copy()
+        phi_slipped[150:] += np.pi / 2
+        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=4, history_length=100)
+        np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
+
+    def test_standalone_multiple_slips(self, backend_device, xp):
+        """Multiple +/-pi/2 slips are all corrected."""
+        B = 500
+        phi_u = np.linspace(0.0, 1.5, B)
+        phi_slipped = phi_u.copy()
+        phi_slipped[100:] += np.pi / 2
+        phi_slipped[300:] -= np.pi / 2
+        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=4, history_length=80)
+        np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
+
+    def test_bps_correction_bounded_output(self, backend_device, xp):
+        """BPS cycle_slip_correction=True returns phase within reasonable bounds."""
+        sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
+        phi = sync.recover_carrier_phase_bps(sig.samples, "qam", 16, cycle_slip_correction=True)
+        assert phi.shape == sig.samples.shape
+        phi_np = phi if xp is np else phi.get()
+        assert np.max(np.abs(phi_np)) < 10 * np.pi
+
+    def test_vv_correction_shape(self, backend_device, xp):
+        """VV cycle_slip_correction=True returns correct shape."""
+        sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
+        phi = sync.recover_carrier_phase_viterbi_viterbi(
+            sig.samples, "qam", 16, cycle_slip_correction=True
+        )
+        assert phi.shape == sig.samples.shape
+
+    def test_tikhonov_correction_shape(self, backend_device, xp):
+        """Tikhonov cycle_slip_correction=True returns correct shape."""
+        sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
+        phi = sync.recover_carrier_phase_tikhonov(
+            sig.samples, "qam", 16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
+            cycle_slip_correction=True,
+        )
+        assert phi.shape == sig.samples.shape
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase ambiguity resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestResolvePhaseAmbiguity:
+    """resolve_phase_ambiguity selects the rotation with lowest SER."""
+
+    N = 2048
+
+    def test_best_rotation_is_zero(self, backend_device, xp):
+        """Already-aligned symbols: k=0 chosen and SER is minimal."""
+        from commstools.helpers import normalize
+        from commstools.metrics import ser
+        sig = _qam_signal(xp, 16, self.N, snr_db=30, seed=5)
+        sym = normalize(sig.samples, "average_power")
+        ref = normalize(xp.asarray(sig.source_symbols), "average_power")
+        resolved = sync.resolve_phase_ambiguity(sym, ref, "qam", 16)
+        s0 = float(ser(resolved, ref, "qam", 16))
+        for k in range(1, 4):
+            sk = float(ser(resolved * xp.exp(1j * k * np.pi / 2).astype(sym.dtype), ref, "qam", 16))
+            assert s0 <= sk + 1e-6
+
+    def test_corrects_pi_half_rotation(self, backend_device, xp):
+        """Symbols rotated by pi/2 are corrected; post-resolution SER is low."""
+        from commstools.helpers import normalize
+        from commstools.metrics import ser
+        sig = _qam_signal(xp, 16, self.N, snr_db=30, seed=5)
+        sym = normalize(sig.samples, "average_power")
+        ref = normalize(xp.asarray(sig.source_symbols), "average_power")
+        rotated = sym * xp.exp(1j * np.pi / 2).astype(sym.dtype)
+        resolved = sync.resolve_phase_ambiguity(rotated, ref, "qam", 16)
+        assert float(ser(resolved, ref, "qam", 16)) < 0.05
+
+    def test_mimo_independent_per_channel(self, backend_device, xp):
+        """MIMO: channels with different rotations are each independently corrected."""
+        from commstools.helpers import normalize
+        from commstools.metrics import ser
+        sig_a = _qam_signal(xp, 16, self.N, seed=1)
+        sig_b = _qam_signal(xp, 16, self.N, seed=2)
+        sym_a = normalize(sig_a.samples, "average_power")
+        sym_b = normalize(sig_b.samples, "average_power")
+        ref_a = normalize(xp.asarray(sig_a.source_symbols), "average_power")
+        ref_b = normalize(xp.asarray(sig_b.source_symbols), "average_power")
+        mimo = xp.stack([sym_a * xp.exp(1j * np.pi / 2).astype(sym_a.dtype),
+                         sym_b * xp.exp(1j * np.pi).astype(sym_b.dtype)], axis=0)
+        ref_mimo = xp.stack([ref_a, ref_b], axis=0)
+        resolved = sync.resolve_phase_ambiguity(mimo, ref_mimo, "qam", 16)
+        assert resolved.shape == (2, self.N)
+        s = ser(resolved, ref_mimo, "qam", 16)
+        s_np = s if xp is np else s.get()
+        assert float(s_np[0]) < 0.05
+        assert float(s_np[1]) < 0.05
+
+    def test_signal_method_in_place(self, backend_device, xp):
+        """Signal.resolve_phase_ambiguity() updates resolved_symbols in place."""
+        from commstools.helpers import normalize
+        from commstools.metrics import ser
+        sig = Signal.qam(order=16, num_symbols=self.N, sps=1, symbol_rate=1e6, seed=9)
+        sig.samples = apply_awgn(sig.samples, esn0_db=30, sps=1, seed=9)
+        sym = normalize(sig.samples, "average_power")
+        sig.resolved_symbols = sym * xp.exp(1j * np.pi / 2).astype(sym.dtype)
+        sig.resolve_phase_ambiguity()
+        assert sig.resolved_symbols is not None
+        ref = normalize(xp.asarray(sig.source_symbols), "average_power")
+        assert float(ser(sig.resolved_symbols, ref, "qam", 16)) < 0.1
+
+    def test_signal_method_raises_without_resolved(self, backend_device, xp):
+        """Raises ValueError when resolved_symbols is None."""
+        sig = Signal.qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
+        with pytest.raises(ValueError, match="resolved_symbols"):
+            sig.resolve_phase_ambiguity()
+
+    def test_signal_method_raises_without_source(self, backend_device, xp):
+        """Raises ValueError when source_symbols is None."""
+        sig = Signal.qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
+        sig.resolved_symbols = sig.samples
+        sig.source_symbols = None
+        with pytest.raises(ValueError, match="source_symbols"):
+            sig.resolve_phase_ambiguity()

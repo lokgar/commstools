@@ -1910,6 +1910,49 @@ class Signal(BaseModel):
         )
         self.resolved_bits = bits
 
+    def resolve_phase_ambiguity(self) -> None:
+        """
+        Resolves rotational phase ambiguity in ``resolved_symbols`` in place.
+
+        After blind CPR (VV, BPS, Tikhonov) a global ``π/2`` (QAM) or
+        ``2π/M`` (PSK) phase ambiguity remains per stream.  This method tests
+        all symmetry rotations, scores each against ``source_symbols`` by SER,
+        and overwrites ``resolved_symbols`` with the best rotation.
+
+        For MIMO (``resolved_symbols`` shape ``(C, N)``), each channel is
+        resolved independently — after MIMO equalisation different output
+        streams may land on different ambiguity branches.
+
+        The result is written to ``self.resolved_symbols`` in place.
+
+        Raises
+        ------
+        ValueError
+            If ``resolved_symbols``, ``source_symbols``, ``mod_scheme``, or
+            ``mod_order`` are not populated.
+        """
+        from .sync import resolve_phase_ambiguity as _resolve
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "resolved_symbols is not set. Call resolve_symbols() or assign "
+                "resolved_symbols directly before calling resolve_phase_ambiguity()."
+            )
+        if self.source_symbols is None:
+            raise ValueError(
+                "source_symbols is not set. Populate source_symbols (the known TX "
+                "symbol sequence) before calling resolve_phase_ambiguity()."
+            )
+        if self.mod_scheme is None or self.mod_order is None:
+            raise ValueError("mod_scheme and mod_order must be set.")
+
+        self.resolved_symbols = _resolve(
+            symbols=self.resolved_symbols,
+            ref_symbols=self.source_symbols,
+            modulation=self.mod_scheme,
+            order=self.mod_order,
+        )
+
     # -------------------------------------------------------------------------
     # Metrics Methods
     # -------------------------------------------------------------------------

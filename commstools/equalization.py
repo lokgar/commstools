@@ -57,7 +57,7 @@ apply_taps :
 
 import functools
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import numpy as np
 
@@ -1796,6 +1796,7 @@ def lms(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -1874,6 +1875,14 @@ def lms(
         the default center-tap identity matrix.  Useful for weight handoff from
         a prior stage (e.g. preamble LMS → payload LMS).
         Raises ``ValueError`` if the shape does not match.
+    pmf : array_like of float, optional
+        Probability mass function over the constellation for probabilistically
+        shaped QAM (PS-QAM).  When provided together with ``modulation`` and
+        ``order``, the DD slicer constellation is scaled by ``1/sqrt(E_PS)``
+        (where ``E_PS = sum_m P(s_m)|s_m|^2`` on the normalised grid) so it
+        matches the unit-power normalised equaliser input.  Training symbols
+        are left untouched — ``_normalize_inputs`` already brings them to unit
+        average power.  Has no effect for uniform modulations.
 
     Returns
     -------
@@ -1968,6 +1977,15 @@ def lms(
             constellation_np = np.unique(np.round(train_flat, decimals=8))
         else:
             raise ValueError("modulation and order must be provided for DD mode.")
+        # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)} so it
+        # matches the normalised equaliser input.  Training is already at unit power
+        # after _normalize_inputs — only the constellation reference needs scaling.
+        if pmf is not None and modulation is not None and order is not None:
+            _pmf_arr = np.asarray(pmf, dtype=np.float64)
+            _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+            if _e_ps < 1.0 - 1e-6:
+                _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
+                constellation_np = (constellation_np * _c_ps).astype(np.complex64)
         train_full, n_train_aligned = _prepare_training_numpy(
             training_np,
             num_ch,
@@ -2048,6 +2066,14 @@ def lms(
     constellation_np = (
         to_device(reference_constellation, "cpu").flatten().astype("complex64")
     )
+    # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
+    if pmf is not None and modulation is not None and order is not None:
+        _pmf_arr = np.asarray(pmf, dtype=np.float64)
+        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        if _e_ps < 1.0 - 1e-6:
+            constellation_np = (
+                constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
+            ).astype(np.complex64)
     train_full, n_train_aligned = _prepare_training_jax(
         training_symbols,
         num_ch,
@@ -2124,6 +2150,7 @@ def rls(
     center_tap: Optional[int] = None,
     backend: str = "numba",
     w_init: Optional[ArrayType] = None,
+    pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -2225,6 +2252,10 @@ def rls(
         Execution backend. ``'numba'`` uses Numba ``@njit``; LLVM-compiled,
         typically fastest on CPU, particularly for the O(num_taps²) Riccati
         update. ``'jax'`` uses ``jax.lax.scan`` (XLA-compiled, GPU-capable).
+    pmf : array_like of float, optional
+        Probability mass function for PS-QAM.  Scales the DD slicer
+        constellation by ``1/sqrt(E_PS)`` to match the unit-power normalised
+        equaliser input.  Requires ``modulation`` and ``order``.
 
     Returns
     -------
@@ -2349,6 +2380,13 @@ def rls(
             )
         else:
             raise ValueError("modulation and order must be provided for DD mode.")
+        # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
+        if pmf is not None and modulation is not None and order is not None:
+            _pmf_arr = np.asarray(pmf, dtype=np.float64)
+            _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+            if _e_ps < 1.0 - 1e-6:
+                _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
+                constellation_np = (constellation_np * _c_ps).astype(np.complex64)
 
         train_full, n_train_aligned = _prepare_training_numpy(
             training_np,
@@ -2441,6 +2479,14 @@ def rls(
     constellation_np = (
         to_device(reference_constellation, "cpu").flatten().astype("complex64")
     )
+    # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
+    if pmf is not None and modulation is not None and order is not None:
+        _pmf_arr = np.asarray(pmf, dtype=np.float64)
+        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        if _e_ps < 1.0 - 1e-6:
+            constellation_np = (
+                constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
+            ).astype(np.complex64)
 
     logger.debug(
         f"RLS internals: n_sym={n_sym}, n_train={num_train_symbols}, "
@@ -2608,6 +2654,7 @@ def cma(
     pilot_ref: Optional[ArrayType] = None,
     pilot_mask: Optional[np.ndarray] = None,
     pilot_gain_db: float = 0.0,
+    pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -2684,6 +2731,13 @@ def cma(
         pilots from inflating the RMS estimate and biasing the Godard
         convergence target at data positions.  Set to ``0.0`` when pilots
         are not boosted.
+    pmf : array_like of float, optional
+        Probability mass function for PS-QAM.  When provided with ``modulation``
+        and ``order``, the Godard R2 is computed for the unit-power PS
+        distribution ``{s_m/sqrt(E_PS)}``:
+        ``R2 = E_PS[|s_m|^4] / E_PS^2``.  Pilot references are also scaled
+        by ``1/sqrt(E_PS)`` so pilot-aided and blind sections converge to the
+        same unit-power target.
 
     Returns
     -------
@@ -2721,13 +2775,29 @@ def cma(
     else:
         num_ch, n_samples = samples.shape
 
-    # Compute R2 from the Godard constellation (constant for a given modulation)
+    # Compute R2 and PS-QAM scale factor from the Godard constellation.
+    _c_ps = None  # 1/sqrt(E_PS) scale factor; None for uniform modulation
     if modulation is not None and order is not None:
         from .mapping import gray_constellation
 
         const = gray_constellation(modulation, order, unipolar=unipolar)
-        r2 = float(np.mean(np.abs(const) ** 4) / np.mean(np.abs(const) ** 2))
-        logger.debug(f"CMA R2 from {modulation.upper()}-{order}: {r2:.4f}")
+        if pmf is not None:
+            # PS-QAM: R2 for the unit-power distribution {s_m/sqrt(E_PS)}:
+            #   R2 = E_PS[|s_m/sqrt(E_PS)|^4] / E_PS[|s_m/sqrt(E_PS)|^2]
+            #      = (E_PS[|s_m|^4] / E_PS^2) / 1
+            #      = E_PS[|s_m|^4] / E_PS^2
+            _pmf_arr = np.asarray(pmf, dtype=np.float64)
+            _abs2 = np.abs(const) ** 2
+            _e_ps = float(np.dot(_pmf_arr, _abs2))
+            r2 = float(np.dot(_pmf_arr, np.abs(const) ** 4)) / (_e_ps ** 2)
+            if _e_ps < 1.0 - 1e-6:
+                _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
+            logger.debug(
+                f"CMA R2 (PS-QAM pmf-weighted, {modulation.upper()}-{order}): {r2:.4f}"
+            )
+        else:
+            r2 = float(np.mean(np.abs(const) ** 4) / np.mean(np.abs(const) ** 2))
+            logger.debug(f"CMA R2 from {modulation.upper()}-{order}: {r2:.4f}")
     else:
         r2 = 1.0
 
@@ -2777,6 +2847,8 @@ def cma(
         )
         if use_pilots:
             pref = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+            if _c_ps is not None:
+                pref = (pref * _c_ps).astype(np.complex64)
             pmask = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
             _get_numba_pa_cma()(
                 x_np,
@@ -2873,6 +2945,8 @@ def cma(
 
     if use_pilots:
         pref_np = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        if _c_ps is not None:
+            pref_np = (pref_np * _c_ps).astype(np.complex64)
         pmask_np = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
         # pilot_ref: (C, n_sym) → (n_sym, C) for scan xs
         pref_jax = to_jax(pref_np.T, device=platform)
@@ -2918,6 +2992,7 @@ def rde(
     pilot_ref: Optional[ArrayType] = None,
     pilot_mask: Optional[np.ndarray] = None,
     pilot_gain_db: float = 0.0,
+    pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -2995,6 +3070,11 @@ def rde(
         pilots from inflating the RMS estimate and biasing the ring-radius
         convergence targets at data positions.  Set to ``0.0`` when pilots
         are not boosted.
+    pmf : array_like of float, optional
+        Probability mass function for PS-QAM.  When provided with ``modulation``
+        and ``order``, the ring radii are scaled by ``1/sqrt(E_PS)`` to target
+        the unit-power constellation ``{|s_m|/sqrt(E_PS)}``.  Pilot references
+        are also scaled accordingly.  Requires ``modulation`` and ``order``.
 
     Returns
     -------
@@ -3047,12 +3127,20 @@ def rde(
     # Compute unique ring radii from constellation.
     # For constant-modulus signals (PSK) this degenerates to a single radius,
     # making RDE identical to CMA.
+    _c_ps = None  # 1/sqrt(E_PS) scale factor; None for uniform modulation
     if modulation is not None and order is not None:
         from .mapping import gray_constellation
 
         const = gray_constellation(modulation, order, unipolar=unipolar)
-        # Round to 6 significant digits to merge numerically identical radii
         raw_radii = np.abs(const).astype(np.float32)
+        if pmf is not None:
+            # PS-QAM: scale radii to unit-power targets {|s_m|/sqrt(E_PS)}
+            _pmf_arr = np.asarray(pmf, dtype=np.float64)
+            _e_ps = float(np.dot(_pmf_arr, raw_radii.astype(np.float64) ** 2))
+            if _e_ps < 1.0 - 1e-6:
+                _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
+                raw_radii = (raw_radii * _c_ps).astype(np.float32)
+        # Round to 6 significant digits to merge numerically identical radii
         radii = np.unique(np.round(raw_radii, 6))
         logger.debug(
             f"RDE radii from {modulation.upper()}-{order}: "
@@ -3112,6 +3200,8 @@ def rde(
         )
         if use_pilots:
             pref = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+            if _c_ps is not None:
+                pref = (pref * _c_ps).astype(np.complex64)
             pmask = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
             _get_numba_pa_rde()(
                 x_np,
@@ -3207,6 +3297,8 @@ def rde(
 
     if use_pilots:
         pref_np = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        if _c_ps is not None:
+            pref_np = (pref_np * _c_ps).astype(np.complex64)
         pmask_np = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
         # pilot_ref: (C, n_sym) → (n_sym, C) for scan xs
         pref_jax = to_jax(pref_np.T, device=platform)
