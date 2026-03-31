@@ -620,7 +620,9 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
     samples[40:47] = barker
 
     preamble = Preamble(sequence_type="barker", length=7)
-    coarse, frac = sync.estimate_timing(samples, preamble, sps=1, pulse_shape="none", threshold=0.3)
+    coarse, frac = sync.estimate_timing(
+        samples, preamble, sps=1, pulse_shape="none", threshold=0.3
+    )
     assert abs(int(coarse[0]) - 40) <= 1
 
 
@@ -794,7 +796,9 @@ def test_estimate_timing_mimo_identity(backend_device, xp):
     preamble_pos = 200
     rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
 
-    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(
+        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+    )
 
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
@@ -811,7 +815,9 @@ def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(
+        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+    )
 
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
@@ -823,9 +829,13 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
     """MIMO: hardware skew of 5 samples on channel 1 is reflected in per-channel coarse offsets."""
     preamble_pos = 200
     skew = 5
-    rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew)
+    rx, preamble, L = _make_mimo_signal(
+        xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew
+    )
 
-    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(
+        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+    )
 
     # Channel 0 should find preamble_pos; channel 1 is shifted by skew
     assert abs(int(coarse[0]) - preamble_pos) <= 1, (
@@ -854,7 +864,9 @@ def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
     H = [[0.0, 1.0], [1.0, 0.0]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = sync.estimate_timing(rx, preamble, sps=1, pulse_shape="none", threshold=0.05)
+    coarse, frac = sync.estimate_timing(
+        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+    )
 
     for ch in range(2):
         assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
@@ -1069,7 +1081,7 @@ class TestBPS:
 
 
 class TestDDPLL:
-    """Tests for recover_carrier_phase_decision_directed."""
+    """Tests for recover_carrier_phase_pll."""
 
     def _qpsk_symbols(self, xp, N=512, seed=10):
         import numpy as np
@@ -1082,7 +1094,7 @@ class TestDDPLL:
     def test_siso_output_shape(self, backend_device, xp):
         """SISO: output is (N,) float64."""
         syms = self._qpsk_symbols(xp)
-        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4)
+        phi = sync.recover_carrier_phase_pll(syms, "psk", 4)
         assert phi.shape == syms.shape
         assert phi.dtype == xp.float64
 
@@ -1098,32 +1110,30 @@ class TestDDPLL:
         syms = xp.asarray(
             const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
         )
-        phi = sync.recover_carrier_phase_decision_directed(syms, "psk", 4)
+        phi = sync.recover_carrier_phase_pll(syms, "psk", 4)
         assert phi.shape == (C, N)
 
     def test_second_order_loop(self, backend_device, xp):
         """beta > 0 engages 2nd-order loop without raising."""
         syms = self._qpsk_symbols(xp, N=256)
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms, "psk", 4, mu=0.02, beta=1e-4
-        )
+        phi = sync.recover_carrier_phase_pll(syms, "psk", 4, mu=0.02, beta=1e-4)
         assert phi.shape == syms.shape
 
     def test_phase_init_applied(self, backend_device, xp):
         """phase_init shifts the starting phase estimate."""
         syms = self._qpsk_symbols(xp, N=256)
         phi_init = 0.5
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms, "psk", 4, phase_init=phi_init
-        )
+        phi = sync.recover_carrier_phase_pll(syms, "psk", 4, phase_init=phi_init)
         # First estimate should be close to phase_init before any loop correction
         assert abs(float(phi[0]) - phi_init) < 0.5
 
     def test_butterworth_output_shape_siso(self, backend_device, xp):
         """loop_filter='butterworth': SISO output shape is (N,)."""
         syms = self._qpsk_symbols(xp, N=512)
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms, "psk", 4,
+        phi = sync.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
         )
@@ -1132,8 +1142,10 @@ class TestDDPLL:
     def test_butterworth_output_dtype(self, backend_device, xp):
         """loop_filter='butterworth': output dtype is float64."""
         syms = self._qpsk_symbols(xp, N=256)
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms, "psk", 4,
+        phi = sync.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
         )
@@ -1151,13 +1163,17 @@ class TestDDPLL:
         syms_clean = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
         syms_rotated = syms_clean * np.exp(1j * phase_offset)
 
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms_rotated, "psk", 4,
+        phi = sync.recover_carrier_phase_pll(
+            syms_rotated,
+            "psk",
+            4,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-2,
         )
         # Phi should be finite everywhere (no NaN or Inf)
-        assert bool(xp.all(xp.isfinite(phi))), "Butterworth PLL output contains non-finite values"
+        assert bool(xp.all(xp.isfinite(phi))), (
+            "Butterworth PLL output contains non-finite values"
+        )
 
     def test_butterworth_mimo_output_shape(self, backend_device, xp):
         """loop_filter='butterworth': MIMO (C, N) output shape is (C, N)."""
@@ -1170,8 +1186,10 @@ class TestDDPLL:
         syms = xp.asarray(
             const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
         )
-        phi = sync.recover_carrier_phase_decision_directed(
-            syms, "psk", 4,
+        phi = sync.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
         )
@@ -1181,8 +1199,10 @@ class TestDDPLL:
         """loop_bandwidth_normalized outside (0, 0.5) should raise ValueError."""
         syms = self._qpsk_symbols(xp, N=64)
         with pytest.raises(ValueError, match="loop_bandwidth_normalized"):
-            sync.recover_carrier_phase_decision_directed(
-                syms, "psk", 4,
+            sync.recover_carrier_phase_pll(
+                syms,
+                "psk",
+                4,
                 loop_filter="butterworth",
                 loop_bandwidth_normalized=0.6,
             )
@@ -1191,9 +1211,7 @@ class TestDDPLL:
         """Unknown loop_filter value should raise ValueError."""
         syms = self._qpsk_symbols(xp, N=64)
         with pytest.raises(ValueError, match="loop_filter"):
-            sync.recover_carrier_phase_decision_directed(
-                syms, "psk", 4, loop_filter="kalman"
-            )
+            sync.recover_carrier_phase_pll(syms, "psk", 4, loop_filter="kalman")
 
 
 # =============================================================================
@@ -1339,7 +1357,7 @@ class TestIQImbalanceCompensation:
 
     # κ = |E[r²]| / E[|r|²]: zero for a circular signal, positive for improper
     def _kappa(self, xp, x):
-        return float(xp.abs(xp.mean(x ** 2))) / float(xp.mean(xp.abs(x) ** 2))
+        return float(xp.abs(xp.mean(x**2))) / float(xp.mean(xp.abs(x) ** 2))
 
     def _make_imbalanced(self, xp, N=8192, seed=42):
         rng = xp.random.RandomState(seed)
@@ -1363,7 +1381,7 @@ class TestIQImbalanceCompensation:
         _, r = self._make_imbalanced(xp)
         out = sync.compensate_iq_imbalance_lowdin(r)
         I, Q = out.real, out.imag
-        power_ratio = float(xp.mean(I ** 2)) / float(xp.mean(Q ** 2))
+        power_ratio = float(xp.mean(I**2)) / float(xp.mean(Q**2))
         cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
         assert abs(power_ratio - 1.0) < 0.05
         assert cross_corr < 0.02

@@ -31,7 +31,7 @@ estimate_frequency_offset_pilots :
     Scattered-pilot FOE via (optionally SNR-weighted) least-squares phase slope fitting.
 correct_frequency_offset :
     Applies frequency offset correction via complex mixing.
-recover_carrier_phase_decision_directed :
+recover_carrier_phase_pll :
     Streaming CPR via Decision-Directed PLL (1st/2nd-order loop); Numba-compiled
     inner loop for CPU performance; GPU-transparent via CPU offload.
 recover_carrier_phase_viterbi_viterbi :
@@ -986,10 +986,9 @@ def estimate_frequency_offset_mth_power(
     search_range: Optional[Tuple[float, float]] = None,
     nfft: Optional[int] = None,
     interpolation: str = "jacobsen",
-    shared_lo_check: bool = True,
-    shared_lo_tol_hz: Optional[float] = None,
+    combine_channels: bool = False,
     debug_plot: bool = False,
-) -> float:
+) -> Union[float, np.ndarray]:
     """
     Estimates frequency offset using the M-th power law (nonlinear spectral method).
 
@@ -1001,7 +1000,8 @@ def estimate_frequency_offset_mth_power(
     ----------
     samples : array_like
         Complex IQ samples. Shape: (N,) or (C, N). For MIMO, channel
-        spectra are summed before peak detection (coherent accumulation).
+        magnitude spectra are summed for robust peak detection, then
+        per-channel sub-bin interpolation is applied at the shared peak bin.
     sampling_rate : float
         Sampling rate in Hz.
     modulation : str
@@ -1021,20 +1021,22 @@ def estimate_frequency_offset_mth_power(
           corrects rectangular-window sinc bias analytically.  More
           accurate than parabolic for short observation windows.
         * ``'parabolic'``: classic parabolic fit on FFT magnitudes.
-    shared_lo_check : bool, default True
-        For MIMO inputs (C > 1): also find the peak independently per
-        channel and warn if the inter-channel spread exceeds
-        ``shared_lo_tol_hz``.  Assumes a shared LO (e.g. dual-polarisation
-        coherent optical).  Set to ``False`` for independent-LO systems.
-    shared_lo_tol_hz : float, optional
-        Spread threshold for the shared-LO sanity check.
-        Default: ``0.005 * sampling_rate`` (0.5 % of sampling rate).
+    combine_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, return a single
+        magnitude-weighted mean estimate as ``float``; if ``False``
+        (default), return per-channel estimates as ``np.ndarray`` of
+        shape ``(C,)``.  SISO inputs always return ``float``.
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the M-th power
+        spectrum per channel with the detected peak and sub-bin result.
 
     Returns
     -------
-    float
-        Estimated frequency offset in Hz. Positive means the received
-        signal is shifted up relative to the local oscillator.
+    float or np.ndarray
+        Estimated frequency offset in Hz. For SISO or when
+        ``combine_channels=True``: scalar ``float``. For MIMO with
+        ``combine_channels=False``: ``np.ndarray`` of shape ``(C,)``
+        with one estimate per channel.
 
     Notes
     -----
@@ -1131,83 +1133,50 @@ def estimate_frequency_offset_mth_power(
     k_peak = int(xp.argmax(mag_combined))
     k_safe = max(1, min(k_peak, nfft - 2))
 
-    if interpolation == "jacobsen":
-        # Jacobsen estimator: uses complex FFT values — unbiased for rectangular window.
-        # δ = Re[(X[k-1] − X[k+1]) / (2·X[k] − X[k-1] − X[k+1])]
-        # Sum over channels for the combined (coherent) spectrum.
-        X_combined = xp.sum(X_M, axis=0)  # (nfft,)
-        xa = complex(X_combined[k_safe - 1])
-        xb = complex(X_combined[k_safe])
-        xc = complex(X_combined[k_safe + 1])
-        denom_j = 2 * xb - xa - xc
-        mu = float(((xa - xc) / denom_j).real) if abs(denom_j) > 1e-30 else 0.0
-    else:
-        # Parabolic fallback on magnitudes (legacy, biased for small nfft)
-        a = float(mag_combined[k_safe - 1])
-        b_ = float(mag_combined[k_safe])
-        c_ = float(mag_combined[k_safe + 1])
-        denom_p = a - 2 * b_ + c_
-        mu = 0.5 * (a - c_) / denom_p if abs(denom_p) > 1e-15 else 0.0
+    # Per-channel sub-bin interpolation at the shared global peak bin.
+    # Using the combined-magnitude peak for robustness (coherent noise averaging);
+    # per-channel complex/magnitude values give the channel-specific fractional correction.
+    f_per_ch = []
+    for c in range(C):
+        if interpolation == "jacobsen":
+            xa_c = complex(X_M[c, k_safe - 1])
+            xb_c = complex(X_M[c, k_safe])
+            xc_c = complex(X_M[c, k_safe + 1])
+            d_c = 2 * xb_c - xa_c - xc_c
+            mu_c = float(((xa_c - xc_c) / d_c).real) if abs(d_c) > 1e-30 else 0.0
+        else:
+            a_c = float(mag[c, k_safe - 1])
+            b_c = float(mag[c, k_safe])
+            cc_ = float(mag[c, k_safe + 1])
+            d_c = a_c - 2 * b_c + cc_
+            mu_c = 0.5 * (a_c - cc_) / d_c if abs(d_c) > 1e-15 else 0.0
+        mu_c = max(-0.5, min(0.5, mu_c))
+        f_per_ch.append((freqs_np[k_safe] + mu_c * (sampling_rate / nfft)) / M)
 
-    mu = max(-0.5, min(0.5, mu))
-    f_est = (freqs_np[k_safe] + mu * (sampling_rate / nfft)) / M
-
-    # Per-channel shared-LO sanity check for MIMO
-    if C > 1 and shared_lo_check:
-        tol = (
-            shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
-        )
-        f_per_ch = []
-        for c_idx in range(C):
-            k_c = int(xp.argmax(mag[c_idx]))
-            k_c_safe = max(1, min(k_c, nfft - 2))
-            if interpolation == "jacobsen":
-                xa_c = complex(X_M[c_idx, k_c_safe - 1])
-                xb_c = complex(X_M[c_idx, k_c_safe])
-                xc_c = complex(X_M[c_idx, k_c_safe + 1])
-                d_c = 2 * xb_c - xa_c - xc_c
-                mu_c = float(((xa_c - xc_c) / d_c).real) if abs(d_c) > 1e-30 else 0.0
-            else:
-                a_c = float(mag[c_idx, k_c_safe - 1])
-                b_c = float(mag[c_idx, k_c_safe])
-                c_c = float(mag[c_idx, k_c_safe + 1])
-                d_c = a_c - 2 * b_c + c_c
-                mu_c = 0.5 * (a_c - c_c) / d_c if abs(d_c) > 1e-15 else 0.0
-            mu_c = max(-0.5, min(0.5, mu_c))
-            f_per_ch.append((freqs_np[k_c_safe] + mu_c * (sampling_rate / nfft)) / M)
-        spread = max(f_per_ch) - min(f_per_ch)
-        logger.info(
-            f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
-            f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz, "
-            f"nfft={nfft}, interp={interpolation}]"
-        )
-        if spread > tol:
-            logger.warning(
-                f"FOE (M-th power): per-channel spread {spread:.2f} Hz "
-                f"exceeds shared-LO tolerance {tol:.2f} Hz. "
-                f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
-                "Possible timing misalignment or independent LOs per channel."
-            )
-    else:
-        logger.info(
-            f"FOE (M-th power, M={M}): {f_est:.2f} Hz "
-            f"[nfft={nfft}, interp={interpolation}, search_range={search_range}]"
-        )
+    logger.info(
+        f"FOE (M-th power, M={M}): {[f'{f:.2f}' for f in f_per_ch]} Hz "
+        f"[nfft={nfft}, interp={interpolation}, search_range={search_range}]"
+    )
 
     if debug_plot:
         from . import plotting as _plotting
 
         _plotting.frequency_offset_spectrum(
-            mag_spectrum=to_device(mag_combined[None, :], "cpu"),
+            mag_spectrum=to_device(mag, "cpu"),
             freqs=freqs_np,
             M=M,
-            k_peaks=np.array([k_peak]),
-            f_estimates=[f_est],
+            k_peaks=np.array([k_peak] * C),
+            f_estimates=f_per_ch,
             search_range=search_range,
             show=True,
         )
 
-    return float(f_est)
+    if was_1d:
+        return float(f_per_ch[0])
+    if combine_channels:
+        weights = [float(mag[c, k_peak]) for c in range(C)]
+        return float(np.average(f_per_ch, weights=weights))
+    return np.array(f_per_ch)
 
 
 # Lazy-compiled Numba kernel for the M&M iterative bootstrap.
@@ -1288,10 +1257,9 @@ def estimate_frequency_offset_mengali_morelli(
     order: Optional[int] = None,
     ref_signal: Optional[ArrayType] = None,
     max_lag: Optional[int] = None,
-    shared_lo_check: bool = True,
-    shared_lo_tol_hz: Optional[float] = None,
+    combine_channels: bool = False,
     debug_plot: bool = False,
-) -> float:
+) -> Union[float, np.ndarray]:
     """
     Estimates frequency offset via the Mengali-Morelli multi-lag autocorrelation.
 
@@ -1363,21 +1331,23 @@ def estimate_frequency_offset_mengali_morelli(
         Maximum autocorrelation lag L.  Default: ``N // 4``, clamped to
         ``[1, N // 2]``.  Increasing L improves noise averaging at the cost
         of using shorter sub-sequences for each lag.
-    shared_lo_check : bool, default True
-        For MIMO (C > 1): warn if per-channel estimates diverge beyond
-        ``shared_lo_tol_hz`` (shared-LO assumption check).
-    shared_lo_tol_hz : float, optional
-        Spread threshold for shared-LO sanity check.
-        Default: ``0.005 * sampling_rate``.
+    combine_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, return the mean of per-channel
+        estimates as a scalar ``float``; if ``False`` (default), return
+        per-channel estimates as ``np.ndarray`` of shape ``(C,)``.
+        SISO inputs always return ``float``.
     debug_plot : bool, default False
-        If ``True``, opens a diagnostic figure showing the autocorrelation
-        magnitude ``|R[m]|`` and wrapped phase ``∠R[m]`` vs lag, with the
-        expected phase ramp overlaid.
+        If ``True``, opens a diagnostic figure showing per-channel
+        autocorrelation magnitude ``|R[m]|`` and wrapped phase ``∠R[m]``
+        vs lag, with the expected phase ramp overlaid.
 
     Returns
     -------
-    float
-        Estimated frequency offset in Hz.
+    float or np.ndarray
+        Estimated frequency offset in Hz. For SISO or when
+        ``combine_channels=True``: scalar ``float``. For MIMO with
+        ``combine_channels=False``: ``np.ndarray`` of shape ``(C,)``
+        with one estimate per channel.
 
     Notes
     -----
@@ -1420,8 +1390,8 @@ def estimate_frequency_offset_mengali_morelli(
            \\hat{f} = \\frac{\\sum_{m=1}^{L} m^2 |R[m]|^2\\, f[m]}
                             {\\sum_{m=1}^{L} m^2 |R[m]|^2}
 
-    For MIMO, autocorrelations are summed coherently across channels before
-    phase extraction, assuming a shared LO.
+    For MIMO, the bootstrap is run independently per channel; the result
+    is a per-channel array by default.
 
     **Lock range:** ``[-fs/(2M), fs/(2M)]`` for blind M-th power mode;
     ``[-fs/2, fs/2]`` (full Nyquist) for data-aided or generic blind mode.
@@ -1473,77 +1443,43 @@ def estimate_frequency_offset_mengali_morelli(
     lags_xp = xp.arange(1, L + 1, dtype=xp.float64)  # (L,) on device
     R_per_ch = R_all[:, 1 : L + 1] / (N - lags_xp[None, :])  # (C, L)
 
-    # Coherent sum across channels (shared-LO assumption), then divide by C
-    R_combined = xp.sum(R_per_ch, axis=0) / C  # (L,)
+    # Transfer R_per_ch (C, L) to CPU once; run the iterative bootstrap per channel.
+    # The bootstrap is a sequential scan (each step depends on the previous),
+    # so Numba on CPU beats GPU here. Single transfer avoids repeated device round-trips.
+    R_per_ch_np = to_device(R_per_ch, "cpu")  # (C, L) complex128
 
-    # Transfer only R_combined (L complex128 = ~16 KB) to CPU.  The iterative
-    # bootstrap is a sequential scan — each step reads f_hat produced by the
-    # previous one, preventing GPU parallelisation.  We use a Numba-compiled
-    # kernel (same lazy-cache pattern as DD-PLL / RTS smoother) for ~250×
-    # speedup over the plain Python loop; falls back to pure Python if Numba
-    # is not installed.
-    R_np = to_device(R_combined, "cpu")  # (L,) complex128
-    theta_np = np.angle(R_np)  # (L,) float64
-    amp_np = np.abs(R_np)  # (L,) float64
-
-    # Iterative bootstrap — see _mm_bootstrap_loop docstring for the algorithm.
-    # Weights: w[m] ∝ m² · |R[m]|²  (M&M MVUE × SNR proxy)
     _mm_kernel = _get_numba_mm_bootstrap()
-    f_est = float(_mm_kernel(theta_np, amp_np, float(M), float(sampling_rate)))
+    f_per_ch = []
+    for c_idx in range(C):
+        R_c_np = R_per_ch_np[c_idx]  # (L,)
+        theta_c = np.angle(R_c_np)
+        amp_c = np.abs(R_c_np)
+        f_per_ch.append(
+            float(_mm_kernel(theta_c, amp_c, float(M), float(sampling_rate)))
+        )
 
     mode_str = "data-aided" if ref_signal is not None else f"blind M={M}"
-
-    # Per-channel shared-LO sanity check for MIMO.
-    # R_per_ch[c, :] was already computed above — transfer (C, L) once, then
-    # run the same Numba kernel per channel (no extra GPU work).
-    spread = None
-    f_per_ch = None
-    if C > 1 and shared_lo_check:
-        tol = (
-            shared_lo_tol_hz if shared_lo_tol_hz is not None else 0.005 * sampling_rate
-        )
-        f_per_ch = []
-        R_per_ch_np = to_device(R_per_ch, "cpu")  # (C, L) — single transfer
-        for c_idx in range(C):
-            R_c_np = R_per_ch_np[c_idx]  # (L,) — already on CPU
-            theta_c = np.angle(R_c_np)
-            amp_c = np.abs(R_c_np)
-            f_per_ch.append(
-                float(_mm_kernel(theta_c, amp_c, float(M), float(sampling_rate)))
-            )
-        spread = max(f_per_ch) - min(f_per_ch)
-
-    if f_per_ch is not None:
-        logger.info(
-            f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz "
-            f"[L={L} lags, N={N}, per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, "
-            f"spread: {spread:.2f} Hz]"
-        )
-    else:
-        logger.info(
-            f"FOE (Mengali-Morelli, {mode_str}): {f_est:.2f} Hz [L={L} lags, N={N}]"
-        )
-
-    if spread is not None and spread > tol:
-        logger.warning(
-            f"FOE (Mengali-Morelli): per-channel spread {spread:.2f} Hz "
-            f"exceeds shared-LO tolerance {tol:.2f} Hz. "
-            f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
-            "Possible timing misalignment or independent LOs per channel."
-        )
+    logger.info(
+        f"FOE (Mengali-Morelli, {mode_str}): {[f'{f:.2f}' for f in f_per_ch]} Hz "
+        f"[L={L} lags, N={N}]"
+    )
 
     if debug_plot:
         from . import plotting as _plotting
 
         _plotting.mm_autocorrelation(
-            R_np=R_np,
-            f_est=f_est,
+            R_np=R_per_ch_np,
+            f_est=f_per_ch,
             sampling_rate=sampling_rate,
             M=M,
             show=True,
         )
 
-    return f_est
+    if was_1d:
+        return float(f_per_ch[0])
+    if combine_channels:
+        return float(np.mean(f_per_ch))
+    return np.array(f_per_ch)
 
 
 def estimate_frequency_offset_pilots(
@@ -1552,10 +1488,9 @@ def estimate_frequency_offset_pilots(
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
     snr_weighted: bool = True,
-    shared_lo_check: bool = True,
-    shared_lo_tol_hz: Optional[float] = None,
+    combine_channels: bool = False,
     debug_plot: bool = False,
-) -> float:
+) -> Union[float, np.ndarray]:
     """
     Estimates frequency offset from pilot symbols via phase slope fitting.
 
@@ -1591,20 +1526,22 @@ def estimate_frequency_offset_pilots(
         **WLSQ** estimator and is significantly more robust when pilot SNR
         varies across the block (e.g. due to PMD nulls or spectral ripple).
         Set to ``False`` for the standard unweighted OLS slope.
-    shared_lo_check : bool, default True
-        For MIMO inputs (C > 1): compare per-channel slope estimates and
-        warn if the inter-channel spread exceeds ``shared_lo_tol_hz``.
-        Assumes a shared LO (e.g. dual-polarisation coherent optical).
-        Set to ``False`` for independent-LO systems.
-    shared_lo_tol_hz : float, optional
-        Spread threshold for the shared-LO sanity check.
-        Default: ``0.005 * sampling_rate`` (0.5 % of sampling rate).
+    combine_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, return the mean of per-channel
+        estimates as a scalar ``float``; if ``False`` (default), return
+        per-channel estimates as ``np.ndarray`` of shape ``(C,)``.
+        SISO inputs always return ``float``.
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the unwrapped pilot
+        phase sequence and the fitted frequency-slope line.
 
     Returns
     -------
-    float
-        Estimated frequency offset in Hz.  For MIMO (shared LO), the
-        per-channel slope estimates are averaged to a single scalar.
+    float or np.ndarray
+        Estimated frequency offset in Hz. For SISO or when
+        ``combine_channels=True``: scalar ``float``. For MIMO with
+        ``combine_channels=False``: ``np.ndarray`` of shape ``(C,)``
+        with one estimate per channel.
 
     Notes
     -----
@@ -1706,39 +1643,16 @@ def estimate_frequency_offset_pilots(
         phi_c = phi_pilots_u - xp.mean(phi_pilots_u, axis=-1, keepdims=True)  # (C, P)
         slopes = xp.sum(phi_c * t_c[None, :], axis=-1) / t_var  # (C,)
 
-    # Combined estimate: mean of per-channel slopes (valid for shared LO)
-    f_est = float(xp.mean(slopes)) / (2.0 * np.pi)
-
     max_gap = int(np.max(np.diff(pilot_indices_np))) if P > 1 else 0
     lock_range = sampling_rate / (2 * max_gap) if max_gap > 0 else float("inf")
     wt_str = "WLSQ" if snr_weighted else "OLS"
 
-    if C > 1:
-        f_per_ch = [float(slopes[c]) / (2.0 * np.pi) for c in range(C)]
-        spread = max(f_per_ch) - min(f_per_ch)
-        logger.info(
-            f"FOE (pilots, {wt_str}): {f_est:.2f} Hz "
-            f"[per-ch: {[f'{f:.2f}' for f in f_per_ch]} Hz, spread: {spread:.2f} Hz, "
-            f"P={P}, max_gap={max_gap}, lock_range=±{lock_range:.1f} Hz]"
-        )
-        if shared_lo_check:
-            tol = (
-                shared_lo_tol_hz
-                if shared_lo_tol_hz is not None
-                else 0.005 * sampling_rate
-            )
-            if spread > tol:
-                logger.warning(
-                    f"FOE (pilots): per-channel spread {spread:.2f} Hz "
-                    f"exceeds shared-LO tolerance {tol:.2f} Hz. "
-                    f"Per-channel estimates: {[f'{f:.2f}' for f in f_per_ch]} Hz. "
-                    "Possible timing misalignment or independent LOs per channel."
-                )
-    else:
-        logger.info(
-            f"FOE (pilots, {wt_str}): {f_est:.2f} Hz "
-            f"[P={P}, max_gap={max_gap} samples, lock_range=±{lock_range:.1f} Hz]"
-        )
+    f_per_ch = [float(slopes[c]) / (2.0 * np.pi) for c in range(C)]
+
+    logger.info(
+        f"FOE (pilots, {wt_str}): {[f'{f:.2f}' for f in f_per_ch]} Hz "
+        f"[P={P}, max_gap={max_gap} samples, lock_range=±{lock_range:.1f} Hz]"
+    )
 
     if debug_plot:
         from . import plotting as _plotting
@@ -1746,18 +1660,22 @@ def estimate_frequency_offset_pilots(
         _plotting.pilot_phase_estimate(
             pilot_indices=pilot_indices_np,
             phi_pilots_u=to_device(phi_pilots_u, "cpu"),
-            f_est=f_est,
+            f_est=f_per_ch,
             sampling_rate=sampling_rate,
             show=True,
         )
 
-    return f_est
+    if was_1d:
+        return float(f_per_ch[0])
+    if combine_channels:
+        return float(np.mean(f_per_ch))
+    return np.array(f_per_ch)
 
 
 def correct_frequency_offset(
     samples: ArrayType,
     sampling_rate: float,
-    offset: float,
+    offset: Union[float, np.ndarray],
 ) -> ArrayType:
     """
     Applies frequency offset correction by exact complex mixing.
@@ -1773,9 +1691,12 @@ def correct_frequency_offset(
         Input signal samples. Shape: (..., N).
     sampling_rate : float
         Sampling rate in Hz.
-    offset : float
-        Estimated frequency offset in Hz (as returned by the
-        ``estimate_frequency_offset_*`` functions).
+    offset : float or np.ndarray
+        Estimated frequency offset in Hz. Either a scalar (same correction
+        applied to all channels) or a 1-D array of shape ``(C,)`` as
+        returned by the per-channel ``estimate_frequency_offset_*``
+        functions when ``combine_channels=False``.  A per-channel array
+        requires ``samples`` to have shape ``(C, N)``.
 
     Returns
     -------
@@ -1783,24 +1704,41 @@ def correct_frequency_offset(
         Frequency-corrected samples, same shape and dtype as input.
     """
     samples, xp, _ = dispatch(samples)
-    logger.debug(
-        f"Applying frequency offset correction: {offset:.4f} Hz (sampling_rate={sampling_rate:.0f} Hz)"
-    )
+    offset_arr = np.asarray(offset)
+    per_channel = offset_arr.ndim >= 1 and offset_arr.size > 1
+
+    if per_channel:
+        logger.debug(
+            f"Applying per-channel frequency offset correction: "
+            f"{[f'{f:.4f}' for f in offset_arr.flat]} Hz "
+            f"(sampling_rate={sampling_rate:.0f} Hz)"
+        )
+    else:
+        logger.debug(
+            f"Applying frequency offset correction: {float(offset_arr):.4f} Hz "
+            f"(sampling_rate={sampling_rate:.0f} Hz)"
+        )
+
     n = samples.shape[-1]
     t = xp.arange(n) / sampling_rate
-
-    # Negate offset: correction reverses the carrier frequency error
-    phase = -2.0 * np.pi * float(offset) * t
-    mixer = xp.exp(1j * phase)  # complex128
 
     if xp.iscomplexobj(samples):
         target_dtype = samples.dtype
     else:
         target_dtype = xp.complex64 if samples.dtype == xp.float32 else xp.complex128
-    mixer = mixer.astype(target_dtype)
 
-    if samples.ndim > 1:
-        mixer = mixer.reshape((1,) * (samples.ndim - 1) + (-1,))
+    if per_channel:
+        # Build a (C, N) mixer — one distinct tone per channel
+        C = samples.shape[0]
+        offsets_xp = xp.asarray(offset_arr.reshape(-1)[:C], dtype=xp.float64)  # (C,)
+        phase = -2.0 * np.pi * offsets_xp[:, None] * t[None, :]  # (C, N)
+        mixer = xp.exp(1j * phase).astype(target_dtype)
+    else:
+        # Scalar path — single mixer broadcast over all channels
+        phase = -2.0 * np.pi * float(offset_arr) * t
+        mixer = xp.exp(1j * phase).astype(target_dtype)
+        if samples.ndim > 1:
+            mixer = mixer.reshape((1,) * (samples.ndim - 1) + (-1,))
 
     return samples * mixer
 
@@ -1980,6 +1918,144 @@ def _get_numba_dd_pll_butterworth():
     return _NUMBA_PLL["dd_pll_bw"]
 
 
+def _get_numba_dd_pll_joint():
+    """JIT-compile and cache the joint-channel DD-PLL PI kernel.
+
+    Averages the cross-product phase error across C channels at each symbol
+    before updating the single shared phase/frequency state.  This is the
+    MVUE joint estimator for shared-LO systems.
+
+    Returns
+    -------
+    callable
+        Numba-compiled ``_dd_pll_joint_loop``.
+    """
+    if "dd_pll_joint" not in _NUMBA_PLL:
+        import numba  # noqa: PLC0415
+
+        @numba.njit(cache=True, fastmath=True, nogil=True)
+        def _dd_pll_joint_loop(sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0):
+            """Joint-channel DD-PLL with PI loop filter.
+
+            Parameters
+            ----------
+            sym_r, sym_i : (C, N) float64
+                Real and imaginary parts of received symbols, all channels.
+            const_r, const_i : (M,) float64
+                Reference constellation.
+            mu, beta, phi0, freq0 : float64
+                Loop parameters — same semantics as ``_dd_pll_loop``.
+
+            Returns
+            -------
+            phase_est : (N,) float64
+                Single shared phase trajectory (broadcast to all channels by caller).
+            """
+            C = sym_r.shape[0]
+            N = sym_r.shape[1]
+            M = len(const_r)
+            phase_est = np.empty(N, dtype=np.float64)
+            phi = phi0
+            freq = freq0
+
+            for n in range(N):
+                cos_phi = np.cos(phi)
+                sin_phi = np.sin(phi)
+                e_sum = 0.0
+                for c in range(C):
+                    yr = sym_r[c, n] * cos_phi + sym_i[c, n] * sin_phi
+                    yi = -sym_r[c, n] * sin_phi + sym_i[c, n] * cos_phi
+                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                    d_r = const_r[0]
+                    d_i = const_i[0]
+                    for k in range(1, M):
+                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                        if d2 < min_d2:
+                            min_d2 = d2
+                            d_r = const_r[k]
+                            d_i = const_i[k]
+                    e_sum += yi * d_r - yr * d_i
+                # Average error across channels — MVUE for shared LO
+                e = e_sum / float(C)
+                phase_est[n] = phi
+                phi = phi + mu * e + freq
+                freq = freq + beta * e
+
+            return phase_est
+
+        _NUMBA_PLL["dd_pll_joint"] = _dd_pll_joint_loop
+
+    return _NUMBA_PLL["dd_pll_joint"]
+
+
+def _get_numba_dd_pll_joint_butterworth():
+    """JIT-compile and cache the joint-channel DD-PLL Butterworth kernel.
+
+    Returns
+    -------
+    callable
+        Numba-compiled ``_dd_pll_joint_bw_loop``.
+    """
+    if "dd_pll_joint_bw" not in _NUMBA_PLL:
+        import numba  # noqa: PLC0415
+
+        @numba.njit(cache=True, fastmath=True, nogil=True)
+        def _dd_pll_joint_bw_loop(
+            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2
+        ):
+            """Joint-channel DD-PLL with 2nd-order Butterworth loop filter.
+
+            Parameters
+            ----------
+            sym_r, sym_i : (C, N) float64
+            const_r, const_i : (M,) float64
+            phi0 : float64
+            b0, b1, b2, a1, a2 : float64
+                Butterworth biquad coefficients.
+
+            Returns
+            -------
+            phase_est : (N,) float64
+            """
+            C = sym_r.shape[0]
+            N = sym_r.shape[1]
+            M = len(const_r)
+            phase_est = np.empty(N, dtype=np.float64)
+            phi = phi0
+            w1 = 0.0
+            w2 = 0.0
+
+            for n in range(N):
+                cos_phi = np.cos(phi)
+                sin_phi = np.sin(phi)
+                e_sum = 0.0
+                for c in range(C):
+                    yr = sym_r[c, n] * cos_phi + sym_i[c, n] * sin_phi
+                    yi = -sym_r[c, n] * sin_phi + sym_i[c, n] * cos_phi
+                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                    d_r = const_r[0]
+                    d_i = const_i[0]
+                    for k in range(1, M):
+                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                        if d2 < min_d2:
+                            min_d2 = d2
+                            d_r = const_r[k]
+                            d_i = const_i[k]
+                    e_sum += yi * d_r - yr * d_i
+                e = e_sum / float(C)
+                phase_est[n] = phi
+                v_out = b0 * e + w1
+                w1 = b1 * e - a1 * v_out + w2
+                w2 = b2 * e - a2 * v_out
+                phi = phi + v_out
+
+            return phase_est
+
+        _NUMBA_PLL["dd_pll_joint_bw"] = _dd_pll_joint_bw_loop
+
+    return _NUMBA_PLL["dd_pll_joint_bw"]
+
+
 _NUMBA_RTS: dict = {}
 
 
@@ -2036,7 +2112,7 @@ def _get_numba_rts_smoother():
     return _NUMBA_RTS["rts"]
 
 
-def recover_carrier_phase_decision_directed(
+def recover_carrier_phase_pll(
     symbols: ArrayType,
     modulation: str,
     order: int,
@@ -2045,6 +2121,10 @@ def recover_carrier_phase_decision_directed(
     phase_init: float = 0.0,
     loop_filter: str = "pi",
     loop_bandwidth_normalized: float = 1e-3,
+    joint_channels: bool = False,
+    cycle_slip_correction: bool = True,
+    cycle_slip_history: int = 10000,
+    cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
     r"""
@@ -2107,6 +2187,23 @@ def recover_carrier_phase_decision_directed(
         rate (i.e. in the range ``(0, 0.5)``).  Only used when
         ``loop_filter='butterworth'``.  Typical values: ``1e-4``
         (narrow, low phase noise) to ``1e-2`` (wide, fast tracking).
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, average the cross-product
+        phase error across all channels at each symbol before updating the
+        shared loop state.  Both polarisations drive a single phase/frequency
+        trajectory, giving ~√C variance reduction for shared-LO systems.
+        The output ``phi_full[ch]`` rows are all identical.
+        Has no effect for SISO (C = 1).
+    cycle_slip_correction : bool, default True
+        If ``True``, apply :func:`correct_cycle_slips` to the per-symbol
+        phase trajectory after the loop, to detect and fix sudden ``π/2``
+        jumps caused by incorrect hard decisions near the branch boundary.
+    cycle_slip_history : int, default 10000
+        ``history_length`` passed to :func:`correct_cycle_slips`.
+        Default is higher than for block-phase methods because the trajectory
+        is per-symbol (not per-block).
+    cycle_slip_threshold : float, default π/4
+        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
 
     Returns
     -------
@@ -2195,6 +2292,13 @@ def recover_carrier_phase_decision_directed(
         symbols_cpu = symbols
 
     phi_full = np.zeros((C, N), dtype=np.float64)
+    use_joint = joint_channels and C > 1
+
+    # Pre-build (C, N) float64 views used by joint kernels
+    if use_joint:
+        symbols_np = symbols_cpu.astype(np.complex128)
+        sym_r_all = np.ascontiguousarray(symbols_np.real)  # (C, N) float64
+        sym_i_all = np.ascontiguousarray(symbols_np.imag)
 
     if loop_filter == "butterworth":
         import scipy.signal as _ss  # noqa: PLC0415
@@ -2207,12 +2311,11 @@ def recover_carrier_phase_decision_directed(
         b0, b1, b2 = float(b_arr[0]), float(b_arr[1]), float(b_arr[2])
         a1, a2 = float(a_arr[1]), float(a_arr[2])
 
-        bw_kernel = _get_numba_dd_pll_butterworth()
-        for ch in range(C):
-            sym = symbols_cpu[ch].astype(np.complex128)
-            phi_full[ch] = bw_kernel(
-                sym.real.copy(),
-                sym.imag.copy(),
+        if use_joint:
+            jbw_kernel = _get_numba_dd_pll_joint_butterworth()
+            phi_joint = jbw_kernel(
+                sym_r_all,
+                sym_i_all,
                 const_r,
                 const_i,
                 float(phase_init),
@@ -2222,14 +2325,31 @@ def recover_carrier_phase_decision_directed(
                 a1,
                 a2,
             )
+            for ch in range(C):
+                phi_full[ch] = phi_joint
+        else:
+            bw_kernel = _get_numba_dd_pll_butterworth()
+            for ch in range(C):
+                sym = symbols_cpu[ch].astype(np.complex128)
+                phi_full[ch] = bw_kernel(
+                    sym.real.copy(),
+                    sym.imag.copy(),
+                    const_r,
+                    const_i,
+                    float(phase_init),
+                    b0,
+                    b1,
+                    b2,
+                    a1,
+                    a2,
+                )
         loop_desc = f"Butterworth, BW={loop_bandwidth_normalized:.2g}"
     else:
-        pi_kernel = _get_numba_dd_pll()
-        for ch in range(C):
-            sym = symbols_cpu[ch].astype(np.complex128)
-            phi_full[ch] = pi_kernel(
-                sym.real.copy(),
-                sym.imag.copy(),
+        if use_joint:
+            j_kernel = _get_numba_dd_pll_joint()
+            phi_joint = j_kernel(
+                sym_r_all,
+                sym_i_all,
                 const_r,
                 const_i,
                 float(mu),
@@ -2237,8 +2357,44 @@ def recover_carrier_phase_decision_directed(
                 float(phase_init),
                 0.0,
             )
+            for ch in range(C):
+                phi_full[ch] = phi_joint
+        else:
+            pi_kernel = _get_numba_dd_pll()
+            for ch in range(C):
+                sym = symbols_cpu[ch].astype(np.complex128)
+                phi_full[ch] = pi_kernel(
+                    sym.real.copy(),
+                    sym.imag.copy(),
+                    const_r,
+                    const_i,
+                    float(mu),
+                    float(beta),
+                    float(phase_init),
+                    0.0,
+                )
         loop_order = "2nd" if beta > 0.0 else "1st"
         loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
+
+    if cycle_slip_correction:
+        if use_joint:
+            # All rows are identical — correct once and broadcast
+            phi_full[0] = correct_cycle_slips(
+                phi_full[0],
+                symmetry=4,
+                history_length=cycle_slip_history,
+                threshold=cycle_slip_threshold,
+            )
+            for ch in range(1, C):
+                phi_full[ch] = phi_full[0]
+        else:
+            for ch in range(C):
+                phi_full[ch] = correct_cycle_slips(
+                    phi_full[ch],
+                    symmetry=4,
+                    history_length=cycle_slip_history,
+                    threshold=cycle_slip_threshold,
+                )
 
     # Move result back to original device
     if xp is not np:
@@ -2270,6 +2426,10 @@ def recover_carrier_phase_viterbi_viterbi(
     modulation: str,
     order: int,
     block_size: int = 32,
+    joint_channels: bool = False,
+    cycle_slip_correction: bool = True,
+    cycle_slip_history: int = 1000,
+    cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
     """
@@ -2291,7 +2451,24 @@ def recover_carrier_phase_viterbi_viterbi(
     block_size : int, default 32
         Number of symbols per estimation block. Larger blocks reduce
         variance but reduce tracking bandwidth for fast phase noise.
-        Typical range: 16-128.
+        Typical range: 16-128 for QAM; as low as 1 for PSK (data cancels
+        exactly in the M-th power for M-PSK constellations).
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, sum the M-th-power block
+        phasors ``S_b`` across all channels before phase extraction.
+        The resulting single trajectory is broadcast to all C output rows.
+        Reduces variance by ~√C for shared-LO systems.  SISO-safe.
+    cycle_slip_correction : bool, default True
+        If ``True``, apply cycle-slip detection and correction
+        (:func:`correct_cycle_slips`) after M-fold unwrap, before
+        interpolation.
+    cycle_slip_history : int, default 1000
+        ``history_length`` passed to :func:`correct_cycle_slips`.
+    cycle_slip_threshold : float, default π/4
+        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the per-symbol phase
+        trajectory alongside the block-phase estimates.
 
     Returns
     -------
@@ -2314,23 +2491,40 @@ def recover_carrier_phase_viterbi_viterbi(
 
     .. warning::
         **Phase-unwrapping slip risk:** the unwrapper assumes consecutive block
-        phases differ by less than `pi/M`.  For high phase noise this
-        assumption can be violated, causing a persistent `2*pi/M` phase
-        step in the output.
+        phases differ by less than ``π/M``.  Two independent effects can
+        violate this:
 
-        A rough safety condition is:
+        1. **Phase noise (high linewidth):** for a combined linewidth
+           :math:`\\Delta\\nu`, the safety condition is:
 
-        .. math::
+           .. math::
 
-            \\Delta\\nu \\cdot T_{\\text{block}} < 0.05 \\cdot f_s
+               \\Delta\\nu \\cdot T_{\\text{block}} < 0.05 \\cdot f_s
 
-        where :math:`\\Delta\\nu` is the combined linewidth (Hz),
-        :math:`T_{\\text{block}} = \\text{block\\_size} / f_s` is the block
-        duration, and :math:`f_s` is the symbol rate.  For example, 100 kHz
-        linewidth at 32 Gbaud is safe up to ``block_size ≈ 16 000``, but
-        1 MHz linewidth requires ``block_size ≤ 1 600``.
+           where :math:`T_{\\text{block}} = \\text{block\\_size} / f_s`.
+           For example, 100 kHz linewidth at 32 Gbaud is safe up to
+           ``block_size ≈ 16 000``, but 1 MHz linewidth requires
+           ``block_size ≤ 1 600``.
 
-        When operating near or above this limit, prefer
+        2. **Insufficient averaging for QAM (dominant at small block_size):**
+           For PSK constellations every point maps to the *same* M-th power
+           value, so the data modulation cancels exactly even with a single
+           symbol per block.  For QAM constellations with ``order > 4`` the
+           M-th power of individual symbols is **not** constant — it varies
+           by constellation point.  Averaging over a block suppresses this
+           residual, but a small ``block_size`` leaves significant variance
+           that exceeds the unwrap threshold.  The minimum block size for
+           reliable unwrapping scales roughly as
+           :math:`4\\lceil\\sqrt{\\text{order}}\\rceil`:
+
+           * 16-QAM → ``block_size ≥ 16``
+           * 64-QAM → ``block_size ≥ 32``
+           * 256-QAM → ``block_size ≥ 64``
+
+           Using a ``block_size`` below this threshold will cause persistent
+           ``2π/M`` phase slips regardless of SNR.
+
+        When operating near or above the phase-noise limit, prefer
         :func:`recover_carrier_phase_bps`, which uses a brute-force phase
         search and does not require phase unwrapping.
 
@@ -2357,6 +2551,21 @@ def recover_carrier_phase_viterbi_viterbi(
             "Reduce block_size or use a longer symbol sequence."
         )
 
+    # For QAM with order > 4 the M-th power of individual symbols does NOT cancel
+    # the data modulation (unlike PSK, where every M-PSK point gives (c/|c|)^M = 1).
+    # Sufficient block averaging is required so that the block-phase variance stays
+    # below the π/M unwrap threshold.  The practical minimum scales as 4·ceil(√order).
+    if "qam" in modulation.lower() and order > 4:
+        _min_bs = max(8, 4 * int(np.ceil(order**0.5)))
+        if block_size < _min_bs:
+            logger.warning(
+                f"CPR (VV): block_size={block_size} is too small for {order}-QAM. "
+                f"Individual QAM symbols' M-th powers do not cancel the data modulation; "
+                f"insufficient averaging causes block-phase variance that exceeds the "
+                f"π/M unwrap threshold, producing persistent 2π/M phase slips. "
+                f"Recommended minimum for {order}-QAM: block_size ≥ {_min_bs}."
+            )
+
     # Reshape for block processing: (C, N_blocks, block_size).
     # Promote to complex128 for the M-th power — identical to estimate_frequency_offset_mth_power.
     # On GPU, complex64^4 loses precision near the ±π/M unwrap boundary, causing
@@ -2376,53 +2585,77 @@ def recover_carrier_phase_viterbi_viterbi(
 
     S_b = xp.sum(blocks_c**M, axis=-1)  # (C, N_blocks)
 
-    # Raw block phase in [-π/M, π/M)
-    phi_raw = xp.angle(S_b) / M  # (C, N_blocks)
-
-    # M-fold unwrap: scale into 2π domain, unwrap, re-scale back.
-    # Cast to float64 before unwrap — cp.unwrap preserves input dtype so float32
-    # would lose precision during the discontinuity test (diff vs 2π threshold).
-    phi_u = xp.unwrap((phi_raw * M).astype(xp.float64), axis=-1) / M  # (C, N_blocks)
-
-    # QAM bias correction.
-    # With unit-circle normalisation, E[(d/|d|)^M] is real negative by the
-    # 4-fold rotational symmetry of any square QAM constellation: all points
-    # map to angles of the form π/4 + k·π/2, whose 4th powers are all −1.
-    # This gives a deterministic π/M offset; subtracting it is now exact.
-    # PSK has no such bias (all (d/|d|)^M = 1 are real positive).
-    if "qam" in modulation.lower():
-        phi_u = phi_u - (np.pi / M)
-
-    # MIMO M-fold alignment.
-    # VV resolves the M-fold ambiguity independently per channel, so different
-    # streams can land on different 2π/M branches.  For a coherent system with a
-    # shared local oscillator the carrier phase is common — align every channel
-    # to channel 0's branch by rounding the mean inter-channel difference to the
-    # nearest integer multiple of 2π/M.
-    if C > 1:
-        for ch in range(1, C):
-            diff = float(xp.mean(phi_u[ch] - phi_u[0]))
-            k = round(diff * M / (2 * np.pi))
-            phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
-
     # Block centre positions for interpolation (uniform spacing = block_size)
     block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
     all_positions = xp.arange(N, dtype=xp.float64)
 
-    # xp.interp is 1D-only; loop over C channels.  C is typically 1–4 so the
-    # overhead is negligible.  A searchsorted-based batched form gives ULP-level
-    # differences at block boundaries that can flip the M-fold branch for
-    # high-order QAM with small block sizes, so xp.interp is preferred here.
     phi_full = xp.zeros((C, N), dtype=xp.float64)
-    for ch in range(C):
-        phi_full[ch] = xp.interp(all_positions, block_centers, phi_u[ch])
+    phi_blocks_out = xp.zeros((C, N_blocks), dtype=xp.float64)
+
+    if joint_channels and C > 1:
+        # Sum M-th-power phasors across channels → single block-phase trajectory
+        S_b_joint = xp.sum(S_b, axis=0)  # (N_blocks,)
+        phi_raw_joint = xp.angle(S_b_joint) / M
+        phi_u_joint = xp.unwrap((phi_raw_joint * M).astype(xp.float64)) / M
+        if "qam" in modulation.lower():
+            phi_u_joint = phi_u_joint - (np.pi / M)
+        if cycle_slip_correction:
+            phi_u_joint_np = correct_cycle_slips(
+                to_device(phi_u_joint, "cpu"),
+                4,
+                cycle_slip_history,
+                cycle_slip_threshold,
+            )
+            phi_u_joint = xp.asarray(phi_u_joint_np)
+        phi_interp = xp.interp(all_positions, block_centers, phi_u_joint)
+        for ch in range(C):
+            phi_full[ch] = phi_interp
+            phi_blocks_out[ch] = phi_u_joint
+    else:
+        # Raw block phase in [-π/M, π/M)
+        phi_raw = xp.angle(S_b) / M  # (C, N_blocks)
+
+        # M-fold unwrap: scale into 2π domain, unwrap, re-scale back.
+        # Cast to float64 before unwrap — cp.unwrap preserves input dtype so float32
+        # would lose precision during the discontinuity test (diff vs 2π threshold).
+        phi_u = (
+            xp.unwrap((phi_raw * M).astype(xp.float64), axis=-1) / M
+        )  # (C, N_blocks)
+
+        # QAM bias correction.
+        if "qam" in modulation.lower():
+            phi_u = phi_u - (np.pi / M)
+
+        # MIMO M-fold alignment: align every channel to channel 0's branch.
+        # Skipped in joint mode (all channels share the same trajectory).
+        if C > 1:
+            for ch in range(1, C):
+                diff = float(xp.mean(phi_u[ch] - phi_u[0]))
+                k = round(diff * M / (2 * np.pi))
+                phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
+
+        # xp.interp is 1D-only; loop over C channels.
+        for ch in range(C):
+            phi_u_ch = phi_u[ch]
+            if cycle_slip_correction:
+                phi_u_ch_np = correct_cycle_slips(
+                    to_device(phi_u_ch, "cpu"),
+                    4,
+                    cycle_slip_history,
+                    cycle_slip_threshold,
+                )
+                phi_u_ch = xp.asarray(phi_u_ch_np)
+            phi_full[ch] = xp.interp(all_positions, block_centers, phi_u_ch)
+            phi_blocks_out[ch] = phi_u_ch
 
     phi_full_np = to_device(phi_full, "cpu")
     phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
     phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
-        f"CPR (Viterbi-Viterbi, M={M}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [{N_blocks} blocks × {block_size} symbols, C={C}]"
+        f"CPR (Viterbi-Viterbi, M={M}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [{N_blocks} blocks × {block_size} symbols, C={C}, "
+        f"cycle_slip_correction={cycle_slip_correction}]"
     )
 
     if debug_plot:
@@ -2431,7 +2664,7 @@ def recover_carrier_phase_viterbi_viterbi(
         _plotting.carrier_phase_trajectory(
             phi_full=phi_full_np,
             block_centers=to_device(block_centers, "cpu"),
-            phi_blocks=to_device(phi_u, "cpu"),
+            phi_blocks=to_device(phi_blocks_out, "cpu"),
             show=True,
             title="CPR — Viterbi-Viterbi",
         )
@@ -2447,6 +2680,10 @@ def recover_carrier_phase_bps(
     order: int,
     num_test_phases: int = 64,
     block_size: int = 32,
+    joint_channels: bool = False,
+    cycle_slip_correction: bool = True,
+    cycle_slip_history: int = 1000,
+    cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
     """
@@ -2472,6 +2709,30 @@ def recover_carrier_phase_bps(
         rad per step. More candidates improve accuracy at higher compute cost.
     block_size : int, default 32
         Number of symbols per block for error-metric averaging.
+        Very small values (< 4) make the 4-fold phase unwrap unreliable
+        because noise on a single-symbol metric causes the best-candidate
+        index to jump between non-adjacent phase bins between consecutive
+        blocks, triggering false unwrap corrections.  Recommended
+        minimum: ``block_size ≥ 4``.
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, sum the distance metrics
+        across all channels before selecting the best phase candidate.
+        The resulting single phase trajectory is broadcast to all C rows
+        of the output (all channels identical before ambiguity resolution).
+        Reduces phase estimation variance by ~√C for shared-LO systems.
+        Has no effect for SISO (C = 1).
+    cycle_slip_correction : bool, default True
+        If ``True``, apply cycle-slip detection and correction
+        (:func:`correct_cycle_slips`) to the block-phase trajectory
+        after 4-fold unwrap, before interpolation.
+    cycle_slip_history : int, default 1000
+        ``history_length`` passed to :func:`correct_cycle_slips`.
+        Number of past corrected blocks used for linear extrapolation.
+    cycle_slip_threshold : float, default π/4
+        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the per-symbol phase
+        trajectory alongside the block-phase estimates.
 
     Returns
     -------
@@ -2488,7 +2749,13 @@ def recover_carrier_phase_bps(
     3. Min dist: ``d²[n,k] = min_c |x_rot[n,k]-c|²``. Shape: (N, B).
     4. Block sum: ``metric[b,k] = Σ d²[n,k]`` over block ``b``.
     5. Best phase: ``φ_b = candidates[argmin(metric[b,:])]``.
-    6. 4-fold unwrap and per-symbol interpolation.
+    6. 4-fold unwrap, optional cycle-slip correction, per-symbol interpolation.
+
+    .. note::
+        The candidate search covers :math:`[0, \\pi/2)` and the unwrap
+        exploits the **4-fold** symmetry of square QAM constellations.
+        For PSK modulations whose symmetry order differs from 4, the
+        candidate range and unwrap fold should be adjusted accordingly.
 
     **Memory:** The ``(N, B, M_const)`` distance tensor scales as
     ``N·B·M_const·8`` bytes.  For N=10 000, B=64, M=256 → ~1.3 GB.
@@ -2537,6 +2804,17 @@ def recover_carrier_phase_bps(
             "Reduce block_size or use a longer symbol sequence."
         )
 
+    # Very small block_size makes the 4-fold phase unwrap unreliable: with only
+    # one or two symbols per block the noise on the distance-metric argmin causes
+    # large candidate-index jumps between consecutive blocks, triggering false
+    # 4-fold unwrap corrections.  Warn early so users diagnose this easily.
+    if block_size < 4:
+        logger.warning(
+            f"CPR (BPS): block_size={block_size} is very small. "
+            f"Averaging the distance metric over only {block_size} symbol(s) per block "
+            f"makes the 4-fold phase unwrap unreliable. Recommended minimum: block_size ≥ 4."
+        )
+
     # block_centers[b] = b * block_size + block_size/2  (consistent with VV)
     block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
 
@@ -2580,13 +2858,11 @@ def recover_carrier_phase_bps(
     phi_full = xp.zeros((C, N), dtype=xp.float64)
     phi_blocks = xp.zeros((C, N_blocks), dtype=xp.float64)
 
+    # Accumulate per-channel distance metrics (N_blocks, B) for all channels.
+    metrics_all = xp.zeros((C, N_blocks, B), dtype=float_dtype)
+
     for ch in range(C):
         sym = symbols[ch, :N_trunc]  # (N_trunc,)
-
-        # Accumulate block-average error metric: (N_blocks, B).
-        # CHUNK_N is a multiple of block_size by construction, so each chunk
-        # covers a whole number of blocks with no remainder.
-        metric = xp.zeros((N_blocks, B), dtype=float_dtype)
 
         for n0 in range(0, N_trunc, CHUNK_N):
             n1 = min(n0 + CHUNK_N, N_trunc)
@@ -2616,23 +2892,54 @@ def recover_carrier_phase_bps(
 
             b0 = n0 // block_size
             n_b = (n1 - n0) // block_size
-            metric[b0 : b0 + n_b] = chunk_min_d.reshape(n_b, block_size, B).sum(axis=1)
+            metrics_all[ch, b0 : b0 + n_b] = chunk_min_d.reshape(
+                n_b, block_size, B
+            ).sum(axis=1)
 
-        # Best candidate index per block and 4-fold unwrap
-        best_k = xp.argmin(metric, axis=-1)  # (N_blocks,)
-        phi_b = candidates[best_k]  # (N_blocks,)
-        phi_u = xp.unwrap(phi_b.astype(xp.float64) * 4, axis=-1) / 4
-
-        # Interpolate to per-symbol resolution using pre-computed weights
-        phi_full[ch] = phi_u[idx_left] * (1.0 - t_interp) + phi_u[idx_right] * t_interp
-        phi_blocks[ch] = phi_u
+    # Phase estimation: joint (sum metrics across channels) or independent per channel.
+    if joint_channels and C > 1:
+        metric_joint = xp.sum(metrics_all, axis=0)  # (N_blocks, B)
+        best_k_joint = xp.argmin(metric_joint, axis=-1)  # (N_blocks,)
+        phi_b_joint = candidates[best_k_joint]  # (N_blocks,)
+        phi_u_joint = xp.unwrap(phi_b_joint.astype(xp.float64) * 4, axis=-1) / 4
+        if cycle_slip_correction:
+            phi_u_joint_np = correct_cycle_slips(
+                to_device(phi_u_joint, "cpu"),
+                4,
+                cycle_slip_history,
+                cycle_slip_threshold,
+            )
+            phi_u_joint = xp.asarray(phi_u_joint_np)
+        for ch in range(C):
+            phi_full[ch] = (
+                phi_u_joint[idx_left] * (1.0 - t_interp)
+                + phi_u_joint[idx_right] * t_interp
+            )
+            phi_blocks[ch] = phi_u_joint
+    else:
+        for ch in range(C):
+            metric = metrics_all[ch]  # (N_blocks, B)
+            best_k = xp.argmin(metric, axis=-1)  # (N_blocks,)
+            phi_b = candidates[best_k]  # (N_blocks,)
+            phi_u = xp.unwrap(phi_b.astype(xp.float64) * 4, axis=-1) / 4
+            if cycle_slip_correction:
+                phi_u_np = correct_cycle_slips(
+                    to_device(phi_u, "cpu"), 4, cycle_slip_history, cycle_slip_threshold
+                )
+                phi_u = xp.asarray(phi_u_np)
+            phi_full[ch] = (
+                phi_u[idx_left] * (1.0 - t_interp) + phi_u[idx_right] * t_interp
+            )
+            phi_blocks[ch] = phi_u
 
     phi_full_np = to_device(phi_full, "cpu")
     phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
     phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
-        f"CPR (BPS, B={B}): phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
-        f"[{N_blocks} blocks × {block_size} symbols, C={C}]"
+        f"CPR (BPS, B={B}, {mode_str}): phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
+        f"[{N_blocks} blocks × {block_size} symbols, C={C}, "
+        f"cycle_slip_correction={cycle_slip_correction}]"
     )
 
     if debug_plot:
@@ -2747,6 +3054,10 @@ def recover_carrier_phase_tikhonov(
     block_size: int = 32,
     snr_db: Optional[float] = None,
     method: str = "exact",
+    joint_channels: bool = False,
+    cycle_slip_correction: bool = True,
+    cycle_slip_history: int = 1000,
+    cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
     r"""
@@ -2796,6 +3107,22 @@ def recover_carrier_phase_tikhonov(
           (:func:`_sskf_smoother_1d`); runs on the input device (GPU-native
           when data is on GPU).  Excellent for ``N_blocks ≥ 20``; for
           ``N_blocks < 7`` silently falls back to ``'exact'``.
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, sum the M-th-power block
+        phasors across all channels before the VV phase extraction and
+        Kalman smoother.  The single smoothed trajectory is broadcast to
+        all C output rows.  Reduces variance by ~√C for shared-LO systems.
+    cycle_slip_correction : bool, default True
+        If ``True``, apply cycle-slip detection and correction
+        (:func:`correct_cycle_slips`) after the Kalman smoother, before
+        interpolation.
+    cycle_slip_history : int, default 1000
+        ``history_length`` passed to :func:`correct_cycle_slips`.
+    cycle_slip_threshold : float, default π/4
+        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the per-symbol phase
+        trajectory with the Kalman-smoothed block phases.
 
     Returns
     -------
@@ -2855,6 +3182,19 @@ def recover_carrier_phase_tikhonov(
             "Reduce block_size or use a longer symbol sequence."
         )
 
+    # Same data-residual constraint as VV: for QAM with order > 4 the M-th power
+    # does not cancel per symbol.  Block phase variance can exceed π/M before the
+    # Kalman smoother is applied, causing unwrap slips that the smoother cannot fix.
+    if "qam" in modulation.lower() and order > 4:
+        _min_bs = max(8, 4 * int(np.ceil(order**0.5)))
+        if block_size < _min_bs:
+            logger.warning(
+                f"CPR (Tikhonov): block_size={block_size} is too small for {order}-QAM. "
+                f"Block phases are estimated via Viterbi-Viterbi; the data-residual "
+                f"constraint is identical — see recover_carrier_phase_viterbi_viterbi. "
+                f"Recommended minimum for {order}-QAM: block_size ≥ {_min_bs}."
+            )
+
     # Smoother noise parameters
     if snr_db is None:
         logger.warning(
@@ -2878,48 +3218,95 @@ def recover_carrier_phase_tikhonov(
         blocks_c = blocks_c / xp.maximum(mag, 1e-15 * xp.max(mag))
 
     S_b = xp.sum(blocks_c**M, axis=-1)  # (C, N_blocks)
-    phi_raw = xp.angle(S_b) / M
-    phi_u = xp.unwrap((phi_raw * M).astype(xp.float64), axis=-1) / M  # (C, N_blocks)
 
-    if "qam" in modulation.lower():
-        phi_u = phi_u - (np.pi / M)
-
-    if C > 1:
-        for ch in range(1, C):
-            diff = float(xp.mean(phi_u[ch] - phi_u[0]))
-            k = round(diff * M / (2 * np.pi))
-            phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
-
-    # Kalman smoother — dispatch on method
-    if method == "exact":
-        # Sequential RTS: offload to CPU; Numba kernel used when available.
-        phi_u_np = to_device(phi_u, "cpu")  # (C, N_blocks) float64
-        phi_smooth_np = np.empty_like(phi_u_np)
-        for ch in range(C):
-            phi_smooth_np[ch] = _rts_smoother_1d(phi_u_np[ch], sigma_p2, sigma_v2)
-        phi_smooth = xp.asarray(phi_smooth_np)
-    else:  # method == "sskf"
-        # Steady-state approximation via filtfilt — stays on the input device.
-        phi_smooth = xp.empty_like(phi_u)
-        for ch in range(C):
-            phi_smooth[ch] = _sskf_smoother_1d(phi_u[ch], sigma_p2, sigma_v2, sp, xp)
-        phi_smooth_np = to_device(phi_smooth, "cpu")
-
-    # Per-symbol interpolation (linear, consistent with VV)
     block_centers = xp.arange(N_blocks, dtype=xp.float64) * block_size + block_size / 2
     all_positions = xp.arange(N, dtype=xp.float64)
-
     phi_full = xp.zeros((C, N), dtype=xp.float64)
-    for ch in range(C):
-        phi_full[ch] = xp.interp(all_positions, block_centers, phi_smooth[ch])
+
+    if joint_channels and C > 1:
+        # Sum M-th-power phasors → single VV estimate → single Kalman pass
+        S_b_joint = xp.sum(S_b, axis=0)  # (N_blocks,)
+        phi_raw_joint = xp.angle(S_b_joint) / M
+        phi_u_joint = xp.unwrap((phi_raw_joint * M).astype(xp.float64)) / M
+        if "qam" in modulation.lower():
+            phi_u_joint = phi_u_joint - (np.pi / M)
+
+        # Kalman smoother on the joint trajectory
+        if method == "exact":
+            phi_u_joint_np = to_device(phi_u_joint, "cpu")
+            phi_smooth_joint_np = _rts_smoother_1d(phi_u_joint_np, sigma_p2, sigma_v2)
+            phi_smooth_joint = xp.asarray(phi_smooth_joint_np)
+        else:
+            phi_smooth_joint = _sskf_smoother_1d(
+                phi_u_joint, sigma_p2, sigma_v2, sp, xp
+            )
+            phi_smooth_joint_np = to_device(phi_smooth_joint, "cpu")
+
+        if cycle_slip_correction:
+            phi_smooth_joint_np = correct_cycle_slips(
+                to_device(phi_smooth_joint, "cpu"),
+                4,
+                cycle_slip_history,
+                cycle_slip_threshold,
+            )
+            phi_smooth_joint = xp.asarray(phi_smooth_joint_np)
+
+        phi_interp = xp.interp(all_positions, block_centers, phi_smooth_joint)
+        for ch in range(C):
+            phi_full[ch] = phi_interp
+        phi_smooth_np = np.tile(to_device(phi_smooth_joint, "cpu"), (C, 1))
+    else:
+        phi_raw = xp.angle(S_b) / M
+        phi_u = (
+            xp.unwrap((phi_raw * M).astype(xp.float64), axis=-1) / M
+        )  # (C, N_blocks)
+
+        if "qam" in modulation.lower():
+            phi_u = phi_u - (np.pi / M)
+
+        if C > 1:
+            for ch in range(1, C):
+                diff = float(xp.mean(phi_u[ch] - phi_u[0]))
+                k = round(diff * M / (2 * np.pi))
+                phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
+
+        # Kalman smoother — dispatch on method
+        if method == "exact":
+            phi_u_np = to_device(phi_u, "cpu")  # (C, N_blocks) float64
+            phi_smooth_np = np.empty_like(phi_u_np)
+            for ch in range(C):
+                phi_smooth_np[ch] = _rts_smoother_1d(phi_u_np[ch], sigma_p2, sigma_v2)
+            phi_smooth = xp.asarray(phi_smooth_np)
+        else:  # method == "sskf"
+            phi_smooth = xp.empty_like(phi_u)
+            for ch in range(C):
+                phi_smooth[ch] = _sskf_smoother_1d(
+                    phi_u[ch], sigma_p2, sigma_v2, sp, xp
+                )
+            phi_smooth_np = to_device(phi_smooth, "cpu")
+
+        for ch in range(C):
+            phi_s_ch = phi_smooth[ch]
+            if cycle_slip_correction:
+                phi_s_ch_np = correct_cycle_slips(
+                    to_device(phi_s_ch, "cpu"),
+                    4,
+                    cycle_slip_history,
+                    cycle_slip_threshold,
+                )
+                phi_s_ch = xp.asarray(phi_s_ch_np)
+                phi_smooth_np[ch] = to_device(phi_s_ch, "cpu")
+            phi_full[ch] = xp.interp(all_positions, block_centers, phi_s_ch)
 
     phi_full_np = to_device(phi_full, "cpu")
     phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
     phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+    mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
-        f"CPR (Tikhonov-{method.upper()}, M={M}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [{N_blocks} blocks × {block_size}, "
-        f"σ_p²={sigma_p2:.2e}, σ_v²={sigma_v2:.2e}, C={C}]"
+        f"CPR (Tikhonov-{method.upper()}, M={M}, {mode_str}): "
+        f"phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
+        f"[{N_blocks} blocks × {block_size}, σ_p²={sigma_p2:.2e}, σ_v²={sigma_v2:.2e}, "
+        f"C={C}, cycle_slip_correction={cycle_slip_correction}]"
     )
 
     if debug_plot:
@@ -2930,7 +3317,7 @@ def recover_carrier_phase_tikhonov(
             block_centers=to_device(block_centers, "cpu"),
             phi_blocks=phi_smooth_np,
             show=True,
-            title="CPR — Tikhonov-RTS",
+            title=f"CPR — Tikhonov-{method.upper()}",
         )
 
     if was_1d:
@@ -2943,6 +3330,10 @@ def recover_carrier_phase_pilots(
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
     interpolation: str = "linear",
+    joint_channels: bool = False,
+    cycle_slip_correction: bool = True,
+    cycle_slip_history: int = 1000,
+    cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
     """
@@ -2965,11 +3356,30 @@ def recover_carrier_phase_pilots(
     interpolation : {'linear', 'cubic'}, default 'linear'
         Interpolation method between pilot positions.  Both modes loop over
         MIMO channels (``xp.interp`` and ``CubicSpline`` are 1D-only);
-        C is typically 1–4 so the overhead is negligible.  ``'cubic'`` uses
+        C is typically 1-4 so the overhead is negligible.  ``'cubic'`` uses
         :class:`scipy.interpolate.CubicSpline` (CPU) or
         :class:`cupyx.scipy.interpolate.CubicSpline` (GPU) with natural
         boundary conditions (zero second derivative at endpoints) and
         constant-hold extrapolation outside the pilot span.
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, perform coherent complex
+        averaging of ``r_pilot * conj(s_pilot)`` across all channels before
+        calling ``angle()``.  This avoids wrap-around artefacts that arise
+        when averaging phases directly, and reduces variance by ~√C for
+        shared-LO systems.  The resulting single phase trajectory is broadcast
+        to all C output rows.  Has no effect for SISO (C = 1).
+    cycle_slip_correction : bool, default True
+        If ``True``, apply :func:`correct_cycle_slips` to the unwrapped pilot
+        phase sequence before interpolation, with ``symmetry=1`` (correction
+        quantum ``2π``) to detect and fix wrap-around errors introduced by
+        ``xp.unwrap`` at large inter-pilot gaps.
+    cycle_slip_history : int, default 1000
+        ``history_length`` passed to :func:`correct_cycle_slips`.
+    cycle_slip_threshold : float, default π/4
+        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the unwrapped pilot
+        phase sequence and the interpolated phase trajectory.
 
     Returns
     -------
@@ -3024,11 +3434,38 @@ def recover_carrier_phase_pilots(
 
     # Phase at each pilot position: angle(r_pilot · conj(s_pilot))
     r_pilots = symbols[:, pilot_indices_np]  # (C, P)
-    phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
 
-    # Unwrap along the pilot axis in float64 (cp.unwrap preserves input dtype;
-    # casting before avoids precision loss in the discontinuity test for float32 input)
-    phi_pilots_u = xp.unwrap(phi_pilots.astype(xp.float64), axis=-1)  # (C, P)
+    if joint_channels and C > 1:
+        # Coherent complex averaging before angle() — avoids wrap-around artefacts
+        # that arise from averaging phases directly (e.g. antipodal channels).
+        z_joint = xp.mean(r_pilots * xp.conj(pilot_values_xp), axis=0)  # (P,)
+        phi_joint_u = xp.unwrap(xp.angle(z_joint).astype(xp.float64))  # (P,)
+        if cycle_slip_correction:
+            phi_joint_np = to_device(phi_joint_u, "cpu")
+            phi_joint_np = correct_cycle_slips(
+                phi_joint_np,
+                symmetry=1,
+                history_length=cycle_slip_history,
+                threshold=cycle_slip_threshold,
+            )
+            phi_joint_u = xp.asarray(phi_joint_np)
+        # Broadcast to (C, P) — read-only, downstream code only reads phi_pilots_u[ch]
+        phi_pilots_u = xp.broadcast_to(phi_joint_u[None, :], (C, P))
+    else:
+        phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
+        # Unwrap along the pilot axis in float64 (cp.unwrap preserves input dtype;
+        # casting before avoids precision loss in the discontinuity test for float32 input)
+        phi_pilots_u = xp.unwrap(phi_pilots.astype(xp.float64), axis=-1)  # (C, P)
+        if cycle_slip_correction:
+            phi_pilots_u_np = to_device(phi_pilots_u, "cpu")
+            for ch in range(C):
+                phi_pilots_u_np[ch] = correct_cycle_slips(
+                    phi_pilots_u_np[ch],
+                    symmetry=1,
+                    history_length=cycle_slip_history,
+                    threshold=cycle_slip_threshold,
+                )
+            phi_pilots_u = xp.asarray(phi_pilots_u_np)
 
     all_positions = xp.arange(N, dtype=xp.float64)
 
@@ -3128,6 +3565,314 @@ def correct_carrier_phase(
     if phasor.dtype != symbols.dtype:
         phasor = phasor.astype(symbols.dtype)
     return symbols * phasor
+
+
+# -----------------------------------------------------------------------------
+# Cycle-slip correction
+# -----------------------------------------------------------------------------
+
+_NUMBA_CYCLE_SLIP: dict = {}
+
+
+def _get_numba_cycle_slip():
+    """JIT-compile and cache the Numba cycle-slip correction kernel.
+
+    Returns
+    -------
+    callable
+        Numba-compiled ``_cycle_slip_loop``.
+    """
+    if "cs" not in _NUMBA_CYCLE_SLIP:
+        import numba  # noqa: PLC0415
+
+        @numba.njit(cache=True, fastmath=True, nogil=True)
+        def _cycle_slip_loop(phi_u, symmetry, history_length, threshold):
+            """Cycle-slip detection and correction via linear extrapolation.
+
+            Scans the block-phase trajectory ``phi_u`` sequentially.  For each
+            block, linearly extrapolates from up to ``history_length`` past
+            *corrected* blocks.  When the deviation exceeds ``threshold``, a
+            ``π/2`` step correction is applied.
+
+            The linear regression is maintained in O(1) per step using
+            incremental sufficient statistics (Welford-style running sums):
+            ``Sx``, ``Sy``, ``Sxx``, ``Sxy``, ``n``.
+
+            Parameters
+            ----------
+            phi_u : (B,) float64
+                Block-phase trajectory after M-fold unwrap (modified in place).
+            symmetry : int
+                Rotational symmetry order; correction quantum = ``2π/symmetry``.
+                Pass 4 for QAM (all BPS, VV, Tikhonov use 4-fold symmetry).
+            history_length : int
+                Maximum number of past corrected blocks used for extrapolation.
+                Use ``min(b, history_length)`` at each step.
+            threshold : float64
+                Deviation from extrapolated value that triggers a correction
+                (radians).  Default in the caller: ``π/4``.
+
+            Returns
+            -------
+            (B,) float64
+                Corrected block-phase trajectory (same array, modified in place).
+            """
+            two_pi = 2.0 * np.pi
+            quantum = two_pi / float(symmetry)
+            B = len(phi_u)
+
+            # Incremental linear regression state
+            # We store the window as a circular buffer of (x, y) pairs.
+            buf_x = np.empty(history_length, dtype=np.float64)
+            buf_y = np.empty(history_length, dtype=np.float64)
+            buf_head = 0  # index of next write position (circular)
+            n_buf = 0  # current number of valid entries
+
+            Sx = 0.0
+            Sy = 0.0
+            Sxx = 0.0
+            Sxy = 0.0
+
+            for b in range(B):
+                x_b = float(b)
+                y_b = phi_u[b]
+
+                if n_buf < 2:
+                    # Not enough history for a prediction — add to buffer and continue
+                    buf_x[buf_head % history_length] = x_b
+                    buf_y[buf_head % history_length] = y_b
+                    buf_head += 1
+                    n_buf += 1
+                    Sx += x_b
+                    Sy += y_b
+                    Sxx += x_b * x_b
+                    Sxy += x_b * y_b
+                    continue
+
+                # Linear extrapolation: slope = (n·Sxy − Sx·Sy) / (n·Sxx − Sx²)
+                n_f = float(n_buf)
+                denom = n_f * Sxx - Sx * Sx
+                if abs(denom) > 1e-30:
+                    slope = (n_f * Sxy - Sx * Sy) / denom
+                    intercept = (Sy - slope * Sx) / n_f
+                else:
+                    slope = 0.0
+                    intercept = Sy / n_f
+                phi_pred = slope * x_b + intercept
+
+                diff = y_b - phi_pred
+                # Round to nearest correction quantum
+                k = round(diff / quantum)
+                if abs(diff) > threshold and k != 0:
+                    phi_u[b] -= float(k) * quantum
+                    y_b = phi_u[b]
+
+                # Add corrected value to circular buffer, evicting oldest if full
+                if n_buf == history_length:
+                    # Evict the oldest entry
+                    old_idx = buf_head % history_length
+                    ox = buf_x[old_idx]
+                    oy = buf_y[old_idx]
+                    Sx -= ox
+                    Sy -= oy
+                    Sxx -= ox * ox
+                    Sxy -= ox * oy
+                    buf_x[old_idx] = x_b
+                    buf_y[old_idx] = y_b
+                    Sx += x_b
+                    Sy += y_b
+                    Sxx += x_b * x_b
+                    Sxy += x_b * y_b
+                    buf_head += 1
+                else:
+                    idx = buf_head % history_length
+                    buf_x[idx] = x_b
+                    buf_y[idx] = y_b
+                    Sx += x_b
+                    Sy += y_b
+                    Sxx += x_b * x_b
+                    Sxy += x_b * y_b
+                    buf_head += 1
+                    n_buf += 1
+
+            return phi_u
+
+        _NUMBA_CYCLE_SLIP["cs"] = _cycle_slip_loop
+
+    return _NUMBA_CYCLE_SLIP["cs"]
+
+
+def correct_cycle_slips(
+    phi_u: np.ndarray,
+    symmetry: int = 4,
+    history_length: int = 1000,
+    threshold: float = np.pi / 4,
+) -> np.ndarray:
+    """
+    Detects and corrects cycle slips in a block-phase trajectory.
+
+    After ``xp.unwrap`` resolves the M-fold ambiguity, residual cycle slips
+    may remain where the unwrapper chose the wrong quadrant.  This function
+    scans the trajectory sequentially: for each block it extrapolates the
+    expected phase from up to ``history_length`` past corrected blocks using
+    a linear fit.  When the deviation exceeds ``threshold``, the block is
+    corrected by the nearest integer multiple of ``2π/symmetry``.
+
+    Algorithm: linear extrapolation from the previous
+    ``history_length`` corrected phases; correction quantum = ``π/2`` for
+    4-fold QAM symmetry; threshold = ``π/4``.
+
+    Parameters
+    ----------
+    phi_u : (B,) float64
+        Block-phase trajectory on CPU after M-fold unwrap (e.g. output of
+        ``xp.unwrap(phi_raw * M) / M``).  **Modified in place.**
+    symmetry : int, default 4
+        Rotational symmetry order of the constellation.  Correction quantum
+        is ``2π/symmetry``.  Use 4 for all square QAM constellations and BPS
+        (which always searches over ``[0, π/2)``).  For M-PSK use ``symmetry = M``.
+    history_length : int, default 1000
+        Number of past corrected blocks used for linear extrapolation.
+        Reduce for short bursts.
+    threshold : float, default π/4
+        Deviation from the extrapolated phase that triggers a correction.
+        ``π/4`` is the midpoint between adjacent correction quanta for 4-fold
+        symmetry.
+
+    Returns
+    -------
+    (B,) float64
+        Corrected block-phase trajectory (same NumPy array).
+
+    Notes
+    -----
+    Runs on CPU only (sequential scan; Numba-compiled when available).
+    The caller should transfer ``phi_u`` to CPU before calling and move
+    the result back to the device if needed.
+    """
+    phi_u = np.asarray(phi_u, dtype=np.float64)
+    try:
+        kernel = _get_numba_cycle_slip()
+        return kernel(phi_u, int(symmetry), int(history_length), float(threshold))
+    except ImportError:
+        # Pure-Python fallback (no Numba)
+        two_pi = 2.0 * np.pi
+        quantum = two_pi / symmetry
+        B = len(phi_u)
+        xs = []
+        ys = []
+        for b in range(B):
+            if len(xs) < 2:
+                xs.append(float(b))
+                ys.append(phi_u[b])
+                continue
+            window_x = xs[-history_length:]
+            window_y = ys[-history_length:]
+            n = len(window_x)
+            mean_x = sum(window_x) / n
+            mean_y = sum(window_y) / n
+            num = sum(
+                (xi - mean_x) * (yi - mean_y) for xi, yi in zip(window_x, window_y)
+            )
+            den = sum((xi - mean_x) ** 2 for xi in window_x)
+            slope = num / den if abs(den) > 1e-30 else 0.0
+            phi_pred = slope * (float(b) - mean_x) + mean_y
+            diff = phi_u[b] - phi_pred
+            k = round(diff / quantum)
+            if abs(diff) > threshold and k != 0:
+                phi_u[b] -= k * quantum
+            xs.append(float(b))
+            ys.append(phi_u[b])
+        return phi_u
+
+
+# -----------------------------------------------------------------------------
+# Phase ambiguity resolution
+# -----------------------------------------------------------------------------
+
+
+def resolve_phase_ambiguity(
+    symbols: ArrayType,
+    ref_symbols: ArrayType,
+    modulation: str,
+    order: int,
+    symmetry_order: Optional[int] = None,
+) -> ArrayType:
+    """
+    Resolves rotational phase ambiguity after blind carrier phase recovery.
+
+    Blind CPR methods (VV, BPS, Tikhonov) cannot distinguish between
+    ``symmetry_order`` rotational copies of the constellation.  This function
+    tests all candidate rotations, scores each by Symbol Error Rate (SER)
+    against the known transmitted symbols, and returns the symbols rotated by
+    the best candidate.
+
+    For MIMO inputs each channel is resolved independently — after MIMO
+    equalisation the output streams may land on different ambiguity branches.
+
+    Parameters
+    ----------
+    symbols : array_like
+        Received complex symbols after CPR and ``correct_carrier_phase``.
+        Shape: ``(N,)`` or ``(C, N)``.
+    ref_symbols : array_like
+        Known transmitted symbols (unit-average-power normalised).
+        Shape: ``(N,)`` or ``(C, N)``.
+    modulation : str
+        Modulation scheme (case-insensitive): ``'qam'``, ``'psk'``, etc.
+    order : int
+        Modulation order.
+    symmetry_order : int, optional
+        Number of rotationally equivalent constellation copies to test.
+        Defaults to 4 for QAM (4-fold ``π/2`` symmetry) and ``order`` for
+        PSK.  Override for non-standard constellations.
+
+    Returns
+    -------
+    array_like
+        Phase-ambiguity-resolved symbols, same shape and dtype as ``symbols``.
+    """
+    from .metrics import ser as _ser
+
+    symbols, xp, _ = dispatch(symbols)
+    was_1d = symbols.ndim == 1
+    if was_1d:
+        symbols = symbols[None, :]
+    C, N = symbols.shape
+
+    ref = xp.asarray(ref_symbols)
+    if ref.ndim == 1:
+        ref = ref[None, :]
+    if ref.shape[0] == 1 and C > 1:
+        ref = xp.broadcast_to(ref, (C, N))
+
+    if symmetry_order is None:
+        symmetry_order = 4 if "qam" in modulation.lower() else order
+
+    step = 2.0 * np.pi / symmetry_order
+    candidates = [
+        xp.exp(1j * k * step).astype(symbols.dtype) for k in range(symmetry_order)
+    ]
+
+    out = xp.empty_like(symbols)
+    for ch in range(C):
+        best_k = 0
+        best_ser = float("inf")
+        for k, rot in enumerate(candidates):
+            rotated = symbols[ch] * rot
+            s = float(xp.mean(xp.asarray(_ser(rotated, ref[ch], modulation, order))))
+            if s < best_ser:
+                best_ser = s
+                best_k = k
+        out[ch] = symbols[ch] * candidates[best_k]
+        logger.info(
+            f"Phase ambiguity resolution: ch={ch}, best_k={best_k}, "
+            f"rotation={best_k * step * 180.0 / np.pi:.1f}°, SER={best_ser:.4f}"
+        )
+
+    if was_1d:
+        return out[0]
+    return out
 
 
 def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
