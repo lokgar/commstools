@@ -1704,7 +1704,7 @@ def correct_frequency_offset(
         Frequency-corrected samples, same shape and dtype as input.
     """
     samples, xp, _ = dispatch(samples)
-    offset_arr = np.asarray(offset)
+    offset_arr = xp.asarray(offset)
     per_channel = offset_arr.ndim >= 1 and offset_arr.size > 1
 
     if per_channel:
@@ -1731,11 +1731,11 @@ def correct_frequency_offset(
         # Build a (C, N) mixer — one distinct tone per channel
         C = samples.shape[0]
         offsets_xp = xp.asarray(offset_arr.reshape(-1)[:C], dtype=xp.float64)  # (C,)
-        phase = -2.0 * np.pi * offsets_xp[:, None] * t[None, :]  # (C, N)
+        phase = -2.0 * xp.pi * offsets_xp[:, None] * t[None, :]  # (C, N)
         mixer = xp.exp(1j * phase).astype(target_dtype)
     else:
         # Scalar path — single mixer broadcast over all channels
-        phase = -2.0 * np.pi * float(offset_arr) * t
+        phase = -2.0 * xp.pi * float(offset_arr) * t
         mixer = xp.exp(1j * phase).astype(target_dtype)
         if samples.ndim > 1:
             mixer = mixer.reshape((1,) * (samples.ndim - 1) + (-1,))
