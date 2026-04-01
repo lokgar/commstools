@@ -1123,7 +1123,7 @@ def _get_numba_pa_cma():
                 # Error: DA-LMS at pilots, CMA Godard at data
                 for i in range(C):
                     if pilot_mask[idx]:
-                        e[i] = pilot_ref[i, idx] - y[i]
+                        e[i] = y[i] - pilot_ref[i, idx]  # inverted to match blind subtractive update
                     else:
                         mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
                         e[i] = y[i] * np.float32(mod2 - r2)
@@ -1216,7 +1216,7 @@ def _get_numba_pa_rde():
                 # Error: DA-LMS at pilots, RDE ring-directed at data
                 for i in range(C):
                     if pilot_mask[idx]:
-                        e[i] = pilot_ref[i, idx] - y[i]
+                        e[i] = y[i] - pilot_ref[i, idx]  # inverted to match blind subtractive update
                     else:
                         mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
                         abs_y = mod2 ** np.float32(0.5)
@@ -1294,7 +1294,7 @@ def _get_jax_pa_cma(num_taps: int, stride: int, num_ch: int):
 
                 abs_y2 = jnp.real(y * jnp.conj(y))  # strict real |y|²
                 e_blind = y * (abs_y2 - r2)  # Godard CMA
-                e_da = p_ref - y  # pilot LMS
+                e_da = y - p_ref  # pilot LMS (inverted to match blind subtractive update)
                 e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
 
                 W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
@@ -1358,7 +1358,7 @@ def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
                 rd = radii[jnp.argmin(dist, axis=1)]  # (C,) nearest radius
 
                 e_blind = y * (abs_y2 - rd**2)  # RDE ring-directed
-                e_da = p_ref - y  # pilot LMS
+                e_da = y - p_ref  # pilot LMS (inverted to match blind subtractive update)
                 e = jnp.where(p_mask, e_da, e_blind)  # (C,) branchless
 
                 W_new = W - step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
