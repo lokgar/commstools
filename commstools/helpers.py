@@ -345,7 +345,6 @@ def validate_array(
     return v
 
 
-
 def cross_correlate_fft(
     samples: ArrayType,
     template: ArrayType,
@@ -463,6 +462,3 @@ def zc_mimo_root(stream_idx: int, base_root: int, length: int) -> int:
     [10, 11, 12, 1]
     """
     return ((base_root - 1 + stream_idx) % (length - 1)) + 1
-
-
-

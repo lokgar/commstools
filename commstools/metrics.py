@@ -129,7 +129,9 @@ def evm(
         # gray_constellation always returns unit-average-power constellations.
         # No gain correction of rx is applied here — the caller is responsible
         # for passing a gain-corrected signal at the expected constellation power.
-        constellation = xp.asarray(gray_constellation(modulation, order))  # (M,) unit power
+        constellation = xp.asarray(
+            gray_constellation(modulation, order)
+        )  # (M,) unit power
 
         # ML hard decision: nearest constellation point per symbol.
         # rx shape (..., N) → (..., N, 1) vs (M,) → (..., N, M)
@@ -367,8 +369,8 @@ def ser(
     constellation = xp.asarray(gray_constellation(modulation, order))  # (M,)
 
     # Broadcast: rx/tx (..., N) → (..., N, 1) vs constellation (M,) → (..., N, M)
-    dist_rx = xp.abs(rx[..., None] - constellation) ** 2   # (..., N, M)
-    dist_tx = xp.abs(tx[..., None] - constellation) ** 2   # (..., N, M)
+    dist_rx = xp.abs(rx[..., None] - constellation) ** 2  # (..., N, M)
+    dist_tx = xp.abs(tx[..., None] - constellation) ** 2  # (..., N, M)
 
     dec_rx = xp.argmin(dist_rx, axis=-1)  # (..., N) — index into constellation
     dec_tx = xp.argmin(dist_tx, axis=-1)  # (..., N)
@@ -479,7 +481,9 @@ def gmi(
 
     # Numerically stable softplus: log2(1 + exp(x)) = log1p(exp(-|x|))/ln2 + max(0,x)/ln2
     ln2 = xp.log(xp.asarray(2.0, dtype=xp.float64))
-    softplus = (xp.log1p(xp.exp(-xp.abs(x))) + xp.maximum(xp.asarray(0.0, dtype=xp.float64), x)) / ln2
+    softplus = (
+        xp.log1p(xp.exp(-xp.abs(x))) + xp.maximum(xp.asarray(0.0, dtype=xp.float64), x)
+    ) / ln2
 
     # GMI = Σ_{b=0}^{k-1} (1 - mean_n[softplus_b]) = k * (1 - mean_all[softplus])
     gmi_value = float(k * (1.0 - xp.mean(softplus)))
@@ -577,10 +581,10 @@ def mi(
     from .mapping import gray_constellation
 
     rx, xp, _ = dispatch(symbols_rx)
-    rx = rx.ravel().astype(xp.complex128)             # (N,)
+    rx = rx.ravel().astype(xp.complex128)  # (N,)
     constellation = xp.asarray(
         gray_constellation(modulation, order), dtype=xp.complex128
-    )                                                  # (M,)
+    )  # (M,)
     M = len(constellation)
     ln2 = float(xp.log(xp.asarray(2.0, dtype=xp.float64)))
     log2_M = float(xp.log2(xp.asarray(float(M), dtype=xp.float64)))
@@ -592,21 +596,22 @@ def mi(
         nz = pmf_arr > 0
         h_x_bits = float(-np.sum(pmf_arr[nz] * np.log2(pmf_arr[nz])))
     else:
-        log_prior = xp.full(M, -xp.log(xp.asarray(float(M), dtype=xp.float64)),
-                            dtype=xp.float64)          # log(1/M)
+        log_prior = xp.full(
+            M, -xp.log(xp.asarray(float(M), dtype=xp.float64)), dtype=xp.float64
+        )  # log(1/M)
         h_x_bits = log2_M
 
     # Log-joint: log P(sₘ) + log p(r | sₘ)   (drop noise-normalisation constant)
     # Shape: (N, M)
-    diff = rx[:, None] - constellation[None, :]        # (N, M)
+    diff = rx[:, None] - constellation[None, :]  # (N, M)
     log_liks = log_prior[None, :] - (diff.real**2 + diff.imag**2) / noise_var
 
     # log p(s_m | r) via log-sum-exp for numerical stability
-    lse_shift = log_liks.max(axis=1, keepdims=True)    # (N, 1)
+    lse_shift = log_liks.max(axis=1, keepdims=True)  # (N, 1)
     log_sum = xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
 
-    log_posterior = log_liks - log_sum[:, None]        # (N, M), log base e
-    posterior = xp.exp(log_posterior)                  # (N, M), sum-to-1 per row
+    log_posterior = log_liks - log_sum[:, None]  # (N, M), log base e
+    posterior = xp.exp(log_posterior)  # (N, M), sum-to-1 per row
 
     # MI = H(X) + (1/N) Σ_n Σ_m p(s_m|r_n) · log2 p(s_m|r_n)
     mi_nats = float(xp.sum(posterior * log_posterior, axis=1).mean())

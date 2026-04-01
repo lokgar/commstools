@@ -1982,7 +1982,9 @@ def lms(
         # after _normalize_inputs — only the constellation reference needs scaling.
         if pmf is not None and modulation is not None and order is not None:
             _pmf_arr = np.asarray(pmf, dtype=np.float64)
-            _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+            _e_ps = float(
+                np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
+            )
             if _e_ps < 1.0 - 1e-6:
                 _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
                 constellation_np = (constellation_np * _c_ps).astype(np.complex64)
@@ -2069,7 +2071,9 @@ def lms(
     # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
     if pmf is not None and modulation is not None and order is not None:
         _pmf_arr = np.asarray(pmf, dtype=np.float64)
-        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        _e_ps = float(
+            np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
+        )
         if _e_ps < 1.0 - 1e-6:
             constellation_np = (
                 constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
@@ -2383,7 +2387,9 @@ def rls(
         # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
         if pmf is not None and modulation is not None and order is not None:
             _pmf_arr = np.asarray(pmf, dtype=np.float64)
-            _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+            _e_ps = float(
+                np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
+            )
             if _e_ps < 1.0 - 1e-6:
                 _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
                 constellation_np = (constellation_np * _c_ps).astype(np.complex64)
@@ -2482,7 +2488,9 @@ def rls(
     # PS-QAM: scale slicer constellation to unit-power {s_m/sqrt(E_PS)}.
     if pmf is not None and modulation is not None and order is not None:
         _pmf_arr = np.asarray(pmf, dtype=np.float64)
-        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        _e_ps = float(
+            np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
+        )
         if _e_ps < 1.0 - 1e-6:
             constellation_np = (
                 constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
@@ -2789,7 +2797,7 @@ def cma(
             _pmf_arr = np.asarray(pmf, dtype=np.float64)
             _abs2 = np.abs(const) ** 2
             _e_ps = float(np.dot(_pmf_arr, _abs2))
-            r2 = float(np.dot(_pmf_arr, np.abs(const) ** 4)) / (_e_ps ** 2)
+            r2 = float(np.dot(_pmf_arr, np.abs(const) ** 4)) / (_e_ps**2)
             if _e_ps < 1.0 - 1e-6:
                 _c_ps = np.float32(1.0 / np.sqrt(_e_ps))
             logger.debug(

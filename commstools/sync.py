@@ -643,9 +643,7 @@ def estimate_timing(
             [corr_all[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
         )  # (C_rx, N_lag) complex
     else:
-        corr = cross_correlate_fft(
-            sig_processing, ref_waveform, mode="positive_lags"
-        )
+        corr = cross_correlate_fft(sig_processing, ref_waveform, mode="positive_lags")
 
     # Magnitude
     corr_mag = xp.abs(corr)
@@ -689,26 +687,28 @@ def estimate_timing(
 
     coherence = peak_vals / norm_factors
     coherence = xp.clip(coherence, 0.0, 1.0)
-    
+
     # Primary timing metric: PAPR (Peak-to-Average magnitude)
     # This evaluates visual prominence against the noise floor, ensuring
     # extreme robustness to CFO phase-rotation and pulse-shape mismatch.
     mean_vals = xp.maximum(mean_vals, 1e-12)
     metrics = peak_vals / mean_vals
-    
+
     # Log coherence diagnostics
     for ch in range(num_sig_ch):
         c_val = float(coherence[ch])
         p_val = float(metrics[ch])
         if c_val < 0.5 and p_val >= threshold:
-             logger.info(
-                 f"Channel {ch}: Peak phase coherence is very low ({c_val:.2f}), but "
-                 f"peak is visually prominent (PAPR={p_val:.1f} >= {threshold}). "
-                 f"This suggests strong Carrier Frequency Offset (CFO) or uncompensated "
-                 f"dispersion destroying phase alignment over the sequence length."
-             )
+            logger.warning(
+                f"Channel {ch}: Peak phase coherence is very low ({c_val:.2f}), but "
+                f"peak is visually prominent (PAPR={p_val:.1f} >= {threshold}). "
+                f"This suggests strong Carrier Frequency Offset (CFO) or uncompensated "
+                f"dispersion destroying phase alignment over the sequence length."
+            )
         else:
-             logger.debug(f"Channel {ch}: Peak prominence = {p_val:.1f}, coherence = {c_val:.2f}")
+            logger.debug(
+                f"Channel {ch}: Peak prominence = {p_val:.1f}, coherence = {c_val:.2f}"
+            )
 
     # === MIMO fallback: X-Y power imbalance with polarization mixing ===
     if C_tx > 1 and float(xp.max(metrics)) >= threshold:
