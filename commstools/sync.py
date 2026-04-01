@@ -3698,8 +3698,8 @@ def _get_numba_cycle_slip():
                 x_b = float(b)
                 y_b = phi_u[b]
 
-                if n_buf < 2:
-                    # Not enough history for a prediction — add to buffer and continue
+                if n_buf == 0:
+                    # First block: trust it unconditionally
                     buf_x[buf_head % history_length] = x_b
                     buf_y[buf_head % history_length] = y_b
                     buf_head += 1
@@ -3710,16 +3710,21 @@ def _get_numba_cycle_slip():
                     Sxy += x_b * y_b
                     continue
 
-                # Linear extrapolation: slope = (n·Sxy − Sx·Sy) / (n·Sxx − Sx²)
-                n_f = float(n_buf)
-                denom = n_f * Sxx - Sx * Sx
-                if abs(denom) > 1e-30:
-                    slope = (n_f * Sxy - Sx * Sy) / denom
-                    intercept = (Sy - slope * Sx) / n_f
+                if n_buf < min(10, history_length):
+                    # Zero-slope (constant) extrapolation for first few blocks
+                    # Prevents noisy early blocks from cementing false slips
+                    phi_pred = buf_y[(buf_head - 1) % history_length]
                 else:
-                    slope = 0.0
-                    intercept = Sy / n_f
-                phi_pred = slope * x_b + intercept
+                    # Linear extrapolation: slope = (n·Sxy − Sx·Sy) / (n·Sxx − Sx²)
+                    n_f = float(n_buf)
+                    denom = n_f * Sxx - Sx * Sx
+                    if abs(denom) > 1e-30:
+                        slope = (n_f * Sxy - Sx * Sy) / denom
+                        intercept = (Sy - slope * Sx) / n_f
+                    else:
+                        slope = 0.0
+                        intercept = Sy / n_f
+                    phi_pred = slope * x_b + intercept
 
                 diff = y_b - phi_pred
                 # Round to nearest correction quantum
