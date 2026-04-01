@@ -601,11 +601,11 @@ def test_fft_fractional_delay_scalar_ndarray(backend_device, xp, xpt):
 
 
 def test_estimate_timing_no_preamble_error(backend_device, xp):
-    """Verify estimate_timing raises when neither info nor preamble given."""
+    """Verify estimate_timing raises when no reference is given."""
     sig = xp.zeros(100, dtype="complex64")
     with pytest.raises(
         ValueError,
-        match="Either 'signal.frame' with a preamble, or 'preamble' argument must be provided.",
+        match="A 'reference' sequence must be provided",
     ):
         sync.estimate_timing(sig)
 
@@ -721,7 +721,7 @@ def test_estimate_timing_preamble_kwargs_without_sps(backend_device, xp):
     sig = xp.zeros(100, dtype="complex64")
     pre = Preamble(sequence_type="barker", length=7)
     with pytest.raises(ValueError, match="SPS must be provided"):
-        sync.estimate_timing(sig, preamble=pre)
+        sync.estimate_timing(sig, reference=pre)
 
 
 # -----------------------------------------------------------------------------

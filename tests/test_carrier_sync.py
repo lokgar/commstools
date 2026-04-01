@@ -988,3 +988,182 @@ class TestResolvePhaseAmbiguity:
         sig.source_symbols = None
         with pytest.raises(ValueError, match="source_symbols"):
             sig.resolve_phase_ambiguity()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DD-PLL — joint_channels and cycle_slip_correction
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDDPLLEnhancements:
+    """DD-PLL joint_channels and cycle_slip_correction parameters."""
+
+    N = 4096
+    PHASE = 0.4  # rad constant phase offset
+
+    def _make_mimo(self, xp, order=16, phase=PHASE, snr_db=SNR_DB):
+        sig_a = _qam_signal(xp, order, self.N, snr_db=snr_db, seed=10)
+        sig_b = _qam_signal(xp, order, self.N, snr_db=snr_db, seed=11)
+        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
+        return mimo * xp.exp(1j * phase).astype(mimo.dtype)
+
+    def test_joint_rows_identical(self, backend_device, xp):
+        """PI loop + joint_channels=True: both phi_full rows are bitwise identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_pll(
+            mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_butterworth_joint_rows_identical(self, backend_device, xp):
+        """Butterworth loop + joint_channels=True: both phi rows are bitwise identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_pll(
+            mimo, "qam", 16,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+            joint_channels=True,
+            cycle_slip_correction=False,
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_siso_joint_noop(self, backend_device, xp):
+        """joint_channels=True on SISO returns identical result to False."""
+        sig = _qam_signal(xp, 16, self.N, seed=12)
+        phi_a = sync.recover_carrier_phase_pll(
+            sig.samples, "qam", 16, joint_channels=False, cycle_slip_correction=False
+        )
+        phi_b = sync.recover_carrier_phase_pll(
+            sig.samples, "qam", 16, joint_channels=True, cycle_slip_correction=False
+        )
+        phi_a_np = phi_a if xp is np else phi_a.get()
+        phi_b_np = phi_b if xp is np else phi_b.get()
+        np.testing.assert_allclose(phi_a_np, phi_b_np, atol=1e-10)
+
+    def test_cycle_slip_shape(self, backend_device, xp):
+        """cycle_slip_correction=True (PI loop) returns correct shape."""
+        sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
+        phi = sync.recover_carrier_phase_pll(
+            sig.samples, "qam", 16, cycle_slip_correction=True
+        )
+        assert phi.shape == sig.samples.shape
+
+    def test_butterworth_cycle_slip_shape(self, backend_device, xp):
+        """cycle_slip_correction=True (Butterworth loop) returns correct shape."""
+        sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
+        phi = sync.recover_carrier_phase_pll(
+            sig.samples, "qam", 16,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+            cycle_slip_correction=True,
+        )
+        assert phi.shape == sig.samples.shape
+
+    def test_joint_cycle_slip_mimo_rows_identical(self, backend_device, xp):
+        """joint_channels=True + cycle_slip_correction=True: rows remain identical."""
+        mimo = self._make_mimo(xp)
+        phi = sync.recover_carrier_phase_pll(
+            mimo, "qam", 16,
+            joint_channels=True,
+            cycle_slip_correction=True,
+            cycle_slip_history=1000,
+        )
+        assert phi.shape == (2, self.N)
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pilots CPR — joint_channels and cycle_slip_correction
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPilotsCPREnhancements:
+    """Pilots CPR joint_channels and cycle_slip_correction parameters."""
+
+    def _pilot_setup(self, xp, n_symbols=512, pilot_period=8, phase_per_sym=0.001, seed=42):
+        """Return (samples, pilot_indices, pilot_values) for a 16-QAM signal."""
+        sig = Signal.qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS, seed=seed)
+        ideal = xp.asarray(sig.samples.copy())
+        sig.samples = apply_awgn(sig.samples, esn0_db=SNR_DB, sps=1, seed=seed)
+        sig.samples = _apply_phase_ramp(xp, sig.samples, phase_per_sym)
+        pilot_indices = np.arange(0, n_symbols, pilot_period)
+        pilot_values = ideal[pilot_indices]
+        return sig.samples, pilot_indices, pilot_values
+
+    def test_joint_rows_identical(self, backend_device, xp):
+        """joint_channels=True: both phi_full rows are bitwise identical."""
+        samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=1)
+        samples_b, _, _ = self._pilot_setup(xp, seed=2)
+        mimo = xp.stack([samples_a, samples_b], axis=0)  # (2, N)
+        phi = sync.recover_carrier_phase_pilots(
+            mimo,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            joint_channels=True,
+            cycle_slip_correction=False,
+        )
+        assert phi.shape == (2, mimo.shape[-1])
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+    def test_joint_siso_noop(self, backend_device, xp):
+        """joint_channels=True on SISO returns identical result to False."""
+        samples, pilot_indices, pilot_values = self._pilot_setup(xp, seed=3)
+        phi_a = sync.recover_carrier_phase_pilots(
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            joint_channels=False,
+            cycle_slip_correction=False,
+        )
+        phi_b = sync.recover_carrier_phase_pilots(
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            joint_channels=True,
+            cycle_slip_correction=False,
+        )
+        phi_a_np = phi_a if xp is np else phi_a.get()
+        phi_b_np = phi_b if xp is np else phi_b.get()
+        np.testing.assert_allclose(phi_a_np, phi_b_np, atol=1e-10)
+
+    def test_cycle_slip_shape(self, backend_device, xp):
+        """cycle_slip_correction=True returns correct shape."""
+        samples, pilot_indices, pilot_values = self._pilot_setup(xp)
+        phi = sync.recover_carrier_phase_pilots(
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            cycle_slip_correction=True,
+        )
+        assert phi.shape == samples.shape
+
+    def test_cycle_slip_standalone_symmetry_1(self, backend_device, xp):
+        """correct_cycle_slips with symmetry=1 corrects an injected 2π slip."""
+        B = 200
+        phi_u = np.linspace(0.0, 3.0, B)
+        phi_slipped = phi_u.copy()
+        phi_slipped[100:] += 2.0 * np.pi
+        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=1, history_length=50)
+        np.testing.assert_allclose(phi_out, phi_u, atol=0.1)
+
+    def test_joint_cycle_slip_mimo_rows_identical(self, backend_device, xp):
+        """joint_channels=True + cycle_slip_correction=True: rows remain identical."""
+        samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=4)
+        samples_b, _, _ = self._pilot_setup(xp, seed=5)
+        mimo = xp.stack([samples_a, samples_b], axis=0)
+        phi = sync.recover_carrier_phase_pilots(
+            mimo,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            joint_channels=True,
+            cycle_slip_correction=True,
+        )
+        assert phi.shape == (2, mimo.shape[-1])
+        phi_np = phi if xp is np else phi.get()
+        np.testing.assert_array_equal(phi_np[0], phi_np[1])
