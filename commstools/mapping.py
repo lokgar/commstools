@@ -632,20 +632,22 @@ def demap_symbols_hard(
     if is_sq_qam:
         # O(1) component-wise rounding — no (N, M) distance matrix.
         # Levels are evenly spaced; round each axis independently.
-        n_ax = k // 2          # bits per axis
-        side = 2 ** n_ax       # points per axis
-        levels = xp.sort(xp.unique(constellation.real))   # (side,)
+        n_ax = k // 2  # bits per axis
+        side = 2**n_ax  # points per axis
+        levels = xp.sort(xp.unique(constellation.real))  # (side,)
         lev_min = float(levels[0])
-        d_grid  = float(levels[1] - levels[0])
+        d_grid = float(levels[1] - levels[0])
         # Gray LUT: sorted-level index (geometric) → natural-binary symbol index
-        gray_lut = xp.asarray(gray_code(n_ax))            # (side,)
+        gray_lut = xp.asarray(gray_code(n_ax))  # (side,)
         g_i = xp.clip(
             xp.round((symbols_flat.real - lev_min) / d_grid).astype(xp.int64),
-            0, side - 1,
+            0,
+            side - 1,
         )
         g_q = xp.clip(
             xp.round((symbols_flat.imag - lev_min) / d_grid).astype(xp.int64),
-            0, side - 1,
+            0,
+            side - 1,
         )
         indices = (gray_lut[g_i] << n_ax) | gray_lut[g_q]  # (N_flat,)
     else:
@@ -868,7 +870,9 @@ def compute_llr(
             jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq, log_pmf_jax
         )
     else:
-        llrs = exact_fn(jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq, log_pmf_jax)
+        llrs = exact_fn(
+            jax_symbols_flat, constellation_jax, bits_table_t_jax, sigma_sq, log_pmf_jax
+        )
 
     # Reshape to match input structure
     flat_llrs = llrs.flatten()

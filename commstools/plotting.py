@@ -2017,7 +2017,10 @@ def pilot_phase_estimate(
             label="Pilot φ (unwrapped)",
         )
         ax1.plot(
-            pilot_indices, np.degrees(phi_fit), "r--", label=f"Fit  Δf={f_ests[i]:.3f} Hz"
+            pilot_indices,
+            np.degrees(phi_fit),
+            "r--",
+            label=f"Fit  Δf={f_ests[i]:.3f} Hz",
         )
         ax1.set_title(f"{title}{ch_suffix} — Pilots")
         ax1.set_xlabel("Sample Index")
