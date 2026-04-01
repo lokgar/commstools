@@ -19,7 +19,7 @@ fft_fractional_delay :
     (ideal for bandlimited signals, perfect power preservation).
 estimate_timing :
     Estimates coarse (integer) and fractional timing offsets via
-    preamble correlation and parabolic interpolation.
+    cross-correlation with a known reference sequence.
 correct_timing :
     Combined coarse (integer) and fine (fractional) timing correction.
 estimate_frequency_offset_mth_power :
@@ -439,7 +439,7 @@ def fft_fractional_delay(
 
 def estimate_timing(
     samples: ArrayType,
-    preamble: Optional[Union[ArrayType, "Preamble"]] = None,
+    reference: Optional[Union[ArrayType, "Preamble"]] = None,
     threshold: float = 0.5,
     sps: Optional[int] = None,
     pulse_shape: Optional[str] = None,
@@ -450,12 +450,23 @@ def estimate_timing(
     debug_plot: bool = False,
 ) -> Tuple[ArrayType, ArrayType]:
     """
-    Estimates coarse and fractional timing offsets via preamble correlation.
+    Estimates coarse and fractional timing offsets via cross-correlation.
 
     Performs a sliding cross-correlation between the received signal and
-    the expected preamble to determine the coarse (integer sample) timing
-    offset per channel.  Additionally estimates the fractional (sub-sample)
-    timing offset using parabolic interpolation on the correlation peak.
+    a known reference sequence to determine the coarse (integer sample)
+    timing offset per channel.  Additionally estimates the fractional
+    (sub-sample) timing offset using parabolic interpolation on the
+    correlation peak.
+
+    The reference can be:
+
+    * A :class:`~commstools.core.Preamble` object — the waveform is
+      reconstructed internally using ``sps``, ``pulse_shape``, and
+      ``filter_params``.
+    * A raw array — used directly as the correlation template.  This
+      can be the original transmitted signal, a known training sequence,
+      or any sub-sequence of the signal.  The array must be at the same
+      sampling rate as ``samples``.
 
     For MIMO ZC preambles each TX stream uses a unique root (assigned by
     :func:`~commstools.helpers.zc_mimo_root`).  All templates are correlated
@@ -468,20 +479,30 @@ def estimate_timing(
     Parameters
     ----------
     samples : array_like
-        Received signal samples.
+        Received signal samples. Shape: ``(N,)`` or ``(C, N)``.
+    reference : array_like or Preamble
+        Known reference sequence for correlation.
 
-    preamble : array_like or Preamble, optional
-        Known preamble.
+        * **Preamble object:** the waveform is reconstructed via
+          ``Preamble.to_signal()`` using the provided ``sps``,
+          ``pulse_shape``, and ``filter_params``.  ``sps`` is required
+          in this mode.
+        * **Raw array:** used directly as the correlation template at the
+          current sampling rate.  Shape: ``(L,)`` for a single template
+          or ``(C_tx, L)`` for per-channel templates (MIMO).
     threshold : float, default 0.5
-        Detection threshold normalized between 0 and 1.
-
+        Detection threshold for the normalized correlation metric,
+        in the range ``[0, 1]``.
     sps : int, optional
-        Samples per symbol. Must be provided explicitly.
+        Samples per symbol.  Required when ``reference`` is a
+        :class:`~commstools.core.Preamble` object; ignored for raw arrays.
     pulse_shape : str, optional
-        Pulse shaping filter. Defaults to ``'rrc'`` if not provided.
+        Pulse shaping filter type (e.g. ``'rrc'``).  Used only when
+        ``reference`` is a Preamble object.  Defaults to ``'rrc'``.
     filter_params : dict, optional
-        Additional filter parameters (beta, span, etc.). Defaults to ``{}``
-        if None.
+        Additional filter parameters (``beta``, ``span``, etc.) passed
+        to the pulse shaper.  Used only when ``reference`` is a Preamble
+        object.  Defaults to ``{}``.
     search_range : tuple of int, optional
         A ``(start, end)`` sample range to restrict detection.
         Defaults to the full signal length.
@@ -491,14 +512,15 @@ def estimate_timing(
     fractional_method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
         Fitting method for fractional delay estimation.
     debug_plot : bool, default False
-        If True, plots the correlation magnitude for debugging.
+        If ``True``, plots the correlation magnitude for debugging.
 
     Returns
     -------
     coarse_offsets : ArrayType
-        Integer sample offsets where the frame begins, per RX channel.
-        Shape: ``(N_channels,)``.  Each channel's offset is estimated
-        independently so hardware skew between channels is preserved.
+        Integer sample offsets where the reference sequence begins,
+        per RX channel.  Shape: ``(N_channels,)``.  Each channel's
+        offset is estimated independently so hardware skew between
+        channels is preserved.
     fractional_offsets : ArrayType
         Sub-sample timing offsets in [-0.5, 0.5) per channel.
         Shape: ``(N_channels,)``.
@@ -506,17 +528,19 @@ def estimate_timing(
     Raises
     ------
     ValueError
-        If no correlation peak is found that satisfies the threshold criteria.
+        If no correlation peak is found that satisfies the threshold
+        criteria, or if ``reference`` is not provided.
 
     Notes
     -----
     - The returned coarse offset corresponds to the very first sample of
-      the detected preamble.
+      the detected reference sequence.
     - **Synchronization Strategy**: For signals with oversampling (SPS > 1),
-      correlating with a shaped/oversampled preamble (e.g., generated via
+      correlating with a shaped/oversampled reference (e.g., generated via
       ``Preamble.to_signal(...)``) typically yields superior timing precision
-      and SNR compared to correlating with 1 SPS symbols. Ensure the
-      ``preamble`` argument matches the sampling rate of the input ``samples``.
+      and SNR compared to correlating with 1 SPS symbols.  Ensure the
+      ``reference`` argument matches the sampling rate of the input
+      ``samples``.
     """
     from .helpers import cross_correlate_fft
 
@@ -531,16 +555,16 @@ def estimate_timing(
 
     sig_array, xp, _ = dispatch(samples)
 
-    # 2. Reconstruct/Get Preamble Waveform
-    preamble_waveform = None
-    resolved_preamble = preamble
+    # 2. Build reference waveform
+    ref_waveform = None
 
-    if isinstance(resolved_preamble, Preamble):
+    if isinstance(reference, Preamble):
+        # Preamble object: reconstruct the shaped waveform at the target SPS.
         if sps is None:
             raise ValueError("SPS must be provided when using a Preamble object.")
 
-        preamble_waveform = xp.asarray(
-            resolved_preamble.to_signal(
+        ref_waveform = xp.asarray(
+            reference.to_signal(
                 sps=sps,
                 symbol_rate=1.0,
                 pulse_shape=pulse_shape or "rrc",
@@ -548,39 +572,30 @@ def estimate_timing(
             ).samples
         )
         # ensure 2-D (C_tx, L*sps) for the correlation engine
-        if preamble_waveform.ndim == 1:
-            preamble_waveform = preamble_waveform[None, :]
+        if ref_waveform.ndim == 1:
+            ref_waveform = ref_waveform[None, :]
 
-    elif resolved_preamble is not None:
-        preamble_waveform = xp.asarray(resolved_preamble)
+    elif reference is not None:
+        # Raw array: use directly as the correlation template.
+        ref_waveform = xp.asarray(reference)
     else:
         raise ValueError(
-            "Either 'signal.frame' with a preamble, or 'preamble' argument must be provided."
+            "A 'reference' sequence must be provided (Preamble object or raw array)."
         )
 
     # 3. Correlation Strategy
     # Signal: (C, N) or (N,)
-    # Preamble: (C, L) or (L,) or (1, L)
+    # Reference: (C, L) or (L,) or (1, L)
 
     # Ensure dimensions match for broadcast/multichannel correlation
     if sig_array.ndim == 1:
         sig_array = sig_array[None, :]  # Treat as 1 channel
 
-    if preamble_waveform.ndim == 1:
-        preamble_waveform = preamble_waveform[None, :]  # Treat as 1 template
+    if ref_waveform.ndim == 1:
+        ref_waveform = ref_waveform[None, :]  # Treat as 1 template
 
-    # Ensure preamble is on the same device as the signal.  The preamble can be
-    # constructed on GPU (e.g. via Preamble.to_signal() with GPU default) while
-    # the received signal was loaded from a .npy file and lives on CPU.
-    preamble_waveform = to_device(preamble_waveform, "cpu" if xp is np else "gpu")
-
-    # If signal has C channels, we expect preamble to be compatible.
-    # Case 1: Signal (C, N), Preamble (C, L) -> Correlate row-by-row, sum magnitudes.
-    # Case 2: Signal (C, N), Preamble (1, L) -> Broadcast preamble to all?
-    #         If mode="same", Preamble is (C, L) already.
-
-    # We will compute correlation for each channel pair (k, k)
-    # This assumes checking for "preamble on this channel".
+    # Ensure reference is on the same device as the signal.
+    ref_waveform = to_device(ref_waveform, "cpu" if xp is np else "gpu")
 
     num_sig_ch = sig_array.shape[0]
 
@@ -594,8 +609,8 @@ def estimate_timing(
         sig_processing = sig_array
 
     # === Vectorized Correlation (FFT) via shared helper ===
-    L = preamble_waveform.shape[-1]
-    C_tx = preamble_waveform.shape[0]
+    L = ref_waveform.shape[-1]
+    C_tx = ref_waveform.shape[0]
 
     if C_tx > 1:
         from scipy.optimize import linear_sum_assignment
@@ -605,7 +620,7 @@ def estimate_timing(
         corr_all = xp.stack(
             [
                 cross_correlate_fft(
-                    sig_processing, preamble_waveform[t : t + 1], mode="positive_lags"
+                    sig_processing, ref_waveform[t : t + 1], mode="positive_lags"
                 )
                 for t in range(C_tx)
             ],
@@ -613,13 +628,6 @@ def estimate_timing(
         )
 
         # === Best-assignment peak finding ===
-        # Score matrix S[rx, tx] = max_lag |corr_all[rx, tx, :]|.
-        # Solve the linear assignment problem to find the unique TX template per
-        # RX channel that maximises the total peak score.  For a unitary optical
-        # channel this correctly identifies which ZC root each RX channel
-        # received most strongly, giving a higher peak-to-floor ratio than the
-        # incoherent sum (which adds cross-correlation floor terms from all
-        # non-matching templates).
         corr_all_mag = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
         S_np = to_device(xp.max(corr_all_mag, axis=-1), "cpu")  # (C_rx, C_tx)
         _, assignment = linear_sum_assignment(-S_np)  # assignment[rx] = best tx
@@ -635,7 +643,7 @@ def estimate_timing(
         )  # (C_rx, N_lag) complex
     else:
         corr = cross_correlate_fft(
-            sig_processing, preamble_waveform, mode="positive_lags"
+            sig_processing, ref_waveform, mode="positive_lags"
         )
 
     # Magnitude
@@ -647,23 +655,28 @@ def estimate_timing(
         peak_indices = xp.argmax(corr_mag, axis=-1)  # Shape (C,)
 
     # === Per-Channel Normalization ===
-    # Calculate Energy per channel
-    e_p = xp.sum(xp.abs(preamble_waveform) ** 2, axis=-1)  # (C_tx,) or scalar
-    if e_p.ndim == 0:  # SISO: broadcast scalar energy to all channels
-        e_p = xp.full(num_sig_ch, e_p)
+    # Normalized correlation metric: use local signal energy around each
+    # detected peak (L-sample window) instead of global mean.  This gives
+    # metric ≈ 1.0 for a perfectly matched reference regardless of the
+    # noise/data content elsewhere in the signal.
+    e_ref = xp.sum(xp.abs(ref_waveform) ** 2, axis=-1)  # (C_tx,) or scalar
+    if e_ref.ndim == 0:
+        e_ref = xp.full(num_sig_ch, e_ref)
     else:
-        # Multiple TX templates: broadcast mean energy to all RX channels
-        e_p = xp.full(num_sig_ch, xp.mean(e_p))
+        e_ref = xp.full(num_sig_ch, xp.mean(e_ref))
 
-    e_s = xp.mean(xp.abs(sig_processing) ** 2, axis=-1) * L  # (C,)
+    # Local signal energy: sum |sig|² in the L-sample window at each peak
+    N_sig = sig_processing.shape[-1]
+    e_s = xp.empty(num_sig_ch, dtype=sig_processing.real.dtype)
+    for ch in range(num_sig_ch):
+        pk = int(peak_indices[ch])
+        end_idx = min(pk + L, N_sig)
+        e_s[ch] = xp.sum(xp.abs(sig_processing[ch, pk:end_idx]) ** 2)
 
-    norm_factors = xp.sqrt(e_p * e_s)
+    norm_factors = xp.sqrt(e_ref * e_s)
     norm_factors = xp.maximum(norm_factors, 1e-12)
 
     # Calculate per-channel metrics.
-    # For MIMO use the assigned-template correlation magnitude (consistent with
-    # peak_indices); for SISO corr_incoherent is not computed so fall back to
-    # the coherent magnitude.
     if C_tx > 1:
         peak_vals = xp.max(
             corr_incoherent, axis=-1
@@ -674,9 +687,6 @@ def estimate_timing(
     metrics = xp.clip(metrics, 0.0, 1.0)
 
     # === MIMO fallback: X-Y power imbalance with polarization mixing ===
-    # Only enters when at least one channel already has a good peak — that anchor
-    # confirms the frame is present. For each failing channel, try the templates
-    # that weren't assigned to it; if a better correlation is found, borrow it.
     if C_tx > 1 and float(xp.max(metrics)) >= threshold:
         fallback_applied = False
         for rx in range(num_sig_ch):
@@ -704,6 +714,13 @@ def estimate_timing(
                 peak_indices[rx] = xp.argmax(corr_incoherent[rx])
                 fallback_applied = True
         if fallback_applied:
+            # Recompute local energy and metrics for updated peaks
+            for ch in range(num_sig_ch):
+                pk = int(peak_indices[ch])
+                end_idx = min(pk + L, N_sig)
+                e_s[ch] = xp.sum(xp.abs(sig_processing[ch, pk:end_idx]) ** 2)
+            norm_factors = xp.sqrt(e_ref * e_s)
+            norm_factors = xp.maximum(norm_factors, 1e-12)
             peak_vals = xp.max(corr_incoherent, axis=-1)
             metrics = xp.clip(peak_vals / norm_factors, 0.0, 1.0)
             corr_mag = xp.abs(corr)
@@ -724,7 +741,6 @@ def estimate_timing(
 
     # === Skew Check (Robust) ===
     if num_sig_ch > 1:
-        # Check skew among valid channels
         valid_mask = metrics > threshold
 
         if xp.sum(valid_mask) > 1:
@@ -739,7 +755,6 @@ def estimate_timing(
             else:
                 logger.info(f"Channels aligned (spread {spread}).")
 
-    # Frame Start Calculation (Per-Channel)
     # Each channel's peak is found independently so hardware skew is preserved.
     coarse_offsets = xp.maximum(0, peak_indices + offset)
 
@@ -816,11 +831,11 @@ def correct_timing(
 
     Notes
     -----
-    **Preamble is not removed.**  After correction, ``signal[..., 0]``
-    corresponds to the first sample of the preamble (the frame start).
-    All three modes align the frame start to index 0 — they do not strip
-    the preamble from the output.  Use
-    :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
+    **Reference sequence is not removed.**  After correction,
+    ``signal[..., 0]`` corresponds to the first sample of the detected
+    reference (e.g. preamble, training sequence).  All three modes align
+    the reference start to index 0 — they do not strip it from the output.
+    Use :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
     to locate preamble and payload regions, or manually slice using the
     structure map if you need to process the body in isolation.
 
@@ -1175,7 +1190,12 @@ def estimate_frequency_offset_mth_power(
         return float(f_per_ch[0])
     if combine_channels:
         weights = [float(mag[c, k_peak]) for c in range(C)]
-        return float(np.average(f_per_ch, weights=weights))
+        combined = float(np.average(f_per_ch, weights=weights))
+        logger.info(
+            f"FOE (M-th power, M={M}): combined={combined:.2f} Hz "
+            f"(magnitude-weighted mean of {C} channels)"
+        )
+        return combined
     return np.array(f_per_ch)
 
 
@@ -1332,9 +1352,10 @@ def estimate_frequency_offset_mengali_morelli(
         ``[1, N // 2]``.  Increasing L improves noise averaging at the cost
         of using shorter sub-sequences for each lag.
     combine_channels : bool, default False
-        For MIMO inputs (C > 1): if ``True``, return the mean of per-channel
-        estimates as a scalar ``float``; if ``False`` (default), return
-        per-channel estimates as ``np.ndarray`` of shape ``(C,)``.
+        For MIMO inputs (C > 1): if ``True``, return a single
+        autocorrelation-energy-weighted mean estimate as ``float``; if
+        ``False`` (default), return per-channel estimates as
+        ``np.ndarray`` of shape ``(C,)``.
         SISO inputs always return ``float``.
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing per-channel
@@ -1478,7 +1499,14 @@ def estimate_frequency_offset_mengali_morelli(
     if was_1d:
         return float(f_per_ch[0])
     if combine_channels:
-        return float(np.mean(f_per_ch))
+        # Weight by total autocorrelation energy per channel
+        weights = [float(np.sum(np.abs(R_per_ch_np[c]) ** 2)) for c in range(C)]
+        combined = float(np.average(f_per_ch, weights=weights))
+        logger.info(
+            f"FOE (Mengali-Morelli, {mode_str}): combined={combined:.2f} Hz "
+            f"(autocorrelation-weighted mean of {C} channels)"
+        )
+        return combined
     return np.array(f_per_ch)
 
 
@@ -1527,9 +1555,10 @@ def estimate_frequency_offset_pilots(
         varies across the block (e.g. due to PMD nulls or spectral ripple).
         Set to ``False`` for the standard unweighted OLS slope.
     combine_channels : bool, default False
-        For MIMO inputs (C > 1): if ``True``, return the mean of per-channel
-        estimates as a scalar ``float``; if ``False`` (default), return
-        per-channel estimates as ``np.ndarray`` of shape ``(C,)``.
+        For MIMO inputs (C > 1): if ``True``, return a single
+        pilot-power-weighted mean estimate as ``float``; if ``False``
+        (default), return per-channel estimates as ``np.ndarray`` of
+        shape ``(C,)``.
         SISO inputs always return ``float``.
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the unwrapped pilot
@@ -1668,7 +1697,15 @@ def estimate_frequency_offset_pilots(
     if was_1d:
         return float(f_per_ch[0])
     if combine_channels:
-        return float(np.mean(f_per_ch))
+        # Weight by mean received pilot power per channel
+        pwr_per_ch = to_device(xp.mean(xp.abs(r_pilots) ** 2, axis=-1), "cpu")  # (C,)
+        weights = [float(pwr_per_ch[c]) for c in range(C)]
+        combined = float(np.average(f_per_ch, weights=weights))
+        logger.info(
+            f"FOE (pilots, {wt_str}): combined={combined:.2f} Hz "
+            f"(pilot-power-weighted mean of {C} channels)"
+        )
+        return combined
     return np.array(f_per_ch)
 
 
@@ -3068,9 +3105,8 @@ def recover_carrier_phase_tikhonov(
     matched to the laser phase noise statistics.  Two smoother backends are
     available via ``method``:
 
-    * ``'exact'`` — full Rauch-Tung-Striebel (RTS) smoother; Numba-compiled
-      when available, pure-Python fallback otherwise.  Exact for all
-      sequence lengths; runs on CPU.
+    * ``'exact'`` — full Rauch-Tung-Striebel (RTS) smoother; Numba-compiled.
+      Exact for all sequence lengths; runs on CPU.
     * ``'sskf'`` — steady-state Kalman filter approximation via zero-phase
       IIR (``filtfilt``); backend-aware (stays on GPU when input is on GPU).
       Approximation holds for ``N_blocks >> 1/K_∞`` (~20+ blocks typical).
@@ -3746,44 +3782,13 @@ def correct_cycle_slips(
 
     Notes
     -----
-    Runs on CPU only (sequential scan; Numba-compiled when available).
+    Runs on CPU only (sequential scan; Numba-compiled).
     The caller should transfer ``phi_u`` to CPU before calling and move
     the result back to the device if needed.
     """
     phi_u = np.asarray(phi_u, dtype=np.float64)
-    try:
-        kernel = _get_numba_cycle_slip()
-        return kernel(phi_u, int(symmetry), int(history_length), float(threshold))
-    except ImportError:
-        # Pure-Python fallback (no Numba)
-        two_pi = 2.0 * np.pi
-        quantum = two_pi / symmetry
-        B = len(phi_u)
-        xs = []
-        ys = []
-        for b in range(B):
-            if len(xs) < 2:
-                xs.append(float(b))
-                ys.append(phi_u[b])
-                continue
-            window_x = xs[-history_length:]
-            window_y = ys[-history_length:]
-            n = len(window_x)
-            mean_x = sum(window_x) / n
-            mean_y = sum(window_y) / n
-            num = sum(
-                (xi - mean_x) * (yi - mean_y) for xi, yi in zip(window_x, window_y)
-            )
-            den = sum((xi - mean_x) ** 2 for xi in window_x)
-            slope = num / den if abs(den) > 1e-30 else 0.0
-            phi_pred = slope * (float(b) - mean_x) + mean_y
-            diff = phi_u[b] - phi_pred
-            k = round(diff / quantum)
-            if abs(diff) > threshold and k != 0:
-                phi_u[b] -= k * quantum
-            xs.append(float(b))
-            ys.append(phi_u[b])
-        return phi_u
+    kernel = _get_numba_cycle_slip()
+    return kernel(phi_u, int(symmetry), int(history_length), float(threshold))
 
 
 # -----------------------------------------------------------------------------
