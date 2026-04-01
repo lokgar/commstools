@@ -440,7 +440,7 @@ def fft_fractional_delay(
 def estimate_timing(
     samples: ArrayType,
     reference: Optional[Union[ArrayType, "Preamble"]] = None,
-    threshold: float = 0.5,
+    threshold: float = 3.0,
     sps: Optional[int] = None,
     pulse_shape: Optional[str] = None,
     filter_params: Optional[dict] = None,
@@ -490,9 +490,10 @@ def estimate_timing(
         * **Raw array:** used directly as the correlation template at the
           current sampling rate.  Shape: ``(L,)`` for a single template
           or ``(C_tx, L)`` for per-channel templates (MIMO).
-    threshold : float, default 0.5
-        Detection threshold for the normalized correlation metric,
-        in the range ``[0, 1]``.
+    threshold : float, default 3.0
+        Detection threshold for the correlation metric, defined as the Peak-to-Average
+        Power Ratio (PAPR) of the cross-correlation magnitude. A value >= 3.0 ensures
+        reliable peak prominence above the noise floor.
     sps : int, optional
         Samples per symbol.  Required when ``reference`` is a
         :class:`~commstools.core.Preamble` object; ignored for raw arrays.
@@ -676,15 +677,38 @@ def estimate_timing(
     norm_factors = xp.sqrt(e_ref * e_s)
     norm_factors = xp.maximum(norm_factors, 1e-12)
 
-    # Calculate per-channel metrics.
+    # Calculate per-channel coherence (diagnostic mathematically absolute bound, [0, 1])
     if C_tx > 1:
         peak_vals = xp.max(
             corr_incoherent, axis=-1
         )  # (C,) incoherent — matches peak detection
+        mean_vals = xp.mean(corr_incoherent, axis=-1)
     else:
         peak_vals = xp.max(corr_mag, axis=-1)  # (C,)
-    metrics = peak_vals / norm_factors
-    metrics = xp.clip(metrics, 0.0, 1.0)
+        mean_vals = xp.mean(corr_mag, axis=-1)
+
+    coherence = peak_vals / norm_factors
+    coherence = xp.clip(coherence, 0.0, 1.0)
+    
+    # Primary timing metric: PAPR (Peak-to-Average magnitude)
+    # This evaluates visual prominence against the noise floor, ensuring
+    # extreme robustness to CFO phase-rotation and pulse-shape mismatch.
+    mean_vals = xp.maximum(mean_vals, 1e-12)
+    metrics = peak_vals / mean_vals
+    
+    # Log coherence diagnostics
+    for ch in range(num_sig_ch):
+        c_val = float(coherence[ch])
+        p_val = float(metrics[ch])
+        if c_val < 0.5 and p_val >= threshold:
+             logger.info(
+                 f"Channel {ch}: Peak phase coherence is very low ({c_val:.2f}), but "
+                 f"peak is visually prominent (PAPR={p_val:.1f} >= {threshold}). "
+                 f"This suggests strong Carrier Frequency Offset (CFO) or uncompensated "
+                 f"dispersion destroying phase alignment over the sequence length."
+             )
+        else:
+             logger.debug(f"Channel {ch}: Peak prominence = {p_val:.1f}, coherence = {c_val:.2f}")
 
     # === MIMO fallback: X-Y power imbalance with polarization mixing ===
     if C_tx > 1 and float(xp.max(metrics)) >= threshold:
@@ -697,7 +721,8 @@ def estimate_timing(
                 if tx == int(assignment[rx]):
                     continue
                 alt_peak = float(xp.max(corr_all_mag[rx, tx]))
-                alt_metric = min(alt_peak / float(norm_factors[rx]), 1.0)
+                alt_mean = float(xp.mean(corr_all_mag[rx, tx]))
+                alt_metric = alt_peak / max(alt_mean, 1e-12)
                 if alt_metric > best_alt_metric:
                     best_alt_metric, best_alt_tx = alt_metric, tx
             if best_alt_tx is not None:
@@ -764,7 +789,7 @@ def estimate_timing(
         _plotting.timing_correlation(
             corr_mag=to_device(corr_mag, "cpu"),
             peak_indices=to_device(peak_indices, "cpu"),
-            norm_factors=to_device(norm_factors, "cpu"),
+            norm_factors=to_device(mean_vals, "cpu"),
             threshold=threshold,
             offset=offset,
             show=True,

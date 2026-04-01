@@ -178,7 +178,7 @@ def test_estimate_timing_advanced_scenarios(backend_device, xp):
     data = xp.zeros(100, dtype="complex64")
     data[20 : 20 + 7] = preamble.symbols
 
-    coarse, _frac = sync.estimate_timing(data, preamble, threshold=0.1, sps=1)
+    coarse, _frac = sync.estimate_timing(data, preamble, threshold=2.0, sps=1)
     assert 18 <= coarse[0] <= 22
 
     # 2. MIMO Signal (2 channels)
@@ -186,25 +186,25 @@ def test_estimate_timing_advanced_scenarios(backend_device, xp):
     mimo_data[0, 30:37] = preamble.symbols
     mimo_data[1, 30:37] = preamble.symbols
     coarse_mimo, _frac = sync.estimate_timing(
-        mimo_data, preamble.symbols, threshold=0.1
+        mimo_data, preamble.symbols, threshold=2.0
     )
     assert 28 <= coarse_mimo[0] <= 32
     assert len(coarse_mimo) == 2
 
     # 3. Search range
     coarse_range, _frac = sync.estimate_timing(
-        data, preamble.symbols, threshold=0.1, search_range=(10, 50)
+        data, preamble.symbols, threshold=2.0, search_range=(10, 50)
     )
     assert 18 <= coarse_range[0] <= 22
 
     # 4. High threshold (above max)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(data, preamble.symbols, threshold=2.0)
+        sync.estimate_timing(data, preamble.symbols, threshold=100.0)
 
     # 5. Zero energy
     zero_data = xp.zeros(100)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(zero_data, preamble.symbols, threshold=0.1)
+        sync.estimate_timing(zero_data, preamble.symbols, threshold=2.0)
 
 
 def test_estimate_timing_known_position(backend_device, xp):
@@ -218,7 +218,7 @@ def test_estimate_timing_known_position(backend_device, xp):
     signal[start_pos : start_pos + 13] = preamble_symbols
 
     # Detect
-    coarse, _frac = sync.estimate_timing(signal, preamble_symbols, threshold=0.3)
+    coarse, _frac = sync.estimate_timing(signal, preamble_symbols, threshold=2.0)
 
     # Should be within 1 sample of true position
     assert abs(coarse[0] - start_pos) <= 1
@@ -246,7 +246,7 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
     sig_obj = Signal(samples=signal, sampling_rate=1e6, symbol_rate=1e6)
 
     # Detect using Preamble object
-    coarse, _frac = sync.estimate_timing(sig_obj, preamble, threshold=0.3)
+    coarse, _frac = sync.estimate_timing(sig_obj, preamble, threshold=2.0)
 
     assert abs(coarse[0] - start_pos) <= 1
 
@@ -258,7 +258,7 @@ def test_estimate_timing_returns_tuple(backend_device, xp):
     signal = xp.zeros(100, dtype="complex64")
     signal[30:37] = preamble
 
-    coarse, frac = sync.estimate_timing(signal, preamble, threshold=0.1)
+    coarse, frac = sync.estimate_timing(signal, preamble, threshold=2.0)
 
     assert len(coarse) == 1
     assert len(frac) == 1
@@ -286,7 +286,7 @@ def test_estimate_timing_zero_energy(backend_device, xp):
     preamble = xp.ones(10)
     sig = xp.zeros(50)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(sig, preamble, threshold=0.5)
+        sync.estimate_timing(sig, preamble, threshold=2.0)
 
 
 def test_estimate_timing_return_tuple(backend_device, xp):
@@ -294,7 +294,7 @@ def test_estimate_timing_return_tuple(backend_device, xp):
     preamble = xp.ones(4)
     sig = xp.concatenate([xp.zeros(4), preamble, xp.zeros(4)])
 
-    res = sync.estimate_timing(sig, preamble, threshold=0.1)
+    res = sync.estimate_timing(sig, preamble, threshold=2.0)
     assert isinstance(res, tuple)
     assert len(res) == 2
     assert len(res[0]) == 1  # coarse_offsets
@@ -308,7 +308,7 @@ def test_estimate_timing_search_range(backend_device, xp):
 
     # Search only in 40-70 range
     coarse, _frac = sync.estimate_timing(
-        sig, preamble, search_range=(40, 70), threshold=0.5
+        sig, preamble, search_range=(40, 70), threshold=2.0
     )
     assert coarse[0] == 50
 
@@ -528,7 +528,7 @@ def test_estimate_timing_fractional(backend_device, xp):
     signal = xp.zeros(200, dtype="complex64")
     signal[50:63] = preamble
 
-    coarse, frac = sync.estimate_timing(signal, preamble, threshold=0.3)
+    coarse, frac = sync.estimate_timing(signal, preamble, threshold=2.0)
     assert len(coarse) == 1
     assert len(frac) == 1
     # The fractional offset should be near 0 for an integer-aligned preamble
@@ -621,7 +621,7 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
 
     preamble = Preamble(sequence_type="barker", length=7)
     coarse, frac = sync.estimate_timing(
-        samples, preamble, sps=1, pulse_shape="none", threshold=0.3
+        samples, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
     assert abs(int(coarse[0]) - 40) <= 1
 
@@ -637,7 +637,7 @@ def test_estimate_timing_skew_detection(backend_device, xp):
 
     # Capture log output to verify skew warning is emitted
     with patch("commstools.sync.logger") as mock_logger:
-        coarse, frac = sync.estimate_timing(sig, barker, threshold=0.1)
+        coarse, frac = sync.estimate_timing(sig, barker, threshold=2.0)
         # Check that warning was called with skew message
         mock_logger.warning.assert_called()
         call_args = mock_logger.warning.call_args[0][0]
@@ -797,7 +797,7 @@ def test_estimate_timing_mimo_identity(backend_device, xp):
     rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
 
     coarse, frac = sync.estimate_timing(
-        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+        rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
@@ -816,7 +816,7 @@ def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
     coarse, frac = sync.estimate_timing(
-        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+        rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
@@ -834,7 +834,7 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
     )
 
     coarse, frac = sync.estimate_timing(
-        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+        rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     # Channel 0 should find preamble_pos; channel 1 is shifted by skew
@@ -865,7 +865,7 @@ def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
     coarse, frac = sync.estimate_timing(
-        rx, preamble, sps=1, pulse_shape="none", threshold=0.05
+        rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
