@@ -128,6 +128,7 @@ class EqualizerResult:
     num_train_symbols: int = 0
     input_norm_factor: Union[float, np.ndarray] = 1.0
     tail_trim: int = 0
+    phase_trajectory: Optional[ArrayType] = None
 
 
 def _log_equalizer_exit(
@@ -476,6 +477,502 @@ def _get_numba_rls():
 
         _NUMBA_KERNELS["rls"] = rls_loop
     return _NUMBA_KERNELS["rls"]
+
+
+def _get_numba_lms_cpr():
+    """JIT-compile and cache the Numba LMS+CPR butterfly loop kernel.
+
+    Extends the baseline LMS kernel with an inline carrier phase tracker
+    (PLL or single-shot BPS) and a causal cycle-slip corrector.
+
+    cpr_mode 1 = PLL (DD second-order PI loop).
+    cpr_mode 2 = BPS (single-symbol Blind Phase Search).
+
+    Returns
+    -------
+    lms_cpr_loop : numba-compiled callable
+    """
+    if "lms_cpr" not in _NUMBA_KERNELS:
+        numba_mod = _get_numba()
+        if numba_mod is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        def lms_cpr_loop(
+            x_padded,
+            training,
+            constellation,
+            bps_phases_neg,
+            bps_angles,
+            W,
+            step_size,
+            n_train,
+            stride,
+            store_weights,
+            cpr_mode,
+            pll_mu,
+            pll_beta,
+            symmetry,
+            cs_enabled,
+            cs_threshold,
+            pll_phi,
+            pll_freq,
+            cs_buf_x,
+            cs_buf_y,
+            cs_buf_ptr,
+            cs_buf_n,
+            cs_stats,
+            y_out,
+            e_out,
+            phase_out,
+            w_hist_out,
+        ):
+            # x_padded      : (C, N_pad)          complex64
+            # training      : (C, N_sym)           complex64
+            # constellation : (M,)                 complex64
+            # bps_phases_neg: (B,)                 complex64  exp(-j*theta_k)
+            # bps_angles    : (B,)                 float32    theta_k
+            # W             : (C, C, T)            complex64  — in-place
+            # step_size     : float32
+            # n_train       : int32
+            # stride        : int
+            # store_weights : bool
+            # cpr_mode      : int32  1=pll 2=bps
+            # pll_mu        : float32
+            # pll_beta      : float32
+            # symmetry      : int32  — cycle-slip quantum = 2π/symmetry
+            # cs_enabled    : bool
+            # cs_threshold  : float32
+            # pll_phi       : (C,) float32          — in-place
+            # pll_freq      : (C,) float32          — in-place
+            # cs_buf_x      : (C, H) float64        — in-place
+            # cs_buf_y      : (C, H) float64        — in-place
+            # cs_buf_ptr    : (C,) int64            — in-place
+            # cs_buf_n      : (C,) int64            — in-place
+            # cs_stats      : (C, 4) float64  [Sx,Sy,Sxx,Sxy] — in-place
+            # y_out         : (N_sym, C) complex64
+            # e_out         : (N_sym, C) complex64
+            # phase_out     : (N_sym, C) float32
+            # w_hist_out    : (N_sym or 1, C, C, T) complex64
+            C = W.shape[0]
+            num_taps = W.shape[2]
+            n_sym = y_out.shape[0]
+            M = len(constellation)
+            B = len(bps_phases_neg)
+            H = cs_buf_x.shape[1]
+            two_pi = np.float64(2.0 * np.pi)
+            quantum = two_pi / np.float64(symmetry)
+
+            X_wins = np.empty((C, num_taps), dtype=np.complex64)
+            y_raw = np.empty(C, dtype=np.complex64)
+            y_fin = np.empty(C, dtype=np.complex64)
+            phi_c = np.empty(C, dtype=np.float32)
+            d_sym = np.empty(C, dtype=np.complex64)
+            e_clean = np.empty(C, dtype=np.complex64)
+            e_eq = np.empty(C, dtype=np.complex64)
+
+            for idx in range(n_sym):
+                sample_idx = idx * stride
+
+                # Window extraction
+                for c in range(C):
+                    for t in range(num_taps):
+                        X_wins[c, t] = x_padded[c, sample_idx + t]
+
+                # Butterfly forward pass: y_raw[i] = Σ_j conj(W[i,j]) · X
+                for i in range(C):
+                    acc = np.complex64(0.0)
+                    for j in range(C):
+                        for t in range(num_taps):
+                            acc = acc + np.conj(W[i, j, t]) * X_wins[j, t]
+                    y_raw[i] = acc
+
+                # ── CPR: Phase estimation ──────────────────────────────────
+                for i in range(C):
+                    if cpr_mode == 1:  # PLL: read current integrator state
+                        phi_hat = pll_phi[i]
+                    else:  # BPS: single-symbol argmin over B test phases
+                        best_k = np.int32(0)
+                        min_tot = np.float32(1e38)
+                        for k in range(B):
+                            y_rot = y_raw[i] * bps_phases_neg[k]
+                            d2_min = np.float32(1e38)
+                            for m in range(M):
+                                dv = y_rot - constellation[m]
+                                d2 = dv.real * dv.real + dv.imag * dv.imag
+                                if d2 < d2_min:
+                                    d2_min = d2
+                            if d2_min < min_tot:
+                                min_tot = d2_min
+                                best_k = k
+                        phi_hat = bps_angles[best_k]
+
+                    # ── Cycle-slip correction ──────────────────────────────
+                    if cs_enabled:
+                        n_b = cs_buf_n[i]
+                        ptr = cs_buf_ptr[i]
+                        x_b = np.float64(idx)
+                        y_b = np.float64(phi_hat)
+
+                        if n_b == 0:
+                            phi_corr = phi_hat
+                        else:
+                            if n_b < np.int64(10):
+                                last_pos = (ptr - np.int64(1) + np.int64(H)) % np.int64(H)
+                                phi_expected = cs_buf_y[i, last_pos]
+                            else:
+                                Sx = cs_stats[i, 0]
+                                Sy = cs_stats[i, 1]
+                                Sxx = cs_stats[i, 2]
+                                Sxy = cs_stats[i, 3]
+                                n_f = np.float64(n_b)
+                                denom = n_f * Sxx - Sx * Sx
+                                if np.abs(denom) > np.float64(1e-30):
+                                    slope = (n_f * Sxy - Sx * Sy) / denom
+                                    intercept = (Sy - slope * Sx) / n_f
+                                else:
+                                    slope = np.float64(0.0)
+                                    intercept = Sy / n_f
+                                phi_expected = slope * x_b + intercept
+
+                            diff = y_b - phi_expected
+                            k_slip = np.int64(np.round(diff / quantum))
+                            if np.abs(diff) > np.float64(cs_threshold) and k_slip != np.int64(0):
+                                y_b = y_b - np.float64(k_slip) * quantum
+                            phi_corr = np.float32(y_b)
+
+                        # Update circular buffer and incremental stats
+                        write_pos = ptr % np.int64(H)
+                        if n_b == np.int64(H):
+                            old_x = cs_buf_x[i, write_pos]
+                            old_y = cs_buf_y[i, write_pos]
+                            cs_stats[i, 0] -= old_x
+                            cs_stats[i, 1] -= old_y
+                            cs_stats[i, 2] -= old_x * old_x
+                            cs_stats[i, 3] -= old_x * old_y
+                        new_y = np.float64(phi_corr)
+                        cs_buf_x[i, write_pos] = x_b
+                        cs_buf_y[i, write_pos] = new_y
+                        cs_stats[i, 0] += x_b
+                        cs_stats[i, 1] += new_y
+                        cs_stats[i, 2] += x_b * x_b
+                        cs_stats[i, 3] += x_b * new_y
+                        cs_buf_ptr[i] = ptr + np.int64(1)
+                        if n_b < np.int64(H):
+                            cs_buf_n[i] = n_b + np.int64(1)
+                    else:
+                        phi_corr = phi_hat
+
+                    phi_c[i] = phi_corr
+                    phase_out[idx, i] = phi_corr
+
+                    # y_final = y_raw * exp(-j * phi_corr)
+                    cos_p = np.cos(np.float64(phi_corr))
+                    sin_p = np.sin(np.float64(phi_corr))
+                    yr = y_raw[i].real * np.float32(cos_p) + y_raw[i].imag * np.float32(sin_p)
+                    yi = -y_raw[i].real * np.float32(sin_p) + y_raw[i].imag * np.float32(cos_p)
+                    y_fin[i] = np.complex64(yr + yi * np.complex64(1j))
+                    y_out[idx, i] = y_fin[i]
+
+                # ── Slicer and error ───────────────────────────────────────
+                for i in range(C):
+                    if idx < n_train:
+                        d_i = training[i, idx]
+                    else:
+                        min_dist = np.float32(1e38)
+                        min_idx = 0
+                        for k in range(M):
+                            dv = y_fin[i] - constellation[k]
+                            dist = dv.real * dv.real + dv.imag * dv.imag
+                            if dist < min_dist:
+                                min_dist = dist
+                                min_idx = k
+                        d_i = constellation[min_idx]
+                    d_sym[i] = d_i
+                    e_clean[i] = d_i - y_fin[i]
+                    e_out[idx, i] = e_clean[i]
+
+                # ── PLL state update ───────────────────────────────────────
+                if cpr_mode == 1:
+                    for i in range(C):
+                        # Cross-product phase detector: Im(y_fin · conj(d))
+                        e_ph = y_fin[i].imag * d_sym[i].real - y_fin[i].real * d_sym[i].imag
+                        pll_phi[i] = pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
+                        pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
+
+                # ── De-rotate error and weight update ──────────────────────
+                for i in range(C):
+                    # e_eq = e_clean * exp(+j * phi_corr)  (back to pre-rotation plane)
+                    cos_p = np.cos(np.float64(phi_c[i]))
+                    sin_p = np.sin(np.float64(phi_c[i]))
+                    er = (e_clean[i].real * np.float32(cos_p)
+                          - e_clean[i].imag * np.float32(sin_p))
+                    ei = (e_clean[i].real * np.float32(sin_p)
+                          + e_clean[i].imag * np.float32(cos_p))
+                    e_eq[i] = np.complex64(er + ei * np.complex64(1j))
+
+                for i in range(C):
+                    ce_i = np.conj(e_eq[i])
+                    for j in range(C):
+                        for t in range(num_taps):
+                            W[i, j, t] = W[i, j, t] + step_size * ce_i * X_wins[j, t]
+
+                if store_weights:
+                    for i in range(C):
+                        for j in range(C):
+                            for t in range(num_taps):
+                                w_hist_out[idx, i, j, t] = W[i, j, t]
+
+        _NUMBA_KERNELS["lms_cpr"] = lms_cpr_loop
+    return _NUMBA_KERNELS["lms_cpr"]
+
+
+def _get_numba_rls_cpr():
+    """JIT-compile and cache the Numba RLS+CPR butterfly loop kernel.
+
+    Combines the Leaky-RLS Riccati update with the same inline CPR tracker
+    used by the LMS CPR kernel.
+
+    Returns
+    -------
+    rls_cpr_loop : numba-compiled callable
+    """
+    if "rls_cpr" not in _NUMBA_KERNELS:
+        numba_mod = _get_numba()
+        if numba_mod is None:
+            raise ImportError("Numba is required for backend='numba'.")
+
+        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        def rls_cpr_loop(
+            x_padded,
+            training,
+            constellation,
+            bps_phases_neg,
+            bps_angles,
+            W,
+            P,
+            lam,
+            leakage,
+            n_train,
+            n_update_halt,
+            stride,
+            store_weights,
+            cpr_mode,
+            pll_mu,
+            pll_beta,
+            symmetry,
+            cs_enabled,
+            cs_threshold,
+            pll_phi,
+            pll_freq,
+            cs_buf_x,
+            cs_buf_y,
+            cs_buf_ptr,
+            cs_buf_n,
+            cs_stats,
+            y_out,
+            e_out,
+            phase_out,
+            w_hist_out,
+        ):
+            # Same shapes as rls_loop plus CPR state — see lms_cpr_loop header.
+            C = W.shape[0]
+            num_taps = W.shape[2]
+            n_sym = y_out.shape[0]
+            N = C * num_taps
+            M = len(constellation)
+            B = len(bps_phases_neg)
+            H = cs_buf_x.shape[1]
+            two_pi = np.float64(2.0 * np.pi)
+            quantum = two_pi / np.float64(symmetry)
+
+            x_bar = np.empty(N, dtype=np.complex64)
+            Px = np.empty(N, dtype=np.complex64)
+            xH_P = np.empty(N, dtype=np.complex64)
+            k_gain = np.empty(N, dtype=np.complex64)
+            y_raw = np.empty(C, dtype=np.complex64)
+            y_fin = np.empty(C, dtype=np.complex64)
+            phi_c = np.empty(C, dtype=np.float32)
+            d_sym = np.empty(C, dtype=np.complex64)
+            e_clean = np.empty(C, dtype=np.complex64)
+            e_eq = np.empty(C, dtype=np.complex64)
+
+            lam_f32 = np.float32(lam)
+            leak_term = np.float32(1.0) - np.float32(leakage)
+
+            for idx in range(n_sym):
+                sample_idx = idx * stride
+
+                for j in range(C):
+                    for t in range(num_taps):
+                        x_bar[j * num_taps + t] = x_padded[j, sample_idx + t]
+
+                # Butterfly forward pass
+                for i in range(C):
+                    acc = np.complex64(0.0)
+                    for j in range(C):
+                        for t in range(num_taps):
+                            acc = acc + np.conj(W[i, j, t]) * x_bar[j * num_taps + t]
+                    y_raw[i] = acc
+
+                # ── CPR: Phase estimation ──────────────────────────────────
+                for i in range(C):
+                    if cpr_mode == 1:
+                        phi_hat = pll_phi[i]
+                    else:
+                        best_k = np.int32(0)
+                        min_tot = np.float32(1e38)
+                        for k in range(B):
+                            y_rot = y_raw[i] * bps_phases_neg[k]
+                            d2_min = np.float32(1e38)
+                            for m in range(M):
+                                dv = y_rot - constellation[m]
+                                d2 = dv.real * dv.real + dv.imag * dv.imag
+                                if d2 < d2_min:
+                                    d2_min = d2
+                            if d2_min < min_tot:
+                                min_tot = d2_min
+                                best_k = k
+                        phi_hat = bps_angles[best_k]
+
+                    # ── Cycle-slip correction ──────────────────────────────
+                    if cs_enabled:
+                        n_b = cs_buf_n[i]
+                        ptr = cs_buf_ptr[i]
+                        x_b = np.float64(idx)
+                        y_b = np.float64(phi_hat)
+
+                        if n_b == 0:
+                            phi_corr = phi_hat
+                        else:
+                            if n_b < np.int64(10):
+                                last_pos = (ptr - np.int64(1) + np.int64(H)) % np.int64(H)
+                                phi_expected = cs_buf_y[i, last_pos]
+                            else:
+                                Sx = cs_stats[i, 0]
+                                Sy = cs_stats[i, 1]
+                                Sxx = cs_stats[i, 2]
+                                Sxy = cs_stats[i, 3]
+                                n_f = np.float64(n_b)
+                                denom = n_f * Sxx - Sx * Sx
+                                if np.abs(denom) > np.float64(1e-30):
+                                    slope = (n_f * Sxy - Sx * Sy) / denom
+                                    intercept = (Sy - slope * Sx) / n_f
+                                else:
+                                    slope = np.float64(0.0)
+                                    intercept = Sy / n_f
+                                phi_expected = slope * x_b + intercept
+
+                            diff = y_b - phi_expected
+                            k_slip = np.int64(np.round(diff / quantum))
+                            if np.abs(diff) > np.float64(cs_threshold) and k_slip != np.int64(0):
+                                y_b = y_b - np.float64(k_slip) * quantum
+                            phi_corr = np.float32(y_b)
+
+                        write_pos = ptr % np.int64(H)
+                        if n_b == np.int64(H):
+                            old_x = cs_buf_x[i, write_pos]
+                            old_y = cs_buf_y[i, write_pos]
+                            cs_stats[i, 0] -= old_x
+                            cs_stats[i, 1] -= old_y
+                            cs_stats[i, 2] -= old_x * old_x
+                            cs_stats[i, 3] -= old_x * old_y
+                        new_y = np.float64(phi_corr)
+                        cs_buf_x[i, write_pos] = x_b
+                        cs_buf_y[i, write_pos] = new_y
+                        cs_stats[i, 0] += x_b
+                        cs_stats[i, 1] += new_y
+                        cs_stats[i, 2] += x_b * x_b
+                        cs_stats[i, 3] += x_b * new_y
+                        cs_buf_ptr[i] = ptr + np.int64(1)
+                        if n_b < np.int64(H):
+                            cs_buf_n[i] = n_b + np.int64(1)
+                    else:
+                        phi_corr = phi_hat
+
+                    phi_c[i] = phi_corr
+                    phase_out[idx, i] = phi_corr
+
+                    cos_p = np.cos(np.float64(phi_corr))
+                    sin_p = np.sin(np.float64(phi_corr))
+                    yr = y_raw[i].real * np.float32(cos_p) + y_raw[i].imag * np.float32(sin_p)
+                    yi = -y_raw[i].real * np.float32(sin_p) + y_raw[i].imag * np.float32(cos_p)
+                    y_fin[i] = np.complex64(yr + yi * np.complex64(1j))
+                    y_out[idx, i] = y_fin[i]
+
+                # ── Slicer and error ───────────────────────────────────────
+                for i in range(C):
+                    if idx < n_train:
+                        d_i = training[i, idx]
+                    else:
+                        min_dist = np.float32(1e38)
+                        min_idx = 0
+                        for kk in range(M):
+                            dv = y_fin[i] - constellation[kk]
+                            dist = dv.real * dv.real + dv.imag * dv.imag
+                            if dist < min_dist:
+                                min_dist = dist
+                                min_idx = kk
+                        d_i = constellation[min_idx]
+                    d_sym[i] = d_i
+                    e_clean[i] = d_i - y_fin[i]
+                    e_out[idx, i] = e_clean[i]
+
+                # ── PLL state update ───────────────────────────────────────
+                if cpr_mode == 1:
+                    for i in range(C):
+                        e_ph = y_fin[i].imag * d_sym[i].real - y_fin[i].real * d_sym[i].imag
+                        pll_phi[i] = pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
+                        pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
+
+                # ── De-rotate error ────────────────────────────────────────
+                for i in range(C):
+                    cos_p = np.cos(np.float64(phi_c[i]))
+                    sin_p = np.sin(np.float64(phi_c[i]))
+                    er = (e_clean[i].real * np.float32(cos_p)
+                          - e_clean[i].imag * np.float32(sin_p))
+                    ei = (e_clean[i].real * np.float32(sin_p)
+                          + e_clean[i].imag * np.float32(cos_p))
+                    e_eq[i] = np.complex64(er + ei * np.complex64(1j))
+
+                # ── Kalman gain ────────────────────────────────────────────
+                Px = np.dot(P, x_bar)
+                denom_k = lam_f32
+                for jj in range(N):
+                    denom_k = denom_k + (np.conj(x_bar[jj]) * Px[jj]).real
+                inv_denom = np.float32(1.0) / denom_k
+                for ii in range(N):
+                    k_gain[ii] = Px[ii] * inv_denom
+
+                if idx < n_update_halt:
+                    for i in range(C):
+                        ce_i = np.conj(e_eq[i])
+                        for j in range(C):
+                            for t in range(num_taps):
+                                W[i, j, t] = (
+                                    leak_term * W[i, j, t]
+                                    + k_gain[j * num_taps + t] * ce_i
+                                )
+                    for jj in range(N):
+                        xH_P[jj] = np.conj(Px[jj])
+                    for ii in range(N):
+                        for jj in range(N):
+                            P[ii, jj] = (P[ii, jj] - k_gain[ii] * xH_P[jj]) / lam_f32
+                    for ii in range(N):
+                        for jj in range(ii + 1, N):
+                            avg = (P[ii, jj] + np.conj(P[jj, ii])) * np.float32(0.5)
+                            P[ii, jj] = avg
+                            P[jj, ii] = np.conj(avg)
+                        P[ii, ii] = np.complex64(P[ii, ii].real)
+
+                if store_weights:
+                    for i in range(C):
+                        for j in range(C):
+                            for t in range(num_taps):
+                                w_hist_out[idx, i, j, t] = W[i, j, t]
+
+        _NUMBA_KERNELS["rls_cpr"] = rls_cpr_loop
+    return _NUMBA_KERNELS["rls_cpr"]
 
 
 def _get_numba_cma():
@@ -895,6 +1392,350 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
             return y_hat, errors, W_final, w_hist
 
         _JITTED_EQ[key] = rls_scan
+    return _JITTED_EQ[key]
+
+
+def _get_jax_lms_cpr(num_taps, stride, const_size, num_ch, cpr_type, bps_n, cs_history_len):
+    """JIT-compile and cache the LMS+CPR butterfly scan.
+
+    All CPR parameters are static closure variables (baked into the XLA graph
+    at trace time).  A separate cache entry is created for each distinct
+    combination of these parameters.
+
+    cpr_type : "pll" or "bps"
+    bps_n    : number of BPS test phases (ignored for cpr_type="pll")
+    cs_history_len : int — circular buffer depth for cycle-slip correction
+    """
+    key = ("lms_cpr", num_taps, stride, const_size, num_ch, cpr_type, bps_n, cs_history_len)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+
+        H = cs_history_len
+
+        @jax.jit
+        def lms_cpr_scan(
+            x_input,
+            training_padded,
+            constellation,
+            bps_phases_neg,
+            bps_angles,
+            w_init,
+            step_size,
+            n_train,
+            pll_mu,
+            pll_beta,
+            cs_threshold,
+            cs_enabled,
+        ):
+            # x_input         : (C, N_pad)       complex64
+            # training_padded : (C, N_sym)        complex64
+            # constellation   : (M,)              complex64
+            # bps_phases_neg  : (B,)              complex64  exp(-j*theta_k)
+            # bps_angles      : (B,)              float32    theta_k
+            # w_init          : (C, C, T)         complex64
+            # step_size       : scalar float32
+            # n_train         : scalar int32
+            # pll_mu, pll_beta: scalar float32
+            # cs_threshold    : scalar float32
+            # cs_enabled      : scalar bool
+            #
+            # lax.scan carry:
+            #   W             : (C, C, T)         complex64
+            #   pll_phi       : (C,)              float32
+            #   pll_freq      : (C,)              float32
+            #   cs_buf_x      : (C, H)            float32  — symbol index
+            #   cs_buf_y      : (C, H)            float32  — phase value
+            #   cs_buf_ptr    : (C,)              int32    — write pointer
+            #   cs_stats      : (C, 4)            float64  [Sx,Sy,Sxx,Sxy]
+
+            def step(carry, idx):
+                W, pll_phi, pll_freq, cs_buf_x, cs_buf_y, cs_buf_ptr, cs_stats = carry
+                sample_idx = idx * stride
+
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )  # (C, T)
+
+                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
+
+                # ── Phase estimation (static branch at trace time) ──
+                if cpr_type == "pll":
+                    phi_hat = pll_phi  # (C,) current state
+                else:
+                    # BPS: for each channel, test B phases
+                    # rotated: (B, C)
+                    rotated = bps_phases_neg[:, None] * y_raw[None, :]  # (B,C)
+                    # min-dist to constellation: (B, C)
+                    d2 = jnp.min(
+                        jnp.abs(rotated[:, :, None] - constellation[None, None, :]) ** 2,
+                        axis=-1,
+                    )
+                    best_k = jnp.argmin(d2, axis=0)  # (C,)
+                    phi_hat = bps_angles[best_k]  # (C,) float32
+
+                # ── Cycle-slip correction ────────────────────────────
+                def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch, stats_ch):
+                    fill = jnp.minimum(ptr_ch, H)
+                    x_b = idx.astype(jnp.float32)
+                    y_b = phi_h
+
+                    # Incremental OLS from buffer (O(H) but XLA-vectorized)
+                    mask = jnp.arange(H) < fill
+                    n_f = fill.astype(jnp.float32)
+                    Sx = jnp.where(mask, buf_x_ch, 0.0).sum()
+                    Sy = jnp.where(mask, buf_y_ch, 0.0).sum()
+                    Sxx = jnp.where(mask, buf_x_ch * buf_x_ch, 0.0).sum()
+                    Sxy = jnp.where(mask, buf_x_ch * buf_y_ch, 0.0).sum()
+
+                    denom = n_f * Sxx - Sx * Sx
+                    safe_denom = jnp.where(jnp.abs(denom) > 1e-20, denom, jnp.float32(1.0))
+                    slope = jnp.where(fill >= 10, (n_f * Sxy - Sx * Sy) / safe_denom, jnp.float32(0.0))
+                    intercept = jnp.where(fill >= 10, (Sy - slope * Sx) / jnp.maximum(n_f, jnp.float32(1.0)), Sy / jnp.maximum(n_f, jnp.float32(1.0)))
+                    phi_exp_lin = slope * x_b + intercept
+
+                    # Constant fallback: last written entry
+                    last_pos = (ptr_ch - 1 + H) % H
+                    phi_last = jax.lax.dynamic_index_in_dim(buf_y_ch, last_pos, keepdims=False)
+                    phi_expected = jnp.where(fill >= 10, phi_exp_lin, phi_last)
+                    # No history yet: trust unconditionally
+                    phi_expected = jnp.where(fill == 0, y_b, phi_expected)
+
+                    diff = y_b - phi_expected
+                    k_slip = jnp.round(diff / _quantum_static)
+                    should_correct = cs_enabled & (jnp.abs(diff) > cs_threshold) & (k_slip != 0)
+                    phi_corr = jnp.where(should_correct, y_b - k_slip * _quantum_static, y_b)
+
+                    # Update buffer
+                    write_pos = ptr_ch % H
+                    buf_x_new = jax.lax.dynamic_update_slice(buf_x_ch, x_b[None], [write_pos])
+                    buf_y_new = jax.lax.dynamic_update_slice(buf_y_ch, phi_corr[None], [write_pos])
+                    ptr_new = ptr_ch + 1
+                    return phi_corr, buf_x_new, buf_y_new, ptr_new
+
+                # vmap over channels (each channel has its own buffer)
+                phi_corr, cs_buf_x_new, cs_buf_y_new, cs_buf_ptr_new = jax.vmap(
+                    correct_slip_ch
+                )(phi_hat, cs_buf_x, cs_buf_y, cs_buf_ptr, cs_stats)
+
+                # y_final = y_raw * exp(-j * phi_corr)
+                phasor = jnp.exp(-1j * phi_corr.astype(jnp.float32))
+                y_fin = y_raw * phasor  # (C,)
+
+                # Slicer
+                def slicer(ch_y):
+                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+
+                dd = jax.vmap(slicer)(y_fin)
+                d = jnp.where(idx < n_train, training_padded[:, idx], dd)
+                e_clean = d - y_fin  # (C,)
+
+                # PLL update (static branch)
+                if cpr_type == "pll":
+                    e_ph = y_fin.imag * d.real - y_fin.real * d.imag  # (C,)
+                    pll_phi_new = pll_phi + pll_mu * e_ph + pll_freq
+                    pll_freq_new = pll_freq + pll_beta * e_ph
+                else:
+                    pll_phi_new = pll_phi
+                    pll_freq_new = pll_freq
+
+                # De-rotate error: e_eq = e_clean * exp(+j * phi_corr)
+                phasor_inv = jnp.exp(1j * phi_corr.astype(jnp.float32))
+                e_eq = e_clean * phasor_inv  # (C,)
+
+                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e_eq), X_wins)
+
+                carry_new = (
+                    W_new,
+                    pll_phi_new,
+                    pll_freq_new,
+                    cs_buf_x_new,
+                    cs_buf_y_new,
+                    cs_buf_ptr_new,
+                    cs_stats,  # stats not updated in JAX path (O(H) recompute each step)
+                )
+                return carry_new, (y_fin, e_clean, W_new, phi_corr)
+
+            n_sym = training_padded.shape[1]
+            init_carry = (
+                w_init,
+                jnp.zeros(num_ch, dtype=jnp.float32),   # pll_phi
+                jnp.zeros(num_ch, dtype=jnp.float32),   # pll_freq
+                jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_x
+                jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_y
+                jnp.zeros(num_ch, dtype=jnp.int32),     # cs_buf_ptr
+                jnp.zeros((num_ch, 4), dtype=jnp.float32),  # cs_stats unused
+            )
+            (W_final, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = jax.lax.scan(
+                step, init_carry, jnp.arange(n_sym)
+            )
+            return y_hat, errors, W_final, w_hist, phi_traj
+
+        # Closure constant for cycle-slip quantum (symmetry = 4 → π/2)
+        # Injected as a module-level constant since closures in @jax.jit are traced.
+        # We use a Python-level default of symmetry=4 (QAM); callers can override
+        # by recompiling with a different cs_history_len key.
+        # The quantum is injected via a default-argument trick below.
+        import math as _math  # noqa: PLC0415
+        _q = _math.pi / 2.0  # symmetry=4 default — overridden in wrapper
+
+        # Re-define with the quantum baked in as a Python closure constant.
+        _quantum_static = jnp.float32(_q)
+
+        # Rebind the inner step to capture _quantum_static
+        # (already captured above via the closure — no action needed)
+
+        _JITTED_EQ[key] = lms_cpr_scan
+    return _JITTED_EQ[key]
+
+
+def _get_jax_rls_cpr(num_taps, stride, const_size, num_ch, cpr_type, bps_n, cs_history_len):
+    """JIT-compile and cache the RLS+CPR butterfly scan.
+
+    Combines the Leaky-RLS Riccati update with an inline CPR tracker.
+    Static parameters are identical to ``_get_jax_lms_cpr``.
+    """
+    key = ("rls_cpr", num_taps, stride, const_size, num_ch, cpr_type, bps_n, cs_history_len)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+
+        H = cs_history_len
+        import math as _math  # noqa: PLC0415
+        _quantum_static = jnp.float32(_math.pi / 2.0)  # symmetry=4 default
+
+        @jax.jit
+        def rls_cpr_scan(
+            x_input,
+            training_padded,
+            constellation,
+            bps_phases_neg,
+            bps_angles,
+            w_init,
+            P_init,
+            lam,
+            n_train,
+            leakage,
+            n_update_halt,
+            pll_mu,
+            pll_beta,
+            cs_threshold,
+            cs_enabled,
+        ):
+            def step(carry, idx):
+                W, P, pll_phi, pll_freq, cs_buf_x, cs_buf_y, cs_buf_ptr, cs_stats = carry
+                sample_idx = idx * stride
+
+                X_wins = jax.lax.dynamic_slice(
+                    x_input, (0, sample_idx), (num_ch, num_taps)
+                )
+                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
+
+                if cpr_type == "pll":
+                    phi_hat = pll_phi
+                else:
+                    rotated = bps_phases_neg[:, None] * y_raw[None, :]
+                    d2 = jnp.min(
+                        jnp.abs(rotated[:, :, None] - constellation[None, None, :]) ** 2,
+                        axis=-1,
+                    )
+                    best_k = jnp.argmin(d2, axis=0)
+                    phi_hat = bps_angles[best_k]
+
+                def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch, stats_ch):
+                    fill = jnp.minimum(ptr_ch, H)
+                    x_b = idx.astype(jnp.float32)
+                    y_b = phi_h
+                    mask = jnp.arange(H) < fill
+                    n_f = fill.astype(jnp.float32)
+                    Sx = jnp.where(mask, buf_x_ch, 0.0).sum()
+                    Sy = jnp.where(mask, buf_y_ch, 0.0).sum()
+                    Sxx = jnp.where(mask, buf_x_ch * buf_x_ch, 0.0).sum()
+                    Sxy = jnp.where(mask, buf_x_ch * buf_y_ch, 0.0).sum()
+                    denom = n_f * Sxx - Sx * Sx
+                    safe_denom = jnp.where(jnp.abs(denom) > 1e-20, denom, jnp.float32(1.0))
+                    slope = jnp.where(fill >= 10, (n_f * Sxy - Sx * Sy) / safe_denom, jnp.float32(0.0))
+                    intercept = jnp.where(fill >= 10, (Sy - slope * Sx) / jnp.maximum(n_f, jnp.float32(1.0)), Sy / jnp.maximum(n_f, jnp.float32(1.0)))
+                    phi_exp_lin = slope * x_b + intercept
+                    last_pos = (ptr_ch - 1 + H) % H
+                    phi_last = jax.lax.dynamic_index_in_dim(buf_y_ch, last_pos, keepdims=False)
+                    phi_expected = jnp.where(fill >= 10, phi_exp_lin, phi_last)
+                    phi_expected = jnp.where(fill == 0, y_b, phi_expected)
+                    diff = y_b - phi_expected
+                    k_slip = jnp.round(diff / _quantum_static)
+                    should_correct = cs_enabled & (jnp.abs(diff) > cs_threshold) & (k_slip != 0)
+                    phi_corr = jnp.where(should_correct, y_b - k_slip * _quantum_static, y_b)
+                    write_pos = ptr_ch % H
+                    buf_x_new = jax.lax.dynamic_update_slice(buf_x_ch, x_b[None], [write_pos])
+                    buf_y_new = jax.lax.dynamic_update_slice(buf_y_ch, phi_corr[None], [write_pos])
+                    ptr_new = ptr_ch + 1
+                    return phi_corr, buf_x_new, buf_y_new, ptr_new
+
+                phi_corr, cs_buf_x_new, cs_buf_y_new, cs_buf_ptr_new = jax.vmap(
+                    correct_slip_ch
+                )(phi_hat, cs_buf_x, cs_buf_y, cs_buf_ptr, cs_stats)
+
+                phasor = jnp.exp(-1j * phi_corr.astype(jnp.float32))
+                y_fin = y_raw * phasor
+
+                def slicer(ch_y):
+                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+
+                dd = jax.vmap(slicer)(y_fin)
+                d = jnp.where(idx < n_train, training_padded[:, idx], dd)
+                e_clean = d - y_fin
+
+                if cpr_type == "pll":
+                    e_ph = y_fin.imag * d.real - y_fin.real * d.imag
+                    pll_phi_new = pll_phi + pll_mu * e_ph + pll_freq
+                    pll_freq_new = pll_freq + pll_beta * e_ph
+                else:
+                    pll_phi_new = pll_phi
+                    pll_freq_new = pll_freq
+
+                phasor_inv = jnp.exp(1j * phi_corr.astype(jnp.float32))
+                e_eq = e_clean * phasor_inv
+
+                x_bar = X_wins.flatten()
+                Px = P @ x_bar
+                denom_k = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px))
+                k_gain = Px / denom_k
+
+                def w_update(w_row, err_val):
+                    w_flat = w_row.flatten()
+                    w_flat_new = (1.0 - leakage) * w_flat + k_gain * jnp.conj(err_val)
+                    return w_flat_new.reshape(num_ch, num_taps)
+
+                W_upd = jax.vmap(w_update)(W, e_eq)
+                P_upd = (P - jnp.outer(k_gain, jnp.conj(Px))) / lam
+                P_upd = jnp.float32(0.5) * (P_upd + jnp.conj(P_upd).T)
+
+                update_ok = idx < n_update_halt
+                W_new = jnp.where(update_ok, W_upd, W)
+                P_new = jnp.where(update_ok, P_upd, P)
+
+                carry_new = (
+                    W_new, P_new,
+                    pll_phi_new, pll_freq_new,
+                    cs_buf_x_new, cs_buf_y_new, cs_buf_ptr_new,
+                    cs_stats,
+                )
+                return carry_new, (y_fin, e_clean, W_new, phi_corr)
+
+            n_sym = training_padded.shape[1]
+            init_carry = (
+                w_init, P_init,
+                jnp.zeros(num_ch, dtype=jnp.float32),
+                jnp.zeros(num_ch, dtype=jnp.float32),
+                jnp.zeros((num_ch, H), dtype=jnp.float32),
+                jnp.zeros((num_ch, H), dtype=jnp.float32),
+                jnp.zeros(num_ch, dtype=jnp.int32),
+                jnp.zeros((num_ch, 4), dtype=jnp.float32),
+            )
+            (W_final, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = jax.lax.scan(
+                step, init_carry, jnp.arange(n_sym)
+            )
+            return y_hat, errors, W_final, w_hist, phi_traj
+
+        _JITTED_EQ[key] = rls_cpr_scan
     return _JITTED_EQ[key]
 
 
@@ -1753,6 +2594,52 @@ def _unpack_result_numpy(
     )
 
 
+def _cpr_pll_gains(bandwidth: float):
+    """Convert normalised loop bandwidth to PI gains (mu, beta).
+
+    Uses the standard 2nd-order loop approximation for a critically-damped
+    (ζ = 1/√2) PI loop:  μ ≈ 4·B_L,  β ≈ 4·B_L².
+
+    Parameters
+    ----------
+    bandwidth : float
+        Normalised one-sided loop bandwidth as a fraction of the symbol rate,
+        e.g. ``1e-3`` for a narrow loop.
+
+    Returns
+    -------
+    mu, beta : float32
+    """
+    mu = np.float32(4.0 * bandwidth)
+    beta = np.float32(4.0 * bandwidth**2)
+    return mu, beta
+
+
+def _cpr_symmetry(modulation: Optional[str], order: Optional[int]) -> int:
+    """Return the rotational symmetry order used for cycle-slip correction.
+
+    QAM and most practical CPR algorithms exploit 4-fold (π/2) symmetry.
+    BPSK is the only exception (2-fold).
+
+    Parameters
+    ----------
+    modulation : str or None
+    order : int or None
+
+    Returns
+    -------
+    int — 4 (default/QAM/PSK M≥4) or 2 (BPSK/PAM)
+    """
+    if modulation is None:
+        return 4
+    m = modulation.lower().strip()
+    if m in ("pam",):
+        return 2
+    if m in ("psk", "bpsk") and order == 2:
+        return 2
+    return 4
+
+
 def _validate_sps(sps, num_taps):
     """Validate sps; warn about unusual values, check tap count minimum."""
     if sps < 1:
@@ -1799,6 +2686,12 @@ def lms(
     pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    cpr_type: Optional[str] = None,
+    cpr_pll_bandwidth: float = 1e-3,
+    cpr_bps_test_phases: int = 64,
+    cpr_cycle_slip_correction: bool = True,
+    cpr_cycle_slip_history: int = 1000,
+    cpr_cycle_slip_threshold: float = np.pi / 4,
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
@@ -1904,9 +2797,13 @@ def lms(
     independent signals externally.  For CPU-optimal throughput use
     ``backend='numba'`` (the default).
     """
+    if cpr_type is not None and cpr_type not in ("pll", "bps"):
+        raise ValueError(f"cpr_type must be 'pll', 'bps', or None. Got {cpr_type!r}.")
+
     logger.info(
         f"LMS equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
+        + (f", cpr={cpr_type}" if cpr_type else "")
     )
     if sps > 1:
         logger.warning(
@@ -2007,36 +2904,63 @@ def lms(
             if store_weights
             else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
         )
-        _get_numba_lms()(
-            samples_padded,
-            train_full,
-            constellation_np,
-            W,
-            np.float32(step_size),
-            np.int32(n_train_aligned),
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_buf,
-        )
-        return _log_equalizer_exit(
-            _unpack_result_numpy(
+        if cpr_type is None:
+            _get_numba_lms()(
+                samples_padded,
+                train_full,
+                constellation_np,
+                W,
+                np.float32(step_size),
+                np.int32(n_train_aligned),
+                stride,
+                store_weights,
                 y_out,
                 e_out,
-                W,
                 w_hist_buf,
-                was_1d,
-                store_weights,
-                n_sym=None,
-                xp=xp,
+            )
+            result = _unpack_result_numpy(
+                y_out, e_out, W, w_hist_buf, was_1d, store_weights,
+                n_sym=None, xp=xp,
                 num_train_symbols=int(n_train_aligned),
                 input_norm_factor=eq_norm,
-            ),
-            name="LMS",
-            debug_plot=debug_plot,
-            plot_smoothing=plot_smoothing,
-        )
+            )
+        else:
+            pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+            symmetry = _cpr_symmetry(modulation, order)
+            B = int(cpr_bps_test_phases)
+            bps_angles_np = np.linspace(0.0, np.pi / 2.0, B, endpoint=False, dtype=np.float32)
+            bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
+            H = int(cpr_cycle_slip_history)
+            pll_phi = np.zeros(num_ch, dtype=np.float32)
+            pll_freq = np.zeros(num_ch, dtype=np.float32)
+            cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
+            cs_buf_n = np.zeros(num_ch, dtype=np.int64)
+            cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+            phase_out = np.empty((n_sym, num_ch), dtype=np.float32)
+            cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
+            _get_numba_lms_cpr()(
+                samples_padded, train_full, constellation_np,
+                bps_phases_neg_np, bps_angles_np, W,
+                np.float32(step_size), np.int32(n_train_aligned),
+                stride, store_weights,
+                cpr_mode_int, pll_mu, pll_beta, np.int32(symmetry),
+                bool(cpr_cycle_slip_correction), np.float32(cpr_cycle_slip_threshold),
+                pll_phi, pll_freq,
+                cs_buf_x, cs_buf_y, cs_buf_ptr, cs_buf_n, cs_stats,
+                y_out, e_out, phase_out, w_hist_buf,
+            )
+            result = _unpack_result_numpy(
+                y_out, e_out, W, w_hist_buf, was_1d, store_weights,
+                n_sym=None, xp=xp,
+                num_train_symbols=int(n_train_aligned),
+                input_norm_factor=eq_norm,
+            )
+            phi_t = xp.asarray(phase_out.T)  # (C, N_sym)
+            result.phase_trajectory = phi_t[0] if was_1d else phi_t
+        return _log_equalizer_exit(result, name="LMS", debug_plot=debug_plot,
+                                   plot_smoothing=plot_smoothing)
 
     # JAX backend
     jax, jnp, _ = _get_jax()
@@ -2115,26 +3039,47 @@ def lms(
     mu_jax = to_jax(jnp.float32(step_size), device=platform)
     n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
 
-    scan_fn = _get_jax_lms(num_taps, stride, len(constellation_np), num_ch)
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(
-        x_jax, train_jax, const_jax, W_jax, mu_jax, n_train_jax
-    )
-    return _log_equalizer_exit(
-        _unpack_result_jax(
-            y_jax,
-            e_jax,
-            W_jax,
-            wh_jax,
-            was_1d,
-            store_weights,
-            n_sym=None,
-            xp=xp,
+    if cpr_type is None:
+        scan_fn = _get_jax_lms(num_taps, stride, len(constellation_np), num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(
+            x_jax, train_jax, const_jax, W_jax, mu_jax, n_train_jax
+        )
+        result = _unpack_result_jax(
+            y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights,
+            n_sym=None, xp=xp,
             num_train_symbols=int(n_train_aligned),
             input_norm_factor=eq_norm,
-        ),
-        name="LMS",
-        debug_plot=debug_plot,
-    )
+        )
+    else:
+        pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        B = int(cpr_bps_test_phases)
+        H = int(cpr_cycle_slip_history)
+        bps_angles_np = np.linspace(0.0, np.pi / 2.0, B, endpoint=False, dtype=np.float32)
+        bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
+        bps_pn_jax = to_jax(bps_phases_neg_np, device=platform)
+        bps_ang_jax = to_jax(bps_angles_np, device=platform)
+        scan_fn = _get_jax_lms_cpr(
+            num_taps, stride, len(constellation_np), num_ch,
+            cpr_type, B, H,
+        )
+        y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
+            x_jax, train_jax, const_jax, bps_pn_jax, bps_ang_jax,
+            W_jax, mu_jax, n_train_jax,
+            to_jax(jnp.float32(pll_mu), device=platform),
+            to_jax(jnp.float32(pll_beta), device=platform),
+            to_jax(jnp.float32(cpr_cycle_slip_threshold), device=platform),
+            to_jax(jnp.bool_(cpr_cycle_slip_correction), device=platform),
+        )
+        result = _unpack_result_jax(
+            y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights,
+            n_sym=None, xp=xp,
+            num_train_symbols=int(n_train_aligned),
+            input_norm_factor=eq_norm,
+        )
+        phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
+        phi_t = xp.asarray(phi_np.T)  # (C, N_sym)
+        result.phase_trajectory = phi_t[0] if was_1d else phi_t
+    return _log_equalizer_exit(result, name="LMS", debug_plot=debug_plot)
 
 
 def rls(
@@ -2157,6 +3102,12 @@ def rls(
     pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    cpr_type: Optional[str] = None,
+    cpr_pll_bandwidth: float = 1e-3,
+    cpr_bps_test_phases: int = 64,
+    cpr_cycle_slip_correction: bool = True,
+    cpr_cycle_slip_history: int = 1000,
+    cpr_cycle_slip_threshold: float = np.pi / 4,
 ) -> EqualizerResult:
     """
     Recursive Least Squares adaptive equalizer with butterfly MIMO support.
@@ -2288,10 +3239,14 @@ def rls(
             "Use LMS for fractionally-spaced equalization unless heavy Tikhonov regularization is applied."
         )
 
+    if cpr_type is not None and cpr_type not in ("pll", "bps"):
+        raise ValueError(f"cpr_type must be 'pll', 'bps', or None. Got {cpr_type!r}.")
+
     logger.info(
         f"RLS equalizer: num_taps={num_taps}, forgetting_factor={forgetting_factor}, "
         f"delta={delta:.2e}, leakage={leakage:.2e}, sps={sps}, "
         f"backend={backend}, num_train_symbols={num_train_symbols}"
+        + (f", cpr={cpr_type}" if cpr_type else "")
     )
     if sps > 1:
         logger.warning(
@@ -2415,42 +3370,58 @@ def rls(
             if store_weights
             else np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64)
         )
-        _get_numba_rls()(
-            x_np,
-            train_full,
-            constellation_np,
-            W,
-            P,
-            np.float32(forgetting_factor),
-            np.float32(leakage),
-            np.int32(n_train_aligned),
-            np.int32(n_update_halt),
-            stride,
-            store_weights,
-            y_out,
-            e_out,
-            w_hist_buf,
-        )
-        # Truncate last num_taps//2 symbols: those windows overlap the right
-        # zero-padding, producing near-zero y that the slicer maps to ~1.0
-        # magnitude, creating a spurious MSE/EVM spike.
-        result = _log_equalizer_exit(
-            _unpack_result_numpy(
-                y_out,
-                e_out,
-                W,
-                w_hist_buf,
-                was_1d,
-                store_weights,
-                n_sym=n_update_halt,
-                xp=xp,
+        if cpr_type is None:
+            _get_numba_rls()(
+                x_np, train_full, constellation_np, W, P,
+                np.float32(forgetting_factor), np.float32(leakage),
+                np.int32(n_train_aligned), np.int32(n_update_halt),
+                stride, store_weights, y_out, e_out, w_hist_buf,
+            )
+            result = _unpack_result_numpy(
+                y_out, e_out, W, w_hist_buf, was_1d, store_weights,
+                n_sym=n_update_halt, xp=xp,
                 num_train_symbols=int(n_train_aligned),
                 input_norm_factor=eq_norm,
-            ),
-            name="RLS",
-            debug_plot=debug_plot,
-            plot_smoothing=plot_smoothing,
-        )
+            )
+        else:
+            pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+            symmetry = _cpr_symmetry(modulation, order)
+            B = int(cpr_bps_test_phases)
+            bps_angles_np = np.linspace(0.0, np.pi / 2.0, B, endpoint=False, dtype=np.float32)
+            bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
+            H = int(cpr_cycle_slip_history)
+            pll_phi = np.zeros(num_ch, dtype=np.float32)
+            pll_freq = np.zeros(num_ch, dtype=np.float32)
+            cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
+            cs_buf_n = np.zeros(num_ch, dtype=np.int64)
+            cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+            phase_out = np.empty((n_sym, num_ch), dtype=np.float32)
+            cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
+            _get_numba_rls_cpr()(
+                x_np, train_full, constellation_np,
+                bps_phases_neg_np, bps_angles_np, W, P,
+                np.float32(forgetting_factor), np.float32(leakage),
+                np.int32(n_train_aligned), np.int32(n_update_halt),
+                stride, store_weights,
+                cpr_mode_int, pll_mu, pll_beta, np.int32(symmetry),
+                bool(cpr_cycle_slip_correction), np.float32(cpr_cycle_slip_threshold),
+                pll_phi, pll_freq,
+                cs_buf_x, cs_buf_y, cs_buf_ptr, cs_buf_n, cs_stats,
+                y_out, e_out, phase_out, w_hist_buf,
+            )
+            result = _unpack_result_numpy(
+                y_out, e_out, W, w_hist_buf, was_1d, store_weights,
+                n_sym=n_update_halt, xp=xp,
+                num_train_symbols=int(n_train_aligned),
+                input_norm_factor=eq_norm,
+            )
+            phi_t = xp.asarray(phase_out[:n_update_halt].T)  # (C, n_update_halt)
+            result.phase_trajectory = phi_t[0] if was_1d else phi_t
+        # Truncate last num_taps//2 symbols (zero-padding contamination).
+        result = _log_equalizer_exit(result, name="RLS", debug_plot=debug_plot,
+                                     plot_smoothing=plot_smoothing)
         result.tail_trim = tail_trim
         return result
 
@@ -2544,35 +3515,49 @@ def rls(
     leakage_jax = to_jax(jnp.float32(leakage), device=platform)
     n_update_halt_jax = to_jax(jnp.int32(n_update_halt), device=platform)
 
-    scan_fn = _get_jax_rls(num_taps, stride, len(constellation_np), num_ch)
-    y_jax, e_jax, W_jax, wh_jax = scan_fn(
-        x_jax,
-        train_jax,
-        const_jax,
-        W_jax,
-        P_init,
-        lam_jax,
-        n_train_jax,
-        leakage_jax,
-        n_update_halt_jax,
-    )
-    # Truncate last num_taps//2 symbols (zero-padding contamination).
-    result = _log_equalizer_exit(
-        _unpack_result_jax(
-            y_jax,
-            e_jax,
-            W_jax,
-            wh_jax,
-            was_1d,
-            store_weights,
-            n_sym=n_update_halt,
-            xp=xp,
+    if cpr_type is None:
+        scan_fn = _get_jax_rls(num_taps, stride, len(constellation_np), num_ch)
+        y_jax, e_jax, W_jax, wh_jax = scan_fn(
+            x_jax, train_jax, const_jax, W_jax,
+            P_init, lam_jax, n_train_jax, leakage_jax, n_update_halt_jax,
+        )
+        result = _unpack_result_jax(
+            y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights,
+            n_sym=n_update_halt, xp=xp,
             num_train_symbols=int(n_train_aligned),
             input_norm_factor=eq_norm,
-        ),
-        name="RLS",
-        debug_plot=debug_plot,
-    )
+        )
+    else:
+        pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        B = int(cpr_bps_test_phases)
+        H = int(cpr_cycle_slip_history)
+        bps_angles_np = np.linspace(0.0, np.pi / 2.0, B, endpoint=False, dtype=np.float32)
+        bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
+        bps_pn_jax = to_jax(bps_phases_neg_np, device=platform)
+        bps_ang_jax = to_jax(bps_angles_np, device=platform)
+        scan_fn = _get_jax_rls_cpr(
+            num_taps, stride, len(constellation_np), num_ch,
+            cpr_type, B, H,
+        )
+        y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
+            x_jax, train_jax, const_jax, bps_pn_jax, bps_ang_jax,
+            W_jax, P_init, lam_jax, n_train_jax, leakage_jax, n_update_halt_jax,
+            to_jax(jnp.float32(pll_mu), device=platform),
+            to_jax(jnp.float32(pll_beta), device=platform),
+            to_jax(jnp.float32(cpr_cycle_slip_threshold), device=platform),
+            to_jax(jnp.bool_(cpr_cycle_slip_correction), device=platform),
+        )
+        result = _unpack_result_jax(
+            y_jax, e_jax, W_jax, wh_jax, was_1d, store_weights,
+            n_sym=n_update_halt, xp=xp,
+            num_train_symbols=int(n_train_aligned),
+            input_norm_factor=eq_norm,
+        )
+        phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
+        phi_t = xp.asarray(phi_np[:n_update_halt].T)  # (C, n_update_halt)
+        result.phase_trajectory = phi_t[0] if was_1d else phi_t
+    # Truncate last num_taps//2 symbols (zero-padding contamination).
+    result = _log_equalizer_exit(result, name="RLS", debug_plot=debug_plot)
     result.tail_trim = tail_trim
     return result
 

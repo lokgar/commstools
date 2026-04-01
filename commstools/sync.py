@@ -1734,6 +1734,153 @@ def estimate_frequency_offset_pilots(
     return np.array(f_per_ch)
 
 
+def estimate_frequency_offset_blockwise(
+    samples: ArrayType,
+    sampling_rate: float,
+    block_size: int = 4096,
+    overlap: float = 0.5,
+    method: str = "mth_power",
+    sps: int = 2,
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
+) -> np.ndarray:
+    r"""
+    Estimates a time-varying frequency offset via a sliding-window approach.
+
+    Divides the signal into overlapping blocks, runs a scalar FOE on each
+    block, cubic-spline interpolates the block estimates to a dense per-sample
+    grid, then integrates to obtain a phase trajectory suitable for
+    :func:`correct_carrier_phase`.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex IQ samples. Shape: ``(N,)`` or ``(C, N)``. For MIMO only the
+        first channel (row 0) is used for estimation; the returned phase array
+        is 1-D regardless.
+    sampling_rate : float
+        Sampling rate in Hz.
+    block_size : int, default 4096
+        Number of samples per analysis block.
+    overlap : float, default 0.5
+        Fractional overlap between consecutive blocks (``[0, 1)``).  Block
+        centers are spaced ``step = round(block_size * (1 - overlap))``
+        samples apart.  Values ≥ 0.5 are recommended to avoid under-sampling
+        fast frequency drifts.
+    method : {"mth_power", "mengali_morelli"}, default "mth_power"
+        Per-block estimator.
+
+        * ``"mth_power"`` — M-th power spectral method with Jacobsen
+          sub-bin interpolation (:func:`estimate_frequency_offset_mth_power`).
+          Requires ``modulation`` and ``order``.
+        * ``"mengali_morelli"`` — multi-lag autocorrelation MVUE
+          (:func:`estimate_frequency_offset_mengali_morelli`).
+          Requires ``modulation`` and ``order`` for blind operation.
+    sps : int, default 2
+        Samples per symbol (passed to ``estimate_frequency_offset_mth_power``
+        for the M-th power modulation mapping).
+    modulation : str, optional
+        Modulation scheme (e.g. ``'qam'``, ``'psk'``).  Required for blind
+        estimation with either method.
+    order : int, optional
+        Modulation order (e.g. 4, 16, 64).  Required alongside ``modulation``.
+
+    Returns
+    -------
+    np.ndarray, shape ``(N,)`` float64
+        Per-sample phase trajectory :math:`\theta(n)` in radians.  Apply via::
+
+            corrected = correct_carrier_phase(samples, theta)
+
+        Positive :math:`\theta(n)` corresponds to a positive instantaneous
+        frequency offset (carrier ahead of nominal).
+
+    Notes
+    -----
+    **Pipeline:**
+
+    1. Slice into overlapping blocks centered at
+       :math:`t_k = \lfloor k \cdot \text{step} + \text{block\_size}/2 \rceil`
+       for :math:`k = 0, 1, \ldots, B-1`.
+    2. Run ``method`` on each block to obtain :math:`\Delta f[k]` in Hz.
+    3. Cubic-spline-interpolate :math:`\Delta f[k]` at block centers to a
+       dense per-sample grid :math:`\Delta f_\text{dense}(n)`, with
+       ``fill_value='extrapolate'`` to cover the first and last partial blocks.
+    4. Integrate:
+       :math:`\theta(n) = \frac{2\pi}{f_s} \sum_{m=0}^{n} \Delta f_\text{dense}(m)`.
+
+    **Minimum block count:** At least 2 blocks are required for interpolation.
+    If the signal is shorter than ``2 * block_size * (1 - overlap)`` samples,
+    the function falls back to a single-block global estimate.
+    """
+    if method not in ("mth_power", "mengali_morelli"):
+        raise ValueError(
+            f"method must be 'mth_power' or 'mengali_morelli', got {method!r}."
+        )
+    if method in ("mth_power", "mengali_morelli") and (
+        modulation is None or order is None
+    ):
+        raise ValueError(
+            f"method={method!r} requires modulation and order for blind estimation."
+        )
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError(f"overlap must be in [0, 1), got {overlap}.")
+
+    samples_arr, _, _ = dispatch(samples)
+    # Use first channel for MIMO inputs
+    if samples_arr.ndim == 2:
+        sig1d = to_device(samples_arr[0], "cpu")
+    else:
+        sig1d = to_device(samples_arr, "cpu")
+    sig1d = np.asarray(sig1d)
+    N = len(sig1d)
+
+    step = max(1, round(block_size * (1.0 - overlap)))
+    # Block start indices
+    starts = list(range(0, N - block_size + 1, step))
+    if not starts:
+        # Signal shorter than one block: estimate over full signal
+        starts = [0]
+        block_size = N
+
+    t_centers = np.array([s + block_size / 2.0 for s in starts], dtype=np.float64)
+    df_estimates = np.empty(len(starts), dtype=np.float64)
+
+    for k, s in enumerate(starts):
+        block = sig1d[s : s + block_size]
+        if method == "mth_power":
+            est = estimate_frequency_offset_mth_power(
+                block, sampling_rate, modulation, order
+            )
+        else:
+            est = estimate_frequency_offset_mengali_morelli(
+                block, sampling_rate, modulation=modulation, order=order
+            )
+        df_estimates[k] = float(est)
+
+    # Interpolate to per-sample grid
+    n_grid = np.arange(N, dtype=np.float64)
+    if len(t_centers) == 1:
+        df_dense = np.full(N, df_estimates[0], dtype=np.float64)
+    else:
+        from scipy.interpolate import interp1d  # noqa: PLC0415
+
+        interp_fn = interp1d(
+            t_centers, df_estimates, kind="cubic", fill_value="extrapolate"
+        )
+        df_dense = interp_fn(n_grid)
+
+    # Integrate: θ(n) = (2π / fs) * cumsum(Δf_dense)
+    phase_trajectory = (2.0 * np.pi / sampling_rate) * np.cumsum(df_dense)
+
+    logger.debug(
+        f"FOE blockwise: {len(starts)} blocks, method={method}, "
+        f"freq range=[{df_estimates.min():.2f}, {df_estimates.max():.2f}] Hz, "
+        f"total phase drift={float(phase_trajectory[-1]):.3f} rad"
+    )
+    return phase_trajectory
+
+
 def correct_frequency_offset(
     samples: ArrayType,
     sampling_rate: float,
