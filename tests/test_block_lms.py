@@ -11,7 +11,7 @@ Coverage:
   8. cpr_type validation — pll raises ValueError
   9. BPS + CPR — phase_trajectory shape and MSE better than no CPR under phase noise
  10. BPS block_size vs cpr_bps_block_size independence — different values accepted
- 11. MIMO butterfly convergence — 2×2, training on both channels
+ 11. MIMO butterfly convergence — 2x2, training on both channels
 """
 
 import numpy as np
@@ -430,12 +430,12 @@ def test_bps_reduces_mse_under_phase_noise():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 13: MIMO butterfly convergence (2×2)
+# Test 13: MIMO butterfly convergence (2x2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_mimo_convergence():
-    """2×2 MIMO: both channels should converge to low EVM."""
+    """2x2 MIMO: both channels should converge to low EVM."""
     rng = np.random.default_rng(5)
     n_sym = 4096
     sps = 1

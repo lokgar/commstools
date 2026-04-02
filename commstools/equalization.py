@@ -588,8 +588,13 @@ def _get_numba_lms_cpr():
             e_clean = np.empty(C, dtype=np.complex64)
             e_eq = np.empty(C, dtype=np.complex64)
             phi_hat_bps = np.zeros(C, dtype=np.float32)
-            bps_buf = np.zeros((C, bps_block_size), dtype=np.complex64)
-            bps_buf_ptr = np.int64(0)
+            # BPS: incremental running-sum (avoids O(K·B·M) per-symbol rescan)
+            bps_dist_buf = np.zeros((C, bps_block_size, B), dtype=np.float32)
+            bps_running_sum = np.zeros((C, B), dtype=np.float32)
+            bps_dist_ptr = np.int64(0)
+            # Causal 4-fold phase unwrap state (equivalent to np.unwrap(phi*4)/4)
+            bps_prev4 = np.zeros(C, dtype=np.float64)
+            bps_offset4 = np.zeros(C, dtype=np.float64)
 
             for idx in range(n_sym):
                 sample_idx = idx * stride
@@ -609,64 +614,68 @@ def _get_numba_lms_cpr():
 
                 # ── CPR: Phase estimation ──────────────────────────────────
 
-                # BPS: fill circular buffer slot with current y_raw
+                # BPS: incremental running-sum over a causal window of K symbols.
+                # For each new symbol, compute min-dist for all B candidates,
+                # subtract the oldest slot from the running sum and add the new
+                # one — O(B·M·C) per symbol, independent of window size K.
                 if cpr_mode == 2:
-                    slot = bps_buf_ptr % np.int64(bps_block_size)
+                    slot = bps_dist_ptr % np.int64(bps_block_size)
                     for i in range(C):
-                        bps_buf[i, slot] = y_raw[i]
-                    bps_buf_ptr = bps_buf_ptr + np.int64(1)
-                    fill = (
-                        np.int32(bps_buf_ptr)
-                        if bps_buf_ptr < np.int64(bps_block_size)
-                        else bps_block_size
-                    )
+                        for k in range(B):
+                            y_rot = y_raw[i] * bps_phases_neg[k]
+                            d2_min = np.float32(1e38)
+                            for m in range(M):
+                                dv = y_rot - constellation[m]
+                                d2 = dv.real * dv.real + dv.imag * dv.imag
+                                if d2 < d2_min:
+                                    d2_min = d2
+                            # Subtract evicted slot, add new slot
+                            bps_running_sum[i, k] = (
+                                bps_running_sum[i, k]
+                                - bps_dist_buf[i, slot, k]
+                                + d2_min
+                            )
+                            bps_dist_buf[i, slot, k] = d2_min
+                    bps_dist_ptr = bps_dist_ptr + np.int64(1)
 
                     if bps_joint_channels:
-                        # Accumulate min-dist metric jointly across all channels
                         best_k_joint = np.int32(0)
                         min_tot_joint = np.float32(1e38)
                         for k in range(B):
                             metric_k = np.float32(0.0)
-                            for n in range(fill):
-                                for i in range(C):
-                                    y_rot = bps_buf[i, n] * bps_phases_neg[k]
-                                    d2_min = np.float32(1e38)
-                                    for m in range(M):
-                                        dv = y_rot - constellation[m]
-                                        d2 = dv.real * dv.real + dv.imag * dv.imag
-                                        if d2 < d2_min:
-                                            d2_min = d2
-                                    metric_k = metric_k + d2_min
+                            for i in range(C):
+                                metric_k = metric_k + bps_running_sum[i, k]
                             if metric_k < min_tot_joint:
                                 min_tot_joint = metric_k
                                 best_k_joint = k
+                        # Raw argmin in [0, π/2); apply 4-fold causal unwrap
+                        raw4 = np.float64(bps_angles[best_k_joint]) * np.float64(4.0)
                         for i in range(C):
-                            phi_hat_bps[i] = bps_angles[best_k_joint]
+                            diff4 = raw4 - bps_prev4[i]
+                            diff4 = diff4 - np.float64(2.0 * np.pi) * np.round(diff4 / (np.float64(2.0 * np.pi)))
+                            bps_prev4[i] = bps_prev4[i] + diff4
+                            bps_offset4[i] = bps_offset4[i] + diff4
+                            phi_hat_bps[i] = np.float32(bps_offset4[i] / np.float64(4.0))
                     else:
-                        # Independent BPS per channel
                         for i in range(C):
                             best_k = np.int32(0)
                             min_tot = np.float32(1e38)
                             for k in range(B):
-                                metric_k = np.float32(0.0)
-                                for n in range(fill):
-                                    y_rot = bps_buf[i, n] * bps_phases_neg[k]
-                                    d2_min = np.float32(1e38)
-                                    for m in range(M):
-                                        dv = y_rot - constellation[m]
-                                        d2 = dv.real * dv.real + dv.imag * dv.imag
-                                        if d2 < d2_min:
-                                            d2_min = d2
-                                    metric_k = metric_k + d2_min
-                                if metric_k < min_tot:
-                                    min_tot = metric_k
+                                if bps_running_sum[i, k] < min_tot:
+                                    min_tot = bps_running_sum[i, k]
                                     best_k = k
-                            phi_hat_bps[i] = bps_angles[best_k]
+                            # Raw argmin in [0, π/2); apply 4-fold causal unwrap
+                            raw4 = np.float64(bps_angles[best_k]) * np.float64(4.0)
+                            diff4 = raw4 - bps_prev4[i]
+                            diff4 = diff4 - np.float64(2.0 * np.pi) * np.round(diff4 / (np.float64(2.0 * np.pi)))
+                            bps_prev4[i] = bps_prev4[i] + diff4
+                            bps_offset4[i] = bps_offset4[i] + diff4
+                            phi_hat_bps[i] = np.float32(bps_offset4[i] / np.float64(4.0))
 
                 for i in range(C):
                     if cpr_mode == 1:  # PLL: read current integrator state
                         phi_hat = pll_phi[i]
-                    else:  # BPS: use block-averaged estimate
+                    else:  # BPS: unwrapped phase estimate
                         phi_hat = phi_hat_bps[i]
 
                     # ── Cycle-slip correction ──────────────────────────────
@@ -764,16 +773,29 @@ def _get_numba_lms_cpr():
 
                 # ── PLL state update ───────────────────────────────────────
                 if cpr_mode == 1:
-                    for i in range(C):
-                        # Cross-product phase detector: Im(y_fin · conj(d))
-                        e_ph = (
-                            y_fin[i].imag * d_sym[i].real
-                            - y_fin[i].real * d_sym[i].imag
-                        )
-                        pll_phi[i] = (
-                            pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
-                        )
-                        pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
+                    if bps_joint_channels:
+                        # Average phase error across channels (shared LO)
+                        e_ph_sum = np.float32(0.0)
+                        for i in range(C):
+                            e_ph_sum = e_ph_sum + (
+                                y_fin[i].imag * d_sym[i].real
+                                - y_fin[i].real * d_sym[i].imag
+                            )
+                        e_ph_avg = e_ph_sum / np.float32(C)
+                        for i in range(C):
+                            pll_phi[i] = pll_phi[i] + pll_mu * e_ph_avg + pll_freq[i]
+                            pll_freq[i] = pll_freq[i] + pll_beta * e_ph_avg
+                    else:
+                        for i in range(C):
+                            # Cross-product phase detector: Im(y_fin · conj(d))
+                            e_ph = (
+                                y_fin[i].imag * d_sym[i].real
+                                - y_fin[i].real * d_sym[i].imag
+                            )
+                            pll_phi[i] = (
+                                pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
+                            )
+                            pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
 
                 # ── De-rotate error and weight update ──────────────────────
                 for i in range(C):
@@ -876,8 +898,11 @@ def _get_numba_rls_cpr():
             e_clean = np.empty(C, dtype=np.complex64)
             e_eq = np.empty(C, dtype=np.complex64)
             phi_hat_bps = np.zeros(C, dtype=np.float32)
-            bps_buf = np.zeros((C, bps_block_size), dtype=np.complex64)
-            bps_buf_ptr = np.int64(0)
+            bps_dist_buf = np.zeros((C, bps_block_size, B), dtype=np.float32)
+            bps_running_sum = np.zeros((C, B), dtype=np.float32)
+            bps_dist_ptr = np.int64(0)
+            bps_prev4 = np.zeros(C, dtype=np.float64)
+            bps_offset4 = np.zeros(C, dtype=np.float64)
 
             lam_f32 = np.float32(lam)
             leak_term = np.float32(1.0) - np.float32(leakage)
@@ -899,57 +924,57 @@ def _get_numba_rls_cpr():
 
                 # ── CPR: Phase estimation ──────────────────────────────────
 
-                # BPS: fill circular buffer slot with current y_raw
+                # BPS: incremental running-sum (O(B·M·C) per symbol, independent of K)
                 if cpr_mode == 2:
-                    slot = bps_buf_ptr % np.int64(bps_block_size)
+                    slot = bps_dist_ptr % np.int64(bps_block_size)
                     for i in range(C):
-                        bps_buf[i, slot] = y_raw[i]
-                    bps_buf_ptr = bps_buf_ptr + np.int64(1)
-                    fill = (
-                        np.int32(bps_buf_ptr)
-                        if bps_buf_ptr < np.int64(bps_block_size)
-                        else bps_block_size
-                    )
+                        for k in range(B):
+                            y_rot = y_raw[i] * bps_phases_neg[k]
+                            d2_min = np.float32(1e38)
+                            for m in range(M):
+                                dv = y_rot - constellation[m]
+                                d2 = dv.real * dv.real + dv.imag * dv.imag
+                                if d2 < d2_min:
+                                    d2_min = d2
+                            bps_running_sum[i, k] = (
+                                bps_running_sum[i, k]
+                                - bps_dist_buf[i, slot, k]
+                                + d2_min
+                            )
+                            bps_dist_buf[i, slot, k] = d2_min
+                    bps_dist_ptr = bps_dist_ptr + np.int64(1)
 
                     if bps_joint_channels:
                         best_k_joint = np.int32(0)
                         min_tot_joint = np.float32(1e38)
                         for k in range(B):
                             metric_k = np.float32(0.0)
-                            for n in range(fill):
-                                for i in range(C):
-                                    y_rot = bps_buf[i, n] * bps_phases_neg[k]
-                                    d2_min = np.float32(1e38)
-                                    for m in range(M):
-                                        dv = y_rot - constellation[m]
-                                        d2 = dv.real * dv.real + dv.imag * dv.imag
-                                        if d2 < d2_min:
-                                            d2_min = d2
-                                    metric_k = metric_k + d2_min
+                            for i in range(C):
+                                metric_k = metric_k + bps_running_sum[i, k]
                             if metric_k < min_tot_joint:
                                 min_tot_joint = metric_k
                                 best_k_joint = k
+                        raw4 = np.float64(bps_angles[best_k_joint]) * np.float64(4.0)
                         for i in range(C):
-                            phi_hat_bps[i] = bps_angles[best_k_joint]
+                            diff4 = raw4 - bps_prev4[i]
+                            diff4 = diff4 - np.float64(2.0 * np.pi) * np.round(diff4 / (np.float64(2.0 * np.pi)))
+                            bps_prev4[i] = bps_prev4[i] + diff4
+                            bps_offset4[i] = bps_offset4[i] + diff4
+                            phi_hat_bps[i] = np.float32(bps_offset4[i] / np.float64(4.0))
                     else:
                         for i in range(C):
                             best_k = np.int32(0)
                             min_tot = np.float32(1e38)
                             for k in range(B):
-                                metric_k = np.float32(0.0)
-                                for n in range(fill):
-                                    y_rot = bps_buf[i, n] * bps_phases_neg[k]
-                                    d2_min = np.float32(1e38)
-                                    for m in range(M):
-                                        dv = y_rot - constellation[m]
-                                        d2 = dv.real * dv.real + dv.imag * dv.imag
-                                        if d2 < d2_min:
-                                            d2_min = d2
-                                    metric_k = metric_k + d2_min
-                                if metric_k < min_tot:
-                                    min_tot = metric_k
+                                if bps_running_sum[i, k] < min_tot:
+                                    min_tot = bps_running_sum[i, k]
                                     best_k = k
-                            phi_hat_bps[i] = bps_angles[best_k]
+                            raw4 = np.float64(bps_angles[best_k]) * np.float64(4.0)
+                            diff4 = raw4 - bps_prev4[i]
+                            diff4 = diff4 - np.float64(2.0 * np.pi) * np.round(diff4 / (np.float64(2.0 * np.pi)))
+                            bps_prev4[i] = bps_prev4[i] + diff4
+                            bps_offset4[i] = bps_offset4[i] + diff4
+                            phi_hat_bps[i] = np.float32(bps_offset4[i] / np.float64(4.0))
 
                 for i in range(C):
                     if cpr_mode == 1:
@@ -1050,15 +1075,27 @@ def _get_numba_rls_cpr():
 
                 # ── PLL state update ───────────────────────────────────────
                 if cpr_mode == 1:
-                    for i in range(C):
-                        e_ph = (
-                            y_fin[i].imag * d_sym[i].real
-                            - y_fin[i].real * d_sym[i].imag
-                        )
-                        pll_phi[i] = (
-                            pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
-                        )
-                        pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
+                    if bps_joint_channels:
+                        e_ph_sum = np.float32(0.0)
+                        for i in range(C):
+                            e_ph_sum = e_ph_sum + (
+                                y_fin[i].imag * d_sym[i].real
+                                - y_fin[i].real * d_sym[i].imag
+                            )
+                        e_ph_avg = e_ph_sum / np.float32(C)
+                        for i in range(C):
+                            pll_phi[i] = pll_phi[i] + pll_mu * e_ph_avg + pll_freq[i]
+                            pll_freq[i] = pll_freq[i] + pll_beta * e_ph_avg
+                    else:
+                        for i in range(C):
+                            e_ph = (
+                                y_fin[i].imag * d_sym[i].real
+                                - y_fin[i].real * d_sym[i].imag
+                            )
+                            pll_phi[i] = (
+                                pll_phi[i] + pll_mu * np.float32(e_ph) + pll_freq[i]
+                            )
+                            pll_freq[i] = pll_freq[i] + pll_beta * np.float32(e_ph)
 
                 # ── De-rotate error ────────────────────────────────────────
                 for i in range(C):
@@ -1606,8 +1643,9 @@ def _get_jax_lms_cpr(
             #   W             : (C, C, T)         complex64
             #   pll_phi       : (C,)              float32
             #   pll_freq      : (C,)              float32
-            #   bps_buf       : (C, KB)           complex64  — y_raw circular buffer
+            #   bps_buf       : (KB, C)           complex64  — y_raw circular buffer
             #   bps_buf_ptr   : scalar int32
+            #   bps_prev4     : (C,)              float32   — causal 4-fold unwrap state
             #   cs_buf_x      : (C, H)            float32  — symbol index
             #   cs_buf_y      : (C, H)            float32  — phase value
             #   cs_buf_ptr    : (C,)              int32    — write pointer
@@ -1619,6 +1657,7 @@ def _get_jax_lms_cpr(
                     pll_freq,
                     bps_buf,
                     bps_buf_ptr,
+                    bps_prev4,
                     cs_buf_x,
                     cs_buf_y,
                     cs_buf_ptr,
@@ -1636,6 +1675,7 @@ def _get_jax_lms_cpr(
                     phi_hat = pll_phi  # (C,)
                     bps_buf_new = bps_buf
                     bps_buf_ptr_new = bps_buf_ptr
+                    bps_prev4_new = bps_prev4
                 else:
                     # Fill BPS circular buffer with current y_raw
                     slot = bps_buf_ptr % KB
@@ -1668,10 +1708,18 @@ def _get_jax_lms_cpr(
                     if bps_joint_channels:
                         # Sum over channels too → (B,); broadcast winner to all C
                         best_k = jnp.argmin(metric.sum(axis=-1))  # scalar
-                        phi_hat = jnp.full(num_ch, bps_angles[best_k])  # (C,)
+                        phi_raw = jnp.full(num_ch, bps_angles[best_k])  # (C,)
                     else:
                         best_k = jnp.argmin(metric, axis=0)  # (C,)
-                        phi_hat = bps_angles[best_k]  # (C,)
+                        phi_raw = bps_angles[best_k]  # (C,)
+
+                    # Causal 4-fold phase unwrap: equivalent to np.unwrap(phi*4)/4
+                    raw4 = phi_raw * jnp.float32(4.0)
+                    diff4 = raw4 - bps_prev4
+                    two_pi = jnp.float32(2.0 * 3.141592653589793)
+                    diff4 = diff4 - jnp.round(diff4 / two_pi) * two_pi
+                    bps_prev4_new = bps_prev4 + diff4
+                    phi_hat = bps_prev4_new / jnp.float32(4.0)  # (C,) unwrapped
 
                 # ── Cycle-slip correction ────────────────────────────
                 def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch):
@@ -1744,6 +1792,8 @@ def _get_jax_lms_cpr(
 
                 if cpr_type == "pll":
                     e_ph = y_fin.imag * d.real - y_fin.real * d.imag  # (C,)
+                    if bps_joint_channels:  # static branch — shared LO
+                        e_ph = jnp.full(num_ch, e_ph.mean())
                     pll_phi_new = pll_phi + pll_mu * e_ph + pll_freq
                     pll_freq_new = pll_freq + pll_beta * e_ph
                 else:
@@ -1761,6 +1811,7 @@ def _get_jax_lms_cpr(
                     pll_freq_new,
                     bps_buf_new,
                     bps_buf_ptr_new,
+                    bps_prev4_new,
                     cs_buf_x_new,
                     cs_buf_y_new,
                     cs_buf_ptr_new,
@@ -1774,11 +1825,12 @@ def _get_jax_lms_cpr(
                 jnp.zeros(num_ch, dtype=jnp.float32),  # pll_freq
                 jnp.zeros((KB, num_ch), dtype=jnp.complex64),  # bps_buf (KB, C)
                 jnp.int32(0),  # bps_buf_ptr
+                jnp.zeros(num_ch, dtype=jnp.float32),  # bps_prev4 (unwrap state)
                 jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_x
                 jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_y
                 jnp.zeros(num_ch, dtype=jnp.int32),  # cs_buf_ptr
             )
-            (W_final, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
+            (W_final, _, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
                 jax.lax.scan(step, init_carry, jnp.arange(n_sym))
             )
             return y_hat, errors, W_final, w_hist, phi_traj
@@ -1850,6 +1902,7 @@ def _get_jax_rls_cpr(
                     pll_freq,
                     bps_buf,
                     bps_buf_ptr,
+                    bps_prev4,
                     cs_buf_x,
                     cs_buf_y,
                     cs_buf_ptr,
@@ -1865,6 +1918,7 @@ def _get_jax_rls_cpr(
                     phi_hat = pll_phi
                     bps_buf_new = bps_buf
                     bps_buf_ptr_new = bps_buf_ptr
+                    bps_prev4_new = bps_prev4
                 else:
                     slot = bps_buf_ptr % KB
                     bps_buf_new = jax.lax.dynamic_update_slice(
@@ -1890,10 +1944,18 @@ def _get_jax_rls_cpr(
 
                     if bps_joint_channels:
                         best_k = jnp.argmin(metric.sum(axis=-1))
-                        phi_hat = jnp.full(num_ch, bps_angles[best_k])
+                        phi_raw = jnp.full(num_ch, bps_angles[best_k])
                     else:
                         best_k = jnp.argmin(metric, axis=0)
-                        phi_hat = bps_angles[best_k]
+                        phi_raw = bps_angles[best_k]
+
+                    # Causal 4-fold phase unwrap
+                    raw4 = phi_raw * jnp.float32(4.0)
+                    diff4 = raw4 - bps_prev4
+                    two_pi = jnp.float32(2.0 * 3.141592653589793)
+                    diff4 = diff4 - jnp.round(diff4 / two_pi) * two_pi
+                    bps_prev4_new = bps_prev4 + diff4
+                    phi_hat = bps_prev4_new / jnp.float32(4.0)
 
                 def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch):
                     fill_cs = jnp.minimum(ptr_ch, H)
@@ -1960,6 +2022,8 @@ def _get_jax_rls_cpr(
 
                 if cpr_type == "pll":
                     e_ph = y_fin.imag * d.real - y_fin.real * d.imag
+                    if bps_joint_channels:  # static branch — shared LO
+                        e_ph = jnp.full(num_ch, e_ph.mean())
                     pll_phi_new = pll_phi + pll_mu * e_ph + pll_freq
                     pll_freq_new = pll_freq + pll_beta * e_ph
                 else:
@@ -1994,6 +2058,7 @@ def _get_jax_rls_cpr(
                     pll_freq_new,
                     bps_buf_new,
                     bps_buf_ptr_new,
+                    bps_prev4_new,
                     cs_buf_x_new,
                     cs_buf_y_new,
                     cs_buf_ptr_new,
@@ -2004,15 +2069,16 @@ def _get_jax_rls_cpr(
             init_carry = (
                 w_init,
                 P_init,
-                jnp.zeros(num_ch, dtype=jnp.float32),
-                jnp.zeros(num_ch, dtype=jnp.float32),
+                jnp.zeros(num_ch, dtype=jnp.float32),  # pll_phi
+                jnp.zeros(num_ch, dtype=jnp.float32),  # pll_freq
                 jnp.zeros((KB, num_ch), dtype=jnp.complex64),  # bps_buf
                 jnp.int32(0),  # bps_buf_ptr
-                jnp.zeros((num_ch, H), dtype=jnp.float32),
-                jnp.zeros((num_ch, H), dtype=jnp.float32),
-                jnp.zeros(num_ch, dtype=jnp.int32),
+                jnp.zeros(num_ch, dtype=jnp.float32),  # bps_prev4
+                jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_x
+                jnp.zeros((num_ch, H), dtype=jnp.float32),  # cs_buf_y
+                jnp.zeros(num_ch, dtype=jnp.int32),  # cs_buf_ptr
             )
-            (W_final, _, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
+            (W_final, _, _, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
                 jax.lax.scan(step, init_carry, jnp.arange(n_sym))
             )
             return y_hat, errors, W_final, w_hist, phi_traj
@@ -2978,9 +3044,9 @@ def lms(
     cpr_pll_bandwidth: float = 1e-3,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
-    cpr_bps_joint_channels: bool = False,
-    cpr_cycle_slip_correction: bool = True,
-    cpr_cycle_slip_history: int = 1000,
+    cpr_joint_channels: bool = False,
+    cpr_cycle_slip_correction: bool = False,
+    cpr_cycle_slip_history: int = 100,
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
@@ -3098,13 +3164,13 @@ def lms(
         estimate at the cost of increased latency (``K-1`` symbols).
         ``cpr_bps_block_size=1`` recovers the degenerate single-symbol BPS.
         Ignored when ``cpr_type != 'bps'``.
-    cpr_bps_joint_channels : bool, default False
+    cpr_joint_channels : bool, default False
         For MIMO inputs (C > 1): if ``True``, sum the BPS distance metric
         across all C channels before ``argmin``, producing one shared phase
         estimate broadcast to all channels.  Reduces estimation variance by
         ~√C for shared-LO systems.  If ``False``, each channel estimates its
         phase independently.  Ignored when ``cpr_type != 'bps'`` or C == 1.
-    cpr_cycle_slip_correction : bool, default True
+    cpr_cycle_slip_correction : bool, default False
         Enable causal cycle-slip detection and correction.  A circular buffer
         of ``cpr_cycle_slip_history`` past phase estimates is maintained per
         channel; a linear trend is extrapolated to predict the next phase.
@@ -3112,7 +3178,7 @@ def lms(
         from the prediction, it is snapped to the nearest ``2π/symmetry``
         quantum.  Disable for parity checks or when the channel is known to
         be slip-free.
-    cpr_cycle_slip_history : int, default 1000
+    cpr_cycle_slip_history : int, default 100
         Length of the phase-history buffer used for cycle-slip extrapolation.
         Longer buffers give a more accurate linear-trend estimate but are
         slower to adapt to genuine frequency steps.  Ignored when
@@ -3307,7 +3373,7 @@ def lms(
                 bps_phases_neg_np,
                 bps_angles_np,
                 np.int32(cpr_bps_block_size),
-                bool(cpr_bps_joint_channels),
+                bool(cpr_joint_channels),
                 W,
                 np.float32(step_size),
                 np.int32(n_train_aligned),
@@ -3461,7 +3527,7 @@ def lms(
             cpr_type,
             B,
             int(cpr_bps_block_size),
-            bool(cpr_bps_joint_channels),
+            bool(cpr_joint_channels),
             H,
         )
         y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
@@ -3518,9 +3584,9 @@ def rls(
     cpr_pll_bandwidth: float = 1e-3,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
-    cpr_bps_joint_channels: bool = False,
-    cpr_cycle_slip_correction: bool = True,
-    cpr_cycle_slip_history: int = 1000,
+    cpr_joint_channels: bool = False,
+    cpr_cycle_slip_correction: bool = False,
+    cpr_cycle_slip_history: int = 100,
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
@@ -3638,11 +3704,11 @@ def rls(
         See :func:`lms` for details.
     cpr_bps_block_size : int, default 32
         BPS averaging window length.  See :func:`lms` for details.
-    cpr_bps_joint_channels : bool, default False
-        Joint MIMO BPS metric.  See :func:`lms` for details.
-    cpr_cycle_slip_correction : bool, default True
+    cpr_joint_channels : bool, default False
+        Joint MIMO BPS metric (BPS and PLL).  See :func:`lms` for details.
+    cpr_cycle_slip_correction : bool, default False
         Enable causal cycle-slip detection.  See :func:`lms` for details.
-    cpr_cycle_slip_history : int, default 1000
+    cpr_cycle_slip_history : int, default 100
         Phase-history buffer length for slip extrapolation.  See :func:`lms`.
     cpr_cycle_slip_threshold : float, default π/4
         Slip detection threshold in radians.  See :func:`lms` for details.
@@ -3863,7 +3929,7 @@ def rls(
                 bps_phases_neg_np,
                 bps_angles_np,
                 np.int32(cpr_bps_block_size),
-                bool(cpr_bps_joint_channels),
+                bool(cpr_joint_channels),
                 W,
                 P,
                 np.float32(forgetting_factor),
@@ -4044,7 +4110,7 @@ def rls(
             cpr_type,
             B,
             int(cpr_bps_block_size),
-            bool(cpr_bps_joint_channels),
+            bool(cpr_joint_channels),
             H,
         )
         y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
@@ -4103,8 +4169,8 @@ def block_lms(
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_bps_joint_channels: bool = False,
-    cpr_cycle_slip_correction: bool = True,
-    cpr_cycle_slip_history: int = 1000,
+    cpr_cycle_slip_correction: bool = False,
+    cpr_cycle_slip_history: int = 100,
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
@@ -4214,7 +4280,7 @@ def block_lms(
         of slower tracking of rapid phase changes.
     cpr_bps_joint_channels : bool, default False
         Sum BPS metric across all C channels before argmin (shared LO).
-    cpr_cycle_slip_correction : bool, default True
+    cpr_cycle_slip_correction : bool, default False
         Enable per-block cycle-slip detection.  An online linear regression
         predictor is maintained over the past ``cpr_cycle_slip_history``
         blocks; each block's midpoint phase is compared against the
@@ -4222,7 +4288,7 @@ def block_lms(
         the entire block's phase trajectory is shifted by the nearest
         ``2π/symmetry`` quantum.  When disabled, no device↔host transfer
         of the phase tensor occurs.
-    cpr_cycle_slip_history : int, default 1000
+    cpr_cycle_slip_history : int, default 100
         Number of past symbols used for the linear-trend predictor.
     cpr_cycle_slip_threshold : float, default π/4
         Phase deviation that triggers a slip correction (radians).
@@ -4340,9 +4406,10 @@ def block_lms(
         )  # (P,)
         bps_angles = xp.asarray(bps_angles_np)  # (P,)
         quantum = np.float64(2.0 * np.pi / symmetry)
+        # Cross-block 4-fold unwrap state (CPU, one value per channel)
+        bps_prev4 = np.zeros(C, dtype=np.float64)
+        bps_offset4 = np.zeros(C, dtype=np.float64)
         # Cycle-slip state (CPU scalars — negligible overhead vs GPU compute)
-        # Uses global symbol index as x_b so the regression is consistent with
-        # the per-symbol Numba kernel and across blocks of varying B.
         _cs_H = min(int(cpr_cycle_slip_history), n_sym)
         cs_buf_x = np.zeros((C, _cs_H), dtype=np.float64)
         cs_buf_y = np.zeros((C, _cs_H), dtype=np.float64)
@@ -4425,15 +4492,31 @@ def block_lms(
             )  # (B,) — denominator handles warmup
             metric = win_sum / counts[None, None, :]  # (P, C, B)
 
-            # Per-symbol argmin over P phases → phi_c (C, B)
+            # Per-symbol argmin over P phases → raw (C, B) in [0, π/2)
             if cpr_bps_joint_channels and C > 1:
                 best_k = xp.argmin(metric.sum(axis=1), axis=0)  # (B,)
-                phi_c_dev = xp.broadcast_to(
+                phi_raw = xp.broadcast_to(
                     bps_angles[best_k][None, :], (C, B)
                 ).copy()  # (C, B)
             else:
                 best_k = xp.argmin(metric, axis=0)  # (C, B)
-                phi_c_dev = bps_angles[best_k]  # (C, B)
+                phi_raw = bps_angles[best_k]  # (C, B)
+
+            # 4-fold causal unwrap: np.unwrap(phi*4)/4 across the entire
+            # block and across block boundaries via bps_prev4/bps_offset4.
+            # All on CPU to keep the unwrap state consistent.
+            phi_raw_np = to_device(phi_raw, "cpu").astype(np.float64)  # (C, B)
+            phi_unwrapped_np = np.empty_like(phi_raw_np)
+            two_pi = 2.0 * np.pi
+            for ci in range(C):
+                for n in range(B):
+                    raw4 = phi_raw_np[ci, n] * 4.0
+                    diff4 = raw4 - bps_prev4[ci]
+                    diff4 -= two_pi * np.round(diff4 / two_pi)
+                    bps_prev4[ci] += diff4
+                    bps_offset4[ci] += diff4
+                    phi_unwrapped_np[ci, n] = bps_offset4[ci] / 4.0
+            phi_c_dev = xp.asarray(phi_unwrapped_np.astype(np.float32))  # (C, B)
 
             # ── Per-block cycle-slip correction ───────────────────────────
             # A cycle slip is a block-level event (discrete quantum jump).
@@ -4445,8 +4528,8 @@ def block_lms(
             # When CS is disabled no device transfer occurs at all.
             if cpr_cycle_slip_correction:
                 x_b = float(b_start + B // 2)  # global index of block midpoint
-                # Transfer only (C,) float scalars from device
-                phi_mid_np = to_device(phi_c_dev[:, B // 2], "cpu").astype(np.float64)
+                # phi_unwrapped_np already on CPU — read midpoint directly
+                phi_mid_np = phi_unwrapped_np[:, B // 2].astype(np.float64)
                 offsets = np.zeros(C, dtype=np.float64)
 
                 for ci in range(C):
@@ -5405,7 +5488,7 @@ def zf_equalizer(
         W = xp.conj(H) / (xp.abs(H) ** 2 + reg)
         X_hat_f = Y * W
     else:
-        # MIMO: per-bin (C×C) matrix inversion — cannot reduce to scalar multiply.
+        # MIMO: per-bin (CxC) matrix inversion — cannot reduce to scalar multiply.
         H_f = xp.fft.fft(channel_estimate, n=N_fft, axis=-1)
         Hk = xp.transpose(H_f, (2, 0, 1))  # (N_fft, C_rx, C_tx)
         Hk_H = xp.conj(xp.transpose(Hk, (0, 2, 1)))  # (N_fft, C_tx, C_rx)

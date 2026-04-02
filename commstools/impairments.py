@@ -207,7 +207,7 @@ def apply_pmd(
 
     where :math:`\\tau` is the differential group delay (DGD),
     :math:`\\theta` is the PSP orientation angle, and :math:`R(\\theta)` is
-    the 2×2 Jones rotation matrix.
+    the 2x2 Jones rotation matrix.
 
     The DGD is applied in the *principal states of polarisation* (PSP) frame:
     :math:`R(-\\theta)` projects the signal onto the PSPs, the differential

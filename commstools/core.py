@@ -1495,7 +1495,7 @@ class Signal(BaseModel):
         The generated samples are normalized to **unit symbol power (Es = 1)**
         via `filtering.shape_pulse`, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
         Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
         average power (Es = 1, 1 SPS) before demapping or computing metrics.
@@ -1575,7 +1575,7 @@ class Signal(BaseModel):
         The generated samples are normalized to **unit symbol power (Es = 1)**
         via `filtering.shape_pulse`, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power × sps = 1``, so Es/N0 calibration is exact for
+        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
         Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
         average power (Es = 1, 1 SPS) before demapping or computing metrics.

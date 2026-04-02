@@ -730,7 +730,7 @@ def test_estimate_timing_preamble_kwargs_without_sps(backend_device, xp):
 
 
 def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
-    """Helper: build 2×2 MIMO received signal with unique-root ZC preamble.
+    """Helper: build 2x2 MIMO received signal with unique-root ZC preamble.
 
     Parameters
     ----------
