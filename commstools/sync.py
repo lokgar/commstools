@@ -2367,8 +2367,8 @@ def recover_carrier_phase_pll(
     loop_filter: str = "pi",
     loop_bandwidth_normalized: float = 1e-3,
     joint_channels: bool = False,
-    cycle_slip_correction: bool = True,
-    cycle_slip_history: int = 10000,
+    cycle_slip_correction: bool = False,
+    cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
@@ -2439,11 +2439,11 @@ def recover_carrier_phase_pll(
         trajectory, giving ~√C variance reduction for shared-LO systems.
         The output ``phi_full[ch]`` rows are all identical.
         Has no effect for SISO (C = 1).
-    cycle_slip_correction : bool, default True
+    cycle_slip_correction : bool, default False
         If ``True``, apply :func:`correct_cycle_slips` to the per-symbol
         phase trajectory after the loop, to detect and fix sudden ``π/2``
         jumps caused by incorrect hard decisions near the branch boundary.
-    cycle_slip_history : int, default 10000
+    cycle_slip_history : int, default 100
         ``history_length`` passed to :func:`correct_cycle_slips`.
         Default is higher than for block-phase methods because the trajectory
         is per-symbol (not per-block).
@@ -2672,8 +2672,8 @@ def recover_carrier_phase_viterbi_viterbi(
     order: int,
     block_size: int = 32,
     joint_channels: bool = False,
-    cycle_slip_correction: bool = True,
-    cycle_slip_history: int = 1000,
+    cycle_slip_correction: bool = False,
+    cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
@@ -2703,11 +2703,11 @@ def recover_carrier_phase_viterbi_viterbi(
         phasors ``S_b`` across all channels before phase extraction.
         The resulting single trajectory is broadcast to all C output rows.
         Reduces variance by ~√C for shared-LO systems.  SISO-safe.
-    cycle_slip_correction : bool, default True
+    cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
         (:func:`correct_cycle_slips`) after M-fold unwrap, before
         interpolation.
-    cycle_slip_history : int, default 1000
+    cycle_slip_history : int, default 100
         ``history_length`` passed to :func:`correct_cycle_slips`.
     cycle_slip_threshold : float, default π/4
         ``threshold`` passed to :func:`correct_cycle_slips` (radians).
@@ -2899,7 +2899,7 @@ def recover_carrier_phase_viterbi_viterbi(
     mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
         f"CPR (Viterbi-Viterbi, M={M}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [{N_blocks} blocks × {block_size} symbols, C={C}, "
+        f"std={phi_std_deg:.2f}° [{N_blocks} blocks x {block_size} symbols, C={C}, "
         f"cycle_slip_correction={cycle_slip_correction}]"
     )
 
@@ -2926,8 +2926,8 @@ def recover_carrier_phase_bps(
     num_test_phases: int = 64,
     block_size: int = 32,
     joint_channels: bool = False,
-    cycle_slip_correction: bool = True,
-    cycle_slip_history: int = 1000,
+    cycle_slip_correction: bool = False,
+    cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
@@ -2966,11 +2966,11 @@ def recover_carrier_phase_bps(
         of the output (all channels identical before ambiguity resolution).
         Reduces phase estimation variance by ~√C for shared-LO systems.
         Has no effect for SISO (C = 1).
-    cycle_slip_correction : bool, default True
+    cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
         (:func:`correct_cycle_slips`) to the block-phase trajectory
         after 4-fold unwrap, before interpolation.
-    cycle_slip_history : int, default 1000
+    cycle_slip_history : int, default 100
         ``history_length`` passed to :func:`correct_cycle_slips`.
         Number of past corrected blocks used for linear extrapolation.
     cycle_slip_threshold : float, default π/4
@@ -3183,7 +3183,7 @@ def recover_carrier_phase_bps(
     mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
         f"CPR (BPS, B={B}, {mode_str}): phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
-        f"[{N_blocks} blocks × {block_size} symbols, C={C}, "
+        f"[{N_blocks} blocks x {block_size} symbols, C={C}, "
         f"cycle_slip_correction={cycle_slip_correction}]"
     )
 
@@ -3300,8 +3300,8 @@ def recover_carrier_phase_tikhonov(
     snr_db: Optional[float] = None,
     method: str = "exact",
     joint_channels: bool = False,
-    cycle_slip_correction: bool = True,
-    cycle_slip_history: int = 1000,
+    cycle_slip_correction: bool = False,
+    cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
@@ -3356,11 +3356,11 @@ def recover_carrier_phase_tikhonov(
         phasors across all channels before the VV phase extraction and
         Kalman smoother.  The single smoothed trajectory is broadcast to
         all C output rows.  Reduces variance by ~√C for shared-LO systems.
-    cycle_slip_correction : bool, default True
+    cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
         (:func:`correct_cycle_slips`) after the Kalman smoother, before
         interpolation.
-    cycle_slip_history : int, default 1000
+    cycle_slip_history : int, default 100
         ``history_length`` passed to :func:`correct_cycle_slips`.
     cycle_slip_threshold : float, default π/4
         ``threshold`` passed to :func:`correct_cycle_slips` (radians).
@@ -3549,7 +3549,7 @@ def recover_carrier_phase_tikhonov(
     logger.info(
         f"CPR (Tikhonov-{method.upper()}, M={M}, {mode_str}): "
         f"phase mean={phi_mean_deg:.2f}°, std={phi_std_deg:.2f}° "
-        f"[{N_blocks} blocks × {block_size}, σ_p²={sigma_p2:.2e}, σ_v²={sigma_v2:.2e}, "
+        f"[{N_blocks} blocks x {block_size}, σ_p²={sigma_p2:.2e}, σ_v²={sigma_v2:.2e}, "
         f"C={C}, cycle_slip_correction={cycle_slip_correction}]"
     )
 
@@ -3575,8 +3575,8 @@ def recover_carrier_phase_pilots(
     pilot_values: ArrayType,
     interpolation: str = "linear",
     joint_channels: bool = False,
-    cycle_slip_correction: bool = True,
-    cycle_slip_history: int = 1000,
+    cycle_slip_correction: bool = False,
+    cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
 ) -> ArrayType:
@@ -3612,12 +3612,12 @@ def recover_carrier_phase_pilots(
         when averaging phases directly, and reduces variance by ~√C for
         shared-LO systems.  The resulting single phase trajectory is broadcast
         to all C output rows.  Has no effect for SISO (C = 1).
-    cycle_slip_correction : bool, default True
+    cycle_slip_correction : bool, default False
         If ``True``, apply :func:`correct_cycle_slips` to the unwrapped pilot
         phase sequence before interpolation, with ``symmetry=1`` (correction
         quantum ``2π``) to detect and fix wrap-around errors introduced by
         ``xp.unwrap`` at large inter-pilot gaps.
-    cycle_slip_history : int, default 1000
+    cycle_slip_history : int, default 100
         ``history_length`` passed to :func:`correct_cycle_slips`.
     cycle_slip_threshold : float, default π/4
         ``threshold`` passed to :func:`correct_cycle_slips` (radians).
@@ -4147,10 +4147,10 @@ def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
         r = samples[ch]  # (N,)
         P_in = xp.mean(xp.abs(r) ** 2)
 
-        # 2×N real data matrix: rows = [I, Q]
+        # 2xN real data matrix: rows = [I, Q]
         X = xp.stack([r.real, r.imag])  # (2, N)
 
-        # 2×2 second-moment matrix
+        # 2x2 second-moment matrix
         M = (X @ X.T) / N  # (2, 2)
 
         # Symmetric whitening: W = M^{-1/2} = V @ diag(1/sqrt(lam)) @ V.T

@@ -744,7 +744,7 @@ def shape_pulse(
     rect, and unit-energy Nyquist filters (RRC, RC, Gaussian, SmoothRect) —
     produce an output where ``E[|x|²] · sps = 1``, i.e. average sample power
     equals 1/sps. This is the **symbol-power** convention and is what
-    ``apply_awgn`` expects: it computes ``Es = mean_sample_power × sps``, so
+    ``apply_awgn`` expects: it computes ``Es = mean_sample_power x sps``, so
     Es = 1 is preserved and Es/N0 calibration is correct for all pulse shapes
     without any per-pulse offset.
 

@@ -195,7 +195,7 @@ from commstools import Signal
 from commstools.impairments import apply_awgn
 import numpy as np
 
-# 2×2 MIMO signal
+# 2x2 MIMO signal
 mimo_samples = np.random.randn(2, 10000) + 1j * np.random.randn(2, 10000)
 sig = Signal(samples=mimo_samples, sampling_rate=100e9, symbol_rate=25e9)
 

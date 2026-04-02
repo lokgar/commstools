@@ -971,7 +971,7 @@ class TestJAXBackend:
         assert result.num_train_symbols <= 50
 
     def test_lms_jax_mimo(self, backend_device, xp):
-        """LMS JAX butterfly should handle 2×2 MIMO input."""
+        """LMS JAX butterfly should handle 2x2 MIMO input."""
         from commstools import Signal
 
         n_symbols = 1000
@@ -1168,7 +1168,7 @@ class TestJAXBackend:
         assert result.y_hat.shape[0] > 0
 
     def test_rde_jax_mimo(self, backend_device, xp):
-        """RDE JAX butterfly should handle 2×2 MIMO input."""
+        """RDE JAX butterfly should handle 2x2 MIMO input."""
         from commstools import Signal
 
         n_symbols = 1000
@@ -1515,12 +1515,12 @@ class TestZF3x3:
     """Tests for the ZF/MMSE equalizer with 3+ channel MIMO (uses linalg.inv)."""
 
     def test_zf_3x3_identity(self, backend_device, xp, xpt):
-        """ZF on 3×3 identity channel should be a no-op (linalg.inv path)."""
+        """ZF on 3x3 identity channel should be a no-op (linalg.inv path)."""
         n = 256
         rng = xp.random.RandomState(0)
         symbols = (rng.randn(3, n) + 1j * rng.randn(3, n)).astype(xp.complex64)
 
-        # 3×3 identity impulse response
+        # 3x3 identity impulse response
         channel = xp.zeros((3, 3, 1), dtype=xp.complex64)
         for i in range(3):
             channel[i, i, 0] = 1.0
@@ -1531,12 +1531,12 @@ class TestZF3x3:
         xpt.assert_allclose(equalized, symbols, atol=1e-4)
 
     def test_zf_3x3_inversion(self, backend_device, xp, xpt):
-        """ZF should invert a non-trivial 3×3 single-tap MIMO channel."""
+        """ZF should invert a non-trivial 3x3 single-tap MIMO channel."""
         n = 256
         rng = xp.random.RandomState(42)
         tx = (rng.randn(3, n) + 1j * rng.randn(3, n)).astype(xp.complex64)
 
-        # Single-tap 3×3 mixing matrix
+        # Single-tap 3x3 mixing matrix
         H = xp.array(
             [[[1.0], [0.3], [0.0]], [[0.0], [1.0], [0.2]], [[0.1], [0.0], [1.0]]],
             dtype=xp.complex64,
@@ -1554,7 +1554,7 @@ class TestZF3x3:
         xpt.assert_allclose(equalized, tx, atol=1e-3)
 
     def test_mmse_3x3_with_noise(self, backend_device, xp):
-        """MMSE 3×3 should run without error and return correct shape."""
+        """MMSE 3x3 should run without error and return correct shape."""
         n = 128
         channel = xp.zeros((3, 3, 2), dtype=xp.complex64)
         for i in range(3):
@@ -1578,7 +1578,7 @@ class TestButterflyMIMOExtended:
     """Additional MIMO butterfly tests for RDE and JAX backends."""
 
     def test_rde_2x2_butterfly_numba(self, backend_device, xp):
-        """RDE Numba butterfly should handle 2×2 cross-polarization without error."""
+        """RDE Numba butterfly should handle 2x2 cross-polarization without error."""
         from commstools import Signal
 
         n_symbols = 2000
@@ -1633,7 +1633,7 @@ class TestButterflyMIMOExtended:
         rx = xp.asarray(sig.samples)
         train = xp.asarray(sig.source_symbols)
 
-        # 2×2 mixed input
+        # 2x2 mixed input
         rx_mimo = xp.stack([rx, xp.roll(rx, 2)], axis=0)
         train_mimo = xp.stack([train, train], axis=0)
 

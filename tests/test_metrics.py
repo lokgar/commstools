@@ -178,7 +178,6 @@ def test_evm_near_zero_ref(backend_device, xp):
     assert db == float("inf")
 
 
-
 def test_evm_shape_mismatch(backend_device, xp):
     """Verify error on shape mismatch in evm."""
     with pytest.raises(ValueError, match="Shape mismatch"):
@@ -189,7 +188,6 @@ def test_snr_shape_mismatch(backend_device, xp):
     """Verify error on shape mismatch in snr."""
     with pytest.raises(ValueError, match="Shape mismatch"):
         metrics.snr(xp.zeros(10), xp.zeros(11))
-
 
 
 def test_evm_array_handling(backend_device, xp):
@@ -269,7 +267,7 @@ def test_evm_blind_perfect_signal(backend_device, xp):
     from commstools.mapping import gray_constellation
 
     const = xp.asarray(gray_constellation("qam", 16))
-    rx = xp.tile(const, 32)  # 512 symbols, each of the 16 points exactly 32×
+    rx = xp.tile(const, 32)  # 512 symbols, each of the 16 points exactly 32x
 
     pct, db = metrics.evm(rx, mode="blind", modulation="qam", order=16)
 
@@ -353,7 +351,9 @@ def test_signal_evm_blind(backend_device, xp):
     """
     from commstools.core import Signal
 
-    sig = Signal.qam(order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none")
+    sig = Signal.qam(
+        order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none"
+    )
     sig.resolve_symbols()
 
     pct, db = sig.evm(mode="blind")
@@ -415,7 +415,9 @@ def test_signal_ser_method(backend_device, xp):
     """Signal.ser() returns 0 for a clean signal."""
     from commstools.core import Signal
 
-    sig = Signal.qam(order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none")
+    sig = Signal.qam(
+        order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none"
+    )
     sig.resolve_symbols()
 
     assert sig.ser() == 0.0
