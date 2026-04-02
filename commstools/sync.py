@@ -1110,7 +1110,7 @@ def estimate_frequency_offset_mth_power(
     modems for burst-mode transmissions," IEEE Trans. Commun., 1995.
 
     E. Jacobsen and P. Kootsookos, "Fast, accurate frequency estimators,"
-    IEEE Signal Process. Mag., vol. 24, no. 3, pp. 123–125, May 2007.
+    IEEE Signal Process. Mag., vol. 24, no. 3, pp. 123-125, May 2007.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -1626,7 +1626,7 @@ def estimate_frequency_offset_pilots(
                   {\\sum_k v_k(t_k - \\bar{t}_v)^2}
 
     where :math:`\\bar{t}_v` and :math:`\\bar{\\phi}_v` are the
-    weighted means.  This reduces variance by 30–50 % when pilot SNR
+    weighted means.  This reduces variance by 30-50 % when pilot SNR
     varies significantly across the burst.
 
     **Lock range:** ``xp.unwrap`` bridges each gap between consecutive
@@ -1647,7 +1647,7 @@ def estimate_frequency_offset_pilots(
     References
     ----------
     S. A. Tretter, "Estimating the frequency of a noisy sinusoid by linear
-    regression," *IEEE Trans. Inf. Theory*, vol. 31, no. 6, pp. 832–835,
+    regression," *IEEE Trans. Inf. Theory*, vol. 31, no. 6, pp. 832-835,
     Nov. 1985.
     """
     samples, xp, _ = dispatch(samples)
@@ -1743,6 +1743,7 @@ def estimate_frequency_offset_blockwise(
     sps: int = 2,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
+    debug_plot: bool = False,
 ) -> np.ndarray:
     r"""
     Estimates a time-varying frequency offset via a sliding-window approach.
@@ -1784,6 +1785,10 @@ def estimate_frequency_offset_blockwise(
         estimation with either method.
     order : int, optional
         Modulation order (e.g. 4, 16, 64).  Required alongside ``modulation``.
+    debug_plot : bool, default False
+        If ``True``, opens a diagnostic figure showing the per-block frequency
+        estimates, the interpolated frequency trajectory, and the integrated
+        phase trajectory.
 
     Returns
     -------
@@ -1803,9 +1808,15 @@ def estimate_frequency_offset_blockwise(
        :math:`t_k = \lfloor k \cdot \text{step} + \text{block\_size}/2 \rceil`
        for :math:`k = 0, 1, \ldots, B-1`.
     2. Run ``method`` on each block to obtain :math:`\Delta f[k]` in Hz.
-    3. Cubic-spline-interpolate :math:`\Delta f[k]` at block centers to a
-       dense per-sample grid :math:`\Delta f_\text{dense}(n)`, with
-       ``fill_value='extrapolate'`` to cover the first and last partial blocks.
+    3. Interpolate :math:`\Delta f[k]` to a dense per-sample grid:
+
+       * Interior (between first and last block centre): cubic spline.
+       * Exterior (before first / after last block centre): constant clamp to
+         the nearest edge estimate.  Cubic extrapolation diverges rapidly for
+         noisy block estimates and is avoided.
+       * Fallback to linear interpolation when fewer than 4 blocks are
+         available (cubic requires ≥ 4 nodes for numerical stability).
+
     4. Integrate:
        :math:`\theta(n) = \frac{2\pi}{f_s} \sum_{m=0}^{n} \Delta f_\text{dense}(m)`.
 
@@ -1860,13 +1871,24 @@ def estimate_frequency_offset_blockwise(
 
     # Interpolate to per-sample grid
     n_grid = np.arange(N, dtype=np.float64)
-    if len(t_centers) == 1:
+    n_blocks = len(t_centers)
+    if n_blocks == 1:
         df_dense = np.full(N, df_estimates[0], dtype=np.float64)
     else:
         from scipy.interpolate import interp1d  # noqa: PLC0415
 
+        # Use cubic for the interior when ≥ 4 nodes; fall back to linear for
+        # small block counts (cubic requires ≥ 4 nodes for stability).
+        kind = "cubic" if n_blocks >= 4 else "linear"
+
+        # Interior interpolation only — clamp at the boundaries to avoid
+        # diverging polynomial extrapolation from noisy edge estimates.
         interp_fn = interp1d(
-            t_centers, df_estimates, kind="cubic", fill_value="extrapolate"
+            t_centers,
+            df_estimates,
+            kind=kind,
+            bounds_error=False,
+            fill_value=(df_estimates[0], df_estimates[-1]),
         )
         df_dense = interp_fn(n_grid)
 
@@ -1874,10 +1896,24 @@ def estimate_frequency_offset_blockwise(
     phase_trajectory = (2.0 * np.pi / sampling_rate) * np.cumsum(df_dense)
 
     logger.debug(
-        f"FOE blockwise: {len(starts)} blocks, method={method}, "
+        f"FOE blockwise: {n_blocks} blocks, method={method}, "
         f"freq range=[{df_estimates.min():.2f}, {df_estimates.max():.2f}] Hz, "
         f"total phase drift={float(phase_trajectory[-1]):.3f} rad"
     )
+
+    if debug_plot:
+        from . import plotting as _plotting  # noqa: PLC0415
+
+        _plotting.foe_blockwise_result(
+            t_centers=t_centers,
+            df_estimates=df_estimates,
+            n_grid=n_grid,
+            df_dense=df_dense,
+            phase_trajectory=phase_trajectory,
+            sampling_rate=sampling_rate,
+            show=True,
+        )
+
     return phase_trajectory
 
 
@@ -3681,7 +3717,7 @@ def recover_carrier_phase_pilots(
         # xp.interp handles non-uniform pilot spacing natively, is boundary-safe
         # (extrapolates with first/last pilot value), and avoids the divide-by-zero
         # guards that the searchsorted form required.  Loop over C channels because
-        # xp.interp is 1D-only; overhead is negligible for typical C = 1–4.
+        # xp.interp is 1D-only; overhead is negligible for typical C = 1-4.
         phi_full = xp.zeros((C, N), dtype=xp.float64)
         for ch in range(C):
             phi_full[ch] = xp.interp(all_positions, pilot_indices_xp, phi_pilots_u[ch])
