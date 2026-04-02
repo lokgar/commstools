@@ -4250,10 +4250,10 @@ def block_lms(
             "PLL is not available for block processing."
         )
 
-    logger.info(
-        f"Block-LMS: num_taps={num_taps}, block_size={block_size}, "
-        f"mu={step_size}, sps={sps}" + (f", cpr={cpr_type}" if cpr_type else "")
-    )
+    num_taps = int(num_taps)
+    sps = int(sps)
+    block_size = int(block_size)
+
     _validate_sps(sps, num_taps)
 
     samples, xp, _ = dispatch(samples)
@@ -4352,8 +4352,18 @@ def block_lms(
 
     # ── OLS block size ────────────────────────────────────────────────────────
     # fftsize must be >= block_size * sps + num_taps - 1 (linear OLS condition)
-    _ols_min = int(block_size) * int(sps) + int(num_taps) - 1
+    _ols_min = block_size * sps + num_taps - 1
     fftsize = 1 << (_ols_min - 1).bit_length()  # next power of 2
+
+    _cpr_info = ""
+    if cpr_type == "bps":
+        _cs = f", cs_corr=True(thr={cpr_cycle_slip_threshold:.3f})" if cpr_cycle_slip_correction else ", cs_corr=False"
+        _joint = ", joint" if cpr_bps_joint_channels and C > 1 else ""
+        _cpr_info = f", cpr=bps(P={cpr_bps_test_phases}, K={cpr_bps_block_size}{_joint}{_cs})"
+    logger.info(
+        f"Block-LMS: C={C}, num_taps={num_taps}, sps={sps}, block_size={block_size}, "
+        f"fftsize={fftsize}, mu={step_size}, n_sym={n_sym}{_cpr_info}"
+    )
 
     # ── Padding — matches lms() convention ───────────────────────────────────
     c_tap = num_taps // 2
