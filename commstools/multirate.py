@@ -36,7 +36,7 @@ sample power is preserved:
     E[|x_{\\text{out}}[n]|^2] \\approx E[|x_{\\text{in}}[n]|^2]
 
 This holds regardless of the resampling ratio, rolloff factor, or
-signal length (verified for RRC-shaped signals with rolloff 0.01–0.99,
+signal length (verified for RRC-shaped signals with rolloff 0.01-0.99,
 sps_in down to 1.5, and block sizes as short as 64 symbols).
 
 **Consequence for the ``"symbol_power"`` convention**

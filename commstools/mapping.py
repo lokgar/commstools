@@ -925,7 +925,7 @@ def maxwell_boltzmann(order: int, nu: float) -> np.ndarray:
         Shaping parameter ``ν ≥ 0``.
         ``ν = 0`` returns the uniform distribution ``1/M``.
         Larger ``ν`` concentrates probability on lower-energy inner points.
-        Values are on the unnormalized grid scale (typical range 0.001–0.5
+        Values are on the unnormalized grid scale (typical range 0.001-0.5
         depending on order; see :func:`optimal_nu`).
 
     Returns

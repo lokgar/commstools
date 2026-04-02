@@ -30,6 +30,8 @@ frequency_offset_spectrum :
     M-th power spectrum with detected tone for blind FOE diagnostics.
 carrier_phase_trajectory :
     Per-symbol carrier phase trajectory for CPR algorithm diagnostics.
+foe_blockwise_result :
+    Block-wise FOE diagnostic: interpolated frequency and integrated phase.
 pilot_phase_estimate :
     Pilot phase scatter, linear fit, and interpolated phase trajectory.
 zf_equalizer_response :
@@ -1389,17 +1391,20 @@ def equalizer_result(
     show: bool = False,
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Plots adaptive equalizer diagnostics: convergence curve and tap weights.
+    Plots adaptive equalizer diagnostics: convergence curve, tap weights, and
+    (when CPR was enabled) the recovered phase trajectory.
 
     Parameters
     ----------
     result : EqualizerResult
-        Equalizer output containing ``error`` and ``weights`` fields.
+        Equalizer output containing ``error``, ``weights``, and optionally
+        ``phase_trajectory`` fields.
     smoothing : int, default 50
         Moving-average window length for the MSE convergence curve.
-    ax : list of 2 Axes, optional
-        Pre-existing axes ``[ax_convergence, ax_taps]``. If None, a new
-        figure with 2 subplots is created.
+    ax : list of Axes, optional
+        Pre-existing axes.  Pass 2 axes when ``phase_trajectory`` is None, or
+        3 axes when CPR was used (``[ax_convergence, ax_taps, ax_phase]``).
+        If None, a new figure is created with the appropriate number of panels.
     show : bool, default False
         If True, calls ``plt.show()`` and returns None.
 
@@ -1410,13 +1415,17 @@ def equalizer_result(
     """
     error = to_device(result.error, "cpu")
     weights = to_device(result.weights, "cpu")
+    phase_traj = getattr(result, "phase_trajectory", None)
+    if phase_traj is not None:
+        phase_traj = to_device(phase_traj, "cpu")
 
     is_mimo = error.ndim == 2
+    n_panels = 3 if phase_traj is not None else 2
 
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(10, 3.5))
+        fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 3.5))
     else:
-        axes = np.asarray(ax).flatten()[:2]
+        axes = np.asarray(ax).flatten()[:n_panels]
         fig = axes[0].figure
 
     # --- Panel 1: MSE convergence ---
@@ -1500,6 +1509,20 @@ def equalizer_result(
     ax_taps.set_ylabel("|w|")
     ax_taps.set_title("Tap Weights")
 
+    # --- Panel 3: Phase trajectory (CPR only) ---
+    if phase_traj is not None:
+        ax_phase = axes[2]
+        phi = np.asarray(phase_traj)
+        if phi.ndim == 1:
+            ax_phase.plot(np.degrees(phi))
+        else:
+            for ch in range(phi.shape[0]):
+                ax_phase.plot(np.degrees(phi[ch]), label=f"ch {ch}")
+            ax_phase.legend(fontsize=8)
+        ax_phase.set_xlabel("Symbol Index")
+        ax_phase.set_ylabel("Phase (°)")
+        ax_phase.set_title("CPR Phase Trajectory")
+
     if show:
         plt.show()
         return None
@@ -1537,7 +1560,7 @@ def timing_correlation(
         Per-channel normalization factors. The displayed threshold line is
         ``threshold * norm_factors[c]``. Shape: ``(C,)``.
     threshold : float
-        Detection threshold (normalized 0–1).
+        Detection threshold (normalized 0-1).
     offset : int, default 0
         Search-range start sample added to sample indices for correct labels.
     ax : array_like of Axes, optional
@@ -1836,9 +1859,10 @@ def carrier_phase_trajectory(
     """
     Plots per-symbol carrier phase trajectory for CPR algorithm diagnostics.
 
-    Supports all CPR methods — Viterbi-Viterbi, BPS, pilot-aided, and
-    decision-directed.  Block-based methods can overlay block estimates as
-    scatter points via ``block_centers`` / ``phi_blocks``.
+    All channels are overlaid on a single subplot.  Block-based methods may
+    pass ``block_centers`` / ``phi_blocks`` to annotate block-phase estimates
+    as vertical lines (not scatter markers, consistent with the joint
+    equalizer phase panel).
 
     Parameters
     ----------
@@ -1846,73 +1870,153 @@ def carrier_phase_trajectory(
         Per-symbol phase estimate in radians. Shape: ``(C, N)`` or ``(N,)``.
     block_centers : array_like, optional
         Block centre positions in symbols (VV, BPS). Shape: ``(N_blocks,)``.
+        If provided, thin vertical lines at each block centre are drawn.
     phi_blocks : array_like, optional
-        Per-block phase values in radians. Overlaid as scatter points.
-        Shape: ``(C, N_blocks)`` or ``(N_blocks,)``.
+        Kept for backwards compatibility — ignored (block markers removed).
     n_train : int, default 0
-        Training/DD boundary symbol index (DD-PLL). Draws a vertical marker.
-    ax : array_like of Axes, optional
-        One Axes per channel. If ``None``, a new figure is created.
+        Training/DD boundary symbol index. Draws a dashed vertical line.
+    ax : Axes, optional
+        Single Axes object to plot into.  If ``None``, a new figure is created.
     show : bool, default False
     title : str, default "Carrier Phase Trajectory"
 
     Returns
     -------
-    (fig, axes) or None
+    (fig, ax) or None
     """
     phi_full = to_device(phi_full, "cpu")
     if phi_full.ndim == 1:
         phi_full = phi_full[None, :]
     C, N = phi_full.shape
 
-    if phi_blocks is not None:
-        phi_blocks = to_device(phi_blocks, "cpu")
-        if phi_blocks.ndim == 1:
-            phi_blocks = phi_blocks[None, :]
-
     if ax is None:
-        fig, raw_axes = plt.subplots(C, 1, figsize=(9, 3.0 * C), squeeze=False)
-        axes_list = [raw_axes[i][0] for i in range(C)]
+        fig, axi = plt.subplots(1, 1, figsize=(9, 3.5))
     else:
-        axes_list = list(ax) if hasattr(ax, "__len__") else [ax]
-        fig = axes_list[0].figure
+        axi = ax
+        fig = axi.figure
 
     sym_idx = np.arange(N)
     for i in range(C):
-        axi = axes_list[i]
         phi_deg = np.degrees(phi_full[i])
-        phi_mean = float(np.mean(phi_deg))
-        phi_std = float(np.std(phi_deg))
-        ch_suffix = f" — Ch {i}" if C > 1 else ""
+        label = f"Ch {i}" if C > 1 else None
+        axi.plot(sym_idx, phi_deg, alpha=0.85, label=label)
 
-        axi.plot(sym_idx, phi_deg, alpha=0.85, label="φ̂[n]")
+    if block_centers is not None:
+        bc = np.asarray(to_device(block_centers, "cpu"))
+        for tc in bc:
+            axi.axvline(tc, color="gray", linewidth=0.5, alpha=0.5)
 
-        if block_centers is not None and phi_blocks is not None:
-            bc = to_device(block_centers, "cpu")
-            pb_idx = min(i, phi_blocks.shape[0] - 1)
-            pb_deg = np.degrees(phi_blocks[pb_idx])
-            axi.scatter(bc, pb_deg, s=10, color="r", zorder=5, label="Block est.")
+    if n_train > 0:
+        axi.axvline(
+            n_train,
+            color="white",
+            linestyle="--",
+            linewidth=1,
+            label=f"DD start ({n_train})",
+        )
 
-        if n_train > 0:
-            axi.axvline(
-                n_train,
-                color="white",
-                linestyle="--",
-                linewidth=1,
-                label=f"DD start ({n_train})",
-            )
-
-        axi.set_title(f"{title}{ch_suffix}  [μ={phi_mean:.1f}°,  σ={phi_std:.2f}°]")
-        axi.set_xlabel("Symbol Index")
-        axi.set_ylabel("Phase [deg]")
+    phi_all = np.degrees(phi_full)
+    phi_mean = float(np.mean(phi_all))
+    phi_std = float(np.std(phi_all))
+    axi.set_title(f"{title}  [μ={phi_mean:.1f}°,  σ={phi_std:.2f}°]")
+    axi.set_xlabel("Symbol Index")
+    axi.set_ylabel("Phase [deg]")
+    if C > 1 or n_train > 0:
         axi.legend(fontsize="small", loc="upper right")
-        axi.grid(True, alpha=0.3)
+    axi.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if show:
         plt.show()
         return None
-    return fig, (axes_list[0] if C == 1 else axes_list)
+    return fig, axi
+
+
+def foe_blockwise_result(
+    t_centers,
+    df_estimates,
+    n_grid,
+    df_dense,
+    phase_trajectory,
+    sampling_rate: float = 1.0,
+    ax=None,
+    show: bool = False,
+    title: str = "Block-wise FOE",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Diagnostic plot for :func:`~commstools.sync.estimate_frequency_offset_blockwise`.
+
+    Shows three panels:
+
+    1. Per-block frequency estimates (scatter) and interpolated Δf trajectory (line).
+    2. Integrated phase trajectory in degrees.
+
+    Parameters
+    ----------
+    t_centers : array_like
+        Block centre sample indices. Shape: ``(K,)``.
+    df_estimates : array_like
+        Per-block frequency estimates in Hz. Shape: ``(K,)``.
+    n_grid : array_like
+        Dense sample index grid. Shape: ``(N,)``.
+    df_dense : array_like
+        Interpolated frequency at each sample in Hz. Shape: ``(N,)``.
+    phase_trajectory : array_like
+        Integrated phase in radians. Shape: ``(N,)``.
+    sampling_rate : float, default 1.0
+        Sampling rate in Hz (used for axis labelling only).
+    ax : list of 2 Axes, optional
+        Pre-existing axes ``[ax_freq, ax_phase]``. If ``None``, a new figure
+        with 2 panels is created.
+    show : bool, default False
+    title : str
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    t_centers = np.asarray(t_centers, dtype=np.float64)
+    df_estimates = np.asarray(df_estimates, dtype=np.float64)
+    n_grid = np.asarray(n_grid, dtype=np.float64)
+    df_dense = np.asarray(df_dense, dtype=np.float64)
+    phase_trajectory = np.asarray(phase_trajectory, dtype=np.float64)
+
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(11, 3.5))
+    else:
+        axes = np.asarray(ax).flatten()[:2]
+        fig = axes[0].figure
+
+    # Panel 1: frequency trajectory
+    ax_f = axes[0]
+    ax_f.plot(n_grid, df_dense * 1e-3, linewidth=1, label="Interpolated Δf")
+    ax_f.scatter(
+        t_centers,
+        df_estimates * 1e-3,
+        s=20,
+        zorder=5,
+        color="C1",
+        label="Block estimate",
+    )
+    ax_f.set_xlabel("Sample Index")
+    ax_f.set_ylabel("Δf [kHz]")
+    ax_f.set_title(f"{title} — Frequency")
+    ax_f.legend(fontsize="small")
+    ax_f.grid(True, alpha=0.3)
+
+    # Panel 2: phase trajectory
+    ax_p = axes[1]
+    ax_p.plot(n_grid, np.degrees(phase_trajectory), linewidth=1)
+    ax_p.set_xlabel("Sample Index")
+    ax_p.set_ylabel("Phase [deg]")
+    ax_p.set_title(f"{title} — Integrated Phase")
+    ax_p.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axes
 
 
 def pilot_phase_estimate(

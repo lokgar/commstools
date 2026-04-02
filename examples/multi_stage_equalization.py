@@ -37,27 +37,27 @@ from commstools.backend import to_device
 # Parameters
 # ──────────────────────────────────────────────────────────────────────────────
 
-SPS          = 2
-SYMBOL_RATE  = 10e9        # 10 GBaud
-FS           = SPS * SYMBOL_RATE  # 20 GSa/s
-N_SYM        = 8192
-MOD          = "qam"
-ORDER        = 16
-ROLLOFF      = 0.2
-N_TAPS_FSE   = 31          # Stage 1 & 1b: fractionally-spaced filter length
-N_TAPS_SSE   = 7           # Stage 2: short symbol-spaced filter (residual ISI)
-N_TRAIN      = 512         # DA pilot symbols for LMS stages
+SPS = 2
+SYMBOL_RATE = 10e9  # 10 GBaud
+FS = SPS * SYMBOL_RATE  # 20 GSa/s
+N_SYM = 8192
+MOD = "qam"
+ORDER = 16
+ROLLOFF = 0.2
+N_TAPS_FSE = 31  # Stage 1 & 1b: fractionally-spaced filter length
+N_TAPS_SSE = 7  # Stage 2: short symbol-spaced filter (residual ISI)
+N_TRAIN = 512  # DA pilot symbols for LMS stages
 
-SNR_DB       = 22.0
-FO_TRUE_HZ   = 1.2e6       # 1.2 MHz frequency offset
+SNR_DB = 22.0
+FO_TRUE_HZ = 1.2e6  # 1.2 MHz frequency offset
 
 rng = np.random.default_rng(42)
 
 
 def _print_sep(title):
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print(f"  {title}")
-    print('─'*60)
+    print("─" * 60)
 
 
 def _mse_db(error, window=200):
@@ -81,11 +81,13 @@ sig_tx = Signal.qam(
     rrc_rolloff=ROLLOFF,
 )
 
-training_syms = to_device(sig_tx.source_symbols, "cpu").astype(np.complex64)  # (N_SYM,) at 1 SPS
+training_syms = to_device(sig_tx.source_symbols, "cpu").astype(
+    np.complex64
+)  # (N_SYM,) at 1 SPS
 
 print(f"  TX samples : {sig_tx.samples.shape}  (dtype={sig_tx.samples.dtype})")
 print(f"  TX symbols : {training_syms.shape}  {ORDER}-{MOD.upper()}, SPS={SPS}")
-print(f"  Symbol rate: {SYMBOL_RATE/1e9:.0f} GBaud  |  FS: {FS/1e9:.0f} GSa/s")
+print(f"  Symbol rate: {SYMBOL_RATE / 1e9:.0f} GBaud  |  FS: {FS / 1e9:.0f} GSa/s")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ noise = np.sqrt(noise_var / 2) * (
 rx = (rx + noise).astype(np.complex64)
 
 print(f"  Channel    : FIR {h_ch}")
-print(f"  FO true    : {FO_TRUE_HZ/1e6:.2f} MHz")
+print(f"  FO true    : {FO_TRUE_HZ / 1e6:.2f} MHz")
 print(f"  SNR        : {SNR_DB} dB")
 print(f"  RX samples : {rx.shape}  (dtype={rx.dtype})")
 
@@ -156,13 +158,13 @@ _print_sep("4. Stage 1b — LMS refinement  (sps=2, w_init=CMA.weights)")
 
 result_lms1 = equalization.lms(
     rx,
-    training_symbols=training_syms[:N_TRAIN],   # DA phase
+    training_symbols=training_syms[:N_TRAIN],  # DA phase
     modulation=MOD,
     order=ORDER,
     num_taps=N_TAPS_FSE,
     step_size=0.004,
     sps=SPS,
-    w_init=result_cma.weights,                  # ← weight hand-off from CMA
+    w_init=result_cma.weights,  # ← weight hand-off from CMA
     backend="numba",
 )
 
@@ -196,7 +198,7 @@ rx2 = rx2 * np.exp(1j * 2.0 * np.pi * FO_TRUE_HZ * t2).astype(np.complex64) + no
 
 y_frozen = equalization.apply_taps(
     rx2,
-    result_lms1.weights,   # ← frozen taps from the training burst
+    result_lms1.weights,  # ← frozen taps from the training burst
     sps=SPS,
     normalize=True,
 )
@@ -220,9 +222,9 @@ fo_est = sync.estimate_frequency_offset_mth_power(
 
 y_foe = sync.correct_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
 
-print(f"  True FO : {FO_TRUE_HZ/1e6:.4f} MHz")
-print(f"  Est  FO : {fo_est/1e6:.4f} MHz")
-print(f"  Error   : {(fo_est - FO_TRUE_HZ)/1e3:.2f} kHz")
+print(f"  True FO : {FO_TRUE_HZ / 1e6:.4f} MHz")
+print(f"  Est  FO : {fo_est / 1e6:.4f} MHz")
+print(f"  Error   : {(fo_est - FO_TRUE_HZ) / 1e3:.2f} kHz")
 print(f"  Output  : {y_foe.shape} symbols (FO-corrected)")
 
 
@@ -262,9 +264,9 @@ result_lms2 = equalization.lms(
     training_symbols=training_syms[:N_TRAIN],
     modulation=MOD,
     order=ORDER,
-    num_taps=N_TAPS_SSE,       # short filter: only residual ISI spans 1–2 symbols
+    num_taps=N_TAPS_SSE,  # short filter: only residual ISI spans 1-2 symbols
     step_size=0.002,
-    sps=1,                     # ← symbol-spaced — enabled by relaxed sps check
+    sps=1,  # ← symbol-spaced — enabled by relaxed sps check
     backend="numba",
 )
 
@@ -290,10 +292,20 @@ _print_sep("9. MSE progression summary")
 print("  Stage                          | Exit MSE")
 print("  ─────────────────────────────────────────")
 print(f"  CMA  blind FSE      (sps=2)   | {_mse_db(result_cma.error):>7.1f} dB")
-print(f"  LMS  warm-start FSE (sps=2)   | {_mse_db(result_lms1.error):>7.1f} dB  ← DA pilot gain")
-print(f"  LMS  SSE residual   (sps=1)   | {_mse_db(result_lms2.error):>7.1f} dB  ← post FOE+CPR")
+print(
+    f"  LMS  warm-start FSE (sps=2)   | {_mse_db(result_lms1.error):>7.1f} dB  ← DA pilot gain"
+)
+print(
+    f"  LMS  SSE residual   (sps=1)   | {_mse_db(result_lms2.error):>7.1f} dB  ← post FOE+CPR"
+)
 print()
 print("  Weight-passing:")
-print(f"    CMA.weights  {result_cma.weights.shape}  → w_init for LMS Stage 1b  (warm-start)")
-print(f"    LMS1b.weights {result_lms1.weights.shape}  → apply_taps() on 2nd capture (frozen)")
-print(f"    LMS2.weights {result_lms2.weights.shape}    → short SSE taps (sps=1 residual ISI)")
+print(
+    f"    CMA.weights  {result_cma.weights.shape}  → w_init for LMS Stage 1b  (warm-start)"
+)
+print(
+    f"    LMS1b.weights {result_lms1.weights.shape}  → apply_taps() on 2nd capture (frozen)"
+)
+print(
+    f"    LMS2.weights {result_lms2.weights.shape}    → short SSE taps (sps=1 residual ISI)"
+)
