@@ -3192,8 +3192,8 @@ def recover_carrier_phase_bps(
 
         _plotting.carrier_phase_trajectory(
             phi_full=phi_full_np,
-            block_centers=to_device(block_centers, "cpu"),
-            phi_blocks=to_device(phi_blocks, "cpu"),
+            # block_centers=to_device(block_centers, "cpu"),
+            # phi_blocks=to_device(phi_blocks, "cpu"),
             show=True,
             title="CPR — Blind Phase Search",
         )
