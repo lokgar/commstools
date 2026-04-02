@@ -4352,7 +4352,7 @@ def block_lms(
 
     # ── OLS block size ────────────────────────────────────────────────────────
     # fftsize must be >= block_size * sps + num_taps - 1 (linear OLS condition)
-    _ols_min = block_size * sps + num_taps - 1
+    _ols_min = int(block_size) * int(sps) + int(num_taps) - 1
     fftsize = 1 << (_ols_min - 1).bit_length()  # next power of 2
 
     # ── Padding — matches lms() convention ───────────────────────────────────
