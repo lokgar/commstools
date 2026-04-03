@@ -952,9 +952,9 @@ class TestJAXBackend:
         assert result.y_hat.shape[0] > 0
 
     def test_lms_jax_num_train_symbols(self, backend_device, xp):
-        """LMS JAX should respect num_train_symbols cap."""
+        """LMS JAX: pre-sliced training_symbols limits DA phase length."""
         rx, sig = self._make_qpsk_rx(xp, n_symbols=1000)
-        train = xp.asarray(sig.source_symbols)
+        train = xp.asarray(sig.source_symbols[:50])
 
         result = equalization.lms(
             rx,
@@ -964,7 +964,6 @@ class TestJAXBackend:
             modulation="psk",
             order=4,
             backend="jax",
-            num_train_symbols=50,
         )
 
         assert isinstance(result, EqualizerResult)
@@ -1452,9 +1451,9 @@ class TestEdgeCases:
         assert result.y_hat.shape == (2, rx.shape[0] // 2)
 
     def test_lms_num_train_symbols_clamps_numba(self, backend_device, xp):
-        """LMS Numba: num_train_symbols caps training length recorded in result."""
+        """LMS Numba: pre-sliced training_symbols limits DA phase length."""
         rx, sig = self._qpsk_rx(xp, n_symbols=1000)
-        train = xp.asarray(sig.source_symbols)
+        train = xp.asarray(sig.source_symbols[:30])
 
         result = equalization.lms(
             rx,
@@ -1464,7 +1463,6 @@ class TestEdgeCases:
             modulation="psk",
             order=4,
             backend="numba",
-            num_train_symbols=30,
         )
 
         assert result.num_train_symbols <= 30
@@ -1743,9 +1741,9 @@ class TestNumbaBackendCoverage:
         assert result.weights.shape == (2, 2, 7)
 
     def test_rls_numba_num_train_symbols(self, backend_device, xp):
-        """RLS numba should respect num_train_symbols when slicing training data."""
+        """RLS numba: pre-sliced training_symbols limits DA phase length."""
         rx, sig = self._make_qpsk_rx(xp, n_symbols=800)
-        train = xp.asarray(sig.source_symbols)
+        train = xp.asarray(sig.source_symbols[:50])
 
         result = equalization.rls(
             rx,
@@ -1755,7 +1753,6 @@ class TestNumbaBackendCoverage:
             modulation="psk",
             order=4,
             backend="numba",
-            num_train_symbols=50,
         )
 
         assert isinstance(result, EqualizerResult)
@@ -2157,11 +2154,10 @@ class TestWInit:
         # LMS pre-convergence
         pre = equalization.lms(
             rx,
-            training_symbols=xp.asarray(sig.source_symbols),
+            training_symbols=xp.asarray(sig.source_symbols[:200]),
             modulation="qam",
             order=16,
             num_taps=21,
-            num_train_symbols=200,
         )
         _w = pre.weights
         w0 = _to_np(pre.weights)
@@ -2422,3 +2418,42 @@ class TestCmaPilotAided:
         assert mask_u8.shape == (n_sym,)
         assert mask_u8.dtype == np.uint8
         assert int(mask_u8.sum()) == n_pilots
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Normalization length-independence regression test
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNormalizationLengthIndependence:
+    """Normalization uses full-signal RMS — training output scales with signal power."""
+
+    @pytest.mark.parametrize("algo", ["lms", "rls"])
+    @pytest.mark.parametrize("backend", ["numba"])
+    def test_training_output_finite(self, algo, backend, backend_device, xp):
+        """y_hat training region is finite and non-trivial."""
+        import numpy as np
+        from commstools.equalization import lms, rls
+        from commstools.mapping import gray_constellation
+
+        rng = np.random.default_rng(42)
+        n_train = 200
+        n_sym = 500
+
+        const = gray_constellation("qam", 16).astype(np.complex64)
+        syms = const[rng.integers(0, 16, n_sym)]
+        noise = (0.05 * (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym))).astype(np.complex64)
+        sig = (syms + noise).astype(np.complex64)
+
+        fn = lms if algo == "lms" else rls
+        res = fn(
+            sig,
+            training_symbols=syms[:n_train],
+            num_taps=1,
+            sps=1,
+            modulation="qam",
+            order=16,
+            backend=backend,
+        )
+
+        assert np.all(np.isfinite(np.asarray(res.y_hat[:n_train])))

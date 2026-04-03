@@ -331,7 +331,7 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
 
     # Check for JAX x64 mode
     try:
-        from jax.config import config
+        from jax import config
 
         x64_enabled = config.read("jax_enable_x64")
     except (ImportError, AttributeError):

@@ -2582,11 +2582,9 @@ def _normalize_inputs(samples, training_symbols, sps):
     because it can land on zero-crossings of the Nyquist pulse, severely
     underestimating signal power and destabilising adaptation.
 
-    Instead the *wideband* (all-sample) power is used via
-    ``normalize(..., "symbol_power", sps=sps)``, which divides by
-    ``rms(samples) * √sps``.  This estimate is phase-invariant and gives
-    unit symbol energy (Es = 1) for any pulse shape with unit-energy taps.
-    Works transparently on NumPy and CuPy arrays via the helper dispatch.
+    Instead the *wideband* (all-sample) power over the full signal is used.
+    This is the most accurate power estimate and is independent of whether
+    training symbols are provided.
 
     Parameters
     ----------
@@ -2606,20 +2604,21 @@ def _normalize_inputs(samples, training_symbols, sps):
         the physical power scale of a different capture (e.g. vacuum noise)
         passed through the same frozen taps.  See ``EqualizerResult`` docs.
     """
-    from commstools.helpers import normalize as c_normalize, rms as _rms
+    from commstools.helpers import rms as _rms
 
-    # Per-channel norm: rms(ch) * sqrt(sps) — matches the per-channel scaling
-    # that c_normalize("symbol_power", axis=-1) applies below.
-    # For SISO (N,): _rms(axis=-1) is a 0-d scalar → stored as float.
-    # For MIMO (C, N): _rms(axis=-1) is (C,) → stored as np.ndarray on CPU.
-    norm_vec = _rms(samples, axis=-1) * (sps**0.5)
+    ref_samples = samples
+
+    norm_vec = _rms(ref_samples, axis=-1) * (sps**0.5)
     if samples.ndim == 1:
         input_norm_factor = float(norm_vec)
+        samples = samples / float(norm_vec)
     else:
         input_norm_factor = to_device(norm_vec, "cpu")
-    samples = c_normalize(samples, "symbol_power", sps=sps, axis=-1)
+        # Broadcast (C,) divisor over last axis
+        samples = samples / norm_vec[..., None]
 
     if training_symbols is not None:
+        from commstools.helpers import normalize as c_normalize
         # Training symbols are at 1 sps; "average_power" == "symbol_power" at sps=1.
         training_symbols = c_normalize(training_symbols, "average_power", axis=-1)
 
@@ -2718,7 +2717,6 @@ def _prepare_training_jax(
     training_symbols,
     num_ch,
     n_sym,
-    num_train_symbols=None,
 ):
     """Build the zero-padded training array expected by the JAX scan kernels.
 
@@ -2731,16 +2729,11 @@ def _prepare_training_jax(
     The array is kept on the same device as ``training_symbols`` to avoid
     unnecessary CPU round-trips before the ``to_jax()`` transfer.
 
-    Note: callers should pre-slice ``training_symbols`` to ``num_train_symbols``
-    *before* calling this function (done in ``lms()``/``rls()``); the
-    ``num_train_symbols`` argument here only provides a secondary safety cap.
-
     Parameters
     ----------
     training_symbols : array or None — (K,) or (C, K), any backend
     num_ch           : int — C
     n_sym            : int — padded symbol count (columns of output array)
-    num_train_symbols: int or None — secondary cap on n_train_aligned
 
     Returns
     -------
@@ -2759,8 +2752,6 @@ def _prepare_training_jax(
             )
         n_raw = train_arr.shape[1]
         n_train_aligned = max(0, min(n_raw, n_sym))
-        if num_train_symbols is not None:
-            n_train_aligned = min(n_train_aligned, num_train_symbols)
 
         train_full = xp.zeros((num_ch, n_sym), dtype="complex64")
         if n_train_aligned > 0:
@@ -2776,7 +2767,6 @@ def _prepare_training_numpy(
     training_symbols,
     num_ch,
     n_sym,
-    num_train_symbols=None,
 ):
     """Build the zero-padded training array for the Numba scan kernels.
 
@@ -2784,15 +2774,11 @@ def _prepare_training_numpy(
     The caller must ensure ``training_symbols`` is already a NumPy array
     (use ``to_device(training_symbols, "cpu")`` before calling).
 
-    Callers should pre-slice ``training_symbols`` to ``num_train_symbols``
-    *before* calling this function; the argument here is a secondary safety cap.
-
     Parameters
     ----------
     training_symbols : (K,) or (C, K) complex64 NumPy array, or None
     num_ch           : int — C
     n_sym            : int — symbol count (columns of output array)
-    num_train_symbols: int or None — secondary cap on n_train_aligned
 
     Returns
     -------
@@ -2809,8 +2795,6 @@ def _prepare_training_numpy(
             )
         n_raw = train_arr.shape[1]
         n_train_aligned = max(0, min(n_raw, n_sym))
-        if num_train_symbols is not None:
-            n_train_aligned = min(n_train_aligned, num_train_symbols)
 
         train_full = np.zeros((num_ch, n_sym), dtype=np.complex64)
         if n_train_aligned > 0:
@@ -3034,7 +3018,6 @@ def lms(
     order: Optional[int] = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    num_train_symbols: Optional[int] = None,
     device: Optional[str] = "cpu",
     center_tap: Optional[int] = None,
     backend: str = "numba",
@@ -3102,11 +3085,6 @@ def lms(
         If True, indicates the modulation is unipolar (e.g., unipolar PAM).
     store_weights : bool, default False
         If True, stores weight trajectory in ``weights_history``.
-    num_train_symbols : int, optional
-        Limits the number of training symbols used. If provided, the
-        equalizer will forcefully switch to blind Decision-Directed (DD)
-        mode after this many symbols, even if more training symbols
-        are available in the array.
     device : str, optional
         Target device for JAX computations (e.g., 'cpu', 'gpu', 'tpu').
         Default is 'cpu'. Ignored when ``backend='numba'``.
@@ -3218,9 +3196,10 @@ def lms(
     if cpr_type is not None and cpr_type not in ("pll", "bps"):
         raise ValueError(f"cpr_type must be 'pll', 'bps', or None. Got {cpr_type!r}.")
 
+    n_train_log = training_symbols.shape[-1] if training_symbols is not None else 0
     logger.info(
         f"LMS equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
-        f"backend={backend}, num_train_symbols={num_train_symbols}"
+        f"backend={backend}, n_train={n_train_log}"
         + (f", cpr={cpr_type}" if cpr_type else "")
     )
     if sps > 1:
@@ -3233,11 +3212,8 @@ def lms(
     stride = int(sps)
     _validate_sps(sps, num_taps)
 
-    # Clip training to num_train_symbols (on original backend; no copy)
     if training_symbols is not None:
         training_symbols, _, _ = dispatch(training_symbols)
-        if num_train_symbols is not None:
-            training_symbols = training_symbols[..., :num_train_symbols]
 
     # Shape calcs — independent of normalization
     was_1d = samples.ndim == 1
@@ -3249,11 +3225,6 @@ def lms(
         logger.warning(
             f"training_symbols length ({training_symbols.shape[-1]}) exceeds "
             f"available symbol count ({n_sym}); excess training symbols will be ignored."
-        )
-    if num_train_symbols is not None and num_train_symbols > n_sym:
-        logger.warning(
-            f"num_train_symbols={num_train_symbols} exceeds "
-            f"available symbol count ({n_sym}); effective training count clamped to {n_sym}."
         )
 
     c_tap = center_tap if center_tap is not None else num_taps // 2
@@ -3307,7 +3278,6 @@ def lms(
             training_np,
             num_ch,
             n_sym,
-            num_train_symbols=num_train_symbols,
         )
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
@@ -3459,7 +3429,6 @@ def lms(
         training_symbols,
         num_ch,
         n_sym,
-        num_train_symbols=num_train_symbols,
     )
     x_jax = to_jax(samples_padded, device=device)
     if was_1d:
@@ -3574,7 +3543,6 @@ def rls(
     order: Optional[int] = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    num_train_symbols: Optional[int] = None,
     device: Optional[str] = "cpu",
     center_tap: Optional[int] = None,
     backend: str = "numba",
@@ -3676,10 +3644,6 @@ def rls(
         If True, indicates the modulation is unipolar (e.g., unipolar PAM).
     store_weights : bool, default False
         If True, stores weight trajectory.
-    num_train_symbols : int, optional
-        Limits the number of training symbols used. If provided, the
-        equalizer will forcefully switch to blind Decision-Directed (DD)
-        mode after this many symbols.
     device : str, optional
         Target device for JAX computations (e.g., 'cpu', 'gpu', 'tpu').
         Default is 'cpu'. Ignored when ``backend='numba'``.
@@ -3747,10 +3711,11 @@ def rls(
     if cpr_type is not None and cpr_type not in ("pll", "bps"):
         raise ValueError(f"cpr_type must be 'pll', 'bps', or None. Got {cpr_type!r}.")
 
+    n_train_log = training_symbols.shape[-1] if training_symbols is not None else 0
     logger.info(
         f"RLS equalizer: num_taps={num_taps}, forgetting_factor={forgetting_factor}, "
         f"delta={delta:.2e}, leakage={leakage:.2e}, sps={sps}, "
-        f"backend={backend}, num_train_symbols={num_train_symbols}"
+        f"backend={backend}, n_train={n_train_log}"
         + (f", cpr={cpr_type}" if cpr_type else "")
     )
     if sps > 1:
@@ -3764,8 +3729,6 @@ def rls(
 
     if training_symbols is not None:
         training_symbols, _, _ = dispatch(training_symbols)
-        if num_train_symbols is not None:
-            training_symbols = training_symbols[..., :num_train_symbols]
 
     was_1d = samples.ndim == 1
     if was_1d:
@@ -3780,11 +3743,6 @@ def rls(
         logger.warning(
             f"training_symbols length ({training_symbols.shape[-1]}) exceeds "
             f"available symbol count ({n_sym}); excess training symbols will be ignored."
-        )
-    if num_train_symbols is not None and num_train_symbols > n_sym:
-        logger.warning(
-            f"num_train_symbols={num_train_symbols} exceeds "
-            f"available symbol count ({n_sym}); effective training count clamped to {n_sym}."
         )
 
     # Early-halt boundary: freeze W and P once the sliding window reaches the
@@ -3858,7 +3816,6 @@ def rls(
             training_np,
             num_ch,
             n_sym,
-            num_train_symbols=num_train_symbols,
         )
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
@@ -4020,7 +3977,7 @@ def rls(
             ).astype(np.complex64)
 
     logger.debug(
-        f"RLS internals: n_sym={n_sym}, n_train={num_train_symbols}, "
+        f"RLS internals: n_sym={n_sym}, n_train={n_train_log}, "
         f"n_update_halt={n_update_halt}, leakage={leakage:.2e}, delta={delta:.2e}"
     )
 
@@ -4028,7 +3985,6 @@ def rls(
         training_symbols,
         num_ch,
         n_sym,
-        num_train_symbols=num_train_symbols,
     )
     x_jax = to_jax(samples_padded, device=device)
     if was_1d:
@@ -4162,7 +4118,6 @@ def block_lms(
     order: Optional[int] = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    num_train_symbols: Optional[int] = None,
     w_init: Optional[ArrayType] = None,
     pmf: Optional[Any] = None,
     cpr_type: Optional[str] = None,
@@ -4259,8 +4214,6 @@ def block_lms(
     store_weights : bool, default False
         If ``True``, stores the weight tensor at every block start in
         ``EqualizerResult.weights_history``.
-    num_train_symbols : int, optional
-        Clip training to this many symbols.
     w_init : array_like, optional
         Initial tap weights, shape ``(C, C, T)`` or SISO short-hands.
     pmf : array_like, optional
@@ -4342,8 +4295,6 @@ def block_lms(
         training_symbols, _, _ = dispatch(training_symbols)
         if training_symbols.ndim == 1:
             training_symbols = training_symbols[np.newaxis, :]
-        if num_train_symbols is not None:
-            training_symbols = training_symbols[..., :num_train_symbols]
 
     samples, training_symbols, eq_norm = _normalize_inputs(
         samples, training_symbols, sps
@@ -4381,8 +4332,6 @@ def block_lms(
     # ── Training alignment ────────────────────────────────────────────────────
     if training_symbols is not None:
         n_train_aligned = min(int(training_symbols.shape[-1]), n_sym)
-        if num_train_symbols is not None:
-            n_train_aligned = min(n_train_aligned, int(num_train_symbols))
     else:
         n_train_aligned = 0
 
