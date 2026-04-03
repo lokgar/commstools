@@ -281,7 +281,7 @@ def test_store_weights_shape_mimo():
 
 
 def test_num_train_symbols_respected():
-    """With num_train_symbols=0 and no training, pure DD from the start."""
+    """Training length is determined by the length of training_symbols passed in."""
     samples, syms = _qam16(n_sym=2048, snr_db=30.0, sps=2)
     # Pure DA (all training)
     r_da = block_lms(
@@ -296,17 +296,16 @@ def test_num_train_symbols_respected():
     )
     assert r_da.num_train_symbols == 2048
 
-    # Clipped training to 256
+    # Pre-sliced training to 256
     r_clip = block_lms(
         samples,
-        syms,
+        syms[..., :256],
         num_taps=11,
         sps=2,
         step_size=0.05,
         modulation="qam",
         order=16,
         block_size=128,
-        num_train_symbols=256,
     )
     assert r_clip.num_train_symbols == 256
 

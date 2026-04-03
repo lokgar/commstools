@@ -4222,7 +4222,7 @@ def compensate_iq_imbalance_gram_schmidt(samples: ArrayType) -> ArrayType:
         r = samples[ch]  # (N,)
         P_in = xp.mean(xp.abs(r) ** 2)
 
-        I = r.real
+        I = r.real  # noqa: E741
         Q = r.imag
 
         # Step 1: Normalise I (reference branch)

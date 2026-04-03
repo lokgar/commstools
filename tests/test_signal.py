@@ -524,10 +524,9 @@ def test_evm_with_explicit_num_train_symbols(backend_device, xp):
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
-        training_symbols=orig.source_symbols,
+        training_symbols=orig.source_symbols[:n_train],
         sps=2,
         num_taps=7,
-        num_train_symbols=n_train,
         backend="numba",
     )
     n_train = result.num_train_symbols
@@ -559,10 +558,9 @@ def test_snr_with_explicit_num_train_symbols(backend_device, xp):
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
-        training_symbols=orig.source_symbols,
+        training_symbols=orig.source_symbols[:100],
         sps=2,
         num_taps=7,
-        num_train_symbols=100,
         backend="numba",
     )
     rx = Signal(
@@ -592,10 +590,9 @@ def test_ber_with_explicit_num_train_symbols(backend_device, xp):
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
-        training_symbols=orig.source_symbols,
+        training_symbols=orig.source_symbols[:100],
         sps=2,
         num_taps=7,
-        num_train_symbols=100,
         backend="numba",
     )
     rx = Signal(
