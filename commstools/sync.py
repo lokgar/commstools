@@ -1740,7 +1740,6 @@ def estimate_frequency_offset_blockwise(
     block_size: int = 4096,
     overlap: float = 0.5,
     method: str = "mth_power",
-    sps: int = 2,
     modulation: Optional[str] = None,
     order: Optional[int] = None,
     debug_plot: bool = False,
@@ -1777,9 +1776,6 @@ def estimate_frequency_offset_blockwise(
         * ``"mengali_morelli"`` — multi-lag autocorrelation MVUE
           (:func:`estimate_frequency_offset_mengali_morelli`).
           Requires ``modulation`` and ``order`` for blind operation.
-    sps : int, default 2
-        Samples per symbol (passed to ``estimate_frequency_offset_mth_power``
-        for the M-th power modulation mapping).
     modulation : str, optional
         Modulation scheme (e.g. ``'qam'``, ``'psk'``).  Required for blind
         estimation with either method.
