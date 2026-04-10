@@ -7,9 +7,8 @@ from commstools.core import Signal
 
 def test_signal_pulse_params(backend_device, xp):
     """Verify that pulse shaping parameters (e.g., rolloff) are correctly stored and utilized."""
-    sig = Signal.pam(
-        order=2,
-        unipolar=False,
+    sig = Signal.qam(
+        order=4,
         num_symbols=10,
         sps=4,
         symbol_rate=1e3,
@@ -57,10 +56,10 @@ def test_rzpam_pulse_params(backend_device, xp):
         symbol_rate=1e3,
         rz=True,
         pulse_shape="smoothrect",
-        smoothrect_bt=0.5,
+        rise_time=0.1,
     )
     assert sig.pulse_shape == "smoothrect"
-    assert sig.smoothrect_bt == 0.5
+    assert sig.rise_time == 0.1
 
     taps = sig.shaping_filter_taps()
     assert len(taps) > 0
@@ -118,7 +117,7 @@ def test_gaussian_shaping_filter_taps(backend_device, xp):
         symbol_rate=1e3,
         pulse_shape="gaussian",
         filter_span=4,
-        gaussian_bt=0.3,
+        duty_cycle=0.5,
     )
     taps = sig.shaping_filter_taps()
     assert taps is not None

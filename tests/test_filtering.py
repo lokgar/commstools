@@ -46,7 +46,7 @@ def test_rc_taps_rolloff_zero():
 
 def test_gaussian_taps():
     """Verify Gaussian filter tap length and unit-energy normalisation."""
-    taps = filtering.gaussian_taps(sps=4, bt=0.3, span=4)
+    taps = filtering.gaussian_taps(sps=4, duty_cycle=0.5, span=4)
     assert isinstance(taps, np.ndarray)
     assert len(taps) == 4 * 4 + 1
     assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
@@ -54,7 +54,7 @@ def test_gaussian_taps():
 
 def test_smoothrect_taps():
     """Verify smoothrect tap length and unit-energy normalisation."""
-    taps = filtering.smoothrect_taps(sps=8, span=4, bt=1.0)
+    taps = filtering.smoothrect_taps(sps=8, span=4, rise_time=0.22)
     assert isinstance(taps, np.ndarray)
     assert len(taps) == 4 * 8 + 1
     assert np.isclose(np.sum(np.abs(taps) ** 2), 1.0)
@@ -186,7 +186,9 @@ def test_shape_pulse_variants(backend_device, xp):
 def test_smoothrect_pulse(backend_device, xp):
     """Verify smoothrect pulse shaping output length."""
     symbols = xp.array([1, 1])
-    res = filtering.shape_pulse(symbols, sps=8, pulse_shape="smoothrect", filter_span=4)
+    res = filtering.shape_pulse(
+        symbols, sps=8, pulse_shape="smoothrect", filter_span=4, rise_time=0.05
+    )
     assert len(res) == 16
 
 
@@ -398,13 +400,17 @@ class TestCompensateChromaticDispersion:
     def test_output_shape_siso(self, backend_device, xp):
         """SISO output shape matches input."""
         samples = xp.ones(512, dtype=xp.complex64)
-        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        out = filtering.compensate_chromatic_dispersion(
+            samples, 17.0, 80.0, 1550.0, 64e9
+        )
         assert out.shape == (512,)
 
     def test_output_shape_mimo(self, backend_device, xp):
         """MIMO output shape matches input."""
         samples = xp.ones((2, 512), dtype=xp.complex64)
-        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        out = filtering.compensate_chromatic_dispersion(
+            samples, 17.0, 80.0, 1550.0, 64e9
+        )
         assert out.shape == (2, 512)
 
     def test_energy_preserved(self, backend_device, xp, xpt):
@@ -415,8 +421,9 @@ class TestCompensateChromaticDispersion:
                 np.complex64
             )
         )
-        out = filtering.compensate_chromatic_dispersion(samples, 17.0, 80.0, 1550.0, 64e9)
+        out = filtering.compensate_chromatic_dispersion(
+            samples, 17.0, 80.0, 1550.0, 64e9
+        )
         power_in = float(xp.sum(xp.abs(samples) ** 2))
         power_out = float(xp.sum(xp.abs(out) ** 2))
         xpt.assert_allclose(power_out, power_in, rtol=1e-4)
-

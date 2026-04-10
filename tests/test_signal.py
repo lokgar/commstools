@@ -272,10 +272,10 @@ def test_signal_gaussian_coverage(backend_device, xp):
         symbol_rate=1e6,
         num_symbols=100,
         sps=8,
-        gaussian_bt=0.5,
+        duty_cycle=0.5,
     )
     assert s.pulse_shape == "gaussian"
-    assert s.gaussian_bt == 0.5
+    assert s.duty_cycle == 0.5
 
 
 def test_signal_jax_interop(backend_device, xp, xpt):
