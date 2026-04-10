@@ -259,7 +259,6 @@ def test_blockwise_foe_chirp():
         block_size=4096,
         overlap=0.5,
         method="mth_power",
-        sps=sps,
         modulation="qam",
         order=16,
     )
@@ -567,15 +566,18 @@ def test_pll_joint_channels():
     noise_pwr = 10 ** (-25.0 / 10)
 
     def _awgn():
-        return (np.sqrt(noise_pwr / 2) * (
-            rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
-        )).astype(np.complex64)
+        return (
+            np.sqrt(noise_pwr / 2)
+            * (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym))
+        ).astype(np.complex64)
 
     phasor = np.exp(1j * phase_noise).astype(np.complex64)
-    samples = np.stack([
-        syms_a * phasor + _awgn(),
-        syms_b * phasor + _awgn(),
-    ])  # (2, n_sym)
+    samples = np.stack(
+        [
+            syms_a * phasor + _awgn(),
+            syms_b * phasor + _awgn(),
+        ]
+    )  # (2, n_sym)
     training = np.stack([syms_a[:500], syms_b[:500]])
 
     res = lms(

@@ -8,6 +8,8 @@ both CPU and GPU backends.
 
 Functions
 ---------
+rect_taps :
+    Hard or trapezoidal rectangular pulse design.
 gaussian_taps :
     Gaussian pulse-shaping filter design.
 smoothrect_taps :
@@ -28,8 +30,6 @@ compensate_chromatic_dispersion :
     Electronic dispersion compensation (EDC) for chromatic dispersion.
 """
 
-from typing import Any
-
 import numpy as np
 import scipy
 
@@ -41,16 +41,86 @@ from .helpers import normalize
 # -----------------------------------------------------------------------------
 # FILTER DESIGN - TAP GENERATORS
 # -----------------------------------------------------------------------------
+# rect_taps:     Hard or trapezoidal rectangular pulse taps
 # gaussian_taps: Gaussian filter taps
-# rrc_taps: Root Raised Cosine filter taps
-# rc_taps: Raised Cosine filter taps
-# lowpass_taps: Low pass filter taps
-# highpass_taps: High pass filter taps
-# bandpass_taps: Band pass filter taps
-# bandstop_taps: Band stop filter taps
+# smoothrect_taps: Gaussian-smoothed rectangular pulse taps
+# rrc_taps:      Root Raised Cosine filter taps
+# rc_taps:       Raised Cosine filter taps
+# lowpass_taps, highpass_taps, bandpass_taps, bandstop_taps: FIR filters
+
+# Coefficient relating smoothrect rise_time to bt:
+#   rise_time = _SR_RISE_COEFF * duty_cycle / bt   [symbol periods, 10%-90%]
+#   bt        = _SR_RISE_COEFF * duty_cycle / rise_time
+#
+# Derivation: the smoothrect rising edge is 0.5*(erf((t+w/2)/(σ√2))+1).
+# 10%→90% transition: Δt = 2·√2·erfinv(0.8)·σ,  σ = duty_cycle·√(ln2)/(2π·bt)
+_SR_RISE_COEFF: float = float(
+    2 * np.sqrt(2) * scipy.special.erfinv(0.8) * np.sqrt(np.log(2)) / (2 * np.pi)
+)
 
 
-def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> np.ndarray:
+def rect_taps(sps: int, duty_cycle: float = 1.0, rise_time: float = 0.0) -> np.ndarray:
+    """
+    Generates rectangular or trapezoidal pulse-shaping filter taps.
+
+    With ``rise_time=0`` (default) the output is a hard rectangular pulse of
+    width ``duty_cycle`` symbol periods.  With ``rise_time > 0`` the leading
+    and trailing edges are replaced by linear ramps, producing an isosceles
+    trapezoidal pulse that models a slew-rate-limited driver or modulator.
+
+    Parameters
+    ----------
+    sps : int
+        Samples per symbol.
+    duty_cycle : float, default 1.0
+        Total pulse width in symbol periods, including both ramps.
+        Must be in the range ``(0, 1]``.
+    rise_time : float, default 0.0
+        Duration of each linear ramp (10%→90% of amplitude is the full ramp
+        here; the ramp spans the full ``rise_time``) in symbol periods.
+        Must satisfy ``rise_time <= duty_cycle / 2``; otherwise the ramps
+        overlap and no flat top exists.
+
+    Returns
+    -------
+    ndarray
+        Pulse taps (unnormalized). Shape: ``(N_taps,)``.
+
+    Raises
+    ------
+    ValueError
+        If ``rise_time > duty_cycle / 2``.
+    """
+    if rise_time > duty_cycle / 2:
+        raise ValueError(
+            f"rise_time ({rise_time}) must be <= duty_cycle / 2 ({duty_cycle / 2:.3f}); "
+            "ramps would overlap with no flat top."
+        )
+
+    n_total = int(round(sps * duty_cycle))
+    if n_total < 1:
+        n_total = 1
+
+    if rise_time == 0.0:
+        h = np.ones(n_total)
+    else:
+        n_ramp = int(round(sps * rise_time))
+        n_flat = n_total - 2 * n_ramp
+        if n_flat < 0:
+            n_flat = 0
+        ramp_up = np.linspace(0.0, 1.0, n_ramp, endpoint=False)
+        ramp_dn = np.linspace(1.0, 0.0, n_ramp, endpoint=False)
+        flat = np.ones(n_flat)
+        h = np.concatenate([ramp_up, flat, ramp_dn])
+
+    logger.debug(
+        f"Generating Rect taps: sps={sps}, duty_cycle={duty_cycle}, "
+        f"rise_time={rise_time}, n_taps={len(h)}"
+    )
+    return h
+
+
+def gaussian_taps(sps: float, span: int = 4, duty_cycle: float = 1.0) -> np.ndarray:
     """
     Generates Gaussian pulse-shaping filter taps.
 
@@ -62,11 +132,13 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> np.ndarray:
     sps : float
         Samples per symbol.
     span : int, default 4
-        Total filter span in symbols. The number of taps will be `span * sps + 1`
+        Total filter span in symbols. The number of taps will be ``span * sps + 1``
         to ensure symmetry.
-    bt : float, default 0.3
-        Bandwidth-Time (BT) product. Lower values result in narrower bandwidths
-        but more ISI.
+    duty_cycle : float, default 1.0
+        Full-Width at Half-Maximum (FWHM) of the Gaussian pulse in symbol periods.
+        Smaller values produce a narrower pulse (lower ISI but wider bandwidth).
+        The Bandwidth-Time product is derived internally as
+        ``bt = √2·ln(2) / (π·duty_cycle)``.
 
     Returns
     -------
@@ -74,7 +146,17 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> np.ndarray:
         Gaussian filter taps normalized to unit energy.
         Shape: (N_taps,).
     """
-    logger.debug(f"Generating Gaussian taps: sps={sps}, span={span}, bt={bt}")
+    # Convert duty_cycle (FWHM in symbol periods) to BT product.
+    # FWHM of h(t) = exp(-(π·t/α)²) is α·√(ln2)/π = √(ln2/2)/B·√(ln2)/π = ln2/(π·B).
+    # Wait — using the standard relation:
+    #   FWHM = √(2·ln2) · σ_freq,  where B = 1/(2π·σ_freq)  →  BT = √(ln2/2)/π
+    # More directly: FWHM_time = √(ln2/2) / (π·B) which gives BT = √(ln2/2)/π·(1/FWHM)
+    # Rearranged: bt = √2·ln(2) / (π·duty_cycle)
+    bt = np.sqrt(2) * np.log(2) / (np.pi * duty_cycle)
+    logger.debug(
+        f"Generating Gaussian taps: sps={sps}, span={span}, "
+        f"duty_cycle={duty_cycle} (bt={bt:.4f})"
+    )
     # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
     if num_taps % 2 == 0:
@@ -92,7 +174,7 @@ def gaussian_taps(sps: float, span: int = 4, bt: float = 0.3) -> np.ndarray:
 
 
 def smoothrect_taps(
-    sps: int, span: int, bt: float = 1.0, pulse_width: float = 1.0
+    sps: int, span: int, rise_time: float = 0.22, duty_cycle: float = 1.0
 ) -> ArrayType:
     """
     Generates a perfectly centered Gaussian-smoothed rectangular pulse.
@@ -106,11 +188,14 @@ def smoothrect_taps(
     sps : int
         Samples per symbol.
     span : int
-        Filter span in symbols. The number of taps will be approximately `span * sps`.
-    bt : float, default 1.0
-        Bandwidth-Time (BT) product of the Gaussian smoothing filter.
-    pulse_width : float, default 1.0
-        Width of the rectangular pulse in symbol periods. Use 1.0 for NRZ
+        Filter span in symbols. The number of taps will be approximately ``span * sps``.
+    rise_time : float, default 0.22
+        10%-90% edge transition duration in symbol periods. Smaller values produce
+        sharper edges (closer to a hard rect); larger values yield softer transitions
+        (approaching a Gaussian pulse). Converted internally to the Gaussian sigma via
+        ``σ = rise_time / (2·√2·erfinv(0.8))``.
+    duty_cycle : float, default 1.0
+        Width of the underlying rectangular pulse in symbol periods. Use 1.0 for NRZ
         and 0.5 for RZ signaling.
 
     Returns
@@ -120,7 +205,8 @@ def smoothrect_taps(
         Shape: (N_taps,).
     """
     logger.debug(
-        f"Generating SmoothRect taps: sps={sps}, span={span}, bt={bt}, width={pulse_width}"
+        f"Generating SmoothRect taps: sps={sps}, span={span}, "
+        f"rise_time={rise_time}, duty_cycle={duty_cycle}"
     )
     # Ensure odd number of taps to have a center peak
     num_taps = int(span * sps)
@@ -129,18 +215,16 @@ def smoothrect_taps(
 
     t = np.linspace(-span / 2, span / 2, num_taps)
 
-    # Calculate Sigma from BT
-    # Relationship: B = sqrt(ln 2) / (2 * pi * sigma)
-    # So sigma = sqrt(ln 2) / (2 * pi * B)
-    # B = bt / pulse_width (If bt is B * pulse_width product)
-    # sigma = pulse_width * sqrt(ln 2) / (2 * np.pi * bt)
-    sigma = pulse_width * np.sqrt(np.log(2)) / (2 * np.pi * bt)
+    # Convert rise_time to Gaussian sigma.
+    # rise_time (10%-90%) = 2·√2·erfinv(0.8)·σ  →  σ = rise_time / (2·√2·erfinv(0.8))
+    # _SR_RISE_COEFF = 2·√2·erfinv(0.8)·√(ln2)/(2π), so
+    # bt = _SR_RISE_COEFF·duty_cycle / rise_time  and  σ = duty_cycle·√(ln2)/(2π·bt)
+    sigma = rise_time / (2 * np.sqrt(2) * float(scipy.special.erfinv(0.8)))
 
     # Analytical Formula (Convolved Rect and Gaussian)
-    # The 'width' of the rect is pulse_width symbols
-    # Rect is from -width/2 to width/2
-    # The convolution of a rectangle with a Gaussian is given by the difference of erfs
-    w_half = pulse_width / 2.0
+    # The underlying rect spans [-duty_cycle/2, +duty_cycle/2].
+    # Convolution of rect with Gaussian = difference of error functions.
+    w_half = duty_cycle / 2.0
     h = 0.5 * (
         scipy.special.erf((t + w_half) / (sigma * np.sqrt(2)))
         - scipy.special.erf((t - w_half) / (sigma * np.sqrt(2)))
@@ -710,7 +794,13 @@ def shape_pulse(
     symbols: ArrayType,
     sps: float,
     pulse_shape: str = "none",
-    **kwargs: Any,
+    *,
+    duty_cycle: float = 1.0,
+    rise_time: float = 0.0,
+    filter_span: int = 10,
+    rrc_rolloff: float = 0.35,
+    rc_rolloff: float = 0.35,
+    rz: bool = False,
 ) -> ArrayType:
     """
     Applies pulse shaping to a symbol sequence.
@@ -723,22 +813,45 @@ def shape_pulse(
         Samples per symbol (upsampling factor).
     pulse_shape : {"none", "rect", "smoothrect", "gaussian", "rrc", "rc", "sinc"}, default "none"
         Identifier for the pulse shaping filter type.
-    **kwargs : Any
-        Filter-specific parameters:
-        filter_span (int): Filter span in symbols (default 10).
-        rrc_rolloff / rc_rolloff (float): Rolloff factor (default 0.35).
-        smoothrect_bt / gaussian_bt (float): BT product (default 1.0 / 0.3).
+    duty_cycle : float, default 1.0
+        Pulse width in symbol periods, in the range ``(0, 1]``.
+
+        - ``"rect"``, ``"smoothrect"``: total on-time of the pulse (including
+          ramps for rect, underlying rect width for smoothrect).
+        - ``"gaussian"``: Full-Width at Half-Maximum (FWHM) of the Gaussian.
+        - NRZ signals always use 1.0; use 0.5 for canonical RZ.
+    rise_time : float, default 0.0
+        Edge transition duration in symbol periods. Applies to ``"rect"`` and
+        ``"smoothrect"`` only; ignored for all other pulse types.
+
+        - ``"rect"``: duration of each linear ramp. The flat top width is
+          ``duty_cycle - 2 * rise_time``. Must satisfy
+          ``rise_time <= duty_cycle / 2``.
+        - ``"smoothrect"``: 10%-90% erf-edge duration. Smaller values give
+          sharper edges; larger values give softer Gaussian-like transitions.
+        - ``0.0`` (default): hard rectangular edges for ``"rect"``.
+    filter_span : int, default 10
+        Filter span in symbols for FIR tap generators
+        (``"smoothrect"``, ``"gaussian"``, ``"rrc"``, ``"rc"``, ``"sinc"``).
+    rrc_rolloff : float, default 0.35
+        Roll-off factor for the Root-Raised-Cosine filter (``"rrc"``). Range [0, 1].
+    rc_rolloff : float, default 0.35
+        Roll-off factor for the Raised-Cosine filter (``"rc"``). Range [0, 1].
+    rz : bool, default False
+        Convenience flag for Return-to-Zero signaling. When ``True``, overrides
+        ``duty_cycle`` to 0.5 (if not already set below 1.0) and converts
+        ``pulse_shape="none"`` to ``"rect"`` automatically.
 
     Returns
     -------
     array_like
-        The pulse-shaped waveform at rate `sps * symbol_rate`, normalized to
+        The pulse-shaped waveform at rate ``sps * symbol_rate``, normalized to
         **unit symbol power** (Es = 1). Average sample power = 1/sps.
 
     Notes
     -----
-    This method implements pulse shaping via polyphase resampling, which is
-    computationally more efficient than zero-stuffing followed by convolution.
+    Pulse shaping is implemented via polyphase resampling, which is more
+    computationally efficient than zero-stuffing followed by convolution.
 
     **Normalization convention.** All pulse types — zero-stuffed (``"none"``),
     rect, and unit-energy Nyquist filters (RRC, RC, Gaussian, SmoothRect) —
@@ -753,22 +866,13 @@ def shape_pulse(
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
-    # Extract parameters with defaults
-    filter_span = kwargs.get("filter_span", 10)
-    rrc_rolloff = kwargs.get("rrc_rolloff", 0.35)
-    rc_rolloff = kwargs.get("rc_rolloff", 0.35)
-    smoothrect_bt = kwargs.get("smoothrect_bt", 1.0)
-    gaussian_bt = kwargs.get("gaussian_bt", 0.3)
-    pulse_width = kwargs.get("pulse_width", 1.0)
-
-    # Support explicit rz flag
-    if kwargs.get("rz", False):
-        pulse_width = 0.5
+    if rz:
+        duty_cycle = 0.5
 
     symbols, xp, sp = dispatch(symbols)
 
     if pulse_shape == "none":
-        if kwargs.get("rz", False):
+        if rz:
             logger.debug("RZ signaling requested, using rect pulse shape")
             pulse_shape = "rect"
         else:
@@ -781,17 +885,13 @@ def shape_pulse(
             )
 
     if pulse_shape == "rect":
-        # Normalize to unit energy so rect has the same power behaviour as all
-        # other pulse generators (‖h‖₂ = 1).  Without this, the rect output
-        # sits at average sample power ≈ 1 instead of 1/sps.
-        h = normalize(xp.ones(int(sps * pulse_width)), "unit_energy")
+        h = rect_taps(int(sps), duty_cycle=duty_cycle, rise_time=rise_time)
     elif pulse_shape == "smoothrect":
-        # Note: Tap generators return NumPy arrays
         h = smoothrect_taps(
-            sps, span=filter_span, bt=smoothrect_bt, pulse_width=pulse_width
+            sps, span=filter_span, rise_time=rise_time, duty_cycle=duty_cycle
         )
     elif pulse_shape == "gaussian":
-        h = gaussian_taps(sps, span=filter_span, bt=gaussian_bt)
+        h = gaussian_taps(sps, span=filter_span, duty_cycle=duty_cycle)
     elif pulse_shape == "rrc":
         h = rrc_taps(sps, span=filter_span, rolloff=rrc_rolloff)
     elif pulse_shape == "rc":

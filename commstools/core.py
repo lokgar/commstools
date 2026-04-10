@@ -111,10 +111,17 @@ class Signal(BaseModel):
         Roll-off factor for the Root-Raised Cosine (RRC) filter.
     rc_rolloff : float
         Roll-off factor for the Raised Cosine (RC) filter.
-    gaussian_bt : float
-        Bandwidth-Time (BT) product for Gaussian pulse shaping.
-    smoothrect_bt : float
-        BT product for SmoothRect shaping filters.
+    duty_cycle : float
+        Pulse width in symbol periods. Meaning depends on pulse shape:
+        ``rect``/``smoothrect`` — on-time fraction (incl. ramps);
+        ``gaussian`` — FWHM. For NRZ signals this is always 1.0 internally;
+        only meaningful when ``mod_rz=True``. Stored so
+        ``generate_shaping_taps()`` can reconstruct the correct taps.
+    rise_time : float
+        Edge transition duration in symbol periods for ``rect`` and
+        ``smoothrect``. For ``rect``: linear ramp duration (flat top =
+        ``duty_cycle - 2 * rise_time``). For ``smoothrect``: 10%-90%
+        erf-edge duration. Ignored for all other pulse shapes.
     spectral_domain : {"BASEBAND", "PASSBAND", "INTERMEDIATE"}
         The signal's current placement in the frequency spectrum.
     physical_domain : {"DIG", "RF", "OPT"}
@@ -171,8 +178,8 @@ class Signal(BaseModel):
     filter_span: int = Field(default=10, ge=1)
     rrc_rolloff: float = Field(default=0.35, ge=0, le=1)
     rc_rolloff: float = Field(default=0.35, ge=0, le=1)
-    gaussian_bt: float = Field(default=0.3, gt=0)
-    smoothrect_bt: float = Field(default=1.0, gt=0)
+    duty_cycle: float = Field(default=1.0, gt=0, le=1)
+    rise_time: float = Field(default=0.0, ge=0)
 
     spectral_domain: Literal["BASEBAND", "PASSBAND", "INTERMEDIATE"] = "BASEBAND"
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
@@ -1252,24 +1259,26 @@ class Signal(BaseModel):
         logger.info(f"Generating shaping filter taps (shape: {self.pulse_shape}).")
         from . import filtering
 
-        # Determine pulse width based on modulation if RZ
-        p_width = 0.5 if self.mod_rz else 1.0
+        # Use stored duty_cycle for RZ; NRZ always uses the full symbol period
+        duty_cycle = self.duty_cycle if self.mod_rz else 1.0
 
         # Generate taps using filtering module (returns default numpy usually)
         if self.pulse_shape == "rect":
-            taps = np.ones(int(self.sps * p_width))
+            taps = filtering.rect_taps(
+                int(self.sps), duty_cycle=duty_cycle, rise_time=self.rise_time
+            )
         elif self.pulse_shape == "smoothrect":
             taps = filtering.smoothrect_taps(
                 sps=self.sps,
                 span=self.filter_span,
-                bt=self.smoothrect_bt,
-                pulse_width=p_width,
+                rise_time=self.rise_time,
+                duty_cycle=duty_cycle,
             )
         elif self.pulse_shape == "gaussian":
             taps = filtering.gaussian_taps(
                 sps=self.sps,
                 span=self.filter_span,
-                bt=self.gaussian_bt,
+                duty_cycle=self.duty_cycle,
             )
         elif self.pulse_shape == "rrc":
             taps = filtering.rrc_taps(
@@ -1346,7 +1355,11 @@ class Signal(BaseModel):
         pulse_shape: str = "none",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        duty_cycle: float = 1.0,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        rise_time: float = 0.0,
     ) -> "Signal":
         """
         Generates a generic baseband waveform with specified modulation.
@@ -1372,13 +1385,24 @@ class Signal(BaseModel):
         rz : bool, default False
             If True, uses Return-to-Zero signaling.
         pulse_shape : str, default "none"
-            Pulse shaping filter type (e.g., 'rrc', 'rect').
+            Pulse shaping filter type (e.g., ``'rrc'``, ``'rect'``).
         num_streams : int, default 1
             Number of independent streams (MIMO).
         seed : int, optional
             Seed for reproducible random generation.
-        **kwargs : Any
-            Additional filter parameters (e.g., `filter_span`, `rrc_rolloff`).
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse (rect/smoothrect).
+            Overridden to 0.5 when ``rz=True``.
+        filter_span : int, default 10
+            Filter span in symbols for smoothrect/gaussian/rrc/rc/sinc.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for the RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for the RC filter.
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods for smoothrect.
+        duty_cycle : float, default 1.0
+            FWHM of the Gaussian pulse in symbol periods.
 
         Returns
         -------
@@ -1389,7 +1413,7 @@ class Signal(BaseModel):
         -----
         Symbols are ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
         The generated samples are normalized to **unit symbol power (Es = 1)**
-        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
@@ -1397,6 +1421,11 @@ class Signal(BaseModel):
         average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         from . import filtering, mapping
+
+        # When rz=True and the caller hasn't specified a custom duty_cycle,
+        # default to 50% (canonical RZ). Explicit duty_cycle values are preserved.
+        if rz and duty_cycle == 1.0:
+            duty_cycle = 0.5
 
         # Bit-first architecture: generate bits → map to symbols
         k = int(np.log2(order))  # bits per symbol
@@ -1423,7 +1452,15 @@ class Signal(BaseModel):
         # Apply pulse shaping
         # shape_pulse defaults to axis=-1 (Time) which is correct for (C, T)
         samples = filtering.shape_pulse(
-            symbols=symbols, sps=sps, pulse_shape=pulse_shape, rz=rz, **kwargs
+            symbols=symbols,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            rz=rz,
+            duty_cycle=duty_cycle,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            rise_time=rise_time,
         )
 
         return cls(
@@ -1437,7 +1474,11 @@ class Signal(BaseModel):
             source_bits=bits,
             source_symbols=symbols,
             pulse_shape=pulse_shape,
-            **kwargs,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
     @classmethod
@@ -1452,7 +1493,9 @@ class Signal(BaseModel):
         pulse_shape: Literal["rect", "smoothrect"] = "rect",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        duty_cycle: float = 1.0,
+        filter_span: int = 10,
+        rise_time: float = 0.0,
     ) -> "Signal":
         """
         Generates a Pulse Amplitude Modulation (PAM) baseband waveform.
@@ -1482,8 +1525,13 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for reproducible bit and symbol generation.
-        **kwargs : Any
-            Additional parameters passed to the pulse shaping filter.
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse. Overridden to
+            0.5 when ``rz=True``.
+        filter_span : int, default 10
+            Filter span in symbols (smoothrect only).
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods (smoothrect only).
 
         Returns
         -------
@@ -1493,7 +1541,7 @@ class Signal(BaseModel):
         Notes
         -----
         The generated samples are normalized to **unit symbol power (Es = 1)**
-        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
@@ -1522,7 +1570,9 @@ class Signal(BaseModel):
             pulse_shape=pulse_shape,
             num_streams=num_streams,
             seed=seed,
-            **kwargs,
+            filter_span=filter_span,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
     @classmethod
@@ -1537,7 +1587,11 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        rise_time: float = 0.0,
+        duty_cycle: float = 1.0,
     ) -> "Signal":
         """
         Generates a Phase Shift Keying (PSK) baseband waveform.
@@ -1562,8 +1616,19 @@ class Signal(BaseModel):
             Number of independent streams (channels) to generate.
         seed : int, optional
             Random seed for bit and symbol generation.
-        **kwargs : Any
-            Additional parameters passed to `filtering.shape_pulse`.
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse (rect/smoothrect).
+            Only meaningful when ``rz=True``.
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for the RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for the RC filter.
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods (smoothrect only).
+        duty_cycle : float, default 1.0
+            FWHM of the Gaussian pulse in symbol periods (gaussian only).
 
         Returns
         -------
@@ -1573,7 +1638,7 @@ class Signal(BaseModel):
         Notes
         -----
         The generated samples are normalized to **unit symbol power (Es = 1)**
-        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
@@ -1591,7 +1656,11 @@ class Signal(BaseModel):
             seed=seed,
             unipolar=unipolar,
             rz=rz,
-            **kwargs,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
     @classmethod
@@ -1606,7 +1675,11 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        rise_time: float = 0.0,
+        duty_cycle: float = 1.0,
     ) -> "Signal":
         """
         Generates a Quadrature Amplitude Modulation (QAM) baseband waveform.
@@ -1631,8 +1704,19 @@ class Signal(BaseModel):
             Number of MIMO streams.
         seed : int, optional
             Seed for random generation.
-        **kwargs : Any
-            Additional filter parameters.
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse (rect/smoothrect).
+            Only meaningful when ``rz=True``.
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for the RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for the RC filter.
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods (smoothrect only).
+        duty_cycle : float, default 1.0
+            FWHM of the Gaussian pulse in symbol periods (gaussian only).
 
         Returns
         -------
@@ -1642,7 +1726,7 @@ class Signal(BaseModel):
         Notes
         -----
         The generated samples are normalized to **unit symbol power (Es = 1)**
-        via `filtering.shape_pulse`, meaning average sample power = 1/sps.
+        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
         This matches the convention expected by ``apply_awgn``:
         ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
         all pulse shapes without any per-pulse offset.
@@ -1660,7 +1744,11 @@ class Signal(BaseModel):
             seed=seed,
             unipolar=unipolar,
             rz=rz,
-            **kwargs,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
     @classmethod
@@ -1676,7 +1764,10 @@ class Signal(BaseModel):
         pulse_shape: str = "rrc",
         num_streams: int = 1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        filter_span: int = 10,
+        rrc_rolloff: float = 0.35,
+        rc_rolloff: float = 0.35,
+        duty_cycle: float = 1.0,
     ) -> "Signal":
         """
         Generates a Probabilistically Shaped QAM (PS-QAM) baseband waveform.
@@ -1709,8 +1800,12 @@ class Signal(BaseModel):
             Number of independent streams (MIMO).
         seed : int, optional
             Random seed for reproducible symbol generation.
-        **kwargs : Any
-            Additional filter parameters (e.g. ``filter_span``, ``rrc_rolloff``).
+        filter_span : int, default 10
+            Filter span in symbols.
+        rrc_rolloff : float, default 0.35
+            Roll-off factor for the RRC filter.
+        rc_rolloff : float, default 0.35
+            Roll-off factor for the RC filter.
 
         Returns
         -------
@@ -1774,7 +1869,13 @@ class Signal(BaseModel):
             bits = to_device(bits, "gpu")
 
         samples = filtering.shape_pulse(
-            symbols=symbols, sps=sps, pulse_shape=pulse_shape, **kwargs
+            symbols=symbols,
+            sps=sps,
+            pulse_shape=pulse_shape,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            duty_cycle=duty_cycle,
         )
 
         return cls(
@@ -1787,7 +1888,10 @@ class Signal(BaseModel):
             source_symbols=symbols,
             pulse_shape=pulse_shape,
             ps_pmf=pmf,
-            **kwargs,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            duty_cycle=duty_cycle,
         )
 
     # -------------------------------------------------------------------------
@@ -2579,9 +2683,8 @@ class Preamble(BaseModel):
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
         rc_rolloff: float = 0.35,
-        smoothrect_bt: float = 1.0,
-        gaussian_bt: float = 0.3,
-        **kwargs: Any,
+        rise_time: float = 0.0,
+        duty_cycle: float = 1.0,
     ) -> Signal:
         """
         Generates a shaped waveform from the preamble sequence.
@@ -2600,12 +2703,12 @@ class Preamble(BaseModel):
             Roll-off factor for RRC filter.
         rc_rolloff : float, default 0.35
             Roll-off factor for RC filter.
-        smoothrect_bt : float, default 1.0
-            Bandwidth-Time product for Smooth Rect filter.
-        gaussian_bt : float, default 0.3
-            Bandwidth-Time product for Gaussian filter.
-        **kwargs : Any
-            Additional arguments.
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods (smoothrect only).
+        duty_cycle : float, default 1.0
+            FWHM of the Gaussian pulse in symbol periods (gaussian only).
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse (rect/smoothrect).
 
         Returns
         -------
@@ -2621,9 +2724,8 @@ class Preamble(BaseModel):
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
             rc_rolloff=rc_rolloff,
-            smoothrect_bt=smoothrect_bt,
-            gaussian_bt=gaussian_bt,
-            **kwargs,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
         return Signal(
@@ -2634,8 +2736,12 @@ class Preamble(BaseModel):
             mod_order=None,
             source_symbols=None,
             pulse_shape=pulse_shape,
+            duty_cycle=duty_cycle,
+            filter_span=filter_span,
+            rrc_rolloff=rrc_rolloff,
+            rc_rolloff=rc_rolloff,
+            rise_time=rise_time,
             signal_type="Preamble",
-            **kwargs,
         )
 
 
@@ -3227,9 +3333,8 @@ class SingleCarrierFrame(BaseModel):
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
         rc_rolloff: float = 0.35,
-        smoothrect_bt: float = 1.0,
-        gaussian_bt: float = 0.3,
-        **kwargs: Any,
+        rise_time: float = 0.0,
+        duty_cycle: float = 1.0,
     ) -> Signal:
         """
         Generates a shaped, oversampled waveform from the frame description.
@@ -3242,6 +3347,8 @@ class SingleCarrierFrame(BaseModel):
         ----------
         sps : int, default 4
             Samples per symbol (oversampling factor).
+        symbol_rate : float, default 1e6
+            Symbol rate in Hz.
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
         filter_span : int, default 10
@@ -3250,12 +3357,12 @@ class SingleCarrierFrame(BaseModel):
             Roll-off factor for RRC filter.
         rc_rolloff : float, default 0.35
             Roll-off factor for RC filter.
-        smoothrect_bt : float, default 1.0
-            Bandwidth-Time product for Smooth Rect filter.
-        gaussian_bt : float, default 0.3
-            Bandwidth-Time product for Gaussian filter.
-        **kwargs : Any
-            Additional parameters passed to the shaping filter.
+        rise_time : float, default 0.22
+            10%-90% edge transition duration in symbol periods (smoothrect only).
+        duty_cycle : float, default 1.0
+            FWHM of the Gaussian pulse in symbol periods (gaussian only).
+        duty_cycle : float, default 1.0
+            Fraction of the symbol period occupied by the pulse (rect/smoothrect).
 
         Returns
         -------
@@ -3283,9 +3390,8 @@ class SingleCarrierFrame(BaseModel):
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
             rc_rolloff=rc_rolloff,
-            smoothrect_bt=smoothrect_bt,
-            gaussian_bt=gaussian_bt,
-            **kwargs,
+            rise_time=rise_time,
+            duty_cycle=duty_cycle,
         )
 
         # Normalise body per-channel by max(peak_|I|, peak_|Q|) — a single scale
@@ -3314,9 +3420,8 @@ class SingleCarrierFrame(BaseModel):
                 filter_span=filter_span,
                 rrc_rolloff=rrc_rolloff,
                 rc_rolloff=rc_rolloff,
-                smoothrect_bt=smoothrect_bt,
-                gaussian_bt=gaussian_bt,
-                **kwargs,
+                rise_time=rise_time,
+                duty_cycle=duty_cycle,
             )
             preamble_samples = xp.asarray(preamble_signal.samples)
             # (L*sps,) for SISO  or  (num_streams, L*sps) for MIMO — shape driven by preamble.num_streams
@@ -3371,12 +3476,11 @@ class SingleCarrierFrame(BaseModel):
             source_symbols=None,  # samples include full frame (preamble + body);
             # extract payload segment via frame.get_structure_map() explicitly.
             pulse_shape=pulse_shape,
+            duty_cycle=duty_cycle,
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
             rc_rolloff=rc_rolloff,
-            smoothrect_bt=smoothrect_bt,
-            gaussian_bt=gaussian_bt,
+            rise_time=rise_time,
             signal_type="Single-Carrier Frame",
             frame=self,
-            **kwargs,
         )
