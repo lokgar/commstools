@@ -409,6 +409,50 @@ def test_rzpam_multi_stream(backend_device, xp):
     assert sig.source_symbols is not None
 
 
+@pytest.mark.parametrize(
+    "factory,kwargs",
+    [
+        (
+            Signal.generate,
+            dict(
+                num_symbols=10,
+                sps=3.5,
+                symbol_rate=1e6,
+                modulation="qam",
+                order=16,
+            ),
+        ),
+        (
+            Signal.psk,
+            dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=4),
+        ),
+        (
+            Signal.qam,
+            dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=16),
+        ),
+        (
+            Signal.pam,
+            dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=4),
+        ),
+        (
+            Signal.psqam,
+            dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=64, nu=0.3),
+        ),
+    ],
+)
+def test_noninteger_sps_raises(backend_device, factory, kwargs):
+    """Non-integer sps must raise at generation time, before any samples are produced."""
+    with pytest.raises(ValueError, match="sps must be a positive integer"):
+        factory(**kwargs)
+
+
+def test_integer_valued_float_sps_accepted(backend_device):
+    """sps=4.0 (integer-valued float) must succeed and produce correct sample count."""
+    sig = Signal.qam(num_symbols=100, sps=4.0, symbol_rate=1e6, order=16)
+    assert sig.samples.shape[-1] == 100 * 4
+    assert sig.sps == 4.0
+
+
 def test_resolve_symbols_sps_errors(backend_device, xp):
     """Verify resolve_symbols error paths for invalid SPS values."""
     # SPS < 1 (symbol_rate > sampling_rate)
