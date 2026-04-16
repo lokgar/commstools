@@ -366,7 +366,7 @@ wheels = [
 
 [[package]]
 name = "commstools"
-version = "2.2.1"
+version = "2.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "cupy-cuda13x" },

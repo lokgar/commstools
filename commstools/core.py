@@ -1346,7 +1346,7 @@ class Signal(BaseModel):
     def generate(
         cls,
         num_symbols: int,
-        sps: float,
+        sps: int,
         symbol_rate: float,
         modulation: str,
         order: int,
@@ -1421,6 +1421,20 @@ class Signal(BaseModel):
         average power (Es = 1, 1 SPS) before demapping or computing metrics.
         """
         from . import filtering, mapping
+
+        if sps != int(sps) or sps < 1:
+            logger.warning(
+                f"sps={sps!r} is not a positive integer. "
+                "Non-integer sps is valid for captured/resampled signals but not for "
+                "generation: resample_poly requires an integer upsampling factor, so "
+                "the sample buffer would not match the stored sampling_rate metadata. "
+                "To generate at a fractional sps, generate at an integer sps then call "
+                "Signal.resample(up=..., down=...)."
+            )
+            raise ValueError(
+                f"sps must be a positive integer for signal generation, got {sps!r}."
+            )
+        sps = int(sps)
 
         # When rz=True and the caller hasn't specified a custom duty_cycle,
         # default to 50% (canonical RZ). Explicit duty_cycle values are preserved.
@@ -1579,7 +1593,7 @@ class Signal(BaseModel):
     def psk(
         cls,
         num_symbols: int,
-        sps: float,
+        sps: int,
         symbol_rate: float,
         order: int,
         unipolar: bool = False,
@@ -1667,7 +1681,7 @@ class Signal(BaseModel):
     def qam(
         cls,
         num_symbols: int,
-        sps: float,
+        sps: int,
         symbol_rate: float,
         order: int,
         unipolar: bool = False,
@@ -1755,7 +1769,7 @@ class Signal(BaseModel):
     def psqam(
         cls,
         num_symbols: int,
-        sps: float,
+        sps: int,
         symbol_rate: float,
         order: int,
         *,
@@ -1836,6 +1850,20 @@ class Signal(BaseModel):
             sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, nu=0.3)
         """
         from . import filtering, mapping
+
+        if sps != int(sps) or sps < 1:
+            logger.warning(
+                f"sps={sps!r} is not a positive integer. "
+                "Non-integer sps is valid for captured/resampled signals but not for "
+                "generation: resample_poly requires an integer upsampling factor, so "
+                "the sample buffer would not match the stored sampling_rate metadata. "
+                "To generate at a fractional sps, generate at an integer sps then call "
+                "Signal.resample(up=..., down=...)."
+            )
+            raise ValueError(
+                f"sps must be a positive integer for signal generation, got {sps!r}."
+            )
+        sps = int(sps)
 
         if (nu is None) == (entropy is None):
             raise ValueError("Exactly one of `nu` or `entropy` must be specified.")
@@ -2717,6 +2745,16 @@ class Preamble(BaseModel):
         """
         from .filtering import shape_pulse
 
+        if sps != int(sps) or sps < 1:
+            logger.warning(
+                f"sps={sps!r} is not a positive integer. "
+                "Non-integer sps causes sample buffer / sampling_rate metadata mismatch."
+            )
+            raise ValueError(
+                f"sps must be a positive integer for signal generation, got {sps!r}."
+            )
+        sps = int(sps)
+
         samples = shape_pulse(
             self.symbols,
             sps=sps,
@@ -3380,6 +3418,16 @@ class SingleCarrierFrame(BaseModel):
         """
         xp = cp if is_cupy_available() else np
         from .filtering import shape_pulse
+
+        if sps != int(sps) or sps < 1:
+            logger.warning(
+                f"sps={sps!r} is not a positive integer. "
+                "Non-integer sps causes sample buffer / sampling_rate metadata mismatch."
+            )
+            raise ValueError(
+                f"sps must be a positive integer for signal generation, got {sps!r}."
+            )
+        sps = int(sps)
 
         # 1. Shape Body (Payload + Pilots)
         body_symbols = self.body_symbols
