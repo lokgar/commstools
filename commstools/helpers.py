@@ -409,7 +409,7 @@ def cross_correlate_fft(
     corr_circ = xp.fft.ifft(SIG * xp.conj(TPL), axis=-1)
 
     # Gather negative lags (indices n_fft-(L-1) .. n_fft-1) then positive (0 .. N-1)
-    neg_lags = corr_circ[..., -(L - 1) :]  # length L-1
+    neg_lags = corr_circ[..., n_fft - L + 1 :]  # length L-1
     pos_lags = corr_circ[..., :N]  # length N
     corr = xp.concatenate([neg_lags, pos_lags], axis=-1)  # length N+L-1
 
