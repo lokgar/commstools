@@ -3800,8 +3800,12 @@ def correct_carrier_phase(
     """
     symbols, xp, _ = dispatch(symbols)
     logger.debug(f"Applying carrier phase correction: shape={symbols.shape}")
-    phase_vector_xp = xp.asarray(phase_vector)
-    phasor = xp.exp(-1j * phase_vector_xp)
+    # Wrap to [-π, π] in float64 (handles unbounded phase trajectories from
+    # standalone CPR), then cast to float32 for fast GPU exp.
+    phase_f64 = xp.asarray(phase_vector, dtype=xp.float64)
+    two_pi = 2.0 * np.pi
+    phase_wrapped = (phase_f64 - xp.round(phase_f64 / two_pi) * two_pi).astype(xp.float32)
+    phasor = xp.exp(-1j * phase_wrapped)
     if phasor.dtype != symbols.dtype:
         phasor = phasor.astype(symbols.dtype)
     return symbols * phasor

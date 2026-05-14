@@ -17,17 +17,14 @@ Coverage:
 import numpy as np
 import pytest
 
-from commstools.backend import use_cpu_only
 from commstools.equalization import block_lms
 from commstools.mapping import gray_constellation
 from commstools.helpers import normalize
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fixtures / helpers
+# Helpers (NumPy only — tests convert to xp before calling block_lms)
 # ─────────────────────────────────────────────────────────────────────────────
-
-use_cpu_only(True)
 
 
 def _qam16(n_sym=4096, snr_db=25.0, sps=2, rng=None):
@@ -64,10 +61,11 @@ def _qpsk(n_sym=4096, snr_db=20.0, sps=2, rng=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_output_shape_siso():
+def test_output_shape_siso(backend_device, xp):
     samples, syms = _qam16(n_sym=1024, sps=2)
     r = block_lms(
-        samples, syms, num_taps=11, sps=2, modulation="qam", order=16, block_size=128
+        xp.asarray(samples), xp.asarray(syms),
+        num_taps=11, sps=2, modulation="qam", order=16, block_size=128,
     )
     n_sym = len(syms)
     assert r.y_hat.shape == (n_sym,), f"y_hat shape {r.y_hat.shape}"
@@ -81,15 +79,13 @@ def test_output_shape_siso():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_output_shape_mimo():
+def test_output_shape_mimo(backend_device, xp):
     rng = np.random.default_rng(1)
     s1, t1 = _qam16(n_sym=1024, sps=2, rng=rng)
     s2, t2 = _qam16(n_sym=1024, sps=2, rng=rng)
-    samples = np.stack([s1, s2])
-    training = np.stack([t1, t2])
     r = block_lms(
-        samples,
-        training,
+        xp.asarray(np.stack([s1, s2])),
+        xp.asarray(np.stack([t1, t2])),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -106,11 +102,11 @@ def test_output_shape_mimo():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_output_shape_bps():
+def test_output_shape_bps(backend_device, xp):
     samples, syms = _qam16(n_sym=1024, sps=2)
     r = block_lms(
-        samples,
-        syms,
+        xp.asarray(samples),
+        xp.asarray(syms),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -127,13 +123,13 @@ def test_output_shape_bps():
     )
 
 
-def test_output_shape_bps_mimo():
+def test_output_shape_bps_mimo(backend_device, xp):
     rng = np.random.default_rng(2)
     s1, t1 = _qam16(n_sym=1024, sps=2, rng=rng)
     s2, t2 = _qam16(n_sym=1024, sps=2, rng=rng)
     r = block_lms(
-        np.stack([s1, s2]),
-        np.stack([t1, t2]),
+        xp.asarray(np.stack([s1, s2])),
+        xp.asarray(np.stack([t1, t2])),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -150,22 +146,22 @@ def test_output_shape_bps_mimo():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_mse_decreases():
+def test_mse_decreases(backend_device, xp):
     """MSE in the last quarter of the signal must be less than in the first quarter."""
     samples, syms = _qam16(n_sym=8192, snr_db=25.0, sps=2)
     r = block_lms(
-        samples,
-        syms[:512],
+        xp.asarray(samples),
+        xp.asarray(syms[:512]),
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
     )
-    err = np.abs(r.error) ** 2
+    err = xp.abs(r.error) ** 2
     n = len(err)
-    assert err[: n // 4].mean() > err[3 * n // 4 :].mean(), (
+    assert float(err[: n // 4].mean()) > float(err[3 * n // 4 :].mean()), (
         "MSE did not decrease from first to last quarter"
     )
 
@@ -175,24 +171,26 @@ def test_mse_decreases():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_identity_channel_convergence():
+def test_identity_channel_convergence(backend_device, xp):
     """On a near-identity channel, symbols after training should match reference."""
     samples, syms = _qam16(n_sym=4096, snr_db=30.0, sps=2)
     n_train = 1024
+    syms_xp = xp.asarray(syms)
     r = block_lms(
-        samples,
-        syms,
+        xp.asarray(samples),
+        syms_xp,
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
     )
-    # EVM in the last half (well past training)
     y_eval = r.y_hat[n_train:]
-    s_eval = syms[n_train:]
-    evm = np.sqrt(np.mean(np.abs(y_eval - s_eval) ** 2) / np.mean(np.abs(s_eval) ** 2))
+    s_eval = syms_xp[n_train:]
+    evm = float(
+        xp.sqrt(xp.mean(xp.abs(y_eval - s_eval) ** 2) / xp.mean(xp.abs(s_eval) ** 2))
+    )
     assert evm < 0.15, f"EVM {evm:.3f} too high — equalizer did not converge"
 
 
@@ -201,35 +199,36 @@ def test_identity_channel_convergence():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_w_init_used():
+def test_w_init_used(backend_device, xp):
     """Warm-starting from converged weights should give lower initial MSE."""
     samples, syms = _qam16(n_sym=4096, snr_db=25.0, sps=2)
+    samples_xp = xp.asarray(samples)
+    syms_xp = xp.asarray(syms)
     # First pass: converge weights
     r1 = block_lms(
-        samples,
-        syms,
+        samples_xp,
+        syms_xp,
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
     )
     # Second pass: warm-start; MSE at start should be low
     r2 = block_lms(
-        samples,
-        syms,
+        samples_xp,
+        syms_xp,
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
         w_init=r1.weights,
     )
-    # First block MSE with warm-start should be better than cold-start
-    mse_cold_start = float(np.mean(np.abs(r1.error[:128]) ** 2))
-    mse_warm_start = float(np.mean(np.abs(r2.error[:128]) ** 2))
+    mse_cold_start = float(xp.mean(xp.abs(r1.error[:128]) ** 2))
+    mse_warm_start = float(xp.mean(xp.abs(r2.error[:128]) ** 2))
     assert mse_warm_start < mse_cold_start, (
         f"warm-start MSE ({mse_warm_start:.4f}) not better than cold ({mse_cold_start:.4f})"
     )
@@ -240,11 +239,11 @@ def test_w_init_used():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_store_weights_shape_siso():
+def test_store_weights_shape_siso(backend_device, xp):
     samples, syms = _qam16(n_sym=512, sps=2)
     r = block_lms(
-        samples,
-        syms,
+        xp.asarray(samples),
+        xp.asarray(syms),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -258,13 +257,13 @@ def test_store_weights_shape_siso():
     )
 
 
-def test_store_weights_shape_mimo():
+def test_store_weights_shape_mimo(backend_device, xp):
     rng = np.random.default_rng(3)
     s1, t1 = _qam16(n_sym=512, sps=2, rng=rng)
     s2, t2 = _qam16(n_sym=512, sps=2, rng=rng)
     r = block_lms(
-        np.stack([s1, s2]),
-        np.stack([t1, t2]),
+        xp.asarray(np.stack([s1, s2])),
+        xp.asarray(np.stack([t1, t2])),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -280,16 +279,18 @@ def test_store_weights_shape_mimo():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_num_train_symbols_respected():
+def test_num_train_symbols_respected(backend_device, xp):
     """Training length is determined by the length of training_symbols passed in."""
     samples, syms = _qam16(n_sym=2048, snr_db=30.0, sps=2)
+    samples_xp = xp.asarray(samples)
+    syms_xp = xp.asarray(syms)
     # Pure DA (all training)
     r_da = block_lms(
-        samples,
-        syms,
+        samples_xp,
+        syms_xp,
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
@@ -298,11 +299,11 @@ def test_num_train_symbols_respected():
 
     # Pre-sliced training to 256
     r_clip = block_lms(
-        samples,
-        syms[..., :256],
+        samples_xp,
+        syms_xp[..., :256],
         num_taps=11,
         sps=2,
-        step_size=0.05,
+        step_size=5e-4,
         modulation="qam",
         order=16,
         block_size=128,
@@ -315,10 +316,11 @@ def test_num_train_symbols_respected():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_non_multiple_block_size():
+def test_non_multiple_block_size(backend_device, xp):
     samples, syms = _qam16(n_sym=1000, sps=2)  # 1000 is not a multiple of 128
     r = block_lms(
-        samples, syms, num_taps=11, sps=2, modulation="qam", order=16, block_size=128
+        xp.asarray(samples), xp.asarray(syms),
+        num_taps=11, sps=2, modulation="qam", order=16, block_size=128,
     )
     assert r.y_hat.shape == (1000,)
     assert r.error.shape == (1000,)
@@ -329,12 +331,12 @@ def test_non_multiple_block_size():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_pll_raises():
+def test_pll_raises(backend_device, xp):
     samples, syms = _qam16(n_sym=512, sps=2)
     with pytest.raises(ValueError, match="pll"):
         block_lms(
-            samples,
-            syms,
+            xp.asarray(samples),
+            xp.asarray(syms),
             num_taps=11,
             sps=2,
             modulation="qam",
@@ -348,12 +350,12 @@ def test_pll_raises():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_bps_block_size_independent():
+def test_bps_block_size_independent(backend_device, xp):
     """block_size=256 with cpr_bps_block_size=16 must produce per-symbol phi."""
     samples, syms = _qam16(n_sym=1024, sps=2)
     r = block_lms(
-        samples,
-        syms,
+        xp.asarray(samples),
+        xp.asarray(syms),
         num_taps=11,
         sps=2,
         modulation="qam",
@@ -364,9 +366,8 @@ def test_bps_block_size_independent():
         cpr_bps_block_size=16,
     )
     assert r.phase_trajectory.shape == (1024,)
-    # Phase estimates should not all be identical (per-symbol, not per-block)
     phi = r.phase_trajectory
-    assert not np.all(phi == phi[0]), (
+    assert not bool(xp.all(phi == phi[0])), (
         "All phi identical — expected per-symbol variation with cpr_bps_block_size=16"
     )
 
@@ -376,42 +377,40 @@ def test_bps_block_size_independent():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_bps_reduces_mse_under_phase_noise():
+def test_bps_reduces_mse_under_phase_noise(backend_device, xp):
     """With strong phase noise, BPS should produce lower steady-state MSE."""
     rng = np.random.default_rng(99)
     n_sym = 4096
     sps = 2
     const = gray_constellation("psk", 4).astype(np.complex64)
     syms = const[rng.integers(0, 4, n_sym)]
-    samples = np.repeat(syms, sps).astype(np.complex64)
 
-    # Add AWGN
-    samples += 0.1 * (
-        rng.standard_normal(len(samples)) + 1j * rng.standard_normal(len(samples))
-    ).astype(np.complex64)
     # Add random-walk phase noise
     phase_noise = np.cumsum(0.03 * rng.standard_normal(n_sym)).astype(np.float32)
-    samples_pn = np.repeat(syms * np.exp(1j * phase_noise), sps) + 0.1 * (
-        rng.standard_normal(2 * n_sym) + 1j * rng.standard_normal(2 * n_sym)
+    samples_pn = (
+        np.repeat(syms * np.exp(1j * phase_noise), sps)
+        + 0.1 * (
+            rng.standard_normal(2 * n_sym) + 1j * rng.standard_normal(2 * n_sym)
+        ).astype(np.complex64)
     ).astype(np.complex64)
 
-    n_eval = n_sym // 2  # evaluate on second half
+    n_eval = n_sym // 2
     r_no_cpr = block_lms(
-        samples_pn,
-        syms[:512],
+        xp.asarray(samples_pn),
+        xp.asarray(syms[:512]),
         num_taps=7,
         sps=sps,
-        step_size=0.05,
+        step_size=5e-4,
         block_size=128,
         modulation="psk",
         order=4,
     )
     r_bps = block_lms(
-        samples_pn,
-        syms[:512],
+        xp.asarray(samples_pn),
+        xp.asarray(syms[:512]),
         num_taps=7,
         sps=sps,
-        step_size=0.05,
+        step_size=5e-4,
         block_size=128,
         modulation="psk",
         order=4,
@@ -420,8 +419,8 @@ def test_bps_reduces_mse_under_phase_noise():
         cpr_bps_block_size=32,
     )
 
-    mse_no_cpr = float(np.mean(np.abs(r_no_cpr.error[n_eval:]) ** 2))
-    mse_bps = float(np.mean(np.abs(r_bps.error[n_eval:]) ** 2))
+    mse_no_cpr = float(xp.mean(xp.abs(r_no_cpr.error[n_eval:]) ** 2))
+    mse_bps = float(xp.mean(xp.abs(r_bps.error[n_eval:]) ** 2))
     assert mse_bps < mse_no_cpr, (
         f"BPS MSE ({mse_bps:.4f}) not better than no-CPR ({mse_no_cpr:.4f}) "
         "under phase noise"
@@ -433,7 +432,7 @@ def test_bps_reduces_mse_under_phase_noise():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_mimo_convergence():
+def test_mimo_convergence(backend_device, xp):
     """2x2 MIMO: both channels should converge to low EVM."""
     rng = np.random.default_rng(5)
     n_sym = 4096
@@ -445,14 +444,16 @@ def test_mimo_convergence():
     noise = 0.05 * (
         rng.standard_normal((2, n_sym)) + 1j * rng.standard_normal((2, n_sym))
     ).astype(np.complex64)
-    samples = np.stack([t1, t2]) + noise
+    training_np = np.stack([t1, t2])
+    samples = xp.asarray(training_np + noise)
+    training = xp.asarray(training_np)
 
     r = block_lms(
         samples,
-        np.stack([t1, t2]),
+        training,
         num_taps=5,
         sps=sps,
-        step_size=0.1,
+        step_size=2e-3,
         modulation="qam",
         order=16,
         block_size=64,
@@ -460,11 +461,74 @@ def test_mimo_convergence():
     n_eval = n_sym // 2
     for ch in range(2):
         evm = float(
-            np.sqrt(
-                np.mean(
-                    np.abs(r.y_hat[ch, n_eval:] - np.stack([t1, t2])[ch, n_eval:]) ** 2
-                )
-                / np.mean(np.abs(np.stack([t1, t2])[ch, n_eval:]) ** 2)
+            xp.sqrt(
+                xp.mean(xp.abs(r.y_hat[ch, n_eval:] - training[ch, n_eval:]) ** 2)
+                / xp.mean(xp.abs(training[ch, n_eval:]) ** 2)
             )
         )
         assert evm < 0.15, f"MIMO ch{ch} EVM {evm:.3f} too high"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests 14-15: edge cases and ISI channel
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_single_tap(backend_device, xp):
+    """num_taps=1: degenerate equalizer — must not crash, output shape correct."""
+    rng = np.random.default_rng(42)
+    n_sym = 64
+    const = gray_constellation("qam", 4).astype(np.complex64)
+    const = normalize(const, "average_power").astype(np.complex64)
+    syms = xp.asarray(const[rng.integers(0, 4, n_sym)].astype(np.complex64))
+    noise = 0.05 * xp.asarray(
+        (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)).astype(np.complex64)
+    )
+    samples = syms + noise
+
+    r = block_lms(
+        samples,
+        syms,
+        num_taps=1,
+        sps=1,
+        step_size=1e-2,
+        modulation="qam",
+        order=4,
+        block_size=16,
+    )
+    assert r.y_hat.shape == (n_sym,)
+
+
+def test_isi_channel_convergence(backend_device, xp):
+    """Known 3-tap ISI channel: equalizer must converge across block boundaries."""
+    rng = np.random.default_rng(99)
+    n_sym = 2048
+    sps = 1
+    block_size = 32
+
+    channel = np.array([0.1, 1.0, 0.1], dtype=np.complex64)
+    const = gray_constellation("qam", 4).astype(np.complex64)
+    const = normalize(const, "average_power").astype(np.complex64)
+    syms_np = const[rng.integers(0, 4, n_sym)].astype(np.complex64)
+    received_np = np.convolve(syms_np, channel, mode="full")[:n_sym].astype(np.complex64)
+    received = xp.asarray(received_np)
+    syms = xp.asarray(syms_np)
+
+    r = block_lms(
+        received,
+        syms,
+        num_taps=5,
+        sps=sps,
+        step_size=5e-3,
+        modulation="qam",
+        order=4,
+        block_size=block_size,
+    )
+    n_eval = n_sym // 2
+    evm = float(
+        xp.sqrt(
+            xp.mean(xp.abs(r.y_hat[n_eval:] - syms[n_eval:]) ** 2)
+            / xp.mean(xp.abs(syms[n_eval:]) ** 2)
+        )
+    )
+    assert evm < 0.10, f"EVM {evm:.3f} — ISI equalization failed across block boundaries"
