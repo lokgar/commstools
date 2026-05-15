@@ -70,6 +70,7 @@ _META_FIELDS: tuple[str, ...] = (
 _OPTIONAL_ARRAY_FIELDS: tuple[str, ...] = (
     "source_bits",
     "source_symbols",
+    "ps_pmf",
 )
 
 # Derived / cached array fields (only written when include_cache=True)
