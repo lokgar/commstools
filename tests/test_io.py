@@ -214,7 +214,7 @@ def test_compressed_smaller_than_uncompressed(tmp_path):
 
 
 # -----------------------------------------------------------------------------
-# Frame signal with SignalInfo
+# Frame signal with signal_type
 # -----------------------------------------------------------------------------
 
 
@@ -302,3 +302,18 @@ def test_auto_device_uses_gpu_when_available(tmp_path):
     save_npz(sig, p)
     sig2 = load_npz(p)  # device="auto"
     assert sig2.backend == "GPU"
+
+
+# -----------------------------------------------------------------------------
+# PS-QAM round-trip
+# -----------------------------------------------------------------------------
+
+
+def test_psqam_pmf_roundtrip(tmp_path):
+    sig = Signal.psqam(1000, sps=4, symbol_rate=10e9, order=64, entropy=5.0)
+    save_npz(sig, tmp_path / "psqam")
+    loaded = load_npz(tmp_path / "psqam.npz", device="cpu")
+    assert loaded.ps_pmf is not None
+    npt.assert_allclose(np.asarray(loaded.ps_pmf), np.asarray(sig.ps_pmf), rtol=1e-6)
+    assert loaded.mod_scheme == "PS-QAM"
+    assert loaded.mod_order == 64
