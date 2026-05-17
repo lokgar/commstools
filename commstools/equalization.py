@@ -74,6 +74,43 @@ from .logger import logger
 
 
 @dataclass
+class CPRState:
+    """Carrier-phase-recovery state for warm-starting across equalizer calls.
+
+    All arrays are CPU NumPy regardless of the equalizer backend — CPR state is
+    small and must survive device resets.  Do not convert to CuPy.
+
+    Used/produced by ``lms()``, ``rls()``, and ``block_lms()`` when
+    ``cpr_type`` is not None.  Pass as ``cpr_state=result.cpr_state`` to the
+    next call to continue phase tracking without a re-lock transient.
+    """
+
+    # PLL state (lms / rls with cpr_type='pll' or 'bps')
+    pll_phi: Optional[np.ndarray] = None       # (C,) float64
+    pll_freq: Optional[np.ndarray] = None      # (C,) float64
+
+    # BPS cross-block unwrap state (block_lms with cpr_type='bps')
+    bps_prev4: Optional[np.ndarray] = None     # (C,) float64
+    bps_offset4: Optional[np.ndarray] = None   # (C,) float64
+    bps_d2_hist: Optional[np.ndarray] = None   # (P, C, K-1) float32 — CPU copy
+
+    # Cycle-slip regression state (all CPR modes)
+    cs_buf_x: Optional[np.ndarray] = None      # (C, H) float64
+    cs_buf_y: Optional[np.ndarray] = None      # (C, H) float64
+    cs_buf_ptr: Optional[np.ndarray] = None    # (C,) int64
+    cs_buf_n: Optional[np.ndarray] = None      # (C,) int64
+    cs_stats: Optional[np.ndarray] = None      # (C, 4) float64
+
+    # Identity tags — used to validate shape compatibility on warm-start
+    cpr_type: Optional[str] = None
+    num_ch: int = 0
+    symmetry: int = 4
+    bps_P: int = 0   # number of BPS test phases
+    bps_K: int = 0   # BPS block size
+    cs_H: int = 0    # cycle-slip history length
+
+
+@dataclass
 class EqualizerResult:
     """Container for equalizer outputs.
 
@@ -142,6 +179,7 @@ class EqualizerResult:
     input_norm_factor: Union[float, np.ndarray] = 1.0
     tail_trim: int = 0
     phase_trajectory: Optional[ArrayType] = None
+    cpr_state: Optional["CPRState"] = None
 
 
 def _log_equalizer_exit(
@@ -1783,7 +1821,8 @@ def _get_jax_lms_cpr(
                 # Wrap to [-π, π] before casting to float32 for fast GPU exp
                 _two_pi_f64 = jnp.float64(2.0 * 3.141592653589793)
                 phi_wrapped = phi_corr - jnp.round(phi_corr / _two_pi_f64) * _two_pi_f64
-                phasor = jnp.exp(-1j * phi_wrapped.astype(jnp.float32))
+                _phi32 = phi_wrapped.astype(jnp.float32)
+                phasor = jnp.exp(_phi32 * jnp.array(-1j, dtype=jnp.complex64))
                 y_fin = y_raw * phasor  # (C,)
 
                 def slicer(ch_y):
@@ -1803,7 +1842,7 @@ def _get_jax_lms_cpr(
                     pll_phi_new = pll_phi
                     pll_freq_new = pll_freq
 
-                phasor_inv = jnp.exp(1j * phi_wrapped.astype(jnp.float32))
+                phasor_inv = jnp.exp(_phi32 * jnp.array(1j, dtype=jnp.complex64))
                 e_eq = e_clean * phasor_inv  # (C,)
 
                 W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e_eq), X_wins)
@@ -2016,7 +2055,8 @@ def _get_jax_rls_cpr(
                 # Wrap to [-π, π] before casting to float32 for fast GPU exp
                 _two_pi_f64 = jnp.float64(2.0 * 3.141592653589793)
                 phi_wrapped = phi_corr - jnp.round(phi_corr / _two_pi_f64) * _two_pi_f64
-                phasor = jnp.exp(-1j * phi_wrapped.astype(jnp.float32))
+                _phi32 = phi_wrapped.astype(jnp.float32)
+                phasor = jnp.exp(_phi32 * jnp.array(-1j, dtype=jnp.complex64))
                 y_fin = y_raw * phasor
 
                 def slicer(ch_y):
@@ -2036,7 +2076,7 @@ def _get_jax_rls_cpr(
                     pll_phi_new = pll_phi
                     pll_freq_new = pll_freq
 
-                phasor_inv = jnp.exp(1j * phi_wrapped.astype(jnp.float32))
+                phasor_inv = jnp.exp(_phi32 * jnp.array(1j, dtype=jnp.complex64))
                 e_eq = e_clean * phasor_inv
 
                 x_bar = X_wins.flatten()
@@ -2580,7 +2620,7 @@ def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
 # -----------------------------------------------------------------------------
 
 
-def _normalize_inputs(samples, training_symbols, sps):
+def _normalize_inputs(samples, training_symbols, sps, input_norm_factor=None):
     """Scale samples and training symbols to a common unit symbol-power reference.
 
     For fractionally-spaced equalization (sps > 1) the fractional timing phase
@@ -2597,6 +2637,11 @@ def _normalize_inputs(samples, training_symbols, sps):
     samples          : (C, N) or (N,)  complex, any backend (NumPy / CuPy)
     training_symbols : (C, K) or (K,)  or None — always at 1 sps
     sps              : int — samples per symbol
+    input_norm_factor : float or np.ndarray, optional
+        When supplied, skip the RMS computation and divide samples by this
+        factor instead.  Pass ``EqualizerResult.input_norm_factor`` from a
+        previous call to keep successive blocks on the same power scale.
+        ``float`` for SISO, ``(C,)`` array for MIMO.
 
     Returns
     -------
@@ -2610,6 +2655,26 @@ def _normalize_inputs(samples, training_symbols, sps):
         the physical power scale of a different capture (e.g. vacuum noise)
         passed through the same frozen taps.  See ``EqualizerResult`` docs.
     """
+    if input_norm_factor is not None:
+        # Caller supplies scale — skip RMS and just apply it.
+        nf = input_norm_factor
+        if samples.ndim == 1:
+            samples = samples / float(nf)
+        else:
+            nf_arr = np.asarray(nf, dtype=np.float64).ravel()
+            if nf_arr.shape[0] != samples.shape[0]:
+                raise ValueError(
+                    f"input_norm_factor shape {nf_arr.shape} does not match "
+                    f"samples channel count {samples.shape[0]}."
+                )
+            _, xp_loc, _ = dispatch(samples)
+            nf_dev = xp_loc.asarray(nf_arr)[..., None]  # (C, 1) on same device
+            samples = samples / nf_dev
+        if training_symbols is not None:
+            from commstools.helpers import normalize as c_normalize
+            training_symbols = c_normalize(training_symbols, "average_power", axis=-1)
+        return samples, training_symbols, input_norm_factor
+
     from commstools.helpers import rms as _rms
 
     ref_samples = samples
@@ -2629,6 +2694,50 @@ def _normalize_inputs(samples, training_symbols, sps):
         training_symbols = c_normalize(training_symbols, "average_power", axis=-1)
 
     return samples, training_symbols, input_norm_factor
+
+
+def _build_padded_samples(samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps):
+    """Construct the padded input array for the equalizer.
+
+    When ``samples_prefix`` is supplied its last ``pad_left`` samples replace the
+    leading zero-pad, eliminating the warm-start transient.  Otherwise the
+    leading edge is filled according to ``pad_mode``.
+    """
+    if samples_prefix is not None:
+        # Normalize prefix by the same factor used for the main block.
+        prefix_np = np.ascontiguousarray(to_device(samples_prefix, "cpu"), dtype=np.complex64)
+        if prefix_np.ndim == 1:
+            prefix_np = prefix_np[np.newaxis, :]
+        if prefix_np.shape[-1] < pad_left:
+            raise ValueError(
+                f"samples_prefix last axis length {prefix_np.shape[-1]} is less than "
+                f"pad_left={pad_left}. Provide at least pad_left samples."
+            )
+        if eq_norm is not None:
+            nf = eq_norm
+            if prefix_np.shape[0] == 1:
+                prefix_np = prefix_np / float(nf) if np.ndim(nf) == 0 else prefix_np / float(np.asarray(nf).ravel()[0])
+            else:
+                nf_arr = np.asarray(nf, dtype=np.float64).ravel()
+                prefix_np = prefix_np / nf_arr[:, None]
+        left_pad = prefix_np[:, -pad_left:]
+        if samples_np.ndim == 1:
+            samples_2d = samples_np[np.newaxis, :]
+        else:
+            samples_2d = samples_np
+        right_zero = np.zeros((samples_2d.shape[0], pad_right), dtype=np.complex64)
+        padded = np.concatenate([left_pad, samples_2d, right_zero], axis=-1)
+        return padded
+    if pad_mode == "zeros":
+        if samples_np.ndim == 1:
+            return np.pad(samples_np, (pad_left, pad_right))[np.newaxis, :]
+        return np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
+    if pad_mode in ("edge", "reflect"):
+        np_mode = pad_mode
+        if samples_np.ndim == 1:
+            return np.pad(samples_np, (pad_left, pad_right), mode=np_mode)[np.newaxis, :]
+        return np.pad(samples_np, ((0, 0), (pad_left, pad_right)), mode=np_mode)
+    raise ValueError(f"pad_mode must be 'zeros', 'edge', or 'reflect'. Got {pad_mode!r}.")
 
 
 def _init_butterfly_weights_jax(num_ch, num_taps, jnp, center_tap=None):
@@ -3039,6 +3148,10 @@ def lms(
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    cpr_state: Optional["CPRState"] = None,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
@@ -3268,6 +3381,48 @@ def lms(
     plot_smoothing : int, default 50
         Moving-average window (symbols) for the MSE convergence curve in the
         debug plot.
+    cpr_state : CPRState, optional
+        Warm-start CPR state from a previous ``lms()`` call (obtained via
+        ``EqualizerResult.cpr_state``).  When provided and the CPR type and
+        channel count match, the PLL integrators, BPS unwrap accumulators,
+        and cycle-slip buffers are pre-loaded rather than zero-initialized.
+        This eliminates the ~5–10 k symbol CPR convergence transient that
+        occurs at every block boundary in streaming pipelines.  Pass
+        ``None`` (default) to cold-start the CPR from zero.  Ignored when
+        ``cpr_type=None`` or when the stored state is incompatible (mismatched
+        ``cpr_type``, channel count, or history depth), in which case the
+        equalizer falls back to cold-start silently.
+
+        .. note::
+            JAX backend: ``cpr_state`` warm-start is not yet supported;
+            passing a non-``None`` value raises ``NotImplementedError``.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor from a previous call (obtained
+        via ``EqualizerResult.input_norm_factor``).  When provided, the
+        ``_normalize_inputs`` step is skipped and this value is used directly
+        to scale the input samples and training symbols.  This ensures that
+        warm-started weight vectors see the same amplitude regime as the
+        block on which they were trained, preventing a gradient scale mismatch
+        when signal power drifts slowly between blocks.
+        Pass ``None`` (default) to recompute the RMS from the current block.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block, used to eliminate
+        the zero-padded leading transient at each block boundary.  Shape:
+        ``(≥ pad_left,)`` SISO or ``(C, ≥ pad_left)`` MIMO, where
+        ``pad_left = min(center_tap, max(0, num_taps - 1))``.  The last
+        ``pad_left`` samples of ``samples_prefix`` replace the leading zeros
+        in the tap window so that the first output symbol sees a fully
+        populated, real-signal tap vector.  The prefix is normalized by the
+        same ``input_norm_factor`` as the main block before being prepended.
+        Pass ``None`` (default) for standard zero-padding.  Raises
+        ``ValueError`` if the prefix length is less than ``pad_left``.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy for the leading tap window when ``samples_prefix``
+        is ``None``.  ``'zeros'`` (default) prepends ``pad_left`` complex
+        zeros, which is the standard causal initialisation.  ``'edge'``
+        replicates the first sample of the current block, which can reduce
+        the initial amplitude jump at cold start.  Has no effect when
+        ``samples_prefix`` is provided.
 
     Returns
     -------
@@ -3290,6 +3445,13 @@ def lms(
           when ``cpr_type=None``.
         * ``num_train_symbols`` — number of training symbols consumed
           (data-aided phase).
+        * ``input_norm_factor`` — the RMS factor used to normalize inputs
+          (float).  Store and pass as ``input_norm_factor`` on the next call
+          to keep weight magnitudes consistent across block boundaries.
+        * ``cpr_state`` — ``CPRState`` snapshot of PLL/BPS/cycle-slip
+          integrators after the last symbol.  Pass as ``cpr_state`` on the
+          next call to resume CPR without a re-convergence transient.
+          ``None`` when ``cpr_type=None``.
 
         Arrays reside on the same device as the input (NumPy CPU or CuPy
         GPU).
@@ -3356,13 +3518,12 @@ def lms(
             else None
         )
         samples_np, training_np, eq_norm = _normalize_inputs(
-            samples_np, training_np, sps
+            samples_np, training_np, sps, input_norm_factor=input_norm_factor
         )
         # Pad (NumPy)
-        if was_1d:
-            samples_padded = np.pad(samples_np, (pad_left, pad_right))[np.newaxis, :]
-        else:
-            samples_padded = np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
+        samples_padded = _build_padded_samples(
+            samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
+        )
         # Constellation (NumPy)
         if modulation is not None and order is not None:
             from .mapping import gray_constellation
@@ -3442,13 +3603,21 @@ def lms(
             )
             bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
             H = int(cpr_cycle_slip_history)
-            pll_phi = np.zeros(num_ch, dtype=np.float64)
-            pll_freq = np.zeros(num_ch, dtype=np.float64)
-            cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
-            cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
-            cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
-            cs_buf_n = np.zeros(num_ch, dtype=np.int64)
-            cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+            _st = cpr_state
+            _st_ok = (
+                _st is not None
+                and _st.cpr_type == cpr_type
+                and _st.num_ch == num_ch
+                and _st.cs_H == H
+                and _st.pll_phi is not None
+            )
+            pll_phi = _st.pll_phi.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
+            pll_freq = _st.pll_freq.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
+            cs_buf_x = _st.cs_buf_x.copy() if _st_ok else np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_y = _st.cs_buf_y.copy() if _st_ok else np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_ptr = _st.cs_buf_ptr.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
+            cs_buf_n = _st.cs_buf_n.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
+            cs_stats = _st.cs_stats.copy() if _st_ok else np.zeros((num_ch, 4), dtype=np.float64)
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_lms_cpr()(
@@ -3496,6 +3665,14 @@ def lms(
             )
             phi_t = xp.asarray(phase_out.T)  # (C, N_sym)
             result.phase_trajectory = phi_t[0] if was_1d else phi_t
+            result.cpr_state = CPRState(
+                pll_phi=pll_phi.copy(), pll_freq=pll_freq.copy(),
+                cs_buf_x=cs_buf_x.copy(), cs_buf_y=cs_buf_y.copy(),
+                cs_buf_ptr=cs_buf_ptr.copy(), cs_buf_n=cs_buf_n.copy(),
+                cs_stats=cs_stats.copy(),
+                cpr_type=cpr_type, num_ch=num_ch, symmetry=symmetry,
+                bps_P=B, bps_K=int(cpr_bps_block_size), cs_H=H,
+            )
         return _log_equalizer_exit(
             result, name="LMS", debug_plot=debug_plot, plot_smoothing=plot_smoothing
         )
@@ -3505,15 +3682,21 @@ def lms(
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
 
+    if cpr_state is not None and cpr_type is not None:
+        raise NotImplementedError(
+            "cpr_state warm-start is not yet supported for backend='jax'. "
+            "Use backend='numba' for iterative warm-start with CPR."
+        )
+
     samples, training_symbols, eq_norm = _normalize_inputs(
-        samples, training_symbols, sps
+        samples, training_symbols, sps, input_norm_factor=input_norm_factor
     )
-    # Pad (backend-agnostic via xp)
-    samples_padded = (
-        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
-        if not was_1d
-        else xp.pad(samples, (pad_left, pad_right))
+    # Pad — use _build_padded_samples (returns CPU NumPy); convert to xp array after
+    _samp_cpu = to_device(samples, "cpu").astype(np.complex64)
+    samples_padded_np = _build_padded_samples(
+        _samp_cpu, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
     )
+    samples_padded = xp.asarray(samples_padded_np) if not was_1d else xp.asarray(samples_padded_np[0])
     # Constellation
     if modulation is not None and order is not None:
         from .mapping import gray_constellation
@@ -3679,6 +3862,10 @@ def rls(
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    cpr_state: Optional["CPRState"] = None,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """
     Recursive Least Squares adaptive equalizer with butterfly MIMO support.
@@ -3867,6 +4054,18 @@ def rls(
         Display convergence + tap-weight diagnostic plot on exit.
     plot_smoothing : int, default 50
         MSE moving-average window for the debug plot.
+    cpr_state : CPRState, optional
+        Warm-start CPR state from a previous ``rls()`` call.  See
+        ``lms()`` for the full description; behaviour is identical.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor from a previous call.  See
+        ``lms()`` for the full description; behaviour is identical.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block.  See ``lms()``
+        for the full description; behaviour is identical.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy when ``samples_prefix`` is ``None``.  See
+        ``lms()`` for the full description; behaviour is identical.
 
     Returns
     -------
@@ -3886,6 +4085,9 @@ def rls(
           4-fold-unwrapped float64.  PLL: PI integrator state.  ``None``
           when ``cpr_type=None``.
         * ``num_train_symbols`` — number of data-aided training symbols.
+        * ``input_norm_factor`` — RMS factor used to normalize inputs.
+        * ``cpr_state`` — CPRState snapshot after the last symbol; ``None``
+          when ``cpr_type=None``.
 
     Warnings
     --------
@@ -3974,17 +4176,13 @@ def rls(
             else None
         )
         samples_np, training_np, eq_norm = _normalize_inputs(
-            samples_np, training_np, sps
+            samples_np, training_np, sps, input_norm_factor=input_norm_factor
         )
 
-        x_np = (
-            np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
-            if not was_1d
-            else np.pad(samples_np, (pad_left, pad_right))
+        x_np = _build_padded_samples(
+            samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
         )
         x_np = np.ascontiguousarray(x_np)
-        if was_1d:
-            x_np = x_np[np.newaxis, :]
 
         if modulation is not None and order is not None:
             from .mapping import gray_constellation
@@ -4070,13 +4268,21 @@ def rls(
             )
             bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
             H = int(cpr_cycle_slip_history)
-            pll_phi = np.zeros(num_ch, dtype=np.float64)
-            pll_freq = np.zeros(num_ch, dtype=np.float64)
-            cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
-            cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
-            cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
-            cs_buf_n = np.zeros(num_ch, dtype=np.int64)
-            cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+            _st = cpr_state
+            _st_ok = (
+                _st is not None
+                and _st.cpr_type == cpr_type
+                and _st.num_ch == num_ch
+                and _st.cs_H == H
+                and _st.pll_phi is not None
+            )
+            pll_phi = _st.pll_phi.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
+            pll_freq = _st.pll_freq.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
+            cs_buf_x = _st.cs_buf_x.copy() if _st_ok else np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_y = _st.cs_buf_y.copy() if _st_ok else np.zeros((num_ch, H), dtype=np.float64)
+            cs_buf_ptr = _st.cs_buf_ptr.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
+            cs_buf_n = _st.cs_buf_n.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
+            cs_stats = _st.cs_stats.copy() if _st_ok else np.zeros((num_ch, 4), dtype=np.float64)
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_rls_cpr()(
@@ -4127,6 +4333,14 @@ def rls(
             )
             phi_t = xp.asarray(phase_out[:n_update_halt].T)  # (C, n_update_halt)
             result.phase_trajectory = phi_t[0] if was_1d else phi_t
+            result.cpr_state = CPRState(
+                pll_phi=pll_phi.copy(), pll_freq=pll_freq.copy(),
+                cs_buf_x=cs_buf_x.copy(), cs_buf_y=cs_buf_y.copy(),
+                cs_buf_ptr=cs_buf_ptr.copy(), cs_buf_n=cs_buf_n.copy(),
+                cs_stats=cs_stats.copy(),
+                cpr_type=cpr_type, num_ch=num_ch, symmetry=symmetry,
+                bps_P=B, bps_K=int(cpr_bps_block_size), cs_H=H,
+            )
         # Truncate last num_taps//2 symbols (zero-padding contamination).
         result = _log_equalizer_exit(
             result, name="RLS", debug_plot=debug_plot, plot_smoothing=plot_smoothing
@@ -4145,15 +4359,21 @@ def rls(
             "Call jax.config.update('jax_enable_x64', True) before using backend='jax'."
         )
 
+    if cpr_state is not None and cpr_type is not None:
+        raise NotImplementedError(
+            "cpr_state warm-start is not yet supported for rls backend='jax'. "
+            "Use backend='numba' for iterative warm-start with CPR."
+        )
+
     samples, training_symbols, eq_norm = _normalize_inputs(
-        samples, training_symbols, sps
+        samples, training_symbols, sps, input_norm_factor=input_norm_factor
     )
 
-    samples_padded = (
-        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
-        if not was_1d
-        else xp.pad(samples, (pad_left, pad_right))
+    _samp_cpu_rls = to_device(samples, "cpu").astype(np.complex64)
+    samples_padded_np_rls = _build_padded_samples(
+        _samp_cpu_rls, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
     )
+    samples_padded = xp.asarray(samples_padded_np_rls) if not was_1d else xp.asarray(samples_padded_np_rls[0])
 
     if modulation is not None and order is not None:
         from .mapping import gray_constellation
@@ -4335,6 +4555,10 @@ def block_lms(
     cpr_cycle_slip_threshold: float = np.pi / 4,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    cpr_state: Optional["CPRState"] = None,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """Block LMS equalizer with frequency-domain gradient accumulation.
 
@@ -4494,13 +4718,37 @@ def block_lms(
         Show a convergence + phase diagnostic plot on exit.
     plot_smoothing : int, default 50
         Moving-average window for the MSE curve in the debug plot.
+    cpr_state : CPRState, optional
+        Warm-start BPS CPR state from a previous ``block_lms()`` call.
+        When provided, the BPS 4-fold unwrap accumulators (``bps_prev4``,
+        ``bps_offset4``) and the block-distance history matrix
+        (``bps_d2_hist``, shape ``(B, C, K-1)``) are restored from the
+        previous block boundary.  This prevents the BPS from re-converging
+        its phase estimate at each block boundary, which otherwise causes
+        a ~``cpr_bps_block_size``-symbol transient of increased phase error.
+        Pass ``None`` (default) to cold-start.  Only BPS state is used;
+        PLL/cycle-slip fields are ignored.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor.  See ``lms()`` for the full
+        description; behaviour is identical.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block.  See ``lms()``
+        for the full description; behaviour is identical.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy when ``samples_prefix`` is ``None``.  See
+        ``lms()`` for the full description; behaviour is identical.
 
     Returns
     -------
     EqualizerResult
-        Same fields as :func:`lms`.  ``phase_trajectory`` is populated when
-        ``cpr_type='bps'``; shape ``(N_sym,)`` SISO or ``(C, N_sym)`` MIMO,
-        with one phase estimate per output symbol.
+        Same fields as :func:`lms`, plus:
+
+        * ``input_norm_factor`` — RMS factor used to normalize inputs.
+        * ``cpr_state`` — ``CPRState`` with BPS accumulators after the last
+          block.  ``None`` when ``cpr_type=None``.
+
+        ``phase_trajectory`` is populated when ``cpr_type='bps'``; shape
+        ``(N_sym,)`` SISO or ``(C, N_sym)`` MIMO, one estimate per symbol.
 
     Warnings
     --------
@@ -4542,7 +4790,7 @@ def block_lms(
             training_symbols = training_symbols[np.newaxis, :]
 
     samples, training_symbols, eq_norm = _normalize_inputs(
-        samples, training_symbols, sps
+        samples, training_symbols, sps, input_norm_factor=input_norm_factor
     )
 
     # ── Constellation ─────────────────────────────────────────────────────────
@@ -4602,19 +4850,32 @@ def block_lms(
         quantum = np.float64(2.0 * np.pi / symmetry)
         _two_pi = xp.float64(2.0 * np.pi)
         # Cross-block 4-fold unwrap state (CPU, one value per channel)
-        bps_prev4 = np.zeros(C, dtype=np.float64)
-        bps_offset4 = np.zeros(C, dtype=np.float64)
-        # Cycle-slip state (CPU scalars — negligible overhead vs GPU compute)
         _cs_H = min(int(cpr_cycle_slip_history), n_sym)
-        cs_buf_x = np.zeros((C, _cs_H), dtype=np.float64)
-        cs_buf_y = np.zeros((C, _cs_H), dtype=np.float64)
-        cs_buf_ptr = np.zeros(C, dtype=np.int64)
-        cs_buf_n = np.zeros(C, dtype=np.int64)
-        cs_stats = np.zeros((C, 4), dtype=np.float64)  # Sx, Sy, Sxx, Sxy per channel
-        # Cross-block sliding-window history for BPS metric (K-1 prev samples)
         _bps_K = int(cpr_bps_block_size)
         _bps_hist_len = max(0, _bps_K - 1)
-        bps_d2_hist = xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
+        _st = cpr_state
+        _st_ok = (
+            _st is not None
+            and _st.cpr_type == cpr_type
+            and _st.num_ch == C
+            and _st.cs_H == _cs_H
+            and _st.bps_P == P
+            and _st.bps_K == _bps_K
+            and _st.bps_prev4 is not None
+        )
+        bps_prev4 = _st.bps_prev4.copy() if _st_ok else np.zeros(C, dtype=np.float64)
+        bps_offset4 = _st.bps_offset4.copy() if _st_ok else np.zeros(C, dtype=np.float64)
+        # Cycle-slip state (CPU scalars — negligible overhead vs GPU compute)
+        cs_buf_x = _st.cs_buf_x.copy() if _st_ok else np.zeros((C, _cs_H), dtype=np.float64)
+        cs_buf_y = _st.cs_buf_y.copy() if _st_ok else np.zeros((C, _cs_H), dtype=np.float64)
+        cs_buf_ptr = _st.cs_buf_ptr.copy() if _st_ok else np.zeros(C, dtype=np.int64)
+        cs_buf_n = _st.cs_buf_n.copy() if _st_ok else np.zeros(C, dtype=np.int64)
+        cs_stats = _st.cs_stats.copy() if _st_ok else np.zeros((C, 4), dtype=np.float64)  # Sx, Sy, Sxx, Sxy per channel
+        # Cross-block sliding-window history for BPS metric (K-1 prev samples)
+        if _st_ok and _st.bps_d2_hist is not None:
+            bps_d2_hist = xp.asarray(_st.bps_d2_hist)
+        else:
+            bps_d2_hist = xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
 
     # ── OLS block size ────────────────────────────────────────────────────────
     # fftsize must be >= block_size * sps + num_taps - 1 (linear OLS condition)
@@ -4636,7 +4897,10 @@ def block_lms(
     pad_total = max(0, n_sym * sps - N + num_taps - 1)
     pad_left = min(c_tap, pad_total)
     pad_right = pad_total - pad_left
-    x_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))  # (C, N_pad)
+    _samp_cpu_blms = to_device(samples, "cpu").astype(np.complex64)
+    x_padded = xp.asarray(
+        _build_padded_samples(_samp_cpu_blms, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps)
+    )  # (C, N_pad)
     N_padded = x_padded.shape[1]
 
     # ── Output buffers ────────────────────────────────────────────────────────
@@ -4862,6 +5126,16 @@ def block_lms(
         input_norm_factor=eq_norm,
         phase_trajectory=phase_traj,
     )
+    if cpr_type == "bps":
+        result.cpr_state = CPRState(
+            bps_prev4=bps_prev4.copy(), bps_offset4=bps_offset4.copy(),
+            bps_d2_hist=to_device(bps_d2_hist, "cpu"),
+            cs_buf_x=cs_buf_x.copy(), cs_buf_y=cs_buf_y.copy(),
+            cs_buf_ptr=cs_buf_ptr.copy(), cs_buf_n=cs_buf_n.copy(),
+            cs_stats=cs_stats.copy(),
+            cpr_type=cpr_type, num_ch=C, symmetry=_cpr_symmetry(modulation, order),
+            bps_P=P, bps_K=_bps_K, cs_H=_cs_H,
+        )
     return _log_equalizer_exit(
         result, name="Block-LMS", debug_plot=debug_plot, plot_smoothing=plot_smoothing
     )
@@ -4955,6 +5229,9 @@ def cma(
     pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """
     Constant Modulus Algorithm blind equalizer with butterfly MIMO support.
@@ -5085,12 +5362,21 @@ def cma(
         ``R2 = E_PS[|s_m|^4] / E_PS^2``.  Pilot references are also scaled
         by ``1/sqrt(E_PS)`` so pilot-aided and blind sections converge to the
         same unit-power target.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor from a previous call.  See
+        ``lms()`` for the full description; behaviour is identical.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block.  See ``lms()``
+        for the full description; behaviour is identical.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy when ``samples_prefix`` is ``None``.  See
+        ``lms()`` for the full description; behaviour is identical.
 
     Returns
     -------
     EqualizerResult
         Equalized symbols, final weights, CMA error history, and optionally
-        weight trajectory.
+        weight trajectory.  ``input_norm_factor`` field is populated.
 
     Warnings
     --------
@@ -5168,16 +5454,12 @@ def cma(
             _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
             samples_np[..., _smask] /= _amp
         # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
+        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps, input_norm_factor=input_norm_factor)
 
-        x_np = (
-            np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
-            if not was_1d
-            else np.pad(samples_np, (pad_left, pad_right))
+        x_np = _build_padded_samples(
+            samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
         )
         x_np = np.ascontiguousarray(x_np)
-        if was_1d:
-            x_np = x_np[np.newaxis, :]
 
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
@@ -5253,13 +5535,13 @@ def cma(
         samples = samples.copy()
         samples[..., _smask] /= xp.float32(_amp)
     # RMS-normalize samples to unit symbol-rate power (CMA has no training)
-    samples, _, eq_norm = _normalize_inputs(samples, None, sps)
+    samples, _, eq_norm = _normalize_inputs(samples, None, sps, input_norm_factor=input_norm_factor)
 
-    samples_padded = (
-        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
-        if not was_1d
-        else xp.pad(samples, (pad_left, pad_right))
+    _samp_cpu_cma = to_device(samples, "cpu").astype(np.complex64)
+    samples_padded_np_cma = _build_padded_samples(
+        _samp_cpu_cma, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
     )
+    samples_padded = xp.asarray(samples_padded_np_cma) if not was_1d else xp.asarray(samples_padded_np_cma[0])
 
     x_jax = to_jax(samples_padded, device=device)
     if was_1d:
@@ -5342,6 +5624,9 @@ def rde(
     pmf: Optional[Any] = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """
     Radius Directed Equalizer (RDE) — blind equalizer for multi-ring constellations.
@@ -5454,12 +5739,21 @@ def rde(
         and ``order``, the ring radii are scaled by ``1/sqrt(E_PS)`` to target
         the unit-power constellation ``{|s_m|/sqrt(E_PS)}``.  Pilot references
         are also scaled accordingly.  Requires ``modulation`` and ``order``.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor from a previous call.  See
+        ``lms()`` for the full description; behaviour is identical.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block.  See ``lms()``
+        for the full description; behaviour is identical.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy when ``samples_prefix`` is ``None``.  See
+        ``lms()`` for the full description; behaviour is identical.
 
     Returns
     -------
     EqualizerResult
         Equalized symbols, final weights, RDE error history, and optionally
-        weight trajectory.
+        weight trajectory.  ``input_norm_factor`` field is populated.
 
     Notes
     -----
@@ -5549,16 +5843,12 @@ def rde(
             _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
             _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
             samples_np[..., _smask] /= _amp
-        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps)
+        samples_np, _, eq_norm = _normalize_inputs(samples_np, None, sps, input_norm_factor=input_norm_factor)
 
-        x_np = (
-            np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
-            if not was_1d
-            else np.pad(samples_np, (pad_left, pad_right))
+        x_np = _build_padded_samples(
+            samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
         )
         x_np = np.ascontiguousarray(x_np)
-        if was_1d:
-            x_np = x_np[np.newaxis, :]
 
         # Normalize radii to match the unit-power-normalized samples
         # (constellation is unit-average-power after gray_constellation)
@@ -5637,13 +5927,13 @@ def rde(
         _smask = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
         samples = samples.copy()
         samples[..., _smask] /= xp.float32(_amp)
-    samples, _, eq_norm = _normalize_inputs(samples, None, sps)
+    samples, _, eq_norm = _normalize_inputs(samples, None, sps, input_norm_factor=input_norm_factor)
 
-    samples_padded = (
-        xp.pad(samples, ((0, 0), (pad_left, pad_right)))
-        if not was_1d
-        else xp.pad(samples, (pad_left, pad_right))
+    _samp_cpu_rde = to_device(samples, "cpu").astype(np.complex64)
+    samples_padded_np_rde = _build_padded_samples(
+        _samp_cpu_rde, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
     )
+    samples_padded = xp.asarray(samples_padded_np_rde) if not was_1d else xp.asarray(samples_padded_np_rde[0])
 
     x_jax = to_jax(samples_padded, device=device)
     if was_1d:
@@ -5832,6 +6122,9 @@ def apply_taps(
     weights: ArrayType,
     sps: int = 2,
     normalize: bool = True,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
 ) -> ArrayType:
     """Apply frozen equalizer taps to a signal (inference pass, no weight updates).
 
@@ -5866,6 +6159,17 @@ def apply_taps(
         filtering (same pre-processing as the adaptive equalizers via
         ``_normalize_inputs``). Set to ``False`` if the caller has already
         scaled the input consistently with the original training run.
+    input_norm_factor : float or ndarray, optional
+        Pre-computed RMS normalization factor.  When provided and
+        ``normalize=True``, skips RMS recomputation and uses this value
+        directly.  Typically ``EqualizerResult.input_norm_factor`` from the
+        prior equalizer run that produced ``weights``.
+    samples_prefix : array_like, optional
+        Signal history from the end of the previous block.  See ``lms()``
+        for the full description; behaviour is identical.
+    pad_mode : {'zeros', 'edge'}, default 'zeros'
+        Padding strategy when ``samples_prefix`` is ``None``.  See
+        ``lms()`` for the full description; behaviour is identical.
 
     Returns
     -------
@@ -5879,7 +6183,8 @@ def apply_taps(
     Freeze taps from a training run and apply to a new capture::
 
         result = equalization.lms(train_signal, training_symbols, num_taps=31)
-        y = equalization.apply_taps(new_signal, result.weights)
+        y = equalization.apply_taps(new_signal, result.weights,
+                                    input_norm_factor=result.input_norm_factor)
     """
     samples, xp, _ = dispatch(samples)
     weights = xp.asarray(weights)
@@ -5896,15 +6201,22 @@ def apply_taps(
     num_taps = weights.shape[-1]
     n_sym = N // sps
 
+    _at_eq_norm = None
     if normalize:
-        samples, _, _ = _normalize_inputs(samples, None, sps)
+        samples, _, _at_eq_norm = _normalize_inputs(samples, None, sps, input_norm_factor=input_norm_factor)
 
     # Pad left by center tap so window[0] is center-aligned with sample 0,
     # pad right to fill the last window completely — mirrors LMS pre-processing.
     c_tap = num_taps // 2
     pad_left = c_tap
     pad_right = n_sym * sps - N + num_taps - 1 - pad_left
-    samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+    if samples_prefix is None and pad_mode == "zeros":
+        samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
+    else:
+        _samp_cpu_at = to_device(samples, "cpu").astype(np.complex64)
+        samples_padded = xp.asarray(
+            _build_padded_samples(_samp_cpu_at, pad_left, pad_right, samples_prefix, pad_mode, _at_eq_norm, sps)
+        )
 
     # Zero-copy sliding-window view: (C, N_sym, num_taps)
     # windows[c, n, t] = samples_padded[c, n*sps + t]

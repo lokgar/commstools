@@ -82,3 +82,47 @@ Generation flows: bits → symbols → samples. `Signal.source_bits` is the grou
 ### Testing Conventions
 
 Tests use `backend_device` and `xp` fixtures from `conftest.py` to parametrize CPU/GPU execution. GPU tests are skipped automatically if CuPy is unavailable. When writing tests that need backend parametrization, include `backend_device` in the fixture list.
+
+Use `xpt` (backend-aware testing module) for assertions involving GPU arrays — `np.testing.assert_*` raises `TypeError` on cupy arrays. Use `xp.asarray(result)` to convert results to the current backend before comparison, and `float(xp.mean(...))` for scalar reductions.
+
+### Iterative Warm-Start Recipe (LMS / RLS)
+
+For streaming pipelines where the same signal is processed in consecutive blocks, thread four state fields across calls to eliminate inter-block transients:
+
+```python
+from commstools.equalization import lms, CPRState
+from commstools.sync import resolve_phase_ambiguity
+
+# Block 0 — cold start (preamble / first training block)
+r0 = lms(
+    block0_samples, training_symbols,
+    num_taps=31, sps=2,
+    step_size=1e-3, modulation="qam", order=16,
+    cpr_type="pll",  # or "bps"
+)
+
+# Block k — warm start from previous result
+# 1. weights:           eliminates gradient re-convergence transient
+# 2. input_norm_factor: keeps gradient scale consistent across blocks
+# 3. cpr_state:         resumes PLL/BPS integrators, no CPR re-locking transient
+# 4. samples_prefix:    replaces leading zero-pad with real signal history
+prefix_len = 31 - 1  # num_taps - 1 (conservative; actual pad_left = num_taps // 2)
+rk = lms(
+    blockk_samples, training_symbols_k,
+    num_taps=31, sps=2,
+    step_size=1e-3, modulation="qam", order=16,
+    cpr_type="pll",
+    w_init=r0.weights,
+    input_norm_factor=r0.input_norm_factor,
+    cpr_state=r0.cpr_state,
+    samples_prefix=prev_block_samples[-prefix_len:],
+)
+
+# Phase ambiguity resolution — skip symbols that are still converging
+y_resolved = resolve_phase_ambiguity(
+    rk.y_hat, ref_symbols, "qam", 16,
+    num_skip_symbols=len(training_symbols_k),  # skip DA region
+)
+```
+
+**CPRState note:** JAX backend does not yet support `cpr_state` warm-start (raises `NotImplementedError`). Use `backend='numba'` for streaming pipelines. See `JAX_CPR_WARMSTART_PLAN.md` for the planned implementation.

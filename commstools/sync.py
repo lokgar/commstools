@@ -867,6 +867,15 @@ def correct_timing(
     The fractional correction uses FFT-based frequency-domain delay, which
     is mathematically ideal for bandlimited signals and perfectly preserves
     signal power (unlike polynomial interpolators).
+
+    For ``mode='slice'`` the fractional delay is applied to the *full
+    pre-slice* input rather than to the slice itself.  The FFT method
+    treats its input as circular; applying it after the slice would wrap
+    the trailing edge back into the new sample 0 — exactly the frame
+    boundary we just aligned to.  Applying first puts the wrap-around at
+    the physical buffer ends, the leading one of which is then discarded
+    by the slice; only the slice's tail carries any residual sinc-tail
+    artefact, well away from typical equalizer training starts.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -875,6 +884,25 @@ def correct_timing(
 
     num_ch = samples.shape[0]
     N = samples.shape[-1]
+
+    # Pre-evaluate the fractional-correction flag so mode='slice' can apply the
+    # delay before the slice. Same logic that used to live just before the
+    # post-coarse fractional call below — relocated, not changed.
+    if isinstance(fractional_offset, (int, float)):
+        apply_frac = abs(fractional_offset) > 1e-9
+    else:
+        fractional_offset = xp.asarray(fractional_offset)
+        apply_frac = bool(xp.any(xp.abs(fractional_offset) > 1e-9))
+
+    # mode='slice': apply fractional delay on the *full* pre-slice buffer.
+    # fft_fractional_delay treats its input as circular; applying it after the
+    # slice would wrap the slice's trailing edge back into its new sample 0 —
+    # exactly the frame boundary we just aligned to. Applying first puts the
+    # wrap at the physical buffer ends, the leading one of which is then
+    # discarded by the slice; only the tail of the slice carries any residual
+    # ~sinc-tail artefact, well away from the equalizer training start.
+    if mode == "slice" and apply_frac:
+        samples = fft_fractional_delay(samples, -fractional_offset)
 
     # === Coarse correction (integer shift) ===
     coarse_offset = xp.asarray(coarse_offset)
@@ -928,14 +956,10 @@ def correct_timing(
             )
 
     # === Fine correction (fractional via FFT) ===
-    # Correction removes the delay: negate the fractional offset
-    if isinstance(fractional_offset, (int, float)):
-        apply_frac = abs(fractional_offset) > 1e-9
-    else:
-        fractional_offset = xp.asarray(fractional_offset)
-        apply_frac = bool(xp.any(xp.abs(fractional_offset) > 1e-9))
-
-    if apply_frac:
+    # For mode='slice' this was already applied above on the full pre-slice
+    # buffer; here we only handle 'circular' / 'zero', whose output length
+    # equals the input length so the wrap location is unchanged either way.
+    if apply_frac and mode != "slice":
         samples = fft_fractional_delay(samples, -fractional_offset)
 
     if mode == "slice":
@@ -4015,6 +4039,7 @@ def resolve_phase_ambiguity(
     modulation: str,
     order: int,
     symmetry_order: Optional[int] = None,
+    num_skip_symbols: int = 0,
 ) -> ArrayType:
     """
     Resolves rotational phase ambiguity after blind carrier phase recovery.
@@ -4044,6 +4069,12 @@ def resolve_phase_ambiguity(
         Number of rotationally equivalent constellation copies to test.
         Defaults to 4 for QAM (4-fold ``π/2`` symmetry) and ``order`` for
         PSK.  Override for non-standard constellations.
+    num_skip_symbols : int, default 0
+        Number of leading symbols to exclude from SER scoring.  The applied
+        rotation still covers the full input — only the scoring window is
+        trimmed.  Useful when the first ``num_skip_symbols`` symbols have not
+        yet converged and would bias the rotation choice.  Must be strictly
+        less than the total symbol count.
 
     Returns
     -------
@@ -4057,6 +4088,12 @@ def resolve_phase_ambiguity(
     if was_1d:
         symbols = symbols[None, :]
     C, N = symbols.shape
+
+    if num_skip_symbols >= N:
+        raise ValueError(
+            f"num_skip_symbols={num_skip_symbols} must be less than the total "
+            f"symbol count N={N}."
+        )
 
     ref = xp.asarray(ref_symbols)
     if ref.ndim == 1:
@@ -4078,7 +4115,9 @@ def resolve_phase_ambiguity(
         best_ser = float("inf")
         for k, rot in enumerate(candidates):
             rotated = symbols[ch] * rot
-            s = float(xp.mean(xp.asarray(_ser(rotated, ref[ch], modulation, order))))
+            s = float(xp.mean(xp.asarray(
+                _ser(rotated[num_skip_symbols:], ref[ch, num_skip_symbols:], modulation, order)
+            )))
             if s < best_ser:
                 best_ser = s
                 best_k = k

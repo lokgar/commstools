@@ -12,12 +12,14 @@ Coverage:
   9. BPS + CPR — phase_trajectory shape and MSE better than no CPR under phase noise
  10. BPS block_size vs cpr_bps_block_size independence — different values accepted
  11. MIMO butterfly convergence — 2x2, training on both channels
+ 12. CPRState warm-start — second block_lms call resumes BPS state seamlessly
+ 13. input_norm_factor — supplied norm factor skips RMS recomputation
 """
 
 import numpy as np
 import pytest
 
-from commstools.equalization import block_lms
+from commstools.equalization import CPRState, block_lms
 from commstools.mapping import gray_constellation
 from commstools.helpers import normalize
 
@@ -532,3 +534,95 @@ def test_isi_channel_convergence(backend_device, xp):
         )
     )
     assert evm < 0.10, f"EVM {evm:.3f} — ISI equalization failed across block boundaries"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. CPRState warm-start
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _wiener_qam16_block(n_sym=4096, snr_db=25.0, linewidth_hz=5e3, seed=11):
+    """Return (samples, symbols) for 16-QAM under Wiener phase noise."""
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("qam", 16).astype(np.complex64)
+    const = normalize(const, "average_power").astype(np.complex64)
+    syms = const[rng.integers(0, 16, n_sym)]
+    sigma_phi = float(np.sqrt(2 * np.pi * linewidth_hz))
+    phase = np.cumsum(rng.normal(0.0, sigma_phi, n_sym)).astype(np.float64)
+    samples = (syms * np.exp(1j * phase)).astype(np.complex64)
+    noise_std = np.sqrt(10 ** (-snr_db / 10) / 2)
+    samples += noise_std * (
+        rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
+    ).astype(np.complex64)
+    return samples, syms
+
+
+def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
+    """block_lms with cpr_state should populate and accept CPRState."""
+    if backend_device == "gpu":
+        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
+    n_sym = 4096
+    half = n_sym // 2
+    samples_np, syms_np = _wiener_qam16_block(n_sym=n_sym)
+    s1, s2 = samples_np[:half], samples_np[half:]
+    t1, t2 = syms_np[:half], syms_np[half:]
+
+    r1 = block_lms(
+        s1, t1, num_taps=11, sps=1, step_size=5e-4,
+        modulation="qam", order=16, cpr_type="bps",
+        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+    )
+    assert r1.cpr_state is not None, "cpr_state must be set when cpr_type='bps'"
+    assert isinstance(r1.cpr_state, CPRState)
+    assert r1.cpr_state.bps_prev4 is not None
+    assert r1.cpr_state.bps_offset4 is not None
+    assert r1.cpr_state.bps_d2_hist is not None
+
+    r2 = block_lms(
+        s2, t2[:50], num_taps=11, sps=1, step_size=5e-4,
+        modulation="qam", order=16, cpr_type="bps",
+        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+        w_init=r1.weights, cpr_state=r1.cpr_state,
+        input_norm_factor=r1.input_norm_factor,
+    )
+    assert r2.cpr_state is not None
+    assert r2.cpr_state.cpr_type == "bps"
+    assert r2.phase_trajectory is not None
+
+
+def test_cpr_state_none_is_baseline_block_lms(backend_device, xp):
+    """cpr_state=None must be byte-exact with the default (no cpr_state) call."""
+    if backend_device == "gpu":
+        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
+    samples_np, syms_np = _wiener_qam16_block(n_sym=2048)
+    kw = dict(
+        num_taps=11, sps=1, step_size=5e-4,
+        modulation="qam", order=16, cpr_type="bps",
+        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+    )
+    r_default = block_lms(samples_np, syms_np[:100], **kw)
+    r_none = block_lms(samples_np, syms_np[:100], **kw, cpr_state=None, input_norm_factor=None)
+    np.testing.assert_array_equal(
+        np.asarray(r_default.y_hat), np.asarray(r_none.y_hat),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. input_norm_factor
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_input_norm_factor_block_lms(backend_device, xp, xpt):
+    """Supplying input_norm_factor reproduces the same output as auto-computed."""
+    samples_np, syms_np = _wiener_qam16_block(n_sym=2048)
+    samples, syms = xp.asarray(samples_np), xp.asarray(syms_np)
+    kw = dict(num_taps=11, sps=1, step_size=5e-4, modulation="qam", order=16)
+
+    r_auto = block_lms(samples, syms[:100], **kw)
+    nf = r_auto.input_norm_factor
+
+    r_supplied = block_lms(samples, syms[:100], **kw, input_norm_factor=nf)
+    xpt.assert_allclose(
+        xp.asarray(r_supplied.y_hat), xp.asarray(r_auto.y_hat),
+        rtol=1e-5, atol=1e-6,
+    )

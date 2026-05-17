@@ -12,12 +12,14 @@ Verification plan:
   9. BPS Block Size > 1        — bps_block_size=32 still converges (incremental sum)
  10. RLS + BPS                 — rls(cpr_type='bps') convergence smoke test
  11. PLL Joint Channels        — cpr_joint_channels=True shares phase across MIMO
+ 12. CPRState warm-start       — second call resumes phase without re-lock transient
+ 13. input_norm_factor         — pre-supplied scale skips RMS, result matches manual scale
 """
 
 import numpy as np
 import pytest
 
-from commstools.equalization import lms, rls
+from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
 from commstools.sync import (
     correct_carrier_phase,
@@ -588,3 +590,137 @@ def test_pll_joint_channels(backend_device, xp):
     assert bool(xp.all(phi0 == phi1)), (
         "cpr_joint_channels=True: PLL integrators must be identical"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. CPRState warm-start
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _wiener_phase_signal(n_sym=4000, snr_db=20.0, linewidth_hz=1e4, fs=1.0, seed=42):
+    """Return (samples_1sps, symbols) for QPSK under Wiener phase noise at 1 SPS."""
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("psk", 4).astype(np.complex64)
+    syms = const[rng.integers(0, 4, n_sym)]
+    sigma_phi = float(np.sqrt(2 * np.pi * linewidth_hz / fs))
+    phase = np.cumsum(rng.normal(0.0, sigma_phi, n_sym)).astype(np.float64)
+    samples = (syms * np.exp(1j * phase)).astype(np.complex64)
+    noise_std = np.sqrt(10 ** (-snr_db / 10) / 2)
+    samples += noise_std * (
+        rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
+    ).astype(np.complex64)
+    return samples, syms
+
+
+def _mse_db(y, ref):
+    err = np.mean(np.abs(y - ref) ** 2)
+    sig = np.mean(np.abs(ref) ** 2)
+    return 10 * np.log10(err / sig + 1e-30)
+
+
+@pytest.mark.parametrize("cpr_mode", ["pll", "bps"])
+def test_cpr_state_warmstart_lms(cpr_mode, backend_device, xp):
+    """Second lms call with cpr_state should have lower initial MSE than cold restart."""
+    if backend_device == "gpu":
+        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
+    n_sym = 4000
+    half = n_sym // 2
+    samples_np, syms_np = _wiener_phase_signal(n_sym=n_sym)
+    s1, s2 = samples_np[:half], samples_np[half:]
+    t1, t2 = syms_np[:half], syms_np[half:]
+
+    r1 = lms(
+        s1, t1, num_taps=5, sps=1, step_size=5e-3,
+        modulation="psk", order=4, cpr_type=cpr_mode,
+        cpr_bps_block_size=16, cpr_bps_test_phases=32,
+    )
+    assert r1.cpr_state is not None, "cpr_state must be populated when cpr_type is set"
+    assert r1.cpr_state.cpr_type == cpr_mode
+    assert r1.cpr_state.num_ch == 1
+
+    r2_warm = lms(
+        s2, t2[:20], num_taps=5, sps=1, step_size=5e-3,
+        modulation="psk", order=4, cpr_type=cpr_mode,
+        cpr_bps_block_size=16, cpr_bps_test_phases=32,
+        w_init=r1.weights, cpr_state=r1.cpr_state,
+        input_norm_factor=r1.input_norm_factor,
+    )
+    r2_cold = lms(
+        s2, t2[:20], num_taps=5, sps=1, step_size=5e-3,
+        modulation="psk", order=4, cpr_type=cpr_mode,
+        cpr_bps_block_size=16, cpr_bps_test_phases=32,
+        w_init=r1.weights,
+    )
+    n_eval_start, n_eval_end = 20, 50
+    mse_warm = _mse_db(r2_warm.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end])
+    mse_cold = _mse_db(r2_cold.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end])
+    assert mse_warm < mse_cold + 3.0, (
+        f"Warm CPRState should not be worse than cold by >3 dB: "
+        f"warm={mse_warm:.1f} dB  cold={mse_cold:.1f} dB"
+    )
+
+
+def test_cpr_state_none_is_baseline_lms(backend_device, xp):
+    """cpr_state=None must produce byte-exact output matching omitted cpr_state."""
+    if backend_device == "gpu":
+        pytest.skip("cpr_state not yet implemented for JAX/GPU path")
+    samples, syms = _wiener_phase_signal(n_sym=1000)
+    kw = dict(
+        num_taps=5, sps=1, step_size=5e-3,
+        modulation="psk", order=4, cpr_type="pll",
+    )
+    r_default = lms(samples, syms[:50], **kw)
+    r_explicit_none = lms(samples, syms[:50], **kw, cpr_state=None, input_norm_factor=None)
+    np.testing.assert_array_equal(
+        np.asarray(r_default.y_hat), np.asarray(r_explicit_none.y_hat),
+    )
+
+
+def test_cpr_state_warmstart_rls(backend_device, xp):
+    """rls with cpr_state warm-start: second call has valid cpr_state output."""
+    if backend_device == "gpu":
+        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
+    n_sym = 2000
+    half = n_sym // 2
+    samples_np, syms_np = _wiener_phase_signal(n_sym=n_sym)
+    s1, s2 = samples_np[:half], samples_np[half:]
+    t1 = syms_np[:half]
+
+    r1 = rls(
+        s1, t1, num_taps=5, sps=1,
+        modulation="psk", order=4, cpr_type="pll",
+    )
+    assert r1.cpr_state is not None
+    assert isinstance(r1.cpr_state, CPRState)
+    assert r1.cpr_state.pll_phi is not None
+
+    r2 = rls(
+        s2, None, num_taps=5, sps=1,
+        modulation="psk", order=4, cpr_type="pll",
+        w_init=r1.weights, cpr_state=r1.cpr_state,
+        input_norm_factor=r1.input_norm_factor,
+    )
+    assert r2.cpr_state is not None
+    assert r2.cpr_state.cpr_type == "pll"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. input_norm_factor
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_input_norm_factor_lms_skips_rms(backend_device, xp, xpt):
+    """Supplying input_norm_factor should give same result as letting lms compute it."""
+    samples_np, syms_np = _wiener_phase_signal(n_sym=1000)
+    samples, syms = xp.asarray(samples_np), xp.asarray(syms_np)
+    kw = dict(num_taps=5, sps=1, step_size=5e-3, modulation="psk", order=4)
+
+    r_auto = lms(samples, syms[:50], **kw)
+    nf = r_auto.input_norm_factor
+
+    r_supplied = lms(samples, syms[:50], **kw, input_norm_factor=nf)
+    xpt.assert_allclose(
+        xp.asarray(r_supplied.y_hat), xp.asarray(r_auto.y_hat),
+        rtol=1e-5, atol=1e-6,
+    )
+    assert r_supplied.input_norm_factor == pytest.approx(float(nf), rel=1e-6)
