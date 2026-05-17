@@ -2,12 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from commstools import sync
 from commstools.core import Preamble
 from commstools.helpers import cross_correlate_fft
 from commstools.impairments import apply_iq_imbalance
+from commstools.mapping import gray_constellation
 
 
 def test_barker_sequences(backend_device, xp):
@@ -1289,6 +1291,60 @@ class TestCorrectTiming:
         out = sync.correct_timing(sig, xp.asarray(offsets), mode="slice")
         assert out.shape == (C, N - max(offsets))
 
+    def test_slice_mode_fractional_no_edge_wrap(self, backend_device, xp, xpt):
+        """mode='slice' with fractional offset applies the FFT delay on the
+        *full pre-slice buffer*, so the new sample 0 is free of circular
+        wrap-around from the buffer's trailing edge. Regression test for the
+        original ordering (slice-then-FFT) which contaminated sample 0 with a
+        sinc-tail contribution from sig[-1].
+        """
+        import numpy as np
+
+        N, coarse, fract = 1024, 200, 0.3
+        # Pure tone chosen periodic in the FFT window (f0 * N is integer)
+        # so fft_fractional_delay is analytically exact and the test asserts
+        # tight bound rather than handwavy "close enough".
+        f0 = 51.0 / N
+        n = np.arange(N, dtype=np.float64)
+        sig = np.exp(1j * 2 * np.pi * f0 * n).astype(np.complex64)
+        sig_xp = xp.asarray(sig)
+
+        out = sync.correct_timing(sig_xp, coarse, fract, mode="slice")
+
+        # Expected: same tone evaluated at n = coarse + fract, coarse + fract + 1, ...
+        n_out = np.arange(out.shape[-1], dtype=np.float64) + coarse + fract
+        expected = np.exp(1j * 2 * np.pi * f0 * n_out).astype(np.complex64)
+
+        # The first samples must match the analytic tone to ~complex64
+        # precision. Under the buggy ordering this would diverge by O(0.1)
+        # at the leading edge (the slice's tail wrapped back to sample 0).
+        xpt.assert_allclose(
+            xp.asarray(out)[:20], xp.asarray(expected)[:20], atol=1e-4
+        )
+
+    def test_slice_mode_fractional_matches_delay_then_slice(
+        self, backend_device, xp, xpt
+    ):
+        """mode='slice' with fractional offset must be algebraically equivalent
+        to (fft_fractional_delay on full buffer) followed by (integer slice).
+        Locks the operation order in place."""
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        N, coarse, fract = 512, 50, -0.27
+        sig = (
+            rng.standard_normal(N) + 1j * rng.standard_normal(N)
+        ).astype(np.complex64)
+        # Inject a large discontinuity at the trailing edge so the buggy
+        # ordering would visibly differ from the correct one.
+        sig[-10:] += 5.0 + 5.0j
+        sig_xp = xp.asarray(sig)
+
+        ref = sync.fft_fractional_delay(sig_xp, -fract)[..., coarse:]
+        out = sync.correct_timing(sig_xp, coarse, fract, mode="slice")
+
+        xpt.assert_allclose(out, ref, atol=1e-5)
+
 
 # =============================================================================
 # CORRECT TIMING — INVALID MODE ERROR PATHS
@@ -1466,3 +1522,66 @@ class TestIQImbalanceCompensation:
         _, r = self._make_imbalanced(xp)
         out = sync.compensate_iq_imbalance_gram_schmidt(r)
         assert out.dtype == xp.complex64
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# resolve_phase_ambiguity — num_skip_symbols
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_ambiguous_qam16(n_sym=2000, corrupt_head=500, seed=0):
+    """Return (symbols, ref) where the first corrupt_head symbols are rotated by π/2."""
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("qam", 16).astype(np.complex64)
+    const /= np.sqrt(np.mean(np.abs(const) ** 2))
+    ref = const[rng.integers(0, 16, n_sym)]
+    # True ambiguity k=1: rotate entire stream by π/2
+    rot1 = np.exp(1j * np.pi / 2).astype(np.complex64)
+    symbols = ref * rot1
+    # Corrupt only the first corrupt_head symbols with an additional π/2 (total π)
+    symbols[:corrupt_head] = ref[:corrupt_head] * np.exp(1j * np.pi).astype(np.complex64)
+    return symbols, ref
+
+
+def test_resolve_phase_ambiguity_skip(backend_device, xp, xpt):
+    """num_skip_symbols bypasses the corrupt head and picks the correct rotation."""
+    n_sym, corrupt_head = 2000, 500
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=n_sym, corrupt_head=corrupt_head)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    out_no_skip = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
+    out_skip = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=corrupt_head)
+
+    from commstools.metrics import ser as _ser_fn
+
+    def _ser(y, r):
+        return float(xp.mean(xp.asarray(_ser_fn(y, r, "qam", 16))))
+
+    ser_skip_tail = _ser(out_skip[corrupt_head:], ref[corrupt_head:])
+    ser_no_skip_tail = _ser(out_no_skip[corrupt_head:], ref[corrupt_head:])
+    assert ser_skip_tail <= ser_no_skip_tail, (
+        f"Skip should improve tail SER: {ser_skip_tail:.4f} vs {ser_no_skip_tail:.4f}"
+    )
+
+
+def test_resolve_phase_ambiguity_skip_zero_is_baseline(backend_device, xp, xpt):
+    """num_skip_symbols=0 must produce identical output to the default call."""
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=1000, corrupt_head=0)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    out_default = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16)
+    out_skip0 = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
+
+    assert bool(xp.all(out_default == out_skip0))
+
+
+def test_resolve_phase_ambiguity_skip_ge_n_raises(backend_device, xp):
+    """num_skip_symbols >= N must raise ValueError."""
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=100, corrupt_head=0)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    with pytest.raises(ValueError, match="num_skip_symbols"):
+        sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=100)
+
+    with pytest.raises(ValueError, match="num_skip_symbols"):
+        sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=200)
