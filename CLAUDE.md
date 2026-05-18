@@ -125,4 +125,4 @@ y_resolved = resolve_phase_ambiguity(
 )
 ```
 
-**CPRState note:** JAX backend does not yet support `cpr_state` warm-start (raises `NotImplementedError`). Use `backend='numba'` for streaming pipelines. See `JAX_CPR_WARMSTART_PLAN.md` for the planned implementation.
+**CPRState note:** JAX backend fully supports `cpr_state` warm-start for both `lms()` and `rls()`. Pass `cpr_state=prev_result.cpr_state` exactly as shown above. JAX stores BPS state in `cpr_state.jax_bps_buf` / `jax_bps_buf_ptr` (different representation than Numba's `bps_d2_hist` — cross-backend warm-start causes a small BPS transient but is not an error). JAX weight-update products run at `Precision.HIGHEST` to avoid TF32 truncation on Ampere+ GPUs.

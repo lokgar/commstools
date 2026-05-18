@@ -101,6 +101,10 @@ class CPRState:
     cs_buf_n: Optional[np.ndarray] = None      # (C,) int64
     cs_stats: Optional[np.ndarray] = None      # (C, 4) float64
 
+    # JAX-specific BPS buffer state (JAX backend only; None for Numba)
+    jax_bps_buf: Optional[np.ndarray] = None      # (KB, C) complex64
+    jax_bps_buf_ptr: Optional[int] = None         # scalar int32
+
     # Identity tags — used to validate shape compatibility on warm-start
     cpr_type: Optional[str] = None
     num_ch: int = 0
@@ -284,6 +288,27 @@ def _get_numba():
 _NUMBA_KERNELS: dict = {}
 
 
+def _sq_qam_slicer_params(constellation_np):
+    """Return (sq_side, lev_min_f32, d_grid_f32) for O(1) square-QAM slicing.
+
+    For a square M-QAM constellation the nearest symbol can be found by
+    independently snapping the real and imaginary components to the nearest
+    level — no O(M) search required.  Returns sq_side=0 for non-square
+    constellations (PSK, PAM, shaped QAM) to indicate the O(M) fallback
+    should be used.
+    """
+    M = len(constellation_np)
+    sq_side = int(M ** 0.5)
+    if sq_side * sq_side != M:
+        return 0, np.float32(0.0), np.float32(1.0)
+    levels = np.unique(np.round(constellation_np.real, 6))
+    if len(levels) != sq_side:
+        return 0, np.float32(0.0), np.float32(1.0)
+    lev_min = np.float32(levels[0])
+    d_grid = np.float32(levels[1] - levels[0]) if sq_side > 1 else np.float32(1.0)
+    return sq_side, lev_min, d_grid
+
+
 def _get_numba_lms():
     """JIT-compile and cache the Numba LMS butterfly loop kernel.
 
@@ -310,6 +335,9 @@ def _get_numba_lms():
             y_out,
             e_out,
             w_hist_out,
+            sq_lev_min,
+            sq_d_grid,
+            sq_side,
         ):
             # x_padded      : (C, N_pad)          complex64
             # training      : (C, N_sym)           complex64
@@ -352,6 +380,20 @@ def _get_numba_lms():
                 for i in range(C):
                     if idx < n_train:
                         d_i = training[i, idx]
+                    elif sq_side > np.int32(0):
+                        ir = np.int32(np.round((y[i].real - sq_lev_min) / sq_d_grid))
+                        if ir < np.int32(0):
+                            ir = np.int32(0)
+                        if ir >= sq_side:
+                            ir = sq_side - np.int32(1)
+                        ii = np.int32(np.round((y[i].imag - sq_lev_min) / sq_d_grid))
+                        if ii < np.int32(0):
+                            ii = np.int32(0)
+                        if ii >= sq_side:
+                            ii = sq_side - np.int32(1)
+                        nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                        ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                        d_i = np.complex64(nr + ni * np.complex64(1j))
                     else:
                         min_dist = np.float32(1e38)
                         min_idx = 0
@@ -411,6 +453,9 @@ def _get_numba_rls():
             y_out,
             e_out,
             w_hist_out,
+            sq_lev_min,
+            sq_d_grid,
+            sq_side,
         ):
             # x_padded      : (C, N_pad)                  complex64
             # training      : (C, N_sym)                   complex64
@@ -464,6 +509,20 @@ def _get_numba_rls():
                 for i in range(C):
                     if idx < n_train:
                         d_i = training[i, idx]
+                    elif sq_side > np.int32(0):
+                        ir = np.int32(np.round((y[i].real - sq_lev_min) / sq_d_grid))
+                        if ir < np.int32(0):
+                            ir = np.int32(0)
+                        if ir >= sq_side:
+                            ir = sq_side - np.int32(1)
+                        ii = np.int32(np.round((y[i].imag - sq_lev_min) / sq_d_grid))
+                        if ii < np.int32(0):
+                            ii = np.int32(0)
+                        if ii >= sq_side:
+                            ii = sq_side - np.int32(1)
+                        nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                        ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                        d_i = np.complex64(nr + ni * np.complex64(1j))
                     else:
                         min_dist = np.float32(1e38)
                         min_idx = 0
@@ -580,6 +639,9 @@ def _get_numba_lms_cpr():
             e_out,
             phase_out,
             w_hist_out,
+            sq_lev_min,
+            sq_d_grid,
+            sq_side,
         ):
             # x_padded          : (C, N_pad)        complex64
             # training          : (C, N_sym)         complex64
@@ -657,17 +719,33 @@ def _get_numba_lms_cpr():
                 # For each new symbol, compute min-dist for all B candidates,
                 # subtract the oldest slot from the running sum and add the new
                 # one — O(B·M·C) per symbol, independent of window size K.
+                # O(1) square-QAM path: snap real/imag to nearest level grid point.
                 if cpr_mode == 2:
                     slot = bps_dist_ptr % np.int64(bps_block_size)
                     for i in range(C):
                         for k in range(B):
                             y_rot = y_raw[i] * bps_phases_neg[k]
-                            d2_min = np.float32(1e38)
-                            for m in range(M):
-                                dv = y_rot - constellation[m]
-                                d2 = dv.real * dv.real + dv.imag * dv.imag
-                                if d2 < d2_min:
-                                    d2_min = d2
+                            if sq_side > np.int32(0):
+                                ir = np.int32(np.round((y_rot.real - sq_lev_min) / sq_d_grid))
+                                if ir < np.int32(0):
+                                    ir = np.int32(0)
+                                if ir >= sq_side:
+                                    ir = sq_side - np.int32(1)
+                                ii = np.int32(np.round((y_rot.imag - sq_lev_min) / sq_d_grid))
+                                if ii < np.int32(0):
+                                    ii = np.int32(0)
+                                if ii >= sq_side:
+                                    ii = sq_side - np.int32(1)
+                                nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                                ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                                d2_min = (y_rot.real - nr) ** 2 + (y_rot.imag - ni) ** 2
+                            else:
+                                d2_min = np.float32(1e38)
+                                for m in range(M):
+                                    dv = y_rot - constellation[m]
+                                    d2 = dv.real * dv.real + dv.imag * dv.imag
+                                    if d2 < d2_min:
+                                        d2_min = d2
                             # Subtract evicted slot, add new slot
                             bps_running_sum[i, k] = (
                                 bps_running_sum[i, k]
@@ -795,6 +873,20 @@ def _get_numba_lms_cpr():
                 for i in range(C):
                     if idx < n_train:
                         d_i = training[i, idx]
+                    elif sq_side > np.int32(0):
+                        ir = np.int32(np.round((y_fin[i].real - sq_lev_min) / sq_d_grid))
+                        if ir < np.int32(0):
+                            ir = np.int32(0)
+                        if ir >= sq_side:
+                            ir = sq_side - np.int32(1)
+                        ii = np.int32(np.round((y_fin[i].imag - sq_lev_min) / sq_d_grid))
+                        if ii < np.int32(0):
+                            ii = np.int32(0)
+                        if ii >= sq_side:
+                            ii = sq_side - np.int32(1)
+                        nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                        ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                        d_i = np.complex64(nr + ni * np.complex64(1j))
                     else:
                         min_dist = np.float32(1e38)
                         min_idx = 0
@@ -913,6 +1005,9 @@ def _get_numba_rls_cpr():
             e_out,
             phase_out,
             w_hist_out,
+            sq_lev_min,
+            sq_d_grid,
+            sq_side,
         ):
             # Same shapes as rls_loop plus CPR state — see lms_cpr_loop header.
             C = W.shape[0]
@@ -964,17 +1059,33 @@ def _get_numba_rls_cpr():
                 # ── CPR: Phase estimation ──────────────────────────────────
 
                 # BPS: incremental running-sum (O(B·M·C) per symbol, independent of K)
+                # O(1) square-QAM path: snap real/imag to nearest level grid point.
                 if cpr_mode == 2:
                     slot = bps_dist_ptr % np.int64(bps_block_size)
                     for i in range(C):
                         for k in range(B):
                             y_rot = y_raw[i] * bps_phases_neg[k]
-                            d2_min = np.float32(1e38)
-                            for m in range(M):
-                                dv = y_rot - constellation[m]
-                                d2 = dv.real * dv.real + dv.imag * dv.imag
-                                if d2 < d2_min:
-                                    d2_min = d2
+                            if sq_side > np.int32(0):
+                                ir = np.int32(np.round((y_rot.real - sq_lev_min) / sq_d_grid))
+                                if ir < np.int32(0):
+                                    ir = np.int32(0)
+                                if ir >= sq_side:
+                                    ir = sq_side - np.int32(1)
+                                ii = np.int32(np.round((y_rot.imag - sq_lev_min) / sq_d_grid))
+                                if ii < np.int32(0):
+                                    ii = np.int32(0)
+                                if ii >= sq_side:
+                                    ii = sq_side - np.int32(1)
+                                nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                                ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                                d2_min = (y_rot.real - nr) ** 2 + (y_rot.imag - ni) ** 2
+                            else:
+                                d2_min = np.float32(1e38)
+                                for m in range(M):
+                                    dv = y_rot - constellation[m]
+                                    d2 = dv.real * dv.real + dv.imag * dv.imag
+                                    if d2 < d2_min:
+                                        d2_min = d2
                             bps_running_sum[i, k] = (
                                 bps_running_sum[i, k]
                                 - bps_dist_buf[i, slot, k]
@@ -1097,6 +1208,20 @@ def _get_numba_rls_cpr():
                 for i in range(C):
                     if idx < n_train:
                         d_i = training[i, idx]
+                    elif sq_side > np.int32(0):
+                        ir = np.int32(np.round((y_fin[i].real - sq_lev_min) / sq_d_grid))
+                        if ir < np.int32(0):
+                            ir = np.int32(0)
+                        if ir >= sq_side:
+                            ir = sq_side - np.int32(1)
+                        ii = np.int32(np.round((y_fin[i].imag - sq_lev_min) / sq_d_grid))
+                        if ii < np.int32(0):
+                            ii = np.int32(0)
+                        if ii >= sq_side:
+                            ii = sq_side - np.int32(1)
+                        nr = sq_lev_min + np.float32(ir) * sq_d_grid
+                        ni = sq_lev_min + np.float32(ii) * sq_d_grid
+                        d_i = np.complex64(nr + ni * np.complex64(1j))
                     else:
                         min_dist = np.float32(1e38)
                         min_idx = 0
@@ -1413,7 +1538,33 @@ def _get_numba_rde():
 _JITTED_EQ = {}
 
 
-def _get_jax_lms(num_taps, stride, const_size, num_ch):
+def _cpr_state_to_jax_inits(
+    state: "CPRState", num_ch: int, KB: int, H: int
+):
+    """Extract CPR carry init arrays from a CPRState for JAX warm-start.
+
+    Returns CPU NumPy arrays with correct dtypes/shapes for the JAX carry.
+    Missing fields are zero-initialised.  Caller converts to JAX arrays via
+    ``to_jax(..., device=platform)``.
+
+    Returns (pll_phi, pll_freq, bps_buf, bps_buf_ptr, bps_prev4,
+             cs_buf_x, cs_buf_y, cs_buf_ptr) — all NumPy.
+    """
+    def _get(val, shape, dtype):
+        return np.asarray(val, dtype=dtype) if val is not None else np.zeros(shape, dtype=dtype)
+
+    pll_phi      = _get(state.pll_phi,     (num_ch,),      np.float64)
+    pll_freq     = _get(state.pll_freq,    (num_ch,),      np.float64)
+    bps_buf      = _get(state.jax_bps_buf, (KB, num_ch),   np.complex64)
+    bps_buf_ptr  = np.int32(state.jax_bps_buf_ptr if state.jax_bps_buf_ptr is not None else 0)
+    bps_prev4    = _get(state.bps_prev4,   (num_ch,),      np.float64)
+    cs_buf_x     = _get(state.cs_buf_x,   (num_ch, H),    np.float64)
+    cs_buf_y     = _get(state.cs_buf_y,   (num_ch, H),    np.float64)
+    cs_buf_ptr   = _get(state.cs_buf_ptr, (num_ch,),      np.int32)
+    return pll_phi, pll_freq, bps_buf, bps_buf_ptr, bps_prev4, cs_buf_x, cs_buf_y, cs_buf_ptr
+
+
+def _get_jax_lms(num_taps, stride, const_size, num_ch, sq_side=0, sq_lev_min=0.0, sq_d_grid=1.0):
     """JIT-compile and cache the sample-by-sample LMS butterfly scan.
 
     Static closure variables (baked into the compiled kernel; a new cache
@@ -1424,13 +1575,15 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
     const_size : constellation size M — fixes the slicer ``argmin`` shape at
                  trace time so XLA can compile it without dynamic dispatch.
     num_ch     : MIMO butterfly width C (number of input/output channels).
+    sq_side    : int — 0 means O(M) slicer; >0 enables O(1) square-QAM slicer.
+    sq_lev_min, sq_d_grid : float — constellation level grid parameters.
 
     Returns
     -------
     lms_scan : JIT-compiled callable
         See the inner function for the call signature.
     """
-    key = ("lms", num_taps, stride, const_size, num_ch)
+    key = ("lms", num_taps, stride, const_size, num_ch, sq_side, float(sq_lev_min), float(sq_d_grid))
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
 
@@ -1438,22 +1591,12 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
         def lms_scan(
             x_input, training_padded, constellation, w_init, step_size, n_train
         ):
-            # Argument shapes and semantics
-            # ------------------------------
-            # x_input         : (C, N_pad)        complex64 — zero-padded received samples
-            #                    N_pad = n_sym_padded * stride + num_taps - 1
-            # training_padded : (C, N_sym)         complex64 — reference symbols,
-            #                    zeros beyond column n_train (DD region)
+            # x_input         : (C, N_pad)        complex64
+            # training_padded : (C, N_sym)         complex64
             # constellation   : (M,)               complex64 — slicer lookup table
-            # w_init          : (C, C, num_taps)   complex64 — initial butterfly filter
-            # step_size       : scalar float32     — LMS mu
-            # n_train         : scalar int32       — training/DD boundary (dynamic)
-            #
-            # lax.scan carry  : W  (C, C, num_taps) — butterfly weight matrix
-            # lax.scan xs     : jnp.arange(N_sym)   — symbol indices 0..N_sym-1
-            # lax.scan output : y_hat   (N_sym, C)              equalized symbols
-            #                   errors  (N_sym, C)              complex errors d - y
-            #                   w_hist  (N_sym, C, C, num_taps) weight snapshots
+            # w_init          : (C, C, num_taps)   complex64
+            # step_size       : scalar float32
+            # n_train         : scalar int32
 
             def step(W, idx):
                 sample_idx = idx * stride
@@ -1462,19 +1605,31 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
                     x_input, (0, sample_idx), (num_ch, num_taps)
                 )
 
-                # Butterfly: y_i = sum_j conj(W[i,j]) . X_wins[j]
-                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
+                _P = jax.lax.Precision.HIGHEST
+                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins, precision=_P)  # (C,)
 
-                # Training or decision-directed
                 def slicer(ch_y):
-                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+                    if sq_side > 0:  # static branch at trace time
+                        ir = jnp.clip(
+                            jnp.round((ch_y.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        ii = jnp.clip(
+                            jnp.round((ch_y.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        nr = sq_lev_min + ir.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        ni = sq_lev_min + ii.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        return jax.lax.complex(nr, ni)
+                    else:
+                        return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
 
                 dd = jax.vmap(slicer)(y)  # (C,)
                 d = jnp.where(idx < n_train, training_padded[:, idx], dd)
 
                 e = d - y  # (C,)
 
-                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins)
+                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e), X_wins, precision=_P)
                 return W_new, (y, e, W_new)
 
             n_sym = training_padded.shape[1]
@@ -1487,18 +1642,19 @@ def _get_jax_lms(num_taps, stride, const_size, num_ch):
     return _JITTED_EQ[key]
 
 
-def _get_jax_rls(num_taps, stride, const_size, num_ch):
+def _get_jax_rls(num_taps, stride, const_size, num_ch, sq_side=0, sq_lev_min=0.0, sq_d_grid=1.0):
     """JIT-compile and cache the sample-by-sample Leaky-RLS butterfly scan.
 
-    Static closure variables (same semantics as ``_get_jitted_lms``):
+    Static closure variables (same semantics as ``_get_jax_lms``):
     num_taps, stride, const_size, num_ch.
+    sq_side, sq_lev_min, sq_d_grid: O(1) square-QAM slicer parameters.
 
     Returns
     -------
     rls_scan : JIT-compiled callable
         See the inner function for the call signature.
     """
-    key = ("rls", num_taps, stride, const_size, num_ch)
+    key = ("rls", num_taps, stride, const_size, num_ch, sq_side, float(sq_lev_min), float(sq_d_grid))
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
 
@@ -1549,6 +1705,8 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
             #   W     ← (1−γ)W + k ⊗ conj(e)              (if idx < n_update_halt)
             #   P      = (P - outer(k, x_bar^H P)) / λ     (if idx < n_update_halt)
 
+            _P = jax.lax.Precision.HIGHEST
+
             def step(carry, idx):
                 W, P = carry
                 sample_idx = idx * stride
@@ -1557,10 +1715,23 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
                     x_input, (0, sample_idx), (num_ch, num_taps)
                 )
 
-                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
+                y = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins, precision=_P)
 
                 def slicer(ch_y):
-                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+                    if sq_side > 0:  # static branch at trace time
+                        ir = jnp.clip(
+                            jnp.round((ch_y.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        ii = jnp.clip(
+                            jnp.round((ch_y.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        nr = sq_lev_min + ir.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        ni = sq_lev_min + ii.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        return jax.lax.complex(nr, ni)
+                    else:
+                        return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
 
                 dd = jax.vmap(slicer)(y)
                 d = jnp.where(idx < n_train, training_padded[:, idx], dd)
@@ -1568,8 +1739,8 @@ def _get_jax_rls(num_taps, stride, const_size, num_ch):
 
                 x_bar = X_wins.flatten()  # (C * num_taps,)
 
-                Px = P @ x_bar
-                denom = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px))
+                Px = jnp.matmul(P, x_bar, precision=_P)
+                denom = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px, precision=_P))
                 k = Px / denom
 
                 def w_update(w_row, err_val):
@@ -1617,6 +1788,9 @@ def _get_jax_lms_cpr(
     bps_block_size,
     bps_joint_channels,
     cs_history_len,
+    sq_side=0,
+    sq_lev_min=0.0,
+    sq_d_grid=1.0,
 ):
     """JIT-compile and cache the LMS+CPR butterfly scan.
 
@@ -1627,6 +1801,7 @@ def _get_jax_lms_cpr(
     cpr_type : "pll" or "bps"
     bps_n    : number of BPS test phases (ignored for cpr_type="pll")
     cs_history_len : int — circular buffer depth for cycle-slip correction
+    sq_side, sq_lev_min, sq_d_grid : O(1) square-QAM slicer parameters
     """
     key = (
         "lms_cpr",
@@ -1639,6 +1814,9 @@ def _get_jax_lms_cpr(
         bps_block_size,
         bps_joint_channels,
         cs_history_len,
+        sq_side,
+        float(sq_lev_min),
+        float(sq_d_grid),
     )
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
@@ -1649,6 +1827,8 @@ def _get_jax_lms_cpr(
         import math as _math  # noqa: PLC0415
 
         _quantum_static = jnp.float64(_math.pi / 2.0)  # symmetry=4 default
+
+        _PREC = jax.lax.Precision.HIGHEST
 
         @jax.jit
         def lms_cpr_scan(
@@ -1664,6 +1844,14 @@ def _get_jax_lms_cpr(
             pll_beta,
             cs_threshold,
             cs_enabled,
+            pll_phi_init,
+            pll_freq_init,
+            bps_buf_init,
+            bps_buf_ptr_init,
+            bps_prev4_init,
+            cs_buf_x_init,
+            cs_buf_y_init,
+            cs_buf_ptr_init,
         ):
             # x_input         : (C, N_pad)       complex64
             # training_padded : (C, N_sym)        complex64
@@ -1673,19 +1861,27 @@ def _get_jax_lms_cpr(
             # w_init          : (C, C, T)         complex64
             # step_size       : scalar float32
             # n_train         : scalar int32
-            # pll_mu, pll_beta: scalar float32
-            # cs_threshold    : scalar float32
+            # pll_mu, pll_beta: scalar float64
+            # cs_threshold    : scalar float64
             # cs_enabled      : scalar bool
+            # pll_phi_init    : (C,) float64  — warm-start PLL integrator (zeros → cold)
+            # pll_freq_init   : (C,) float64  — warm-start PLL frequency  (zeros → cold)
+            # bps_buf_init    : (KB, C) complex64 — warm-start BPS buffer (zeros → cold)
+            # bps_buf_ptr_init: scalar int32  — warm-start BPS buffer pointer
+            # bps_prev4_init  : (C,) float64  — warm-start 4-fold unwrap state
+            # cs_buf_x_init   : (C, H) float64 — warm-start cycle-slip symbol index
+            # cs_buf_y_init   : (C, H) float64 — warm-start cycle-slip phase value
+            # cs_buf_ptr_init : (C,)   int32   — warm-start cycle-slip write pointer
             #
             # lax.scan carry:
             #   W             : (C, C, T)         complex64
-            #   pll_phi       : (C,)              float32
-            #   pll_freq      : (C,)              float32
+            #   pll_phi       : (C,)              float64
+            #   pll_freq      : (C,)              float64
             #   bps_buf       : (KB, C)           complex64  — y_raw circular buffer
             #   bps_buf_ptr   : scalar int32
-            #   bps_prev4     : (C,)              float32   — causal 4-fold unwrap state
-            #   cs_buf_x      : (C, H)            float32  — symbol index
-            #   cs_buf_y      : (C, H)            float32  — phase value
+            #   bps_prev4     : (C,)              float64   — causal 4-fold unwrap state
+            #   cs_buf_x      : (C, H)            float64  — symbol index
+            #   cs_buf_y      : (C, H)            float64  — phase value
             #   cs_buf_ptr    : (C,)              int32    — write pointer
 
             def step(carry, idx):
@@ -1706,7 +1902,7 @@ def _get_jax_lms_cpr(
                     x_input, (0, sample_idx), (num_ch, num_taps)
                 )  # (C, T)
 
-                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)  # (C,)
+                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins, precision=_PREC)  # (C,)
 
                 # ── Phase estimation (static branch at trace time) ──
                 if cpr_type == "pll":
@@ -1730,13 +1926,26 @@ def _get_jax_lms_cpr(
                         bps_phases_neg[:, None, None] * bps_buf_new[None, :, :]
                     )  # (B, KB, C)
                     # min-dist per candidate per slot per channel: (B, KB, C)
-                    d2_all = jnp.min(
-                        jnp.abs(
-                            rotated[:, :, :, None] - constellation[None, None, None, :]
+                    if sq_side > 0:  # static branch at trace time
+                        r_idx = jnp.clip(
+                            jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
                         )
-                        ** 2,
-                        axis=-1,
-                    )
+                        i_idx = jnp.clip(
+                            jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        d2_all = (rotated.real - r_near) ** 2 + (rotated.imag - i_near) ** 2
+                    else:
+                        d2_all = jnp.min(
+                            jnp.abs(
+                                rotated[:, :, :, None] - constellation[None, None, None, :]
+                            )
+                            ** 2,
+                            axis=-1,
+                        )
                     # Mask slots beyond fill
                     slot_mask = jnp.arange(KB)[None, :, None] < fill  # (1, KB, 1)
                     d2_masked = jnp.where(slot_mask, d2_all, 0.0)
@@ -1826,7 +2035,20 @@ def _get_jax_lms_cpr(
                 y_fin = y_raw * phasor  # (C,)
 
                 def slicer(ch_y):
-                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+                    if sq_side > 0:  # static branch at trace time
+                        ir = jnp.clip(
+                            jnp.round((ch_y.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        ii = jnp.clip(
+                            jnp.round((ch_y.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        nr = sq_lev_min + ir.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        ni = sq_lev_min + ii.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        return jax.lax.complex(nr, ni)
+                    else:
+                        return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
 
                 dd = jax.vmap(slicer)(y_fin)
                 d = jnp.where(idx < n_train, training_padded[:, idx], dd)
@@ -1845,7 +2067,7 @@ def _get_jax_lms_cpr(
                 phasor_inv = jnp.exp(_phi32 * jnp.array(1j, dtype=jnp.complex64))
                 e_eq = e_clean * phasor_inv  # (C,)
 
-                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e_eq), X_wins)
+                W_new = W + step_size * jnp.einsum("i,jt->ijt", jnp.conj(e_eq), X_wins, precision=_PREC)
 
                 carry_new = (
                     W_new,
@@ -1863,19 +2085,29 @@ def _get_jax_lms_cpr(
             n_sym = training_padded.shape[1]
             init_carry = (
                 w_init,
-                jnp.zeros(num_ch, dtype=jnp.float64),  # pll_phi
-                jnp.zeros(num_ch, dtype=jnp.float64),  # pll_freq
-                jnp.zeros((KB, num_ch), dtype=jnp.complex64),  # bps_buf (KB, C)
-                jnp.int32(0),  # bps_buf_ptr
-                jnp.zeros(num_ch, dtype=jnp.float64),  # bps_prev4 (unwrap state)
-                jnp.zeros((num_ch, H), dtype=jnp.float64),  # cs_buf_x
-                jnp.zeros((num_ch, H), dtype=jnp.float64),  # cs_buf_y
-                jnp.zeros(num_ch, dtype=jnp.int32),  # cs_buf_ptr
+                pll_phi_init,
+                pll_freq_init,
+                bps_buf_init,
+                bps_buf_ptr_init,
+                bps_prev4_init,
+                cs_buf_x_init,
+                cs_buf_y_init,
+                cs_buf_ptr_init,
             )
-            (W_final, _, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
-                jax.lax.scan(step, init_carry, jnp.arange(n_sym))
+            (
+                W_final,
+                pll_phi_f, pll_freq_f,
+                bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+                cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+            ), (y_hat, errors, w_hist, phi_traj) = jax.lax.scan(
+                step, init_carry, jnp.arange(n_sym)
             )
-            return y_hat, errors, W_final, w_hist, phi_traj
+            return (
+                y_hat, errors, W_final, w_hist, phi_traj,
+                pll_phi_f, pll_freq_f,
+                bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+                cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+            )
 
         _JITTED_EQ[key] = lms_cpr_scan
     return _JITTED_EQ[key]
@@ -1891,11 +2123,15 @@ def _get_jax_rls_cpr(
     bps_block_size,
     bps_joint_channels,
     cs_history_len,
+    sq_side=0,
+    sq_lev_min=0.0,
+    sq_d_grid=1.0,
 ):
     """JIT-compile and cache the RLS+CPR butterfly scan.
 
     Combines the Leaky-RLS Riccati update with an inline CPR tracker.
     Static parameters are identical to ``_get_jax_lms_cpr``.
+    sq_side, sq_lev_min, sq_d_grid : O(1) square-QAM slicer parameters.
     """
     key = (
         "rls_cpr",
@@ -1908,6 +2144,9 @@ def _get_jax_rls_cpr(
         bps_block_size,
         bps_joint_channels,
         cs_history_len,
+        sq_side,
+        float(sq_lev_min),
+        float(sq_d_grid),
     )
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
@@ -1917,6 +2156,8 @@ def _get_jax_rls_cpr(
         import math as _math  # noqa: PLC0415
 
         _quantum_static = jnp.float64(_math.pi / 2.0)
+
+        _PREC = jax.lax.Precision.HIGHEST
 
         @jax.jit
         def rls_cpr_scan(
@@ -1935,6 +2176,14 @@ def _get_jax_rls_cpr(
             pll_beta,
             cs_threshold,
             cs_enabled,
+            pll_phi_init,
+            pll_freq_init,
+            bps_buf_init,
+            bps_buf_ptr_init,
+            bps_prev4_init,
+            cs_buf_x_init,
+            cs_buf_y_init,
+            cs_buf_ptr_init,
         ):
             def step(carry, idx):
                 (
@@ -1954,7 +2203,7 @@ def _get_jax_rls_cpr(
                 X_wins = jax.lax.dynamic_slice(
                     x_input, (0, sample_idx), (num_ch, num_taps)
                 )
-                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins)
+                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins, precision=_PREC)
 
                 if cpr_type == "pll":
                     phi_hat = pll_phi
@@ -1974,13 +2223,26 @@ def _get_jax_rls_cpr(
                     rotated = (
                         bps_phases_neg[:, None, None] * bps_buf_new[None, :, :]
                     )  # (B, KB, C)
-                    d2_all = jnp.min(
-                        jnp.abs(
-                            rotated[:, :, :, None] - constellation[None, None, None, :]
+                    if sq_side > 0:  # static branch at trace time
+                        r_idx = jnp.clip(
+                            jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
                         )
-                        ** 2,
-                        axis=-1,
-                    )
+                        i_idx = jnp.clip(
+                            jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        d2_all = (rotated.real - r_near) ** 2 + (rotated.imag - i_near) ** 2
+                    else:
+                        d2_all = jnp.min(
+                            jnp.abs(
+                                rotated[:, :, :, None] - constellation[None, None, None, :]
+                            )
+                            ** 2,
+                            axis=-1,
+                        )
                     slot_mask = jnp.arange(KB)[None, :, None] < fill
                     metric = jnp.where(slot_mask, d2_all, 0.0).sum(axis=1)  # (B, C)
 
@@ -2060,7 +2322,20 @@ def _get_jax_rls_cpr(
                 y_fin = y_raw * phasor
 
                 def slicer(ch_y):
-                    return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
+                    if sq_side > 0:  # static branch at trace time
+                        ir = jnp.clip(
+                            jnp.round((ch_y.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        ii = jnp.clip(
+                            jnp.round((ch_y.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                            0, sq_side - 1,
+                        )
+                        nr = sq_lev_min + ir.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        ni = sq_lev_min + ii.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                        return jax.lax.complex(nr, ni)
+                    else:
+                        return constellation[jnp.argmin(jnp.abs(ch_y - constellation) ** 2)]
 
                 dd = jax.vmap(slicer)(y_fin)
                 d = jnp.where(idx < n_train, training_padded[:, idx], dd)
@@ -2080,8 +2355,8 @@ def _get_jax_rls_cpr(
                 e_eq = e_clean * phasor_inv
 
                 x_bar = X_wins.flatten()
-                Px = P @ x_bar
-                denom_k = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px))
+                Px = jnp.matmul(P, x_bar, precision=_PREC)
+                denom_k = lam + jnp.real(jnp.dot(jnp.conj(x_bar), Px, precision=_PREC))
                 k_gain = Px / denom_k
 
                 def w_update(w_row, err_val):
@@ -2115,19 +2390,29 @@ def _get_jax_rls_cpr(
             init_carry = (
                 w_init,
                 P_init,
-                jnp.zeros(num_ch, dtype=jnp.float64),  # pll_phi
-                jnp.zeros(num_ch, dtype=jnp.float64),  # pll_freq
-                jnp.zeros((KB, num_ch), dtype=jnp.complex64),  # bps_buf
-                jnp.int32(0),  # bps_buf_ptr
-                jnp.zeros(num_ch, dtype=jnp.float64),  # bps_prev4
-                jnp.zeros((num_ch, H), dtype=jnp.float64),  # cs_buf_x
-                jnp.zeros((num_ch, H), dtype=jnp.float64),  # cs_buf_y
-                jnp.zeros(num_ch, dtype=jnp.int32),  # cs_buf_ptr
+                pll_phi_init,
+                pll_freq_init,
+                bps_buf_init,
+                bps_buf_ptr_init,
+                bps_prev4_init,
+                cs_buf_x_init,
+                cs_buf_y_init,
+                cs_buf_ptr_init,
             )
-            (W_final, _, _, _, _, _, _, _, _, _), (y_hat, errors, w_hist, phi_traj) = (
-                jax.lax.scan(step, init_carry, jnp.arange(n_sym))
+            (
+                W_final, _,
+                pll_phi_f, pll_freq_f,
+                bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+                cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+            ), (y_hat, errors, w_hist, phi_traj) = jax.lax.scan(
+                step, init_carry, jnp.arange(n_sym)
             )
-            return y_hat, errors, W_final, w_hist, phi_traj
+            return (
+                y_hat, errors, W_final, w_hist, phi_traj,
+                pll_phi_f, pll_freq_f,
+                bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+                cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+            )
 
         _JITTED_EQ[key] = rls_cpr_scan
     return _JITTED_EQ[key]
@@ -3555,6 +3840,7 @@ def lms(
             num_ch,
             n_sym,
         )
+        _sq_side, _sq_lev_min, _sq_d_grid = _sq_qam_slicer_params(constellation_np)
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             w_arr = _validate_w_init(w_arr, num_ch, num_taps)
@@ -3581,6 +3867,9 @@ def lms(
                 y_out,
                 e_out,
                 w_hist_buf,
+                _sq_lev_min,
+                _sq_d_grid,
+                np.int32(_sq_side),
             )
             result = _unpack_result_numpy(
                 y_out,
@@ -3650,6 +3939,9 @@ def lms(
                 e_out,
                 phase_out,
                 w_hist_buf,
+                _sq_lev_min,
+                _sq_d_grid,
+                np.int32(_sq_side),
             )
             result = _unpack_result_numpy(
                 y_out,
@@ -3681,12 +3973,6 @@ def lms(
     jax, jnp, _ = _get_jax()
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
-
-    if cpr_state is not None and cpr_type is not None:
-        raise NotImplementedError(
-            "cpr_state warm-start is not yet supported for backend='jax'. "
-            "Use backend='numba' for iterative warm-start with CPR."
-        )
 
     samples, training_symbols, eq_norm = _normalize_inputs(
         samples, training_symbols, sps, input_norm_factor=input_norm_factor
@@ -3760,7 +4046,11 @@ def lms(
     n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
 
     if cpr_type is None:
-        scan_fn = _get_jax_lms(num_taps, stride, len(constellation_np), num_ch)
+        _sq_side_j, _sq_lev_min_j, _sq_d_grid_j = _sq_qam_slicer_params(constellation_np)
+        scan_fn = _get_jax_lms(
+            num_taps, stride, len(constellation_np), num_ch,
+            int(_sq_side_j), float(_sq_lev_min_j), float(_sq_d_grid_j),
+        )
         y_jax, e_jax, W_jax, wh_jax = scan_fn(
             x_jax, train_jax, const_jax, W_jax, mu_jax, n_train_jax
         )
@@ -3784,6 +4074,7 @@ def lms(
                 "backend='jax' with cpr_type set."
             )
         pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        symmetry = _cpr_symmetry(modulation, order)
         B = int(cpr_bps_test_phases)
         H = int(cpr_cycle_slip_history)
         bps_angles_np = np.linspace(
@@ -3792,6 +4083,7 @@ def lms(
         bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
         bps_pn_jax = to_jax(bps_phases_neg_np, device=platform)
         bps_ang_jax = to_jax(bps_angles_np, device=platform)
+        _sq_side_j, _sq_lev_min_j, _sq_d_grid_j = _sq_qam_slicer_params(constellation_np)
         scan_fn = _get_jax_lms_cpr(
             num_taps,
             stride,
@@ -3802,8 +4094,30 @@ def lms(
             int(cpr_bps_block_size),
             bool(cpr_joint_channels),
             H,
+            int(_sq_side_j),
+            float(_sq_lev_min_j),
+            float(_sq_d_grid_j),
         )
-        y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
+        KB = int(cpr_bps_block_size)
+        if cpr_state is not None:
+            _pi, _pf, _bb, _bbp, _bp4, _cx, _cy, _cp = _cpr_state_to_jax_inits(
+                cpr_state, num_ch, KB, H
+            )
+        else:
+            _pi  = np.zeros(num_ch, dtype=np.float64)
+            _pf  = np.zeros(num_ch, dtype=np.float64)
+            _bb  = np.zeros((KB, num_ch), dtype=np.complex64)
+            _bbp = np.int32(0)
+            _bp4 = np.zeros(num_ch, dtype=np.float64)
+            _cx  = np.zeros((num_ch, H), dtype=np.float64)
+            _cy  = np.zeros((num_ch, H), dtype=np.float64)
+            _cp  = np.zeros(num_ch, dtype=np.int32)
+        (
+            y_jax, e_jax, W_jax, wh_jax, phi_jax,
+            pll_phi_f, pll_freq_f,
+            bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+            cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+        ) = scan_fn(
             x_jax,
             train_jax,
             const_jax,
@@ -3816,6 +4130,14 @@ def lms(
             to_jax(jnp.float64(pll_beta), device=platform),
             to_jax(jnp.float64(cpr_cycle_slip_threshold), device=platform),
             to_jax(jnp.bool_(cpr_cycle_slip_correction), device=platform),
+            to_jax(_pi, device=platform),
+            to_jax(_pf, device=platform),
+            to_jax(_bb, device=platform),
+            to_jax(_bbp, device=platform),
+            to_jax(_bp4, device=platform),
+            to_jax(_cx, device=platform),
+            to_jax(_cy, device=platform),
+            to_jax(_cp, device=platform),
         )
         result = _unpack_result_jax(
             y_jax,
@@ -3832,6 +4154,18 @@ def lms(
         phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
         phi_t = xp.asarray(phi_np.T)  # (C, N_sym)
         result.phase_trajectory = phi_t[0] if was_1d else phi_t
+        result.cpr_state = CPRState(
+            pll_phi=np.asarray(from_jax(pll_phi_f)),
+            pll_freq=np.asarray(from_jax(pll_freq_f)),
+            bps_prev4=np.asarray(from_jax(bps_prev4_f)),
+            jax_bps_buf=np.asarray(from_jax(bps_buf_f)),
+            jax_bps_buf_ptr=int(np.asarray(from_jax(bps_buf_ptr_f))),
+            cs_buf_x=np.asarray(from_jax(cs_buf_x_f)),
+            cs_buf_y=np.asarray(from_jax(cs_buf_y_f)),
+            cs_buf_ptr=np.asarray(from_jax(cs_buf_ptr_f)),
+            cpr_type=cpr_type, num_ch=num_ch, symmetry=symmetry,
+            bps_P=B, bps_K=KB, cs_H=H,
+        )
     return _log_equalizer_exit(result, name="LMS", debug_plot=debug_plot)
 
 
@@ -4215,6 +4549,7 @@ def rls(
             num_ch,
             n_sym,
         )
+        _sq_side, _sq_lev_min, _sq_d_grid = _sq_qam_slicer_params(constellation_np)
         if w_init is not None:
             w_arr = np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64)
             w_arr = _validate_w_init(w_arr, num_ch, num_taps)
@@ -4246,6 +4581,9 @@ def rls(
                 y_out,
                 e_out,
                 w_hist_buf,
+                _sq_lev_min,
+                _sq_d_grid,
+                np.int32(_sq_side),
             )
             result = _unpack_result_numpy(
                 y_out,
@@ -4318,6 +4656,9 @@ def rls(
                 e_out,
                 phase_out,
                 w_hist_buf,
+                _sq_lev_min,
+                _sq_d_grid,
+                np.int32(_sq_side),
             )
             result = _unpack_result_numpy(
                 y_out,
@@ -4357,12 +4698,6 @@ def rls(
             "JAX x64 mode must be enabled for RLS: the P (Riccati) matrix requires "
             "complex128 precision to remain positive-definite. "
             "Call jax.config.update('jax_enable_x64', True) before using backend='jax'."
-        )
-
-    if cpr_state is not None and cpr_type is not None:
-        raise NotImplementedError(
-            "cpr_state warm-start is not yet supported for rls backend='jax'. "
-            "Use backend='numba' for iterative warm-start with CPR."
         )
 
     samples, training_symbols, eq_norm = _normalize_inputs(
@@ -4450,7 +4785,11 @@ def rls(
     n_update_halt_jax = to_jax(jnp.int32(n_update_halt), device=platform)
 
     if cpr_type is None:
-        scan_fn = _get_jax_rls(num_taps, stride, len(constellation_np), num_ch)
+        _sq_side_j, _sq_lev_min_j, _sq_d_grid_j = _sq_qam_slicer_params(constellation_np)
+        scan_fn = _get_jax_rls(
+            num_taps, stride, len(constellation_np), num_ch,
+            int(_sq_side_j), float(_sq_lev_min_j), float(_sq_d_grid_j),
+        )
         y_jax, e_jax, W_jax, wh_jax = scan_fn(
             x_jax,
             train_jax,
@@ -4476,6 +4815,7 @@ def rls(
         )
     else:
         pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        symmetry = _cpr_symmetry(modulation, order)
         B = int(cpr_bps_test_phases)
         H = int(cpr_cycle_slip_history)
         bps_angles_np = np.linspace(
@@ -4484,6 +4824,7 @@ def rls(
         bps_phases_neg_np = np.exp(-1j * bps_angles_np).astype(np.complex64)
         bps_pn_jax = to_jax(bps_phases_neg_np, device=platform)
         bps_ang_jax = to_jax(bps_angles_np, device=platform)
+        _sq_side_j, _sq_lev_min_j, _sq_d_grid_j = _sq_qam_slicer_params(constellation_np)
         scan_fn = _get_jax_rls_cpr(
             num_taps,
             stride,
@@ -4494,8 +4835,30 @@ def rls(
             int(cpr_bps_block_size),
             bool(cpr_joint_channels),
             H,
+            int(_sq_side_j),
+            float(_sq_lev_min_j),
+            float(_sq_d_grid_j),
         )
-        y_jax, e_jax, W_jax, wh_jax, phi_jax = scan_fn(
+        KB = int(cpr_bps_block_size)
+        if cpr_state is not None:
+            _pi, _pf, _bb, _bbp, _bp4, _cx, _cy, _cp = _cpr_state_to_jax_inits(
+                cpr_state, num_ch, KB, H
+            )
+        else:
+            _pi  = np.zeros(num_ch, dtype=np.float64)
+            _pf  = np.zeros(num_ch, dtype=np.float64)
+            _bb  = np.zeros((KB, num_ch), dtype=np.complex64)
+            _bbp = np.int32(0)
+            _bp4 = np.zeros(num_ch, dtype=np.float64)
+            _cx  = np.zeros((num_ch, H), dtype=np.float64)
+            _cy  = np.zeros((num_ch, H), dtype=np.float64)
+            _cp  = np.zeros(num_ch, dtype=np.int32)
+        (
+            y_jax, e_jax, W_jax, wh_jax, phi_jax,
+            pll_phi_f, pll_freq_f,
+            bps_buf_f, bps_buf_ptr_f, bps_prev4_f,
+            cs_buf_x_f, cs_buf_y_f, cs_buf_ptr_f,
+        ) = scan_fn(
             x_jax,
             train_jax,
             const_jax,
@@ -4511,6 +4874,14 @@ def rls(
             to_jax(jnp.float64(pll_beta), device=platform),
             to_jax(jnp.float64(cpr_cycle_slip_threshold), device=platform),
             to_jax(jnp.bool_(cpr_cycle_slip_correction), device=platform),
+            to_jax(_pi, device=platform),
+            to_jax(_pf, device=platform),
+            to_jax(_bb, device=platform),
+            to_jax(_bbp, device=platform),
+            to_jax(_bp4, device=platform),
+            to_jax(_cx, device=platform),
+            to_jax(_cy, device=platform),
+            to_jax(_cp, device=platform),
         )
         result = _unpack_result_jax(
             y_jax,
@@ -4527,6 +4898,18 @@ def rls(
         phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
         phi_t = xp.asarray(phi_np[:n_update_halt].T)  # (C, n_update_halt)
         result.phase_trajectory = phi_t[0] if was_1d else phi_t
+        result.cpr_state = CPRState(
+            pll_phi=np.asarray(from_jax(pll_phi_f)),
+            pll_freq=np.asarray(from_jax(pll_freq_f)),
+            bps_prev4=np.asarray(from_jax(bps_prev4_f)),
+            jax_bps_buf=np.asarray(from_jax(bps_buf_f)),
+            jax_bps_buf_ptr=int(np.asarray(from_jax(bps_buf_ptr_f))),
+            cs_buf_x=np.asarray(from_jax(cs_buf_x_f)),
+            cs_buf_y=np.asarray(from_jax(cs_buf_y_f)),
+            cs_buf_ptr=np.asarray(from_jax(cs_buf_ptr_f)),
+            cpr_type=cpr_type, num_ch=num_ch, symmetry=symmetry,
+            bps_P=B, bps_K=KB, cs_H=H,
+        )
     # Truncate last num_taps//2 symbols (zero-padding contamination).
     result = _log_equalizer_exit(result, name="RLS", debug_plot=debug_plot)
     result.tail_trim = tail_trim
@@ -4821,6 +5204,10 @@ def block_lms(
 
     constellation = xp.asarray(constellation_np)  # (M,) on device
     M = len(constellation_np)
+    _sq_side, _sq_lev_min_f, _sq_d_grid_f = _sq_qam_slicer_params(constellation_np)
+    _sq_lev_min = float(_sq_lev_min_f)
+    _sq_d_grid = float(_sq_d_grid_f)
+    _sq_m1 = _sq_side - 1  # clip upper bound (0 when sq_side==0 — never used)
 
     # ── Training alignment ────────────────────────────────────────────────────
     if training_symbols is not None:
@@ -4897,10 +5284,24 @@ def block_lms(
     pad_total = max(0, n_sym * sps - N + num_taps - 1)
     pad_left = min(c_tap, pad_total)
     pad_right = pad_total - pad_left
-    _samp_cpu_blms = to_device(samples, "cpu").astype(np.complex64)
-    x_padded = xp.asarray(
-        _build_padded_samples(_samp_cpu_blms, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps)
-    )  # (C, N_pad)
+    if samples_prefix is not None or xp is np or pad_mode != "zeros":
+        _samp_cpu_blms = to_device(samples, "cpu").astype(np.complex64)
+        x_padded = xp.asarray(
+            _build_padded_samples(_samp_cpu_blms, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps)
+        )  # (C, N_pad)
+    else:
+        # Fast on-device path: avoid D→H→D round-trip when there is no prefix.
+        # _normalize_inputs already normalized samples; eq_norm is only needed
+        # by _build_padded_samples to normalize the samples_prefix, which is
+        # handled by the branch above.
+        _samp_f32 = samples if samples.dtype == xp.complex64 else samples.astype(xp.complex64)
+        _left = xp.zeros((C, pad_left), dtype=xp.complex64)
+        _right = (
+            xp.zeros((C, pad_right), dtype=xp.complex64)
+            if pad_right > 0
+            else xp.empty((C, 0), dtype=xp.complex64)
+        )
+        x_padded = xp.concatenate([_left, _samp_f32, _right], axis=1)  # (C, N_pad)
     N_padded = x_padded.shape[1]
 
     # ── Output buffers ────────────────────────────────────────────────────────
@@ -4910,6 +5311,10 @@ def block_lms(
         xp.empty((n_sym, C, C, num_taps), dtype=xp.complex64) if store_weights else None
     )
     phi_all = xp.zeros((C, n_sym), dtype=xp.float32) if cpr_type == "bps" else None
+
+    # Pre-allocate scratch buffers — reused every block to avoid per-block heap pressure.
+    x_win = xp.zeros((C, fftsize), dtype=xp.complex64)
+    e_scatter = xp.zeros((C, fftsize), dtype=xp.complex64)
 
     n_blocks = (n_sym + block_size - 1) // block_size
 
@@ -4924,7 +5329,7 @@ def block_lms(
         # B*sps new samples plus num_taps-1 anti-causal look-ahead samples
         # needed by the cross-correlation filter y[n]=Σ conj(h[τ])·x[n+τ].
         x_start = b_start * sps
-        x_win = xp.zeros((C, fftsize), dtype=xp.complex64)
+        x_win.fill(0)
         available = min(fftsize, N_padded - x_start)
         if available > 0:
             x_win[:, :available] = x_padded[:, x_start : x_start + available]
@@ -4941,9 +5346,14 @@ def block_lms(
             # rotated: (P, C, B) — all candidate rotations for all block symbols
             rotated = bps_phases_neg[:, None, None] * y_block[None, :, :]
             # min_d2: (P, C, B) — min squared distance to constellation.
-            # Broadcast over all M points in one fused kernel: (P, C, B, M) → min over M.
-            d2_all = (xp.abs(rotated[..., None] - constellation[None, None, None, :]) ** 2).real
-            min_d2 = xp.min(d2_all, axis=-1).astype(xp.float32)
+            # O(1) square-QAM: snap I/Q independently to nearest level grid point.
+            if _sq_side > 0:
+                _nr = _sq_lev_min + xp.clip(xp.round((rotated.real - _sq_lev_min) / _sq_d_grid), 0, _sq_m1) * _sq_d_grid
+                _ni = _sq_lev_min + xp.clip(xp.round((rotated.imag - _sq_lev_min) / _sq_d_grid), 0, _sq_m1) * _sq_d_grid
+                min_d2 = ((rotated.real - _nr) ** 2 + (rotated.imag - _ni) ** 2).astype(xp.float32)
+            else:
+                d2_all = (xp.abs(rotated[..., None] - constellation[None, None, None, :]) ** 2).real
+                min_d2 = xp.min(d2_all, axis=-1).astype(xp.float32)
 
             # Causal sliding-window average of width K along the B (symbol) axis.
             # win_sum[:,:,n] = sum of min_d2[:,:, n-K+1..n] (with K-1 samples from
@@ -4972,24 +5382,33 @@ def block_lms(
                 combined_hist = xp.concatenate([bps_d2_hist, min_d2], axis=2)
                 bps_d2_hist = combined_hist[:, :, -_bps_hist_len:]
 
-            # 4-fold causal unwrap: np.unwrap(phi*4)/4 across the entire
-            # block and across block boundaries via bps_prev4/bps_offset4.
-            # All on CPU to keep the unwrap state consistent.
-            phi_raw_np = to_device(phi_raw, "cpu").astype(np.float64)  # (C, B)
-            raw4 = phi_raw_np * 4.0  # (C, B)
-            # Prepend the cross-block state to each channel, unwrap, strip prefix.
-            # wrap(r4[n] - prev4[n]) = wrap(r4[n] - r4[n-1]) because wrap removes
-            # multiples of 2π, so the running-state loop is equivalent to np.unwrap.
-            extended = np.concatenate([bps_prev4[:, np.newaxis], raw4], axis=1)  # (C, B+1)
-            unwrapped_ext = np.unwrap(extended, axis=1)  # (C, B+1)
-            cumulative_diffs = unwrapped_ext[:, 1:] - unwrapped_ext[:, 0:1]  # (C, B)
-            phi_unwrapped_np = (bps_offset4[:, np.newaxis] + cumulative_diffs) / 4.0  # (C, B)
-            bps_prev4[:] = unwrapped_ext[:, -1]
-            bps_offset4 += cumulative_diffs[:, -1]
+            # 4-fold causal unwrap: equivalent to np.unwrap(phi*4)/4 via
+            # diff→wrap[-π,π]→cumsum.  CPU: np.unwrap directly (no transfer cost).
+            # GPU: run arithmetic on-device, sync only (C,) float64 per block.
+            if xp is np:
+                raw4 = phi_raw.astype(np.float64) * 4.0  # (C, B)
+                extended = np.concatenate([bps_prev4[:, np.newaxis], raw4], axis=1)  # (C, B+1)
+                unwrapped_ext = np.unwrap(extended, axis=1)  # (C, B+1)
+                _cumul_cpu = unwrapped_ext[:, 1:] - unwrapped_ext[:, 0:1]  # (C, B)
+                _phi_f64 = (bps_offset4[:, np.newaxis] + _cumul_cpu) / 4.0  # (C, B)
+                bps_prev4[:] = unwrapped_ext[:, -1]
+                bps_offset4 += _cumul_cpu[:, -1]
+            else:
+                raw4_dev = phi_raw.astype(xp.float64) * xp.float64(4.0)  # (C, B)
+                ext_dev = xp.concatenate(
+                    [xp.asarray(bps_prev4)[:, None], raw4_dev], axis=1
+                )  # (C, B+1)
+                _two_pi_d = xp.float64(2.0 * np.pi)
+                d4 = ext_dev[:, 1:] - ext_dev[:, :-1]  # (C, B)
+                d4 -= xp.round(d4 / _two_pi_d) * _two_pi_d  # wrap to [-π, π]
+                _cumul_dev = xp.cumsum(d4, axis=1)  # (C, B)
+                _phi_f64 = (xp.asarray(bps_offset4)[:, None] + _cumul_dev) / xp.float64(4.0)
+                _delta = to_device(_cumul_dev[:, -1], "cpu")  # (C,) — 16 bytes for C=2
+                bps_prev4 += _delta
+                bps_offset4 += _delta
             # Wrap unbounded float64 phase to [-π, π] before float32 cast so that
             # the GPU exp() argument is bounded (dual-path: wrapped for rotation,
             # unwrapped for trajectory storage).
-            _phi_f64 = xp.asarray(phi_unwrapped_np)  # (C, B) float64
             phi_c_dev = (_phi_f64 - xp.round(_phi_f64 / _two_pi) * _two_pi).astype(xp.float32)
             phi_c_traj = _phi_f64.astype(xp.float32)  # unwrapped, for output trajectory
 
@@ -5003,8 +5422,8 @@ def block_lms(
             # When CS is disabled no device transfer occurs at all.
             if cpr_cycle_slip_correction:
                 x_b = float(b_start + B // 2)  # global index of block midpoint
-                # phi_unwrapped_np already on CPU — read midpoint directly
-                phi_mid_np = phi_unwrapped_np[:, B // 2].astype(np.float64)
+                # Sync only C scalars (block-midpoint phase) — cheap on both CPU and GPU.
+                phi_mid_np = to_device(_phi_f64[:, B // 2], "cpu").astype(np.float64)
                 offsets = np.zeros(C, dtype=np.float64)
 
                 for ci in range(C):
@@ -5075,9 +5494,15 @@ def block_lms(
 
         if n_train_blk < B:
             y_dd = y_rot[:, n_train_blk:]
-            # Slicer: (C, B-n_train, M) → argmin → (C, B-n_train)
-            d2_sl = (xp.abs(y_dd[:, :, None] - constellation[None, None, :]) ** 2).real
-            d_dd = constellation[xp.argmin(d2_sl, axis=-1)]
+            if _sq_side > 0:
+                _dd_r = _sq_lev_min + xp.clip(xp.round((y_dd.real - _sq_lev_min) / _sq_d_grid), 0, _sq_m1) * _sq_d_grid
+                _dd_i = _sq_lev_min + xp.clip(xp.round((y_dd.imag - _sq_lev_min) / _sq_d_grid), 0, _sq_m1) * _sq_d_grid
+                d_dd = xp.empty(y_dd.shape, dtype=xp.complex64)
+                d_dd.real[:] = _dd_r
+                d_dd.imag[:] = _dd_i
+            else:
+                d2_sl = (xp.abs(y_dd[:, :, None] - constellation[None, None, :]) ** 2).real
+                d_dd = constellation[xp.argmin(d2_sl, axis=-1)]
             e_clean[:, n_train_blk:] = d_dd - y_dd
 
         # ── Store per-symbol outputs ──────────────────────────────────────
@@ -5093,7 +5518,7 @@ def block_lms(
             e_taps = e_clean
 
         # Scatter e_taps to sample positions within the block window
-        e_scatter = xp.zeros((C, fftsize), dtype=xp.complex64)
+        e_scatter.fill(0)
         e_scatter[:, : B * sps : sps] = e_taps
 
         # Frequency-domain gradient: dH_fd[i,j,k] = conj(E_fd[i,k]) * X_fd[j,k]
