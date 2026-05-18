@@ -621,8 +621,6 @@ def _mse_db(y, ref):
 @pytest.mark.parametrize("cpr_mode", ["pll", "bps"])
 def test_cpr_state_warmstart_lms(cpr_mode, backend_device, xp):
     """Second lms call with cpr_state should have lower initial MSE than cold restart."""
-    if backend_device == "gpu":
-        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
     n_sym = 4000
     half = n_sym // 2
     samples_np, syms_np = _wiener_phase_signal(n_sym=n_sym)
@@ -662,8 +660,6 @@ def test_cpr_state_warmstart_lms(cpr_mode, backend_device, xp):
 
 def test_cpr_state_none_is_baseline_lms(backend_device, xp):
     """cpr_state=None must produce byte-exact output matching omitted cpr_state."""
-    if backend_device == "gpu":
-        pytest.skip("cpr_state not yet implemented for JAX/GPU path")
     samples, syms = _wiener_phase_signal(n_sym=1000)
     kw = dict(
         num_taps=5, sps=1, step_size=5e-3,
@@ -678,8 +674,6 @@ def test_cpr_state_none_is_baseline_lms(backend_device, xp):
 
 def test_cpr_state_warmstart_rls(backend_device, xp):
     """rls with cpr_state warm-start: second call has valid cpr_state output."""
-    if backend_device == "gpu":
-        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
     n_sym = 2000
     half = n_sym // 2
     samples_np, syms_np = _wiener_phase_signal(n_sym=n_sym)

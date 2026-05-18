@@ -559,8 +559,6 @@ def _wiener_qam16_block(n_sym=4096, snr_db=25.0, linewidth_hz=5e3, seed=11):
 
 def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
     """block_lms with cpr_state should populate and accept CPRState."""
-    if backend_device == "gpu":
-        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
     n_sym = 4096
     half = n_sym // 2
     samples_np, syms_np = _wiener_qam16_block(n_sym=n_sym)
@@ -592,8 +590,6 @@ def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
 
 def test_cpr_state_none_is_baseline_block_lms(backend_device, xp):
     """cpr_state=None must be byte-exact with the default (no cpr_state) call."""
-    if backend_device == "gpu":
-        pytest.skip("cpr_state warm-start not yet implemented for JAX/GPU path")
     samples_np, syms_np = _wiener_qam16_block(n_sym=2048)
     kw = dict(
         num_taps=11, sps=1, step_size=5e-4,
