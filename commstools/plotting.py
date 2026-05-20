@@ -1944,7 +1944,7 @@ def foe_blockwise_result(
     title: str = "Block-wise FOE",
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Diagnostic plot for :func:`~commstools.sync.estimate_frequency_offset_blockwise`.
+    Diagnostic plot for :func:`~commstools.frequency.estimate_frequency_offset_blockwise`.
 
     Shows three panels:
 
@@ -2033,9 +2033,9 @@ def pilot_phase_estimate(
     Plots pilot phase scatter, linear fit, and the full interpolated trajectory.
 
     Used as a diagnostic for both pilot-based frequency offset estimation
-    (:func:`~commstools.sync.estimate_frequency_offset_pilots`) and
+    (:func:`~commstools.frequency.estimate_frequency_offset_pilots`) and
     pilot-aided carrier phase recovery
-    (:func:`~commstools.sync.recover_carrier_phase_pilots`).
+    (:func:`~commstools.recovery.recover_carrier_phase_pilots`).
 
     Parameters
     ----------

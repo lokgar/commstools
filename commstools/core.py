@@ -2063,7 +2063,7 @@ class Signal(BaseModel):
             If ``resolved_symbols``, ``source_symbols``, ``mod_scheme``, or
             ``mod_order`` are not populated.
         """
-        from .sync import resolve_phase_ambiguity as _resolve
+        from .recovery import resolve_phase_ambiguity as _resolve
 
         if self.resolved_symbols is None:
             raise ValueError(
@@ -2649,23 +2649,23 @@ class Preamble(BaseModel):
           :func:`~commstools.helpers.zc_mimo_root`.
         - Barker: the same sequence is tiled across all streams.
         """
-        from . import sync
+        from . import timing
 
         stype = self.sequence_type.lower()
 
         if stype == "barker":
             # Barker symbols (-1, +1)
-            base = sync.barker_sequence(self.length)
+            base = timing.barker_sequence(self.length)
         elif stype in ("zc", "zadoff_chu"):
             # ZC complex symbols — use the named 'root' field directly.
-            base = sync.zadoff_chu_sequence(self.length, root=self.root)
+            base = timing.zadoff_chu_sequence(self.length, root=self.root)
         else:
             base = None
 
         if base is not None and self.num_streams > 1:
             if stype in ("zc", "zadoff_chu"):
                 rows = [
-                    sync.zadoff_chu_sequence(
+                    timing.zadoff_chu_sequence(
                         self.length,
                         root=helpers.zc_mimo_root(k, self.root, self.length),
                     )

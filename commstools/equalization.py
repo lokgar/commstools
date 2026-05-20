@@ -6259,7 +6259,7 @@ def cma(
     weights converge to one of four equally-valid 90° rotations and slowly
     drift between them — BPS would track that drift, but the next CMA
     gradient step would fight the correction.  Use the sequential pipeline
-    instead: CMA → :func:`~commstools.sync.correct_carrier_phase` (BPS or
+    instead: CMA → :func:`~commstools.recovery.correct_carrier_phase` (BPS or
     Viterbi-Viterbi) → optional :func:`lms` fine-tune.
 
     Parameters

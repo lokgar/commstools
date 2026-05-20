@@ -1,15 +1,13 @@
-"""Tests for synchronization utilities (Barker and Zadoff-Chu sequences, frame detection)."""
+"""Tests for timing synchronization (Barker and Zadoff-Chu sequences, frame detection)."""
 
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from commstools import sync
+from commstools import timing
 from commstools.core import Preamble
 from commstools.helpers import cross_correlate_fft
-from commstools.impairments import apply_iq_imbalance
-from commstools.mapping import gray_constellation
 
 
 def test_barker_sequences(backend_device, xp):
@@ -17,7 +15,7 @@ def test_barker_sequences(backend_device, xp):
     valid_lengths = [2, 3, 4, 5, 7, 11, 13]
 
     for length in valid_lengths:
-        seq = sync.barker_sequence(length)
+        seq = timing.barker_sequence(length)
         assert len(seq) == length
         # All values should be +1 or -1
         assert xp.all((seq == 1) | (seq == -1))
@@ -26,12 +24,12 @@ def test_barker_sequences(backend_device, xp):
 def test_barker_invalid_length(backend_device, xp):
     """Verify that unsupported Barker lengths raise ValueError."""
     with pytest.raises(ValueError):
-        sync.barker_sequence(6)  # No Barker-6 exists
+        timing.barker_sequence(6)  # No Barker-6 exists
 
 
 def test_barker_autocorrelation(backend_device, xp):
     """Verify that Barker sequences possess optimal autocorrelation properties."""
-    seq = sync.barker_sequence(13)
+    seq = timing.barker_sequence(13)
 
     # Auto-correlation via cross_correlate_fft
     acorr = cross_correlate_fft(seq, seq, mode="full")
@@ -52,7 +50,7 @@ def test_barker_autocorrelation(backend_device, xp):
 
 def test_zadoff_chu_cazac(backend_device, xp, xpt):
     """Verify that ZC sequences have constant amplitude (CAZAC property)."""
-    zc = sync.zadoff_chu_sequence(63, root=25)
+    zc = timing.zadoff_chu_sequence(63, root=25)
 
     # All magnitudes should be 1
     magnitudes = xp.abs(zc)
@@ -62,11 +60,11 @@ def test_zadoff_chu_cazac(backend_device, xp, xpt):
 def test_zadoff_chu_length(backend_device, xp, xpt):
     """Verify that ZC sequences are generated with the requested length."""
     for length in [31, 63, 127]:
-        zc = sync.zadoff_chu_sequence(length, root=1)
+        zc = timing.zadoff_chu_sequence(length, root=1)
         assert len(zc) == length
 
     # Test even length
-    zc_even = sync.zadoff_chu_sequence(10, root=1)
+    zc_even = timing.zadoff_chu_sequence(10, root=1)
     assert len(zc_even) == 10
     xpt.assert_allclose(xp.abs(zc_even), 1.0)
 
@@ -74,9 +72,9 @@ def test_zadoff_chu_length(backend_device, xp, xpt):
 def test_zadoff_chu_errors(backend_device, xp):
     """Verify ZC sequence generator input validation."""
     with pytest.raises(ValueError, match="Length must be positive"):
-        sync.zadoff_chu_sequence(0)
+        timing.zadoff_chu_sequence(0)
     with pytest.raises(ValueError, match="Root must be in"):
-        sync.zadoff_chu_sequence(10, root=10)
+        timing.zadoff_chu_sequence(10, root=10)
 
 
 def test_correlate_delta(backend_device, xp):
@@ -180,39 +178,39 @@ def test_estimate_timing_advanced_scenarios(backend_device, xp):
     data = xp.zeros(100, dtype="complex64")
     data[20 : 20 + 7] = preamble.symbols
 
-    coarse, _frac = sync.estimate_timing(data, preamble, threshold=2.0, sps=1)
+    coarse, _frac = timing.estimate_timing(data, preamble, threshold=2.0, sps=1)
     assert 18 <= coarse[0] <= 22
 
     # 2. MIMO Signal (2 channels)
     mimo_data = xp.zeros((2, 100), dtype="complex64")
     mimo_data[0, 30:37] = preamble.symbols
     mimo_data[1, 30:37] = preamble.symbols
-    coarse_mimo, _frac = sync.estimate_timing(
+    coarse_mimo, _frac = timing.estimate_timing(
         mimo_data, preamble.symbols, threshold=2.0
     )
     assert 28 <= coarse_mimo[0] <= 32
     assert len(coarse_mimo) == 2
 
     # 3. Search range
-    coarse_range, _frac = sync.estimate_timing(
+    coarse_range, _frac = timing.estimate_timing(
         data, preamble.symbols, threshold=2.0, search_range=(10, 50)
     )
     assert 18 <= coarse_range[0] <= 22
 
     # 4. High threshold (above max)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(data, preamble.symbols, threshold=100.0)
+        timing.estimate_timing(data, preamble.symbols, threshold=100.0)
 
     # 5. Zero energy
     zero_data = xp.zeros(100)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(zero_data, preamble.symbols, threshold=2.0)
+        timing.estimate_timing(zero_data, preamble.symbols, threshold=2.0)
 
 
 def test_estimate_timing_known_position(backend_device, xp):
     """Verify timing estimation accuracy for a known preamble position."""
     # Create preamble
-    preamble_symbols = sync.barker_sequence(13)
+    preamble_symbols = timing.barker_sequence(13)
 
     # Embed in longer signal at known position
     signal = xp.zeros(200, dtype="complex64")
@@ -220,7 +218,7 @@ def test_estimate_timing_known_position(backend_device, xp):
     signal[start_pos : start_pos + 13] = preamble_symbols
 
     # Detect
-    coarse, _frac = sync.estimate_timing(signal, preamble_symbols, threshold=2.0)
+    coarse, _frac = timing.estimate_timing(signal, preamble_symbols, threshold=2.0)
 
     # Should be within 1 sample of true position
     assert abs(coarse[0] - start_pos) <= 1
@@ -242,25 +240,20 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
     )
     signal[start_pos : start_pos + 13] = preamble_syms
 
-    # Create a Signal object to satisfy Preamble object requirement
-    from commstools.core import Signal
-
-    sig_obj = Signal(samples=signal, sampling_rate=1e6, symbol_rate=1e6)
-
-    # Detect using Preamble object
-    coarse, _frac = sync.estimate_timing(sig_obj, preamble, threshold=2.0)
+    # Detect using Preamble object as reference (key: Preamble as second arg)
+    coarse, _frac = timing.estimate_timing(signal, preamble, sps=1, pulse_shape="none", threshold=2.0)
 
     assert abs(coarse[0] - start_pos) <= 1
 
 
 def test_estimate_timing_returns_tuple(backend_device, xp):
     """Verify that estimate_timing returns (coarse_offsets, fractional_offsets)."""
-    preamble = sync.barker_sequence(7)
+    preamble = timing.barker_sequence(7)
 
     signal = xp.zeros(100, dtype="complex64")
     signal[30:37] = preamble
 
-    coarse, frac = sync.estimate_timing(signal, preamble, threshold=2.0)
+    coarse, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
 
     assert len(coarse) == 1
     assert len(frac) == 1
@@ -280,7 +273,7 @@ def test_estimate_timing_debug_plot(backend_device, xp):
         with patch(
             "matplotlib.pyplot.subplots", return_value=(mock_fig, [[mock_ax, mock_ax]])
         ):
-            sync.estimate_timing(sig, preamble, debug_plot=True)
+            timing.estimate_timing(sig, preamble, debug_plot=True)
 
 
 def test_estimate_timing_zero_energy(backend_device, xp):
@@ -288,7 +281,7 @@ def test_estimate_timing_zero_energy(backend_device, xp):
     preamble = xp.ones(10)
     sig = xp.zeros(50)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
-        sync.estimate_timing(sig, preamble, threshold=2.0)
+        timing.estimate_timing(sig, preamble, threshold=2.0)
 
 
 def test_estimate_timing_return_tuple(backend_device, xp):
@@ -296,7 +289,7 @@ def test_estimate_timing_return_tuple(backend_device, xp):
     preamble = xp.ones(4)
     sig = xp.concatenate([xp.zeros(4), preamble, xp.zeros(4)])
 
-    res = sync.estimate_timing(sig, preamble, threshold=2.0)
+    res = timing.estimate_timing(sig, preamble, threshold=2.0)
     assert isinstance(res, tuple)
     assert len(res) == 2
     assert len(res[0]) == 1  # coarse_offsets
@@ -309,7 +302,7 @@ def test_estimate_timing_search_range(backend_device, xp):
     sig = xp.concatenate([xp.zeros(50), preamble, xp.zeros(50)])
 
     # Search only in 40-70 range
-    coarse, _frac = sync.estimate_timing(
+    coarse, _frac = timing.estimate_timing(
         sig, preamble, search_range=(40, 70), threshold=2.0
     )
     assert coarse[0] == 50
@@ -320,15 +313,15 @@ def test_estimate_timing_infer_error(backend_device, xp):
     pre = Preamble(sequence_type="barker", length=3)
     sig = xp.zeros(20)
     with pytest.raises(ValueError, match="SPS must be provided"):
-        sync.estimate_timing(sig, pre)
+        timing.estimate_timing(sig, pre)
 
 
 def test_sequences_device(backend_device, xp):
     """Verify sequence generators return arrays on the active device."""
-    barker = sync.barker_sequence(13)
+    barker = timing.barker_sequence(13)
     assert isinstance(barker, xp.ndarray)
 
-    zc = sync.zadoff_chu_sequence(13, root=1)
+    zc = timing.zadoff_chu_sequence(13, root=1)
     assert isinstance(zc, xp.ndarray)
 
 
@@ -353,7 +346,7 @@ def test_estimate_fractional_delay_known_shift(backend_device, xp):
 
     peak_idx = xp.argmax(xp.abs(corr))
 
-    mu = sync.estimate_fractional_delay(corr, peak_idx)
+    mu = timing.estimate_fractional_delay(corr, peak_idx)
     assert abs(float(mu) - true_mu) < 0.15  # Parabolic is approximate
 
 
@@ -362,7 +355,7 @@ def test_estimate_fractional_delay_edge_peak(backend_device, xp):
     corr = xp.zeros(50, dtype="float32")
     corr[0] = 1.0  # Peak at boundary
 
-    mu = sync.estimate_fractional_delay(corr, xp.asarray(0))
+    mu = timing.estimate_fractional_delay(corr, xp.asarray(0))
     assert float(mu) == 0.0  # Should return 0 at edge
 
 
@@ -377,15 +370,10 @@ def test_estimate_fractional_delay_mimo(backend_device, xp):
     corr[1] = xp.asarray(np.exp(-0.5 * ((n - 60.0 + 0.1) / 2.0) ** 2).astype("float32"))
 
     peaks = xp.array([40, 60])
-    mu = sync.estimate_fractional_delay(corr, peaks)
+    mu = timing.estimate_fractional_delay(corr, peaks)
     assert mu.shape == (2,)
     assert abs(float(mu[0]) - 0.2) < 0.15
     assert abs(float(mu[1]) - (-0.1)) < 0.15
-
-
-# -----------------------------------------------------------------------------
-# Farrow Interpolator Tests
-# -----------------------------------------------------------------------------
 
 
 # -----------------------------------------------------------------------------
@@ -400,7 +388,7 @@ def test_fft_fractional_delay_zero_delay(backend_device, xp, xpt):
     n = np.arange(100, dtype="float32")
     signal = xp.asarray(np.sin(2 * np.pi * 0.05 * n).astype("complex64"))
 
-    out = sync.fft_fractional_delay(signal, 0.0)
+    out = timing.fft_fractional_delay(signal, 0.0)
     # Should be identical (FFT is exact for delay=0)
     xpt.assert_allclose(out, signal, atol=1e-6)
 
@@ -418,7 +406,7 @@ def test_fft_fractional_delay_known_sine(backend_device, xp, xpt):
     original = np.exp(2j * np.pi * f * n).astype("complex64")
     truth = np.exp(2j * np.pi * f * (n - delay)).astype("complex64")
 
-    out = sync.fft_fractional_delay(xp.asarray(original), delay)
+    out = timing.fft_fractional_delay(xp.asarray(original), delay)
 
     # FFT-based delay should be nearly perfect for bandlimited signals
     xpt.assert_allclose(out, truth, atol=1e-5)
@@ -437,7 +425,7 @@ def test_fft_fractional_delay_mimo(backend_device, xp, xpt):
     sig[1] = np.exp(2j * np.pi * f * n).astype("complex64")
 
     delays = xp.asarray([0.3, -0.2], dtype="float32")
-    out = sync.fft_fractional_delay(xp.asarray(sig), delays)
+    out = timing.fft_fractional_delay(xp.asarray(sig), delays)
 
     truth0 = np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64")
     truth1 = np.exp(2j * np.pi * f * (n + 0.2)).astype("complex64")
@@ -457,7 +445,7 @@ def test_fft_fractional_delay_power_conservation(backend_device, xp):
     signal_xp = xp.asarray(signal)
 
     delay = 0.3
-    delayed = sync.fft_fractional_delay(signal_xp, delay)
+    delayed = timing.fft_fractional_delay(signal_xp, delay)
 
     # Measure power
     power_in = float(xp.mean(xp.abs(signal_xp) ** 2))
@@ -478,8 +466,8 @@ def test_fft_fractional_delay_roundtrip(backend_device, xp, xpt):
 
     delay = 0.37
     # Apply delay then undo it
-    delayed = sync.fft_fractional_delay(signal_xp, delay)
-    recovered = sync.fft_fractional_delay(delayed, -delay)
+    delayed = timing.fft_fractional_delay(signal_xp, delay)
+    recovered = timing.fft_fractional_delay(delayed, -delay)
 
     # Should recover original signal to high precision
     xpt.assert_allclose(recovered, signal_xp, atol=1e-5)
@@ -495,7 +483,7 @@ def test_correct_timing_coarse_only(backend_device, xp):
     signal = xp.zeros(50, dtype="float32")
     signal[10] = 1.0
 
-    corrected = sync.correct_timing(signal, coarse_offset=10)
+    corrected = timing.correct_timing(signal, coarse_offset=10)
     # Peak should now be at index 0
     assert int(xp.argmax(xp.abs(corrected))) == 0
 
@@ -512,7 +500,7 @@ def test_correct_timing_combined(backend_device, xp, xpt):
     original = np.sin(2 * np.pi * f * n).astype("float32")
     delayed = np.sin(2 * np.pi * f * (n - delay)).astype("float32")
 
-    corrected = sync.correct_timing(
+    corrected = timing.correct_timing(
         xp.asarray(delayed), coarse_offset=20, fractional_offset=0.3
     )
 
@@ -526,11 +514,11 @@ def test_correct_timing_combined(backend_device, xp, xpt):
 
 def test_estimate_timing_fractional(backend_device, xp):
     """Verify estimate_timing returns fractional offset."""
-    preamble = sync.barker_sequence(13)
+    preamble = timing.barker_sequence(13)
     signal = xp.zeros(200, dtype="complex64")
     signal[50:63] = preamble
 
-    coarse, frac = sync.estimate_timing(signal, preamble, threshold=2.0)
+    coarse, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
     assert len(coarse) == 1
     assert len(frac) == 1
     # The fractional offset should be near 0 for an integer-aligned preamble
@@ -550,8 +538,8 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
     corr_gauss = xp.asarray(gaussian)
     peak_idx = xp.asarray(32)
 
-    est_std = sync.estimate_fractional_delay(corr_gauss, peak_idx, method="parabolic")
-    est_log = sync.estimate_fractional_delay(
+    est_std = timing.estimate_fractional_delay(corr_gauss, peak_idx, method="parabolic")
+    est_log = timing.estimate_fractional_delay(
         corr_gauss, peak_idx, method="log-parabolic"
     )
 
@@ -567,11 +555,11 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
     corr_sinc = xp.asarray(sinc_val)
 
     # Standard (no upsample)
-    est_sinc_1x = sync.estimate_fractional_delay(corr_sinc, peak_idx, dft_upsample=1)
+    est_sinc_1x = timing.estimate_fractional_delay(corr_sinc, peak_idx, dft_upsample=1)
     err_sinc_1x = abs(float(est_sinc_1x) - true_mu)
 
     # Upsampled (8x)
-    est_sinc_8x = sync.estimate_fractional_delay(corr_sinc, peak_idx, dft_upsample=8)
+    est_sinc_8x = timing.estimate_fractional_delay(corr_sinc, peak_idx, dft_upsample=8)
     err_sinc_8x = abs(float(est_sinc_8x) - true_mu)
 
     # Upsampling should improve accuracy significantly for bandlimited pulse
@@ -595,7 +583,7 @@ def test_fft_fractional_delay_scalar_ndarray(backend_device, xp, xpt):
 
     # Pass delay as 0-d ndarray (not int/float)
     delay = xp.asarray(0.3)
-    out = sync.fft_fractional_delay(signal, delay)
+    out = timing.fft_fractional_delay(signal, delay)
     assert out.shape == (N,)
 
     truth = np.exp(2j * np.pi * f * (n - 0.3)).astype("complex64")
@@ -609,20 +597,20 @@ def test_estimate_timing_no_preamble_error(backend_device, xp):
         ValueError,
         match="A 'reference' sequence must be provided",
     ):
-        sync.estimate_timing(sig)
+        timing.estimate_timing(sig)
 
 
-def test_estimate_timing_with_preamble_object(backend_device, xp):
+def test_estimate_timing_with_preamble_object_explicit(backend_device, xp):
     """Verify estimate_timing with explicit Preamble object."""
     from commstools.core import Preamble
 
     # Create samples with a Barker-7 preamble embedded at sample 40
-    barker = sync.barker_sequence(7)
+    barker = timing.barker_sequence(7)
     samples = xp.zeros(200, dtype="complex64")
     samples[40:47] = barker
 
     preamble = Preamble(sequence_type="barker", length=7)
-    coarse, frac = sync.estimate_timing(
+    coarse, frac = timing.estimate_timing(
         samples, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
     assert abs(int(coarse[0]) - 40) <= 1
@@ -632,14 +620,14 @@ def test_estimate_timing_skew_detection(backend_device, xp):
     """Verify skew warning is emitted when MIMO channels have different preamble positions."""
 
     # 2-channel signal with preambles at slightly different positions
-    barker = sync.barker_sequence(7)
+    barker = timing.barker_sequence(7)
     sig = xp.zeros((2, 200), dtype="complex64")
     sig[0, 40:47] = barker
     sig[1, 42:49] = barker  # 2-sample offset -> skew
 
     # Capture log output to verify skew warning is emitted
-    with patch("commstools.sync.logger") as mock_logger:
-        coarse, frac = sync.estimate_timing(sig, barker, threshold=2.0)
+    with patch("commstools.timing.logger") as mock_logger:
+        coarse, frac = timing.estimate_timing(sig, barker, threshold=2.0)
         # Check that warning was called with skew message
         mock_logger.warning.assert_called()
         call_args = mock_logger.warning.call_args[0][0]
@@ -662,7 +650,7 @@ def test_correct_timing_per_channel(backend_device, xp):
 
     # Per-channel shifts
     offsets = xp.array([10, 20])
-    corrected = sync.correct_timing(sig, coarse_offset=offsets)
+    corrected = timing.correct_timing(sig, coarse_offset=offsets)
 
     # Both peaks should be at index 0 after correction
     assert corrected.shape == (2, 50)
@@ -685,7 +673,7 @@ def test_correct_timing_fractional_array(backend_device, xp, xpt):
 
     # Correct with array of fractional offsets
     fractional = xp.array([0.3, -0.2])
-    corrected = sync.correct_timing(sig, coarse_offset=0, fractional_offset=fractional)
+    corrected = timing.correct_timing(sig, coarse_offset=0, fractional_offset=fractional)
 
     # Should return 2D (not squeezed)
     assert corrected.ndim == 2
@@ -711,7 +699,7 @@ def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
     peak_idx = xp.asarray(2)
 
     # With DFT upsample > 1, but peak near edge → should use standard fallback
-    mu = sync.estimate_fractional_delay(corr, peak_idx, dft_upsample=8)
+    mu = timing.estimate_fractional_delay(corr, peak_idx, dft_upsample=8)
     # Should still produce a reasonable result via standard path
     assert abs(float(mu)) < 0.5
 
@@ -723,7 +711,7 @@ def test_estimate_timing_preamble_kwargs_without_sps(backend_device, xp):
     sig = xp.zeros(100, dtype="complex64")
     pre = Preamble(sequence_type="barker", length=7)
     with pytest.raises(ValueError, match="SPS must be provided"):
-        sync.estimate_timing(sig, reference=pre)
+        timing.estimate_timing(sig, reference=pre)
 
 
 # -----------------------------------------------------------------------------
@@ -732,29 +720,7 @@ def test_estimate_timing_preamble_kwargs_without_sps(backend_device, xp):
 
 
 def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
-    """Helper: build 2x2 MIMO received signal with unique-root ZC preamble.
-
-    Parameters
-    ----------
-    xp : module
-        Array backend (numpy or cupy).
-    channel_matrix : array_like, shape (2, 2)
-        Jones-like channel matrix.  ``rx = channel_matrix @ tx``.
-    preamble_pos : int
-        Sample index where the preamble starts on RX channel 0.
-    skew : int
-        Additional sample offset applied to RX channel 1 only, simulating
-        hardware channel skew.
-
-    Returns
-    -------
-    rx : array, shape (2, N)
-        Received samples with embedded preamble.
-    preamble : Preamble
-        The ZC preamble object (root=1, length=L).
-    L : int
-        Preamble sequence length in samples (= 13 at 1 sps).
-    """
+    """Helper: build 2x2 MIMO received signal with unique-root ZC preamble."""
     import numpy as _np
     from commstools.core import Preamble
     from commstools.helpers import zc_mimo_root
@@ -762,10 +728,10 @@ def _make_mimo_signal(xp, channel_matrix, preamble_pos=200, skew=0):
     # ZC-13 with unique roots per TX stream: root 1 for TX0, root 2 for TX1
     L = 13
     zc0 = xp.asarray(
-        sync.zadoff_chu_sequence(L, root=zc_mimo_root(0, 1, L)), dtype="complex64"
+        timing.zadoff_chu_sequence(L, root=zc_mimo_root(0, 1, L)), dtype="complex64"
     )
     zc1 = xp.asarray(
-        sync.zadoff_chu_sequence(L, root=zc_mimo_root(1, 1, L)), dtype="complex64"
+        timing.zadoff_chu_sequence(L, root=zc_mimo_root(1, 1, L)), dtype="complex64"
     )
 
     # Build TX: both streams transmit simultaneously at preamble_pos
@@ -798,7 +764,7 @@ def test_estimate_timing_mimo_identity(backend_device, xp):
     preamble_pos = 200
     rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
 
-    coarse, frac = sync.estimate_timing(
+    coarse, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
@@ -817,7 +783,7 @@ def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = sync.estimate_timing(
+    coarse, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
@@ -835,7 +801,7 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
         xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew
     )
 
-    coarse, frac = sync.estimate_timing(
+    coarse, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
@@ -854,19 +820,13 @@ def test_estimate_timing_mimo_channel_skew(backend_device, xp):
 
 
 def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
-    """MIMO: pure polarization swap (H = [[0,1],[1,0]]) — RX-0 receives TX-1 and vice versa.
-
-    This is the worst-case for the Hungarian assignment: the initial assignment
-    based on cross-correlation peak scores must correctly un-swap the streams.
-    The fallback path (X-Y power imbalance recovery) is also exercised here
-    when one channel's assigned template has low correlation.
-    """
+    """MIMO: pure polarization swap (H = [[0,1],[1,0]]) — RX-0 receives TX-1 and vice versa."""
     preamble_pos = 200
     # Permutation channel: RX-0 sees TX-1, RX-1 sees TX-0
     H = [[0.0, 1.0], [1.0, 0.0]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = sync.estimate_timing(
+    coarse, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
@@ -887,7 +847,7 @@ def test_fft_fractional_delay_preserves_complex64_dtype(backend_device, xp):
 
     n = np.arange(200)
     sig = xp.asarray(np.exp(2j * np.pi * 0.05 * n).astype(np.complex64))
-    out = sync.fft_fractional_delay(sig, 0.3)
+    out = timing.fft_fractional_delay(sig, 0.3)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
 
 
@@ -897,323 +857,8 @@ def test_fft_fractional_delay_preserves_float32_dtype(backend_device, xp):
 
     n = np.arange(200, dtype=np.float32)
     sig = xp.asarray(np.sin(2 * np.pi * 0.05 * n))
-    out = sync.fft_fractional_delay(sig, 0.3)
+    out = timing.fft_fractional_delay(sig, 0.3)
     assert out.dtype == xp.float32, f"Expected float32, got {out.dtype}"
-
-
-# =============================================================================
-# CARRIER PHASE RECOVERY — VITERBI-VITERBI
-# =============================================================================
-
-
-class TestViterbiViterbi:
-    """Tests for recover_carrier_phase_viterbi_viterbi."""
-
-    def _qpsk_symbols(self, xp, N=512, seed=0):
-        import numpy as np
-
-        rng = np.random.default_rng(seed)
-        bits = rng.integers(0, 4, N)
-        angles = (2 * np.pi / 4) * bits + np.pi / 4
-        return xp.asarray(np.exp(1j * angles).astype(np.complex64))
-
-    def _qam16_symbols(self, xp, N=512, seed=1):
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        rng = np.random.default_rng(seed)
-        const = gray_constellation("qam", 16)
-        idx = rng.integers(0, 16, N)
-        return xp.asarray(const[idx].astype(np.complex64))
-
-    def test_siso_qpsk_output_shape(self, backend_device, xp):
-        """SISO QPSK: output is (N,) float64."""
-        syms = self._qpsk_symbols(xp)
-        phi_est = sync.recover_carrier_phase_viterbi_viterbi(
-            syms, "psk", 4, block_size=32
-        )
-        assert phi_est.shape == syms.shape
-        assert phi_est.dtype == xp.float64
-
-    def test_siso_qpsk_recovers_static_phase(self, backend_device, xp):
-        """VV tracks applied phase: difference between rotated and unrotated estimate equals phi_true mod π/2."""
-        import numpy as np
-
-        phi_true = 0.3  # radians
-        syms = self._qpsk_symbols(xp, N=512)
-        # Baseline (no rotation)
-        phi_base = float(
-            xp.mean(
-                sync.recover_carrier_phase_viterbi_viterbi(
-                    syms, "psk", 4, block_size=32
-                )
-            )
-        )
-        # Rotated by phi_true
-        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
-        phi_rot = float(
-            xp.mean(
-                sync.recover_carrier_phase_viterbi_viterbi(
-                    rotated, "psk", 4, block_size=32
-                )
-            )
-        )
-        # The shift should equal phi_true modulo π/2
-        delta = phi_rot - phi_base
-        residual = (delta - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
-        assert abs(residual) < 0.15, (
-            f"Phase tracking error too large: {residual:.3f} rad"
-        )
-
-    def test_siso_qam16_output_shape(self, backend_device, xp):
-        """SISO QAM16: output shape matches input."""
-        syms = self._qam16_symbols(xp)
-        phi_est = sync.recover_carrier_phase_viterbi_viterbi(
-            syms, "qam", 16, block_size=32
-        )
-        assert phi_est.shape == syms.shape
-
-    def test_mimo_output_shape(self, backend_device, xp):
-        """MIMO input (C, N): output shape is (C, N)."""
-        import numpy as np
-
-        C, N = 2, 256
-        syms = xp.asarray(
-            np.random.default_rng(5).standard_normal((C, N)).astype(np.float32)
-            + 1j * np.random.default_rng(6).standard_normal((C, N)).astype(np.float32)
-        )
-        phi_est = sync.recover_carrier_phase_viterbi_viterbi(
-            syms, "qam", 16, block_size=32
-        )
-        assert phi_est.shape == (C, N)
-
-    def test_block_size_too_large_raises(self, backend_device, xp):
-        """block_size > N should raise ValueError."""
-        syms = self._qpsk_symbols(xp, N=16)
-        with pytest.raises(ValueError, match="block_size"):
-            sync.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=64)
-
-
-# =============================================================================
-# CARRIER PHASE RECOVERY — BLIND PHASE SEARCH
-# =============================================================================
-
-
-class TestBPS:
-    """Tests for recover_carrier_phase_bps."""
-
-    def _qam16_symbols(self, xp, N=512, seed=2):
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        rng = np.random.default_rng(seed)
-        const = gray_constellation("qam", 16)
-        idx = rng.integers(0, 16, N)
-        return xp.asarray(const[idx].astype(np.complex64))
-
-    def _qpsk_symbols(self, xp, N=512, seed=3):
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        rng = np.random.default_rng(seed)
-        const = gray_constellation("qpsk", 4)
-        idx = rng.integers(0, 4, N)
-        return xp.asarray(const[idx].astype(np.complex64))
-
-    def test_siso_qam16_output_shape(self, backend_device, xp):
-        """SISO QAM16 (square QAM fast path): output is (N,) float64."""
-        syms = self._qam16_symbols(xp)
-        phi_est = sync.recover_carrier_phase_bps(
-            syms, "qam", 16, num_test_phases=32, block_size=32
-        )
-        assert phi_est.shape == syms.shape
-        assert phi_est.dtype == xp.float64
-
-    def test_siso_qam16_recovers_static_phase(self, backend_device, xp):
-        """BPS should estimate a static QAM16 phase offset to within π/8 tolerance."""
-        import numpy as np
-
-        phi_true = 0.25
-        syms = self._qam16_symbols(xp, N=512)
-        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
-        phi_est = sync.recover_carrier_phase_bps(
-            rotated, "qam", 16, num_test_phases=64, block_size=32
-        )
-        phi_mean = float(xp.mean(phi_est))
-        # 4-fold ambiguity: allow ±π/8 residual
-        residual = (phi_mean - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
-        assert abs(residual) < 0.15, (
-            f"Residual phase error too large: {residual:.3f} rad"
-        )
-
-    def test_siso_qpsk_general_path(self, backend_device, xp):
-        """SISO QPSK (non-square: triggers general distance path): output shape correct."""
-        syms = self._qpsk_symbols(xp, N=256)
-        phi_est = sync.recover_carrier_phase_bps(
-            syms, "psk", 4, num_test_phases=16, block_size=32
-        )
-        assert phi_est.shape == syms.shape
-
-    def test_mimo_output_shape(self, backend_device, xp):
-        """MIMO input (C, N): output shape is (C, N)."""
-        import numpy as np
-
-        C, N = 2, 256
-        rng = np.random.default_rng(7)
-        syms = xp.asarray(
-            (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
-                np.complex64
-            )
-        )
-        phi_est = sync.recover_carrier_phase_bps(
-            syms, "qam", 16, num_test_phases=16, block_size=32
-        )
-        assert phi_est.shape == (C, N)
-
-    def test_block_size_too_large_raises(self, backend_device, xp):
-        """block_size > N should raise ValueError."""
-        syms = self._qam16_symbols(xp, N=16)
-        with pytest.raises(ValueError, match="block_size"):
-            sync.recover_carrier_phase_bps(syms, "qam", 16, block_size=64)
-
-
-# =============================================================================
-# CARRIER PHASE RECOVERY — DECISION-DIRECTED PLL
-# =============================================================================
-
-
-class TestDDPLL:
-    """Tests for recover_carrier_phase_pll."""
-
-    def _qpsk_symbols(self, xp, N=512, seed=10):
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        rng = np.random.default_rng(seed)
-        const = gray_constellation("qpsk", 4)
-        return xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
-
-    def test_siso_output_shape(self, backend_device, xp):
-        """SISO: output is (N,) float64."""
-        syms = self._qpsk_symbols(xp)
-        phi = sync.recover_carrier_phase_pll(syms, "psk", 4)
-        assert phi.shape == syms.shape
-        assert phi.dtype == xp.float64
-
-    def test_mimo_output_shape(self, backend_device, xp):
-        """MIMO (C, N): output shape is (C, N)."""
-        import numpy as np
-
-        C, N = 2, 256
-        rng = np.random.default_rng(11)
-        from commstools.mapping import gray_constellation
-
-        const = gray_constellation("qpsk", 4)
-        syms = xp.asarray(
-            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
-        )
-        phi = sync.recover_carrier_phase_pll(syms, "psk", 4)
-        assert phi.shape == (C, N)
-
-    def test_second_order_loop(self, backend_device, xp):
-        """beta > 0 engages 2nd-order loop without raising."""
-        syms = self._qpsk_symbols(xp, N=256)
-        phi = sync.recover_carrier_phase_pll(syms, "psk", 4, mu=0.02, beta=1e-4)
-        assert phi.shape == syms.shape
-
-    def test_phase_init_applied(self, backend_device, xp):
-        """phase_init shifts the starting phase estimate."""
-        syms = self._qpsk_symbols(xp, N=256)
-        phi_init = 0.5
-        phi = sync.recover_carrier_phase_pll(syms, "psk", 4, phase_init=phi_init)
-        # First estimate should be close to phase_init before any loop correction
-        assert abs(float(phi[0]) - phi_init) < 0.5
-
-    def test_butterworth_output_shape_siso(self, backend_device, xp):
-        """loop_filter='butterworth': SISO output shape is (N,)."""
-        syms = self._qpsk_symbols(xp, N=512)
-        phi = sync.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-        )
-        assert phi.shape == syms.shape
-
-    def test_butterworth_output_dtype(self, backend_device, xp):
-        """loop_filter='butterworth': output dtype is float64."""
-        syms = self._qpsk_symbols(xp, N=256)
-        phi = sync.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-        )
-        assert phi.dtype == xp.float64
-
-    def test_butterworth_output_finite(self, backend_device, xp):
-        """Butterworth loop output should be finite for clean QPSK symbols."""
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        N = 512
-        phase_offset = 0.15  # radians
-        const = gray_constellation("qpsk", 4)
-        rng = np.random.default_rng(42)
-        syms_clean = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
-        syms_rotated = syms_clean * np.exp(1j * phase_offset)
-
-        phi = sync.recover_carrier_phase_pll(
-            syms_rotated,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-2,
-        )
-        # Phi should be finite everywhere (no NaN or Inf)
-        assert bool(xp.all(xp.isfinite(phi))), (
-            "Butterworth PLL output contains non-finite values"
-        )
-
-    def test_butterworth_mimo_output_shape(self, backend_device, xp):
-        """loop_filter='butterworth': MIMO (C, N) output shape is (C, N)."""
-        import numpy as np
-        from commstools.mapping import gray_constellation
-
-        C, N = 2, 256
-        const = gray_constellation("qpsk", 4)
-        rng = np.random.default_rng(3)
-        syms = xp.asarray(
-            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
-        )
-        phi = sync.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-        )
-        assert phi.shape == (C, N)
-
-    def test_butterworth_invalid_bandwidth_raises(self, backend_device, xp):
-        """loop_bandwidth_normalized outside (0, 0.5) should raise ValueError."""
-        syms = self._qpsk_symbols(xp, N=64)
-        with pytest.raises(ValueError, match="loop_bandwidth_normalized"):
-            sync.recover_carrier_phase_pll(
-                syms,
-                "psk",
-                4,
-                loop_filter="butterworth",
-                loop_bandwidth_normalized=0.6,
-            )
-
-    def test_invalid_loop_filter_raises(self, backend_device, xp):
-        """Unknown loop_filter value should raise ValueError."""
-        syms = self._qpsk_symbols(xp, N=64)
-        with pytest.raises(ValueError, match="loop_filter"):
-            sync.recover_carrier_phase_pll(syms, "psk", 4, loop_filter="kalman")
 
 
 # =============================================================================
@@ -1230,7 +875,7 @@ class TestCorrectTiming:
 
         N, shift = 100, 10
         sig = xp.asarray(np.arange(N, dtype=np.complex64))
-        out = sync.correct_timing(sig, shift, mode="zero")
+        out = timing.correct_timing(sig, shift, mode="zero")
         assert out.shape == sig.shape
         # After left-shift by 10: out[0] == sig[10], tail is zeros
         assert float(out[0].real) == pytest.approx(float(sig[shift].real))
@@ -1242,7 +887,7 @@ class TestCorrectTiming:
 
         N, shift = 100, -5
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
-        out = sync.correct_timing(sig, shift, mode="zero")
+        out = timing.correct_timing(sig, shift, mode="zero")
         assert out.shape == sig.shape
         # Head should be zero-padded
         assert float(out[0].real) == pytest.approx(0.0)
@@ -1253,7 +898,7 @@ class TestCorrectTiming:
 
         N, shift = 100, 15
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
-        out = sync.correct_timing(sig, shift, mode="slice")
+        out = timing.correct_timing(sig, shift, mode="slice")
         assert out.shape[-1] == N - shift
 
     def test_per_channel_circular_mode(self, backend_device, xp):
@@ -1268,7 +913,7 @@ class TestCorrectTiming:
             )
         )
         offsets = xp.asarray(np.array([3, 7], dtype=np.int64))
-        out = sync.correct_timing(sig, offsets, mode="circular")
+        out = timing.correct_timing(sig, offsets, mode="circular")
         assert out.shape == (C, N)
 
     def test_per_channel_zero_mode(self, backend_device, xp):
@@ -1278,7 +923,7 @@ class TestCorrectTiming:
         C, N = 2, 64
         sig = xp.asarray(np.ones((C, N), dtype=np.complex64))
         offsets = xp.asarray(np.array([4, 8], dtype=np.int64))
-        out = sync.correct_timing(sig, offsets, mode="zero")
+        out = timing.correct_timing(sig, offsets, mode="zero")
         assert out.shape == (C, N)
 
     def test_per_channel_slice_mode(self, backend_device, xp):
@@ -1288,36 +933,28 @@ class TestCorrectTiming:
         C, N = 2, 64
         offsets = np.array([3, 10])
         sig = xp.asarray(np.ones((C, N), dtype=np.complex64))
-        out = sync.correct_timing(sig, xp.asarray(offsets), mode="slice")
+        out = timing.correct_timing(sig, xp.asarray(offsets), mode="slice")
         assert out.shape == (C, N - max(offsets))
 
     def test_slice_mode_fractional_no_edge_wrap(self, backend_device, xp, xpt):
         """mode='slice' with fractional offset applies the FFT delay on the
         *full pre-slice buffer*, so the new sample 0 is free of circular
-        wrap-around from the buffer's trailing edge. Regression test for the
-        original ordering (slice-then-FFT) which contaminated sample 0 with a
-        sinc-tail contribution from sig[-1].
+        wrap-around from the buffer's trailing edge.
         """
         import numpy as np
 
         N, coarse, fract = 1024, 200, 0.3
-        # Pure tone chosen periodic in the FFT window (f0 * N is integer)
-        # so fft_fractional_delay is analytically exact and the test asserts
-        # tight bound rather than handwavy "close enough".
         f0 = 51.0 / N
         n = np.arange(N, dtype=np.float64)
         sig = np.exp(1j * 2 * np.pi * f0 * n).astype(np.complex64)
         sig_xp = xp.asarray(sig)
 
-        out = sync.correct_timing(sig_xp, coarse, fract, mode="slice")
+        out = timing.correct_timing(sig_xp, coarse, fract, mode="slice")
 
         # Expected: same tone evaluated at n = coarse + fract, coarse + fract + 1, ...
         n_out = np.arange(out.shape[-1], dtype=np.float64) + coarse + fract
         expected = np.exp(1j * 2 * np.pi * f0 * n_out).astype(np.complex64)
 
-        # The first samples must match the analytic tone to ~complex64
-        # precision. Under the buggy ordering this would diverge by O(0.1)
-        # at the leading edge (the slice's tail wrapped back to sample 0).
         xpt.assert_allclose(
             xp.asarray(out)[:20], xp.asarray(expected)[:20], atol=1e-4
         )
@@ -1327,7 +964,7 @@ class TestCorrectTiming:
     ):
         """mode='slice' with fractional offset must be algebraically equivalent
         to (fft_fractional_delay on full buffer) followed by (integer slice).
-        Locks the operation order in place."""
+        """
         import numpy as np
 
         rng = np.random.default_rng(7)
@@ -1335,13 +972,11 @@ class TestCorrectTiming:
         sig = (
             rng.standard_normal(N) + 1j * rng.standard_normal(N)
         ).astype(np.complex64)
-        # Inject a large discontinuity at the trailing edge so the buggy
-        # ordering would visibly differ from the correct one.
         sig[-10:] += 5.0 + 5.0j
         sig_xp = xp.asarray(sig)
 
-        ref = sync.fft_fractional_delay(sig_xp, -fract)[..., coarse:]
-        out = sync.correct_timing(sig_xp, coarse, fract, mode="slice")
+        ref = timing.fft_fractional_delay(sig_xp, -fract)[..., coarse:]
+        out = timing.correct_timing(sig_xp, coarse, fract, mode="slice")
 
         xpt.assert_allclose(out, ref, atol=1e-5)
 
@@ -1360,7 +995,7 @@ class TestCorrectTimingErrors:
 
         sig = xp.asarray(np.ones(64, dtype=np.complex64))
         with pytest.raises(ValueError, match="Unknown mode"):
-            sync.correct_timing(sig, 4, mode="wrap")
+            timing.correct_timing(sig, 4, mode="wrap")
 
     def test_per_channel_unknown_mode_raises(self, backend_device, xp):
         """Per-channel offset with unsupported mode raises ValueError."""
@@ -1369,219 +1004,4 @@ class TestCorrectTimingErrors:
         sig = xp.asarray(np.ones((2, 64), dtype=np.complex64))
         offsets = xp.asarray(np.array([2, 4], dtype=np.int64))
         with pytest.raises(ValueError, match="Unknown mode"):
-            sync.correct_timing(sig, offsets, mode="wrap")
-
-
-# =============================================================================
-# CORRECT FREQUENCY OFFSET — REAL AND MIMO BRANCHES
-# =============================================================================
-
-
-class TestCorrectFrequencyOffsetBranches:
-    """Branches for real-valued and MIMO input in correct_frequency_offset."""
-
-    def test_real_float32_input(self, backend_device, xp):
-        """Real float32 input is cast to complex64 and frequency-corrected."""
-
-        N = 256
-        t = xp.arange(N, dtype=xp.float32) / 1e6
-        # Simple real cosine as stand-in for a real-baseband signal
-        sig = xp.cos(t)
-        sig = sig.astype(xp.float32)
-        out = sync.correct_frequency_offset(sig, offset=5000.0, sampling_rate=1e6)
-        assert out.dtype == xp.complex64
-        assert out.shape == sig.shape
-
-    def test_mimo_input_broadcasts_mixer(self, backend_device, xp):
-        """MIMO (C, N) input: mixer is broadcast over channels without error."""
-        import numpy as np
-
-        C, N = 2, 256
-        rng = np.random.default_rng(99)
-        sig = xp.asarray(
-            (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
-                np.complex64
-            )
-        )
-        out = sync.correct_frequency_offset(sig, offset=3000.0, sampling_rate=1e6)
-        assert out.shape == (C, N)
-        assert out.dtype == xp.complex64
-
-
-class TestIQImbalanceCompensation:
-    """Tests for compensate_iq_imbalance_lowdin and compensate_iq_imbalance_gram_schmidt."""
-
-    # κ = |E[r²]| / E[|r|²]: zero for a circular signal, positive for improper
-    def _kappa(self, xp, x):
-        return float(xp.abs(xp.mean(x**2))) / float(xp.mean(xp.abs(x) ** 2))
-
-    def _make_imbalanced(self, xp, N=8192, seed=42):
-        rng = xp.random.RandomState(seed)
-        s = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
-        r = apply_iq_imbalance(s, amplitude_imbalance_db=2.0, phase_imbalance_deg=5.0)
-        return s, r
-
-    # --- Löwdin ---
-
-    def test_lowdin_restores_circularity(self, backend_device, xp):
-        """Löwdin compensation should drive κ to near zero."""
-        _, r = self._make_imbalanced(xp)
-        kappa_before = self._kappa(xp, r)
-        out = sync.compensate_iq_imbalance_lowdin(r)
-        kappa_after = self._kappa(xp, out)
-        assert kappa_after < 0.03
-        assert kappa_after < kappa_before / 5
-
-    def test_lowdin_iq_balance(self, backend_device, xp):
-        """After Löwdin, I and Q should have equal power and be orthogonal."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_lowdin(r)
-        I, Q = out.real, out.imag
-        power_ratio = float(xp.mean(I**2)) / float(xp.mean(Q**2))
-        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
-        assert abs(power_ratio - 1.0) < 0.05
-        assert cross_corr < 0.02
-
-    def test_lowdin_preserves_power(self, backend_device, xp):
-        """Löwdin output power should equal input power."""
-        _, r = self._make_imbalanced(xp)
-        P_in = float(xp.mean(xp.abs(r) ** 2))
-        out = sync.compensate_iq_imbalance_lowdin(r)
-        P_out = float(xp.mean(xp.abs(out) ** 2))
-        assert abs(P_out - P_in) / P_in < 0.01
-
-    def test_lowdin_identity_on_balanced_signal(self, backend_device, xp, xpt):
-        """Löwdin applied to a balanced signal should return it unchanged."""
-        N = 8192
-        rng = xp.random.RandomState(0)
-        s = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
-        out = sync.compensate_iq_imbalance_lowdin(s)
-        xpt.assert_allclose(xp.abs(out), xp.abs(s), atol=0.05)
-
-    def test_lowdin_siso_shape(self, backend_device, xp):
-        """Löwdin: SISO (N,) input should return (N,)."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_lowdin(r)
-        assert out.shape == r.shape
-
-    def test_lowdin_mimo_shape(self, backend_device, xp):
-        """Löwdin: MIMO (C, N) input should return (C, N)."""
-        _, r = self._make_imbalanced(xp)
-        r_mimo = xp.stack([r, r])  # (2, N)
-        out = sync.compensate_iq_imbalance_lowdin(r_mimo)
-        assert out.shape == r_mimo.shape
-
-    def test_lowdin_dtype_preserved(self, backend_device, xp):
-        """Löwdin output dtype should match input."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_lowdin(r)
-        assert out.dtype == xp.complex64
-
-    # --- Gram-Schmidt ---
-
-    def test_gram_schmidt_restores_circularity(self, backend_device, xp):
-        """Gram-Schmidt compensation should drive κ to near zero."""
-        _, r = self._make_imbalanced(xp)
-        kappa_before = self._kappa(xp, r)
-        out = sync.compensate_iq_imbalance_gram_schmidt(r)
-        kappa_after = self._kappa(xp, out)
-        assert kappa_after < 0.03
-        assert kappa_after < kappa_before / 5
-
-    def test_gram_schmidt_iq_orthogonality(self, backend_device, xp):
-        """After Gram-Schmidt, I and Q should be orthogonal."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_gram_schmidt(r)
-        I, Q = out.real, out.imag
-        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
-        assert cross_corr < 0.02
-
-    def test_gram_schmidt_preserves_power(self, backend_device, xp):
-        """Gram-Schmidt output power should equal input power."""
-        _, r = self._make_imbalanced(xp)
-        P_in = float(xp.mean(xp.abs(r) ** 2))
-        out = sync.compensate_iq_imbalance_gram_schmidt(r)
-        P_out = float(xp.mean(xp.abs(out) ** 2))
-        assert abs(P_out - P_in) / P_in < 0.01
-
-    def test_gram_schmidt_siso_shape(self, backend_device, xp):
-        """Gram-Schmidt: SISO (N,) input should return (N,)."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_gram_schmidt(r)
-        assert out.shape == r.shape
-
-    def test_gram_schmidt_mimo_shape(self, backend_device, xp):
-        """Gram-Schmidt: MIMO (C, N) input should return (C, N)."""
-        _, r = self._make_imbalanced(xp)
-        r_mimo = xp.stack([r, r])  # (2, N)
-        out = sync.compensate_iq_imbalance_gram_schmidt(r_mimo)
-        assert out.shape == r_mimo.shape
-
-    def test_gram_schmidt_dtype_preserved(self, backend_device, xp):
-        """Gram-Schmidt output dtype should match input."""
-        _, r = self._make_imbalanced(xp)
-        out = sync.compensate_iq_imbalance_gram_schmidt(r)
-        assert out.dtype == xp.complex64
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# resolve_phase_ambiguity — num_skip_symbols
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_ambiguous_qam16(n_sym=2000, corrupt_head=500, seed=0):
-    """Return (symbols, ref) where the first corrupt_head symbols are rotated by π/2."""
-    rng = np.random.default_rng(seed)
-    const = gray_constellation("qam", 16).astype(np.complex64)
-    const /= np.sqrt(np.mean(np.abs(const) ** 2))
-    ref = const[rng.integers(0, 16, n_sym)]
-    # True ambiguity k=1: rotate entire stream by π/2
-    rot1 = np.exp(1j * np.pi / 2).astype(np.complex64)
-    symbols = ref * rot1
-    # Corrupt only the first corrupt_head symbols with an additional π/2 (total π)
-    symbols[:corrupt_head] = ref[:corrupt_head] * np.exp(1j * np.pi).astype(np.complex64)
-    return symbols, ref
-
-
-def test_resolve_phase_ambiguity_skip(backend_device, xp, xpt):
-    """num_skip_symbols bypasses the corrupt head and picks the correct rotation."""
-    n_sym, corrupt_head = 2000, 500
-    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=n_sym, corrupt_head=corrupt_head)
-    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
-
-    out_no_skip = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
-    out_skip = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=corrupt_head)
-
-    from commstools.metrics import ser as _ser_fn
-
-    def _ser(y, r):
-        return float(xp.mean(xp.asarray(_ser_fn(y, r, "qam", 16))))
-
-    ser_skip_tail = _ser(out_skip[corrupt_head:], ref[corrupt_head:])
-    ser_no_skip_tail = _ser(out_no_skip[corrupt_head:], ref[corrupt_head:])
-    assert ser_skip_tail <= ser_no_skip_tail, (
-        f"Skip should improve tail SER: {ser_skip_tail:.4f} vs {ser_no_skip_tail:.4f}"
-    )
-
-
-def test_resolve_phase_ambiguity_skip_zero_is_baseline(backend_device, xp, xpt):
-    """num_skip_symbols=0 must produce identical output to the default call."""
-    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=1000, corrupt_head=0)
-    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
-
-    out_default = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16)
-    out_skip0 = sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
-
-    assert bool(xp.all(out_default == out_skip0))
-
-
-def test_resolve_phase_ambiguity_skip_ge_n_raises(backend_device, xp):
-    """num_skip_symbols >= N must raise ValueError."""
-    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=100, corrupt_head=0)
-    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
-
-    with pytest.raises(ValueError, match="num_skip_symbols"):
-        sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=100)
-
-    with pytest.raises(ValueError, match="num_skip_symbols"):
-        sync.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=200)
+            timing.correct_timing(sig, offsets, mode="wrap")

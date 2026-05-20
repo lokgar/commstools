@@ -30,7 +30,7 @@ Run
 import numpy as np
 
 from commstools import Signal
-from commstools import equalization, sync
+from commstools import equalization, frequency, recovery
 from commstools.backend import to_device
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -213,14 +213,14 @@ print(f"  Output       : {y_frozen.shape} symbols @ 1 SPS  (no adaptation)")
 
 _print_sep("6. FOE — mth-power law  (on 1 SPS symbols from Stage 1b)")
 
-fo_est = sync.estimate_frequency_offset_mth_power(
+fo_est = frequency.estimate_frequency_offset_mth_power(
     y_s1b,
     sampling_rate=SYMBOL_RATE,  # symbols are at 1 SPS → fs = symbol_rate
     modulation=MOD,
     order=ORDER,
 )
 
-y_foe = sync.correct_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
+y_foe = frequency.correct_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
 
 print(f"  True FO : {FO_TRUE_HZ / 1e6:.4f} MHz")
 print(f"  Est  FO : {fo_est / 1e6:.4f} MHz")
@@ -234,14 +234,14 @@ print(f"  Output  : {y_foe.shape} symbols (FO-corrected)")
 
 _print_sep("7. CPR — Viterbi-Viterbi")
 
-phase_vv = sync.recover_carrier_phase_viterbi_viterbi(
+phase_vv = recovery.recover_carrier_phase_viterbi_viterbi(
     y_foe,
     modulation=MOD,
     order=ORDER,
     block_size=32,
 )
 
-y_cpr = sync.correct_carrier_phase(y_foe, phase_vv)
+y_cpr = recovery.correct_carrier_phase(y_foe, phase_vv)
 
 print("  Block size : 32 symbols")
 print(f"  Output     : {y_cpr.shape} phase-corrected symbols")

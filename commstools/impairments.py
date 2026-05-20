@@ -19,6 +19,10 @@ apply_chromatic_dispersion :
     Applies chromatic dispersion (CD) to a signal in the frequency domain.
 apply_polarization_mixing :
     Applies a static or time-varying polarization rotation (pure SOP mixing).
+compensate_iq_imbalance_lowdin :
+    Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
+compensate_iq_imbalance_gram_schmidt :
+    Blind IQ imbalance compensation via Gram-Schmidt sequential orthogonalisation.
 """
 
 import math
@@ -578,6 +582,163 @@ def apply_chromatic_dispersion(
 
     if result.dtype != samples.dtype:
         result = result.astype(samples.dtype)
+
+    if was_1d:
+        return result[0]
+    return result
+
+
+def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
+    """
+    Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
+
+    Treats the I and Q components as a 2-D real vector and applies the
+    symmetric whitening transform :math:`W = M^{-1/2}` (where *M* is the
+    :math:`2 \\times 2` second-moment matrix) so that the corrected I and Q
+    channels have equal power and zero cross-correlation.  Unlike
+    Gram-Schmidt, the transform is symmetric: both branches are adjusted
+    equally, minimising the total distortion introduced.
+
+    The output power equals the input power.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+
+    Returns
+    -------
+    array_like
+        IQ-corrected signal, same shape and dtype as input.
+
+    Notes
+    -----
+    *Algorithm* (per channel):
+
+    1. Form the :math:`2 \\times N` real data matrix :math:`X = [I;\\ Q]`.
+    2. Compute the :math:`2 \\times 2` second-moment matrix
+       :math:`M = X X^\\top / N`.
+    3. Factorise :math:`M = V \\Lambda V^\\top` (symmetric eigendecomposition).
+    4. Apply the whitening matrix :math:`W = V \\operatorname{diag}(\\lambda^{-1/2}) V^\\top`.
+    5. Rescale the output to restore the original signal power.
+
+    Examples
+    --------
+    >>> r = apply_iq_imbalance(s, amplitude_imbalance_db=1.5, phase_imbalance_deg=4.0)
+    >>> s_hat = compensate_iq_imbalance_lowdin(r)
+    """
+    logger.info("Applying Löwdin IQ imbalance compensation.")
+
+    samples, xp, _ = dispatch(samples)
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[xp.newaxis, :]  # (1, N)
+
+    C, N = samples.shape
+    result = xp.empty_like(samples)
+
+    for ch in range(C):
+        r = samples[ch]  # (N,)
+        P_in = xp.mean(xp.abs(r) ** 2)
+
+        # 2xN real data matrix: rows = [I, Q]
+        X = xp.stack([r.real, r.imag])  # (2, N)
+
+        # 2x2 second-moment matrix
+        M = (X @ X.T) / N  # (2, 2)
+
+        # Symmetric whitening: W = M^{-1/2} = V @ diag(1/sqrt(lam)) @ V.T
+        lam, V = xp.linalg.eigh(M)  # lam: (2,), V: (2, 2)
+        W = (V * (1.0 / xp.sqrt(lam))) @ V.T  # (2, 2)
+
+        # Apply whitening — X_corr has identity second-moment matrix
+        X_corr = W @ X  # (2, N)
+
+        # Restore input power: E[|s_hat|^2] = P_in
+        s_corr = (X_corr[0] + 1j * X_corr[1]) * xp.sqrt(P_in / 2.0)
+
+        if s_corr.dtype != samples.dtype:
+            s_corr = s_corr.astype(samples.dtype)
+
+        result[ch] = s_corr
+
+    if was_1d:
+        return result[0]
+    return result
+
+
+def compensate_iq_imbalance_gram_schmidt(samples: ArrayType) -> ArrayType:
+    """
+    Blind IQ imbalance compensation via Gram-Schmidt sequential orthogonalisation.
+
+    Uses the I branch as the reference axis.  The Q branch is orthogonalised
+    against I and both are normalised to unit RMS before being recombined.
+    This is the classical GSOP approach used in analogue front-end calibration.
+
+    The output power equals the input power.
+
+    Parameters
+    ----------
+    samples : array_like
+        Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
+
+    Returns
+    -------
+    array_like
+        IQ-corrected signal, same shape and dtype as input.
+
+    Notes
+    -----
+    *Algorithm* (per channel):
+
+    1. Normalise I to unit RMS: :math:`\\hat{I} = I / \\sigma_I`.
+    2. Remove I-projection from Q: :math:`Q_\\perp = Q - \\langle \\hat{I}, Q \\rangle \\hat{I}`.
+    3. Normalise :math:`Q_\\perp` to unit RMS: :math:`\\hat{Q} = Q_\\perp / \\sigma_{Q_\\perp}`.
+    4. Recombine and rescale to preserve input power.
+
+    Examples
+    --------
+    >>> r = apply_iq_imbalance(s, amplitude_imbalance_db=1.5, phase_imbalance_deg=4.0)
+    >>> s_hat = compensate_iq_imbalance_gram_schmidt(r)
+    """
+    logger.info("Applying Gram-Schmidt IQ imbalance compensation.")
+
+    samples, xp, _ = dispatch(samples)
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[xp.newaxis, :]  # (1, N)
+
+    C, N = samples.shape
+    result = xp.empty_like(samples)
+
+    for ch in range(C):
+        r = samples[ch]  # (N,)
+        P_in = xp.mean(xp.abs(r) ** 2)
+
+        I = r.real  # noqa: E741
+        Q = r.imag
+
+        # Step 1: Normalise I (reference branch)
+        sigma_I = xp.sqrt(xp.mean(I**2))
+        I_norm = I / sigma_I
+
+        # Step 2: Orthogonalise Q against I
+        rho = xp.mean(I_norm * Q)  # scalar projection coefficient
+        Q_orth = Q - rho * I_norm
+
+        # Step 3: Normalise orthogonalised Q
+        sigma_Q = xp.sqrt(xp.mean(Q_orth**2))
+        Q_norm = Q_orth / sigma_Q
+
+        # Step 4: Recombine and restore input power
+        s_corr = (I_norm + 1j * Q_norm) * xp.sqrt(P_in / 2.0)
+
+        if s_corr.dtype != samples.dtype:
+            s_corr = s_corr.astype(samples.dtype)
+
+        result[ch] = s_corr
 
     if was_1d:
         return result[0]

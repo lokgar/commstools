@@ -21,10 +21,8 @@ import pytest
 
 from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
-from commstools.sync import (
-    correct_carrier_phase,
-    estimate_frequency_offset_blockwise,
-)
+from commstools.frequency import estimate_frequency_offset_blockwise
+from commstools.recovery import correct_carrier_phase
 
 
 # ─────────────────────────────────────────────────────────────────────────────

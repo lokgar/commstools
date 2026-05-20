@@ -1,14 +1,12 @@
-"""
-Tests for Carrier Phase Recovery: Frequency Offset Estimation (FOE)
-and Carrier Phase Recovery (CPR) algorithms in commstools.sync.
-"""
+"""Tests for Carrier Phase Recovery (CPR) algorithms in commstools.recovery."""
 
 import numpy as np
 import pytest
 
-from commstools import spectral, sync
+from commstools import recovery, spectral
 from commstools.core import Signal
 from commstools.impairments import apply_awgn
+from commstools.mapping import gray_constellation
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test helpers
@@ -52,94 +50,7 @@ def _rms_phase_error(xp, phase_est, phase_true):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOE — M-th Power
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoeMthPower:
-    @pytest.mark.parametrize("order", [4, 16, 64])
-    @pytest.mark.parametrize("fo_hz", [5_000.0, -8_000.0, 15_000.0])
-    def test_accuracy_qam(self, backend_device, xp, order, fo_hz):
-        """Estimated offset within 5% of true value for QAM at SNR=30 dB."""
-        sig = _qam_signal(xp, order, 4096, fo_hz=fo_hz)
-        est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=order
-        )
-        assert abs(est - fo_hz) / abs(fo_hz) < 0.05
-
-    @pytest.mark.parametrize("order", [4, 8])
-    @pytest.mark.parametrize("fo_hz", [3_000.0, -6_000.0])
-    def test_accuracy_psk(self, backend_device, xp, order, fo_hz):
-        """Estimated offset within 5% of true value for PSK at SNR=30 dB."""
-        sig = _psk_signal(xp, order, 4096, fo_hz=fo_hz)
-        est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="psk", order=order
-        )
-        assert abs(est - fo_hz) / abs(fo_hz) < 0.05
-
-    def test_zero_offset_within_lock_range(self, backend_device, xp):
-        """With no frequency offset, estimate stays within the lock range [-fs/2M, fs/2M]."""
-        sig = _qam_signal(xp, 16, 4096, fo_hz=0.0)
-        est = sync.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=16
-        )
-        # Lock range for QAM with M=4: [-fs/8, fs/8] = ±125 kHz at 1 MHz
-        assert abs(est) < FS / (2 * 4)
-
-    def test_search_range_rejects_out_of_range(self, backend_device, xp):
-        """Peak outside search_range returns an estimate outside the true value."""
-        # True offset is 20 kHz; search range covers only [-5 kHz, 5 kHz]
-        sig = _qam_signal(xp, 4, 8192, fo_hz=20_000.0)
-        est = sync.estimate_frequency_offset_mth_power(
-            sig.samples,
-            sampling_rate=FS,
-            modulation="qam",
-            order=4,
-            search_range=(-5_000.0, 5_000.0),
-        )
-        # The true offset must not be found — estimate stays within the window
-        assert abs(est) <= 5_000.0 + 200.0  # small tolerance for bin quantization
-
-    def test_search_range_empty_raises(self, backend_device, xp):
-        """Empty search_range raises ValueError."""
-        sig = _qam_signal(xp, 4, 1024, fo_hz=0.0)
-        # For QPSK (M=4) at 1 MHz, the tone window for range=[fs/2, fs] would be empty
-        # Use a range that maps to negative frequencies only to force empty positive window
-        with pytest.raises(ValueError, match="empty search window"):
-            sync.estimate_frequency_offset_mth_power(
-                sig.samples,
-                sampling_rate=FS,
-                modulation="qam",
-                order=4,
-                search_range=(400_000.0, 500_000.0),
-            )
-
-    def test_mimo_returns_per_channel(self, backend_device, xp):
-        """MIMO input (C, N) returns ndarray(C,) by default."""
-        sig_a = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
-        sig_b = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
-        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)  # (2, N)
-        est = sync.estimate_frequency_offset_mth_power(
-            mimo, sampling_rate=FS, modulation="qam", order=4
-        )
-        assert isinstance(est, np.ndarray)
-        assert est.shape == (2,)
-        assert all(abs(e - 5_000.0) / 5_000.0 < 0.05 for e in est)
-
-    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
-        """MIMO + combine_channels=True returns a single Python float."""
-        sig_a = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
-        sig_b = _qam_signal(xp, 4, 2048, fo_hz=5_000.0)
-        mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
-        est = sync.estimate_frequency_offset_mth_power(
-            mimo, sampling_rate=FS, modulation="qam", order=4, combine_channels=True
-        )
-        assert isinstance(est, float)
-        assert abs(est - 5_000.0) / 5_000.0 < 0.05
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CPR — Viterbi-Viterbi
+# CPR — Viterbi-Viterbi (from test_carrier_sync.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -147,12 +58,8 @@ class TestCprViterbiViterbi:
     @pytest.mark.parametrize(
         "order,modulation,block_size",
         [
-            # PSK: constant envelope → reliable even with small blocks
             (4, "psk", 16), (4, "psk", 32), (4, "psk", 64),
-            # QAM-16: moderate amplitude variation → works with block_size ≥ 16
             (16, "qam", 16), (16, "qam", 32), (16, "qam", 64),
-            # QAM-64: high amplitude variation in s^4 → requires block_size ≥ 32
-            # for the coherent sum to be stable near the ±π/M unwrap boundary
             (64, "qam", 32), (64, "qam", 64),
         ],
     )
@@ -162,13 +69,10 @@ class TestCprViterbiViterbi:
         phi_true = 0.3  # radians
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
-        phase_est = sync.recover_carrier_phase_viterbi_viterbi(
+        phase_est = recovery.recover_carrier_phase_viterbi_viterbi(
             sig.samples, modulation=modulation, order=order, block_size=block_size
         )
 
-        # Check that the mean estimate is within 0.1 rad of phi_true, modulo the
-        # irreducible M-fold (2π/M) ambiguity.  Wrapping the error to [-π/M, π/M)
-        # removes the ambiguity and leaves only the estimation error.
         M = 4 if modulation == "qam" else order
         step = 2 * np.pi / M
         err = float(xp.mean(phase_est)) - phi_true
@@ -178,7 +82,7 @@ class TestCprViterbiViterbi:
     def test_output_shape_siso(self, backend_device, xp):
         """VV CPR: 1D input → 1D phase output of same length."""
         sig = _qam_signal(xp, 16, 512)
-        phase = sync.recover_carrier_phase_viterbi_viterbi(
+        phase = recovery.recover_carrier_phase_viterbi_viterbi(
             sig.samples, modulation="qam", order=16
         )
         assert phase.shape == sig.samples.shape
@@ -188,7 +92,7 @@ class TestCprViterbiViterbi:
         sig_a = _qam_signal(xp, 4, 512)
         sig_b = _qam_signal(xp, 4, 512)
         mimo = xp.stack([sig_a.samples, sig_b.samples])  # (2, 512)
-        phase = sync.recover_carrier_phase_viterbi_viterbi(
+        phase = recovery.recover_carrier_phase_viterbi_viterbi(
             mimo, modulation="qam", order=4
         )
         assert phase.shape == mimo.shape
@@ -197,7 +101,7 @@ class TestCprViterbiViterbi:
         """VV CPR: signal shorter than block_size raises ValueError."""
         sig = _qam_signal(xp, 4, 20)
         with pytest.raises(ValueError, match="shorter than block_size"):
-            sync.recover_carrier_phase_viterbi_viterbi(
+            recovery.recover_carrier_phase_viterbi_viterbi(
                 sig.samples[:10], modulation="qam", order=4, block_size=32
             )
 
@@ -215,12 +119,12 @@ class TestCprBps:
         phi_true = 0.2  # radians
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
-        phase_est = sync.recover_carrier_phase_bps(
+        phase_est = recovery.recover_carrier_phase_bps(
             sig.samples, modulation="qam", order=order
         )
-        corrected = sync.correct_carrier_phase(sig.samples, phase_est)
+        corrected = recovery.correct_carrier_phase(sig.samples, phase_est)
 
-        phase_resid = sync.recover_carrier_phase_bps(
+        phase_resid = recovery.recover_carrier_phase_bps(
             corrected, modulation="qam", order=order
         )
         assert float(xp.sqrt(xp.mean(phase_resid**2))) < 0.05
@@ -228,7 +132,7 @@ class TestCprBps:
     def test_output_shape_siso(self, backend_device, xp):
         """BPS CPR: 1D input → 1D phase output of same length."""
         sig = _qam_signal(xp, 16, 512)
-        phase = sync.recover_carrier_phase_bps(
+        phase = recovery.recover_carrier_phase_bps(
             sig.samples, modulation="qam", order=16
         )
         assert phase.shape == sig.samples.shape
@@ -238,14 +142,14 @@ class TestCprBps:
         sig_a = _qam_signal(xp, 16, 512)
         sig_b = _qam_signal(xp, 16, 512)
         mimo = xp.stack([sig_a.samples, sig_b.samples])
-        phase = sync.recover_carrier_phase_bps(mimo, modulation="qam", order=16)
+        phase = recovery.recover_carrier_phase_bps(mimo, modulation="qam", order=16)
         assert phase.shape == mimo.shape
 
     def test_too_short_raises(self, backend_device, xp):
         """BPS CPR: signal shorter than block_size raises ValueError."""
         sig = _qam_signal(xp, 16, 20)
         with pytest.raises(ValueError, match="shorter than block_size"):
-            sync.recover_carrier_phase_bps(
+            recovery.recover_carrier_phase_bps(
                 sig.samples[:10], modulation="qam", order=16, block_size=32
             )
 
@@ -257,11 +161,7 @@ class TestCprBps:
 
 class TestCprPilots:
     def _pilot_setup(self, xp, n_symbols=512, pilot_period=16, phase_per_sym=0.001):
-        """Return (noisy+rotated samples, pilot_indices, pilot_values, true_phase).
-
-        pilot_values are the ideal (noiseless, unrotated) symbols at pilot positions,
-        derived from the signal's source_symbols which are set by Signal.qam().
-        """
+        """Return (noisy+rotated samples, pilot_indices, pilot_values, true_phase)."""
         sig = Signal.qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS)
         # Save ideal symbols before adding noise
         ideal_symbols = xp.asarray(sig.samples.copy())
@@ -282,7 +182,7 @@ class TestCprPilots:
         samples, pilot_indices, pilot_values, true_phase = self._pilot_setup(
             xp, n_symbols=512, pilot_period=pilot_period, phase_per_sym=0.001
         )
-        phase_est = sync.recover_carrier_phase_pilots(
+        phase_est = recovery.recover_carrier_phase_pilots(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         err = _rms_phase_error(xp, phase_est, true_phase)
@@ -291,7 +191,7 @@ class TestCprPilots:
     def test_output_shape_siso(self, backend_device, xp):
         """Pilot CPR: 1D input → 1D phase output."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
-        phase = sync.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilots(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         assert phase.shape == samples.shape
@@ -301,7 +201,7 @@ class TestCprPilots:
         samples_a, pilot_indices, pilot_values, _ = self._pilot_setup(xp, n_symbols=256)
         samples_b, _, _, _ = self._pilot_setup(xp, n_symbols=256)
         mimo = xp.stack([samples_a, samples_b])  # (2, 256)
-        phase = sync.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilots(
             mimo, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         assert phase.shape == mimo.shape
@@ -314,7 +214,7 @@ class TestCprPilots:
         samples, pilot_indices, pilot_values, true_phase = self._pilot_setup(
             xp, n_symbols=n_symbols, pilot_period=8, phase_per_sym=phase_per_sym
         )
-        phase_est = sync.recover_carrier_phase_pilots(
+        phase_est = recovery.recover_carrier_phase_pilots(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         err = _rms_phase_error(xp, phase_est, true_phase)
@@ -323,7 +223,7 @@ class TestCprPilots:
     def test_cubic_interpolation(self, backend_device, xp):
         """Cubic interpolation works on both CPU and GPU."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
-        phase = sync.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilots(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -335,7 +235,7 @@ class TestCprPilots:
         """Unknown interpolation method raises ValueError."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
         with pytest.raises(ValueError, match="Unknown interpolation method"):
-            sync.recover_carrier_phase_pilots(
+            recovery.recover_carrier_phase_pilots(
                 samples,
                 pilot_indices=pilot_indices,
                 pilot_values=pilot_values,
@@ -365,7 +265,7 @@ class TestCprTikhonov:
         phi_true = 0.3
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
-        phase_est = sync.recover_carrier_phase_tikhonov(
+        phase_est = recovery.recover_carrier_phase_tikhonov(
             sig.samples,
             modulation=modulation,
             order=order,
@@ -383,7 +283,7 @@ class TestCprTikhonov:
     def test_output_shape_siso(self, backend_device, xp):
         """Tikhonov CPR: 1D input → 1D output of same length."""
         sig = _qam_signal(xp, 16, 512)
-        phase = sync.recover_carrier_phase_tikhonov(
+        phase = recovery.recover_carrier_phase_tikhonov(
             sig.samples, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
         )
         assert phase.shape == sig.samples.shape
@@ -393,7 +293,7 @@ class TestCprTikhonov:
         sig_a = _qam_signal(xp, 16, 512)
         sig_b = _qam_signal(xp, 16, 512)
         mimo = xp.stack([sig_a.samples, sig_b.samples])
-        phase = sync.recover_carrier_phase_tikhonov(
+        phase = recovery.recover_carrier_phase_tikhonov(
             mimo, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
         )
         assert phase.shape == mimo.shape
@@ -402,7 +302,7 @@ class TestCprTikhonov:
         """Tikhonov CPR: signal shorter than block_size raises ValueError."""
         sig = _qam_signal(xp, 4, 20)
         with pytest.raises(ValueError, match="shorter than block_size"):
-            sync.recover_carrier_phase_tikhonov(
+            recovery.recover_carrier_phase_tikhonov(
                 sig.samples[:10], modulation="qam", order=4,
                 linewidth_symbol_periods=1e-4, block_size=32,
             )
@@ -411,7 +311,7 @@ class TestCprTikhonov:
         """Tikhonov CPR: unknown method raises ValueError."""
         sig = _qam_signal(xp, 16, 512)
         with pytest.raises(ValueError, match="Unknown method"):
-            sync.recover_carrier_phase_tikhonov(
+            recovery.recover_carrier_phase_tikhonov(
                 sig.samples, modulation="qam", order=16,
                 linewidth_symbol_periods=1e-4, method="bad",
             )
@@ -423,7 +323,7 @@ class TestCprTikhonov:
         phi_true = 0.3
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
-        phase_est = sync.recover_carrier_phase_tikhonov(
+        phase_est = recovery.recover_carrier_phase_tikhonov(
             sig.samples, modulation=modulation, order=order,
             linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
         )
@@ -439,11 +339,11 @@ class TestCprTikhonov:
         sig = _qam_signal(xp, 16, 2048)
         sig.samples = sig.samples * xp.exp(1j * 0.2)
 
-        phi_exact = sync.recover_carrier_phase_tikhonov(
+        phi_exact = recovery.recover_carrier_phase_tikhonov(
             sig.samples, modulation="qam", order=16,
             linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="exact",
         )
-        phi_sskf = sync.recover_carrier_phase_tikhonov(
+        phi_sskf = recovery.recover_carrier_phase_tikhonov(
             sig.samples, modulation="qam", order=16,
             linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
         )
@@ -451,324 +351,42 @@ class TestCprTikhonov:
         assert rms_diff < 0.05
 
     def test_smoother_reduces_noise_vs_vv(self, backend_device, xp):
-        """Tikhonov produces smoother phase trajectory than VV when σ_p² < σ_v².
-
-        Regime: QPSK at snr_db=15, linewidth_symbol_periods=1e-7, block_size=32.
-          σ_p² = 2π · 1e-7 · 32 ≈ 2e-5 rad²/block  (slow phase noise)
-          σ_v² = 1/(4² · 31.6 · 32) ≈ 6e-5 rad²/block  (noisy VV at 15 dB)
-        K_∞ ≈ 0.4  →  substantial smoothing: Tikhonov std < VV std.
-        """
+        """Tikhonov produces smoother phase trajectory than VV when σ_p² < σ_v²."""
         linewidth_symbol_periods = 1e-7
         snr_test = 15
         sig = _psk_signal(xp, 4, 2048, snr_db=snr_test, seed=123)
         sig.samples = sig.samples * xp.exp(1j * 0.3)
 
-        phi_vv = sync.recover_carrier_phase_viterbi_viterbi(
+        phi_vv = recovery.recover_carrier_phase_viterbi_viterbi(
             sig.samples, modulation="psk", order=4, block_size=32
         )
-        phi_tik = sync.recover_carrier_phase_tikhonov(
+        phi_tik = recovery.recover_carrier_phase_tikhonov(
             sig.samples, modulation="psk", order=4,
             linewidth_symbol_periods=linewidth_symbol_periods, block_size=32, snr_db=snr_test,
         )
 
-        # With constant true phase, VV block estimates fluctuate around the
-        # true value with std ≈ sqrt(σ_v²).  The Tikhonov smoother suppresses
-        # this noise: std(phi_tik) < std(phi_vv).
         assert float(xp.std(phi_tik)) < float(xp.std(phi_vv))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Correction functions
+# Correction functions (phase half)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestCorrectionFunctions:
-    def test_correct_frequency_offset_dtype_preserved(self, backend_device, xp):
-        """correct_frequency_offset: complex64 input → complex64 output."""
-        sig = _qam_signal(xp, 4, 1024)
-        assert sig.samples.dtype == xp.complex64
-        corrected = sync.correct_frequency_offset(sig.samples, offset=5_000.0, sampling_rate=FS)
-        assert corrected.dtype == xp.complex64
-
-    def test_correct_frequency_offset_roundtrip(self, backend_device, xp):
-        """Applying +Δf then correcting with -Δf restores the signal."""
-        sig = _qam_signal(xp, 4, 1024)
-        original = sig.samples.copy()
-        # shift_frequency quantizes to the nearest bin; capture actual offset so
-        # the correction can cancel it exactly (no residual due to quantization)
-        shifted, actual_fo = spectral.shift_frequency(sig.samples, 10_000.0, FS)
-        restored = sync.correct_frequency_offset(shifted, offset=actual_fo, sampling_rate=FS)
-        assert float(xp.max(xp.abs(restored - original))) < 1e-4
-
     def test_correct_carrier_phase_dtype_preserved(self, backend_device, xp):
         """correct_carrier_phase: complex64 input → complex64 output."""
         sig = _qam_signal(xp, 4, 512)
         phase = xp.zeros(512, dtype=xp.float64)
-        corrected = sync.correct_carrier_phase(sig.samples, phase)
+        corrected = recovery.correct_carrier_phase(sig.samples, phase)
         assert corrected.dtype == xp.complex64
 
     def test_correct_carrier_phase_zero_phase_identity(self, backend_device, xp):
         """Applying zero phase correction leaves samples unchanged."""
         sig = _qam_signal(xp, 4, 512)
         phase = xp.zeros(512, dtype=xp.float64)
-        corrected = sync.correct_carrier_phase(sig.samples, phase)
+        corrected = recovery.correct_carrier_phase(sig.samples, phase)
         assert float(xp.max(xp.abs(corrected - sig.samples))) < 1e-5
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# FOE — Scattered Pilots (phase slope)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoePilots:
-    """Tests for estimate_frequency_offset_pilots (least-squares phase slope)."""
-
-    N_SAMPLES = 4096
-    PILOT_PERIOD = 16  # one pilot every 16 samples → lock range ±31.25 kHz
-
-    @staticmethod
-    def _setup(xp, fo_hz, n_samples=4096, pilot_period=16, snr_db=SNR_DB, fs=FS):
-        """
-        Build a QPSK-like signal with BPSK (+1) pilots inserted at a regular
-        grid, apply an exact frequency offset, and return everything needed
-        by the estimator.
-        """
-        rng = np.random.default_rng(seed=7)
-        # Random QPSK-like data (4-point alphabet, unit power)
-        symbols = (
-            rng.choice([-1, 1], size=n_samples)
-            + 1j * rng.choice([-1, 1], size=n_samples)
-        ).astype(np.complex64) / np.sqrt(2)
-
-        pilot_indices = np.arange(0, n_samples, pilot_period, dtype=np.intp)
-        pilot_values = np.ones(len(pilot_indices), dtype=np.complex64)  # BPSK pilots
-        symbols[pilot_indices] = pilot_values  # overwrite data with known pilots
-
-        if snr_db < 100:
-            noise_power = 10 ** (-snr_db / 10)
-            noise = (
-                rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
-            ).astype(np.complex64) * np.sqrt(noise_power / 2)
-            symbols = (symbols + noise).astype(np.complex64)
-
-        samples = xp.asarray(symbols)
-        # Apply exact frequency offset (no bin quantization)
-        t = xp.arange(n_samples, dtype=xp.float64) / fs
-        samples = (samples * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
-        return samples, pilot_indices, pilot_values
-
-    @pytest.mark.parametrize("fo_hz", [1_000.0, 5_000.0, -3_000.0])
-    def test_accuracy(self, backend_device, xp, fo_hz):
-        """Estimated offset within 1 % of true offset at 30 dB SNR."""
-        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
-        est = sync.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
-        )
-        assert abs(est - fo_hz) < 0.01 * abs(fo_hz) + 1.0
-
-    def test_zero_offset(self, backend_device, xp):
-        """Zero frequency offset: estimate is within ±20 Hz."""
-        samples, pilot_indices, pilot_values = self._setup(xp, fo_hz=0.0)
-        est = sync.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
-        )
-        assert abs(est) < 20.0
-
-    def test_mimo_returns_per_channel(self, backend_device, xp):
-        """MIMO input returns ndarray(C,) by default."""
-        fo_hz = 2_000.0
-        s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
-        s1, _, _ = self._setup(xp, fo_hz)
-        samples_mimo = xp.stack([s0, s1], axis=0)  # (2, N)
-        est = sync.estimate_frequency_offset_pilots(
-            samples_mimo,
-            pilot_indices=pilot_indices,
-            pilot_values=pilot_values,
-            sampling_rate=FS,
-        )
-        assert isinstance(est, np.ndarray)
-        assert est.shape == (2,)
-        assert all(abs(e - fo_hz) < 0.01 * fo_hz + 1.0 for e in est)
-
-    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
-        """MIMO + combine_channels=True returns a single Python float."""
-        fo_hz = 2_000.0
-        s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
-        s1, _, _ = self._setup(xp, fo_hz)
-        samples_mimo = xp.stack([s0, s1], axis=0)
-        est = sync.estimate_frequency_offset_pilots(
-            samples_mimo,
-            pilot_indices=pilot_indices,
-            pilot_values=pilot_values,
-            sampling_rate=FS,
-            combine_channels=True,
-        )
-        assert isinstance(est, float)
-        assert abs(est - fo_hz) < 0.01 * fo_hz + 1.0
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FOE — Mengali-Morelli multi-lag
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoeMengaliMorelli:
-    """Tests for estimate_frequency_offset_mengali_morelli."""
-
-    @pytest.mark.parametrize("fo_hz", [5_000.0, -12_000.0, 30_000.0])
-    @pytest.mark.parametrize("order", [4, 16])
-    def test_blind_qam_accuracy(self, backend_device, xp, fo_hz, order):
-        """Blind QAM mode: estimate within 2 % of true offset at 30 dB SNR.
-
-        Uses exact complex mixing (no bin quantization) so the true offset is
-        known precisely.
-        """
-        sig = _qam_signal(xp, order, 4096, fo_hz=0.0)  # generate without offset
-        # Apply exact frequency offset via direct complex mixing
-        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
-        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
-            sig.samples.dtype
-        )
-        est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, sampling_rate=FS, modulation="qam", order=order
-        )
-        assert abs(est - fo_hz) / abs(fo_hz) < 0.02
-
-    @pytest.mark.parametrize("fo_hz", [4_000.0, -8_000.0])
-    def test_data_aided_accuracy(self, backend_device, xp, fo_hz):
-        """Data-aided mode: estimate within 1 % using known reference (exact mixing)."""
-        sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
-        ideal = sig.samples.copy()
-        sig.samples = apply_awgn(sig.samples, esn0_db=25, sps=1)
-        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
-        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
-            sig.samples.dtype
-        )
-        est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, sampling_rate=FS, ref_signal=ideal
-        )
-        assert abs(est - fo_hz) / abs(fo_hz) < 0.01
-
-    def test_large_offset_near_nyquist(self, backend_device, xp):
-        """M&M lock range [-fs/2, fs/2]: succeeds at 40 % of Nyquist where Kay wraps."""
-        N = 4096
-        fo_hz = 0.40 * FS  # 40 % of sampling rate — well beyond Kay lock range for QPSK
-        n = xp.arange(N, dtype=xp.float64)
-        tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        # Generic blind mode (no modulation — pure tone)
-        est = sync.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
-        assert abs(est - fo_hz) < 0.02 * fo_hz
-
-    def test_generic_blind_pure_tone(self, backend_device, xp):
-        """Generic mode (no modulation): pure tone estimated accurately."""
-        N = 2048
-        fo_hz = 7_500.0
-        n = xp.arange(N, dtype=xp.float64)
-        tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        est = sync.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
-        assert abs(est - fo_hz) < 500.0
-
-    def test_mimo_returns_per_channel(self, backend_device, xp):
-        """MIMO (C, N) input returns ndarray(C,) by default."""
-        fo_hz = 6_000.0
-        sig_a = _qam_signal(xp, 4, 2048, fo_hz=0.0)
-        sig_b = _qam_signal(xp, 4, 2048, fo_hz=0.0)
-        n = xp.arange(2048, dtype=xp.float64)
-        mixer = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
-        est = sync.estimate_frequency_offset_mengali_morelli(
-            mimo, sampling_rate=FS, modulation="qam", order=4
-        )
-        assert isinstance(est, np.ndarray)
-        assert est.shape == (2,)
-        assert all(abs(e - fo_hz) / fo_hz < 0.02 for e in est)
-
-    def test_mimo_combine_channels_returns_scalar(self, backend_device, xp):
-        """MIMO + combine_channels=True returns a single Python float."""
-        fo_hz = 6_000.0
-        sig_a = _qam_signal(xp, 4, 2048, fo_hz=0.0)
-        sig_b = _qam_signal(xp, 4, 2048, fo_hz=0.0)
-        n = xp.arange(2048, dtype=xp.float64)
-        mixer = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        mimo = xp.stack([sig_a.samples * mixer, sig_b.samples * mixer], axis=0)
-        est = sync.estimate_frequency_offset_mengali_morelli(
-            mimo, sampling_rate=FS, modulation="qam", order=4, combine_channels=True
-        )
-        assert isinstance(est, float)
-        assert abs(est - fo_hz) / fo_hz < 0.02
-
-    def test_custom_max_lag(self, backend_device, xp):
-        """Custom max_lag parameter: still converges to correct estimate (exact mixing)."""
-        fo_hz = 3_000.0
-        sig = _qam_signal(xp, 4, 2048, fo_hz=0.0)
-        n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)
-        sig.samples = (sig.samples * xp.exp(1j * 2 * np.pi * fo_hz / FS * n)).astype(
-            sig.samples.dtype
-        )
-        est = sync.estimate_frequency_offset_mengali_morelli(
-            sig.samples, sampling_rate=FS, modulation="qam", order=4, max_lag=16
-        )
-        assert abs(est - fo_hz) / fo_hz < 0.05
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FOE — Regression: Jacobsen interpolation, WLSQ pilots
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestFoeRegression:
-
-    def test_jacobsen_vs_parabolic_accuracy(self, backend_device, xp):
-        """Jacobsen interpolation accuracy is at least as good as parabolic for N=256."""
-        fo_hz = 7_777.0  # non-round number to stress sub-bin interpolation
-        sig = _qam_signal(xp, 4, 256, fo_hz=fo_hz)
-        est_j = sync.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="jacobsen"
-        )
-        est_p = sync.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="parabolic"
-        )
-        # Jacobsen error must be ≤ parabolic error (with generous 20 % slack for noise)
-        assert abs(est_j - fo_hz) <= abs(est_p - fo_hz) * 1.2 + 100.0
-
-    def test_mth_power_short_signal_raises(self, backend_device, xp):
-        """M-th power FOE raises ValueError for signals shorter than 8 samples."""
-        short = xp.ones(5, dtype=xp.complex64)
-        with pytest.raises(ValueError, match="too short"):
-            sync.estimate_frequency_offset_mth_power(
-                short, sampling_rate=FS, modulation="qam", order=4
-            )
-
-    def test_pilot_wlsq_vs_ols_at_snr(self, backend_device, xp):
-        """WLSQ pilot FOE returns a valid estimate; result within 2% of true offset."""
-        fo_hz = 5_000.0
-        n_samples = 2048
-        pilot_period = 8
-        rng = np.random.default_rng(42)
-        symbols = (
-            rng.choice([-1, 1], size=n_samples)
-            + 1j * rng.choice([-1, 1], size=n_samples)
-        ).astype(np.complex64) / np.sqrt(2)
-        pilot_indices = np.arange(0, n_samples, pilot_period, dtype=np.intp)
-        pilot_values = np.ones(len(pilot_indices), dtype=np.complex64)
-        symbols[pilot_indices] = pilot_values
-        noise = (
-            rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
-        ).astype(np.complex64) * np.sqrt(10 ** (-SNR_DB / 10) / 2)
-        symbols = (symbols + noise).astype(np.complex64)
-        t = np.arange(n_samples, dtype=np.float64) / FS
-        samples = xp.asarray(
-            symbols * np.exp(1j * 2 * np.pi * fo_hz * t).astype(np.complex64)
-        )
-        est = sync.estimate_frequency_offset_pilots(
-            samples,
-            pilot_indices=pilot_indices,
-            pilot_values=pilot_values,
-            sampling_rate=FS,
-            snr_weighted=True,
-        )
-        assert abs(est - fo_hz) / fo_hz < 0.02
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -792,7 +410,7 @@ class TestJointChannels:
     def test_bps_joint_rows_identical(self, backend_device, xp):
         """joint_channels=True: both phi_full rows are bitwise identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_bps(
+        phi = recovery.recover_carrier_phase_bps(
             mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         assert phi.shape == (2, self.N)
@@ -802,7 +420,7 @@ class TestJointChannels:
     def test_vv_joint_rows_identical(self, backend_device, xp):
         """VV joint_channels=True: both phi_full rows are bitwise identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_viterbi_viterbi(
+        phi = recovery.recover_carrier_phase_viterbi_viterbi(
             mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         assert phi.shape == (2, self.N)
@@ -812,7 +430,7 @@ class TestJointChannels:
     def test_tikhonov_joint_rows_identical(self, backend_device, xp):
         """Tikhonov joint_channels=True: both phi_full rows are bitwise identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_tikhonov(
+        phi = recovery.recover_carrier_phase_tikhonov(
             mimo, "qam", 16,
             linewidth_symbol_periods=1e-4,
             snr_db=SNR_DB,
@@ -826,7 +444,7 @@ class TestJointChannels:
     def test_bps_joint_zero_spread(self, backend_device, xp):
         """Joint BPS: inter-channel spread is exactly zero."""
         mimo = self._make_mimo(xp, snr_db=20)
-        phi_joint = sync.recover_carrier_phase_bps(
+        phi_joint = recovery.recover_carrier_phase_bps(
             mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         phi_np = phi_joint if xp is np else phi_joint.get()
@@ -835,10 +453,10 @@ class TestJointChannels:
     def test_siso_joint_noop(self, backend_device, xp):
         """joint_channels=True on SISO returns identical result to False."""
         sig = _qam_signal(xp, 16, self.N, seed=7)
-        phi_a = sync.recover_carrier_phase_bps(
+        phi_a = recovery.recover_carrier_phase_bps(
             sig.samples, "qam", 16, joint_channels=False, cycle_slip_correction=False
         )
-        phi_b = sync.recover_carrier_phase_bps(
+        phi_b = recovery.recover_carrier_phase_bps(
             sig.samples, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         phi_a_np = phi_a if xp is np else phi_a.get()
@@ -858,7 +476,7 @@ class TestCycleSlipCorrection:
         """Smooth linear ramp with no slips is returned unchanged."""
         B = 200
         phi_u = np.linspace(0.0, 2.0, B)
-        phi_out = sync.correct_cycle_slips(phi_u.copy(), symmetry=4, history_length=50)
+        phi_out = recovery.correct_cycle_slips(phi_u.copy(), symmetry=4, history_length=50)
         np.testing.assert_allclose(phi_out, phi_u, atol=1e-10)
 
     def test_standalone_single_slip(self, backend_device, xp):
@@ -867,7 +485,7 @@ class TestCycleSlipCorrection:
         phi_u = np.linspace(0.0, 1.0, B)
         phi_slipped = phi_u.copy()
         phi_slipped[150:] += np.pi / 2
-        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=4, history_length=100)
+        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=4, history_length=100)
         np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
 
     def test_standalone_multiple_slips(self, backend_device, xp):
@@ -877,13 +495,13 @@ class TestCycleSlipCorrection:
         phi_slipped = phi_u.copy()
         phi_slipped[100:] += np.pi / 2
         phi_slipped[300:] -= np.pi / 2
-        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=4, history_length=80)
+        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=4, history_length=80)
         np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
 
     def test_bps_correction_bounded_output(self, backend_device, xp):
         """BPS cycle_slip_correction=True returns phase within reasonable bounds."""
         sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
-        phi = sync.recover_carrier_phase_bps(sig.samples, "qam", 16, cycle_slip_correction=True)
+        phi = recovery.recover_carrier_phase_bps(sig.samples, "qam", 16, cycle_slip_correction=True)
         assert phi.shape == sig.samples.shape
         phi_np = phi if xp is np else phi.get()
         assert np.max(np.abs(phi_np)) < 10 * np.pi
@@ -891,7 +509,7 @@ class TestCycleSlipCorrection:
     def test_vv_correction_shape(self, backend_device, xp):
         """VV cycle_slip_correction=True returns correct shape."""
         sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
-        phi = sync.recover_carrier_phase_viterbi_viterbi(
+        phi = recovery.recover_carrier_phase_viterbi_viterbi(
             sig.samples, "qam", 16, cycle_slip_correction=True
         )
         assert phi.shape == sig.samples.shape
@@ -899,7 +517,7 @@ class TestCycleSlipCorrection:
     def test_tikhonov_correction_shape(self, backend_device, xp):
         """Tikhonov cycle_slip_correction=True returns correct shape."""
         sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
-        phi = sync.recover_carrier_phase_tikhonov(
+        phi = recovery.recover_carrier_phase_tikhonov(
             sig.samples, "qam", 16,
             linewidth_symbol_periods=1e-4,
             snr_db=SNR_DB,
@@ -925,7 +543,7 @@ class TestResolvePhaseAmbiguity:
         sig = _qam_signal(xp, 16, self.N, snr_db=30, seed=5)
         sym = normalize(sig.samples, "average_power")
         ref = normalize(xp.asarray(sig.source_symbols), "average_power")
-        resolved = sync.resolve_phase_ambiguity(sym, ref, "qam", 16)
+        resolved = recovery.resolve_phase_ambiguity(sym, ref, "qam", 16)
         s0 = float(ser(resolved, ref, "qam", 16))
         for k in range(1, 4):
             sk = float(ser(resolved * xp.exp(1j * k * np.pi / 2).astype(sym.dtype), ref, "qam", 16))
@@ -939,7 +557,7 @@ class TestResolvePhaseAmbiguity:
         sym = normalize(sig.samples, "average_power")
         ref = normalize(xp.asarray(sig.source_symbols), "average_power")
         rotated = sym * xp.exp(1j * np.pi / 2).astype(sym.dtype)
-        resolved = sync.resolve_phase_ambiguity(rotated, ref, "qam", 16)
+        resolved = recovery.resolve_phase_ambiguity(rotated, ref, "qam", 16)
         assert float(ser(resolved, ref, "qam", 16)) < 0.05
 
     def test_mimo_independent_per_channel(self, backend_device, xp):
@@ -955,7 +573,7 @@ class TestResolvePhaseAmbiguity:
         mimo = xp.stack([sym_a * xp.exp(1j * np.pi / 2).astype(sym_a.dtype),
                          sym_b * xp.exp(1j * np.pi).astype(sym_b.dtype)], axis=0)
         ref_mimo = xp.stack([ref_a, ref_b], axis=0)
-        resolved = sync.resolve_phase_ambiguity(mimo, ref_mimo, "qam", 16)
+        resolved = recovery.resolve_phase_ambiguity(mimo, ref_mimo, "qam", 16)
         assert resolved.shape == (2, self.N)
         s = ser(resolved, ref_mimo, "qam", 16)
         s_np = s if xp is np else s.get()
@@ -1010,7 +628,7 @@ class TestDDPLLEnhancements:
     def test_joint_rows_identical(self, backend_device, xp):
         """PI loop + joint_channels=True: both phi_full rows are bitwise identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_pll(
+        phi = recovery.recover_carrier_phase_pll(
             mimo, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         assert phi.shape == (2, self.N)
@@ -1020,7 +638,7 @@ class TestDDPLLEnhancements:
     def test_butterworth_joint_rows_identical(self, backend_device, xp):
         """Butterworth loop + joint_channels=True: both phi rows are bitwise identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_pll(
+        phi = recovery.recover_carrier_phase_pll(
             mimo, "qam", 16,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
@@ -1034,10 +652,10 @@ class TestDDPLLEnhancements:
     def test_siso_joint_noop(self, backend_device, xp):
         """joint_channels=True on SISO returns identical result to False."""
         sig = _qam_signal(xp, 16, self.N, seed=12)
-        phi_a = sync.recover_carrier_phase_pll(
+        phi_a = recovery.recover_carrier_phase_pll(
             sig.samples, "qam", 16, joint_channels=False, cycle_slip_correction=False
         )
-        phi_b = sync.recover_carrier_phase_pll(
+        phi_b = recovery.recover_carrier_phase_pll(
             sig.samples, "qam", 16, joint_channels=True, cycle_slip_correction=False
         )
         phi_a_np = phi_a if xp is np else phi_a.get()
@@ -1047,7 +665,7 @@ class TestDDPLLEnhancements:
     def test_cycle_slip_shape(self, backend_device, xp):
         """cycle_slip_correction=True (PI loop) returns correct shape."""
         sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
-        phi = sync.recover_carrier_phase_pll(
+        phi = recovery.recover_carrier_phase_pll(
             sig.samples, "qam", 16, cycle_slip_correction=True
         )
         assert phi.shape == sig.samples.shape
@@ -1055,7 +673,7 @@ class TestDDPLLEnhancements:
     def test_butterworth_cycle_slip_shape(self, backend_device, xp):
         """cycle_slip_correction=True (Butterworth loop) returns correct shape."""
         sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
-        phi = sync.recover_carrier_phase_pll(
+        phi = recovery.recover_carrier_phase_pll(
             sig.samples, "qam", 16,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
@@ -1066,7 +684,7 @@ class TestDDPLLEnhancements:
     def test_joint_cycle_slip_mimo_rows_identical(self, backend_device, xp):
         """joint_channels=True + cycle_slip_correction=True: rows remain identical."""
         mimo = self._make_mimo(xp)
-        phi = sync.recover_carrier_phase_pll(
+        phi = recovery.recover_carrier_phase_pll(
             mimo, "qam", 16,
             joint_channels=True,
             cycle_slip_correction=True,
@@ -1100,7 +718,7 @@ class TestPilotsCPREnhancements:
         samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=1)
         samples_b, _, _ = self._pilot_setup(xp, seed=2)
         mimo = xp.stack([samples_a, samples_b], axis=0)  # (2, N)
-        phi = sync.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilots(
             mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -1114,14 +732,14 @@ class TestPilotsCPREnhancements:
     def test_joint_siso_noop(self, backend_device, xp):
         """joint_channels=True on SISO returns identical result to False."""
         samples, pilot_indices, pilot_values = self._pilot_setup(xp, seed=3)
-        phi_a = sync.recover_carrier_phase_pilots(
+        phi_a = recovery.recover_carrier_phase_pilots(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
             joint_channels=False,
             cycle_slip_correction=False,
         )
-        phi_b = sync.recover_carrier_phase_pilots(
+        phi_b = recovery.recover_carrier_phase_pilots(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -1135,7 +753,7 @@ class TestPilotsCPREnhancements:
     def test_cycle_slip_shape(self, backend_device, xp):
         """cycle_slip_correction=True returns correct shape."""
         samples, pilot_indices, pilot_values = self._pilot_setup(xp)
-        phi = sync.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilots(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -1149,7 +767,7 @@ class TestPilotsCPREnhancements:
         phi_u = np.linspace(0.0, 3.0, B)
         phi_slipped = phi_u.copy()
         phi_slipped[100:] += 2.0 * np.pi
-        phi_out = sync.correct_cycle_slips(phi_slipped, symmetry=1, history_length=50)
+        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=1, history_length=50)
         np.testing.assert_allclose(phi_out, phi_u, atol=0.1)
 
     def test_joint_cycle_slip_mimo_rows_identical(self, backend_device, xp):
@@ -1157,7 +775,7 @@ class TestPilotsCPREnhancements:
         samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=4)
         samples_b, _, _ = self._pilot_setup(xp, seed=5)
         mimo = xp.stack([samples_a, samples_b], axis=0)
-        phi = sync.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilots(
             mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -1167,3 +785,380 @@ class TestPilotsCPREnhancements:
         assert phi.shape == (2, mimo.shape[-1])
         phi_np = phi if xp is np else phi.get()
         np.testing.assert_array_equal(phi_np[0], phi_np[1])
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — VITERBI-VITERBI (from test_sync.py)
+# =============================================================================
+
+
+class TestViterbiViterbi:
+    """Tests for recover_carrier_phase_viterbi_viterbi."""
+
+    def _qpsk_symbols(self, xp, N=512, seed=0):
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        bits = rng.integers(0, 4, N)
+        angles = (2 * np.pi / 4) * bits + np.pi / 4
+        return xp.asarray(np.exp(1j * angles).astype(np.complex64))
+
+    def _qam16_symbols(self, xp, N=512, seed=1):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qam", 16)
+        idx = rng.integers(0, 16, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def test_siso_qpsk_output_shape(self, backend_device, xp):
+        """SISO QPSK: output is (N,) float64."""
+        syms = self._qpsk_symbols(xp)
+        phi_est = recovery.recover_carrier_phase_viterbi_viterbi(
+            syms, "psk", 4, block_size=32
+        )
+        assert phi_est.shape == syms.shape
+        assert phi_est.dtype == xp.float64
+
+    def test_siso_qpsk_recovers_static_phase(self, backend_device, xp):
+        """VV tracks applied phase: difference between rotated and unrotated estimate equals phi_true mod π/2."""
+        import numpy as np
+
+        phi_true = 0.3  # radians
+        syms = self._qpsk_symbols(xp, N=512)
+        # Baseline (no rotation)
+        phi_base = float(
+            xp.mean(
+                recovery.recover_carrier_phase_viterbi_viterbi(
+                    syms, "psk", 4, block_size=32
+                )
+            )
+        )
+        # Rotated by phi_true
+        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
+        phi_rot = float(
+            xp.mean(
+                recovery.recover_carrier_phase_viterbi_viterbi(
+                    rotated, "psk", 4, block_size=32
+                )
+            )
+        )
+        # The shift should equal phi_true modulo π/2
+        delta = phi_rot - phi_base
+        residual = (delta - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        assert abs(residual) < 0.15, (
+            f"Phase tracking error too large: {residual:.3f} rad"
+        )
+
+    def test_siso_qam16_output_shape(self, backend_device, xp):
+        """SISO QAM16: output shape matches input."""
+        syms = self._qam16_symbols(xp)
+        phi_est = recovery.recover_carrier_phase_viterbi_viterbi(
+            syms, "qam", 16, block_size=32
+        )
+        assert phi_est.shape == syms.shape
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO input (C, N): output shape is (C, N)."""
+        import numpy as np
+
+        C, N = 2, 256
+        syms = xp.asarray(
+            np.random.default_rng(5).standard_normal((C, N)).astype(np.float32)
+            + 1j * np.random.default_rng(6).standard_normal((C, N)).astype(np.float32)
+        )
+        phi_est = recovery.recover_carrier_phase_viterbi_viterbi(
+            syms, "qam", 16, block_size=32
+        )
+        assert phi_est.shape == (C, N)
+
+    def test_block_size_too_large_raises(self, backend_device, xp):
+        """block_size > N should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=16)
+        with pytest.raises(ValueError, match="block_size"):
+            recovery.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=64)
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — BLIND PHASE SEARCH (from test_sync.py)
+# =============================================================================
+
+
+class TestBPS:
+    """Tests for recover_carrier_phase_bps."""
+
+    def _qam16_symbols(self, xp, N=512, seed=2):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qam", 16)
+        idx = rng.integers(0, 16, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def _qpsk_symbols(self, xp, N=512, seed=3):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qpsk", 4)
+        idx = rng.integers(0, 4, N)
+        return xp.asarray(const[idx].astype(np.complex64))
+
+    def test_siso_qam16_output_shape(self, backend_device, xp):
+        """SISO QAM16 (square QAM fast path): output is (N,) float64."""
+        syms = self._qam16_symbols(xp)
+        phi_est = recovery.recover_carrier_phase_bps(
+            syms, "qam", 16, num_test_phases=32, block_size=32
+        )
+        assert phi_est.shape == syms.shape
+        assert phi_est.dtype == xp.float64
+
+    def test_siso_qam16_recovers_static_phase(self, backend_device, xp):
+        """BPS should estimate a static QAM16 phase offset to within π/8 tolerance."""
+        import numpy as np
+
+        phi_true = 0.25
+        syms = self._qam16_symbols(xp, N=512)
+        rotated = syms * xp.asarray(np.complex64(np.exp(1j * phi_true)))
+        phi_est = recovery.recover_carrier_phase_bps(
+            rotated, "qam", 16, num_test_phases=64, block_size=32
+        )
+        phi_mean = float(xp.mean(phi_est))
+        # 4-fold ambiguity: allow ±π/8 residual
+        residual = (phi_mean - phi_true + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        assert abs(residual) < 0.15, (
+            f"Residual phase error too large: {residual:.3f} rad"
+        )
+
+    def test_siso_qpsk_general_path(self, backend_device, xp):
+        """SISO QPSK (non-square: triggers general distance path): output shape correct."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi_est = recovery.recover_carrier_phase_bps(
+            syms, "psk", 4, num_test_phases=16, block_size=32
+        )
+        assert phi_est.shape == syms.shape
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO input (C, N): output shape is (C, N)."""
+        import numpy as np
+
+        C, N = 2, 256
+        rng = np.random.default_rng(7)
+        syms = xp.asarray(
+            (rng.standard_normal((C, N)) + 1j * rng.standard_normal((C, N))).astype(
+                np.complex64
+            )
+        )
+        phi_est = recovery.recover_carrier_phase_bps(
+            syms, "qam", 16, num_test_phases=16, block_size=32
+        )
+        assert phi_est.shape == (C, N)
+
+    def test_block_size_too_large_raises(self, backend_device, xp):
+        """block_size > N should raise ValueError."""
+        syms = self._qam16_symbols(xp, N=16)
+        with pytest.raises(ValueError, match="block_size"):
+            recovery.recover_carrier_phase_bps(syms, "qam", 16, block_size=64)
+
+
+# =============================================================================
+# CARRIER PHASE RECOVERY — DECISION-DIRECTED PLL (from test_sync.py)
+# =============================================================================
+
+
+class TestDDPLL:
+    """Tests for recover_carrier_phase_pll."""
+
+    def _qpsk_symbols(self, xp, N=512, seed=10):
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        rng = np.random.default_rng(seed)
+        const = gray_constellation("qpsk", 4)
+        return xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
+
+    def test_siso_output_shape(self, backend_device, xp):
+        """SISO: output is (N,) float64."""
+        syms = self._qpsk_symbols(xp)
+        phi = recovery.recover_carrier_phase_pll(syms, "psk", 4)
+        assert phi.shape == syms.shape
+        assert phi.dtype == xp.float64
+
+    def test_mimo_output_shape(self, backend_device, xp):
+        """MIMO (C, N): output shape is (C, N)."""
+        import numpy as np
+
+        C, N = 2, 256
+        rng = np.random.default_rng(11)
+        from commstools.mapping import gray_constellation
+
+        const = gray_constellation("qpsk", 4)
+        syms = xp.asarray(
+            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
+        )
+        phi = recovery.recover_carrier_phase_pll(syms, "psk", 4)
+        assert phi.shape == (C, N)
+
+    def test_second_order_loop(self, backend_device, xp):
+        """beta > 0 engages 2nd-order loop without raising."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi = recovery.recover_carrier_phase_pll(syms, "psk", 4, mu=0.02, beta=1e-4)
+        assert phi.shape == syms.shape
+
+    def test_phase_init_applied(self, backend_device, xp):
+        """phase_init shifts the starting phase estimate."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi_init = 0.5
+        phi = recovery.recover_carrier_phase_pll(syms, "psk", 4, phase_init=phi_init)
+        # First estimate should be close to phase_init before any loop correction
+        assert abs(float(phi[0]) - phi_init) < 0.5
+
+    def test_butterworth_output_shape_siso(self, backend_device, xp):
+        """loop_filter='butterworth': SISO output shape is (N,)."""
+        syms = self._qpsk_symbols(xp, N=512)
+        phi = recovery.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.shape == syms.shape
+
+    def test_butterworth_output_dtype(self, backend_device, xp):
+        """loop_filter='butterworth': output dtype is float64."""
+        syms = self._qpsk_symbols(xp, N=256)
+        phi = recovery.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.dtype == xp.float64
+
+    def test_butterworth_output_finite(self, backend_device, xp):
+        """Butterworth loop output should be finite for clean QPSK symbols."""
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        N = 512
+        phase_offset = 0.15  # radians
+        const = gray_constellation("qpsk", 4)
+        rng = np.random.default_rng(42)
+        syms_clean = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
+        syms_rotated = syms_clean * np.exp(1j * phase_offset)
+
+        phi = recovery.recover_carrier_phase_pll(
+            syms_rotated,
+            "psk",
+            4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-2,
+        )
+        assert bool(xp.all(xp.isfinite(phi))), (
+            "Butterworth PLL output contains non-finite values"
+        )
+
+    def test_butterworth_mimo_output_shape(self, backend_device, xp):
+        """loop_filter='butterworth': MIMO (C, N) output shape is (C, N)."""
+        import numpy as np
+        from commstools.mapping import gray_constellation
+
+        C, N = 2, 256
+        const = gray_constellation("qpsk", 4)
+        rng = np.random.default_rng(3)
+        syms = xp.asarray(
+            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
+        )
+        phi = recovery.recover_carrier_phase_pll(
+            syms,
+            "psk",
+            4,
+            loop_filter="butterworth",
+            loop_bandwidth_normalized=1e-3,
+        )
+        assert phi.shape == (C, N)
+
+    def test_butterworth_invalid_bandwidth_raises(self, backend_device, xp):
+        """loop_bandwidth_normalized outside (0, 0.5) should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=64)
+        with pytest.raises(ValueError, match="loop_bandwidth_normalized"):
+            recovery.recover_carrier_phase_pll(
+                syms,
+                "psk",
+                4,
+                loop_filter="butterworth",
+                loop_bandwidth_normalized=0.6,
+            )
+
+    def test_invalid_loop_filter_raises(self, backend_device, xp):
+        """Unknown loop_filter value should raise ValueError."""
+        syms = self._qpsk_symbols(xp, N=64)
+        with pytest.raises(ValueError, match="loop_filter"):
+            recovery.recover_carrier_phase_pll(syms, "psk", 4, loop_filter="kalman")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# resolve_phase_ambiguity — num_skip_symbols (from test_sync.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_ambiguous_qam16(n_sym=2000, corrupt_head=500, seed=0):
+    """Return (symbols, ref) where the first corrupt_head symbols are rotated by π/2."""
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("qam", 16).astype(np.complex64)
+    const /= np.sqrt(np.mean(np.abs(const) ** 2))
+    ref = const[rng.integers(0, 16, n_sym)]
+    # True ambiguity k=1: rotate entire stream by π/2
+    rot1 = np.exp(1j * np.pi / 2).astype(np.complex64)
+    symbols = ref * rot1
+    # Corrupt only the first corrupt_head symbols with an additional π/2 (total π)
+    symbols[:corrupt_head] = ref[:corrupt_head] * np.exp(1j * np.pi).astype(np.complex64)
+    return symbols, ref
+
+
+def test_resolve_phase_ambiguity_skip(backend_device, xp, xpt):
+    """num_skip_symbols bypasses the corrupt head and picks the correct rotation."""
+    n_sym, corrupt_head = 2000, 500
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=n_sym, corrupt_head=corrupt_head)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    out_no_skip = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
+    out_skip = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=corrupt_head)
+
+    from commstools.metrics import ser as _ser_fn
+
+    def _ser(y, r):
+        return float(xp.mean(xp.asarray(_ser_fn(y, r, "qam", 16))))
+
+    ser_skip_tail = _ser(out_skip[corrupt_head:], ref[corrupt_head:])
+    ser_no_skip_tail = _ser(out_no_skip[corrupt_head:], ref[corrupt_head:])
+    assert ser_skip_tail <= ser_no_skip_tail, (
+        f"Skip should improve tail SER: {ser_skip_tail:.4f} vs {ser_no_skip_tail:.4f}"
+    )
+
+
+def test_resolve_phase_ambiguity_skip_zero_is_baseline(backend_device, xp, xpt):
+    """num_skip_symbols=0 must produce identical output to the default call."""
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=1000, corrupt_head=0)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    out_default = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16)
+    out_skip0 = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
+
+    assert bool(xp.all(out_default == out_skip0))
+
+
+def test_resolve_phase_ambiguity_skip_ge_n_raises(backend_device, xp):
+    """num_skip_symbols >= N must raise ValueError."""
+    symbols_np, ref_np = _make_ambiguous_qam16(n_sym=100, corrupt_head=0)
+    symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
+
+    with pytest.raises(ValueError, match="num_skip_symbols"):
+        recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=100)
+
+    with pytest.raises(ValueError, match="num_skip_symbols"):
+        recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=200)

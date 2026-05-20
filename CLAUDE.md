@@ -71,10 +71,12 @@ Generation flows: bits → symbols → samples. `Signal.source_bits` is the grou
 | `mapping.py` | Bits↔symbols, Gray coding, constellation generation, LLR soft demapping |
 | `filtering.py` | Pulse shaping (RRC, RC, Gaussian, smoothrect), FIR filter application |
 | `multirate.py` | Resampling, decimation, polyphase filtering |
-| `sync.py` | Barker/ZC sequences, cross-correlation timing; frequency offset estimation (M-th power spectral with Jacobsen sub-bin interpolation, Mengali-Morelli multi-lag autocorrelation, pilot-aided WLSQ); carrier phase recovery (Viterbi-Viterbi, BPS, pilot-aided, DD-PLL) |
+| `timing.py` | Barker/ZC sequences, cross-correlation timing, fractional delay estimation (`estimate_timing`, `correct_timing`, `fft_fractional_delay`) |
+| `frequency.py` | Frequency offset estimation (M-th power with Jacobsen sub-bin interpolation, Mengali-Morelli multi-lag autocorrelation, pilot-aided WLSQ) and `correct_frequency_offset` |
+| `recovery.py` | Carrier phase recovery (Viterbi-Viterbi, BPS/Pfau, pilot-aided, DD-PLL, Tikhonov-RTS), `correct_carrier_phase`, `correct_cycle_slips`, `resolve_phase_ambiguity` |
 | `equalization.py` | LMS, RLS, CMA (blind), RDE (blind), ZF/MMSE block equalizers; butterfly MIMO topology; Numba + JAX backends |
 | `metrics.py` | EVM, SNR, BER computation |
-| `impairments.py` | AWGN channel (Es/N0 aware with SPS handling), PMD (differential group delay, Jones matrix) |
+| `impairments.py` | AWGN channel (Es/N0 aware with SPS handling), PMD (differential group delay, Jones matrix), IQ imbalance (apply + Löwdin/Gram-Schmidt compensation) |
 | `spectral.py` | Frequency shifting, Welch PSD |
 | `plotting.py` | Constellation, eye diagram, PSD, waveform, filter response, equalizer convergence |
 | `helpers.py` | Random generation, normalization (average_power/peak/unity_gain/unit_energy), cross-correlation, SI formatting |

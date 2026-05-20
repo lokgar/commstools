@@ -20,8 +20,12 @@ impairments :
     Channel models and signal degradation effects.
 metrics :
     Quality assessment tools (BER, SNR, EVM).
-sync :
-    Synchronization and timing recovery algorithms.
+timing :
+    Timing synchronization: preamble sequences and fractional delay estimation.
+frequency :
+    Frequency offset estimation and correction algorithms.
+recovery :
+    Carrier phase recovery and cycle-slip correction.
 mapping :
     Bits-to-symbols and LLR demapping logic.
 filtering :
@@ -38,7 +42,7 @@ import warnings
 
 __version__ = "0.1.0"
 
-from . import equalization, impairments, metrics, sync
+from . import equalization, frequency, impairments, metrics, recovery, timing
 from .core import Preamble, Signal, SingleCarrierFrame
 from .io import load_npz, save_npz
 from .logger import set_log_level
@@ -53,12 +57,14 @@ __all__ = [
     "Signal",
     "SingleCarrierFrame",
     "equalization",
+    "frequency",
     "impairments",
     "load_npz",
     "metrics",
+    "recovery",
     "save_npz",
     "set_log_level",
-    "sync",
+    "timing",
 ]
 
 apply_default_theme()
