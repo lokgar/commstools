@@ -486,7 +486,6 @@ def _get_numba_rls():
             y = np.empty(C, dtype=np.complex64)
             e = np.empty(C, dtype=np.complex64)
 
-            lam_f32 = np.float32(lam)
             lam_f64 = np.float64(lam)
             leak_term = np.float32(1.0) - np.float32(leakage)
 
@@ -540,8 +539,16 @@ def _get_numba_rls():
                     e[i] = d_i - y[i]
                     e_out[idx, i] = e[i]
 
-                # Kalman gain: Px = P @ x_bar
-                Px = np.dot(P, x_bar)
+                # Kalman gain: Px = P @ x_bar  (in-place, no heap allocation)
+                for ii in range(N):
+                    acc_re = 0.0
+                    acc_im = 0.0
+                    for jj in range(N):
+                        p_val = P[ii, jj]
+                        x_val = x_bar[jj]
+                        acc_re += p_val.real * x_val.real - p_val.imag * x_val.imag
+                        acc_im += p_val.real * x_val.imag + p_val.imag * x_val.real
+                    Px[ii] = acc_re + 1j * acc_im
 
                 # denom = λ + real(conj(x_bar) · Px)
                 denom = lam_f64
@@ -1055,7 +1062,6 @@ def _get_numba_rls_cpr():
             bps_prev4 = np.zeros(C, dtype=np.float64)
             bps_offset4 = np.zeros(C, dtype=np.float64)
 
-            lam_f32 = np.float32(lam)
             lam_f64 = np.float64(lam)
             leak_term = np.float32(1.0) - np.float32(leakage)
 
@@ -5632,7 +5638,6 @@ def block_lms(
             constellation_np = (constellation_np / np.sqrt(_e_ps)).astype(np.complex64)
 
     constellation = xp.asarray(constellation_np)  # (M,) on device
-    M = len(constellation_np)
     _sq_side, _sq_lev_min_f, _sq_d_grid_f = _sq_qam_slicer_params(constellation_np)
     _sq_lev_min = float(_sq_lev_min_f)
     _sq_d_grid = float(_sq_d_grid_f)

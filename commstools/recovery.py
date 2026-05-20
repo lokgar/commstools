@@ -1850,7 +1850,9 @@ def correct_carrier_phase(
     # standalone CPR), then cast to float32 for fast GPU exp.
     phase_f64 = xp.asarray(phase_vector, dtype=xp.float64)
     two_pi = 2.0 * np.pi
-    phase_wrapped = (phase_f64 - xp.round(phase_f64 / two_pi) * two_pi).astype(xp.float32)
+    phase_wrapped = (phase_f64 - xp.round(phase_f64 / two_pi) * two_pi).astype(
+        xp.float32
+    )
     phasor = xp.exp(-1j * phase_wrapped)
     if phasor.dtype != symbols.dtype:
         phasor = phasor.astype(symbols.dtype)
@@ -2128,9 +2130,18 @@ def resolve_phase_ambiguity(
         best_ser = float("inf")
         for k, rot in enumerate(candidates):
             rotated = symbols[ch] * rot
-            s = float(xp.mean(xp.asarray(
-                _ser(rotated[num_skip_symbols:], ref[ch, num_skip_symbols:], modulation, order)
-            )))
+            s = float(
+                xp.mean(
+                    xp.asarray(
+                        _ser(
+                            rotated[num_skip_symbols:],
+                            ref[ch, num_skip_symbols:],
+                            modulation,
+                            order,
+                        )
+                    )
+                )
+            )
             if s < best_ser:
                 best_ser = s
                 best_k = k

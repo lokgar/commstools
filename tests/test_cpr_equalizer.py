@@ -21,8 +21,7 @@ import pytest
 
 from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
-from commstools.frequency import estimate_frequency_offset_blockwise
-from commstools.recovery import correct_carrier_phase
+from commstools.frequency import correct_frequency_drift, estimate_frequency_offset_mth_power
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,7 +229,7 @@ def test_pll_phase_noise_tracking(backend_device, xp):
 
 
 def test_blockwise_foe_chirp(backend_device, xp):
-    """estimate_frequency_offset_blockwise recovers a linearly chirping frequency."""
+    """correct_frequency_drift recovers a linearly chirping frequency."""
     rng = np.random.default_rng(3)
     fs = 1e9
     n = 65536
@@ -249,16 +248,15 @@ def test_blockwise_foe_chirp(backend_device, xp):
     samples = xp.asarray((base_np * carrier).astype(np.complex64))
     base = xp.asarray(base_np)
 
-    theta = estimate_frequency_offset_blockwise(
+    corrected = correct_frequency_drift(
         samples,
         fs,
         block_size=4096,
         overlap=0.5,
-        method="mth_power",
-        modulation="qam",
-        order=16,
+        estimator=lambda b, f: estimate_frequency_offset_mth_power(
+            b, sampling_rate=f, modulation="qam", order=16
+        ),
     )
-    corrected = xp.asarray(correct_carrier_phase(samples, theta))
 
     ratio_corr = float(
         xp.mean(xp.abs(corrected - base) ** 2) / xp.mean(xp.abs(base) ** 2)

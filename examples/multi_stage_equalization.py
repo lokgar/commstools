@@ -220,7 +220,7 @@ fo_est = frequency.estimate_frequency_offset_mth_power(
     order=ORDER,
 )
 
-y_foe = frequency.correct_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
+y_foe = frequency.correct_static_frequency_offset(y_s1b, sampling_rate=SYMBOL_RATE, offset=fo_est)
 
 print(f"  True FO : {FO_TRUE_HZ / 1e6:.4f} MHz")
 print(f"  Est  FO : {fo_est / 1e6:.4f} MHz")

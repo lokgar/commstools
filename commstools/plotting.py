@@ -1938,13 +1938,12 @@ def foe_blockwise_result(
     n_grid,
     df_dense,
     phase_trajectory,
-    sampling_rate: float = 1.0,
     ax=None,
     show: bool = False,
     title: str = "Block-wise FOE",
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Diagnostic plot for :func:`~commstools.frequency.estimate_frequency_offset_blockwise`.
+    Diagnostic plot for :func:`~commstools.frequency.correct_frequency_drift`.
 
     Shows three panels:
 
@@ -1963,8 +1962,6 @@ def foe_blockwise_result(
         Interpolated frequency at each sample in Hz. Shape: ``(N,)``.
     phase_trajectory : array_like
         Integrated phase in radians. Shape: ``(N,)``.
-    sampling_rate : float, default 1.0
-        Sampling rate in Hz (used for axis labelling only).
     ax : list of 2 Axes, optional
         Pre-existing axes ``[ax_freq, ax_phase]``. If ``None``, a new figure
         with 2 panels is created.

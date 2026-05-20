@@ -3,8 +3,8 @@ Frequency offset estimation and correction utilities.
 
 This module provides routines for carrier frequency offset (FOE) estimation
 and correction, including blind spectral methods, multi-lag autocorrelation,
-pilot-aided estimation, blockwise time-varying FOE, and exact complex mixing
-correction.
+pilot-aided estimation, blockwise time-varying FOE, and constant-offset
+complex mixing correction.
 
 Functions
 ---------
@@ -15,10 +15,15 @@ estimate_frequency_offset_mengali_morelli :
     extends to full Nyquist [-fs/2, fs/2] regardless of block length.
 estimate_frequency_offset_pilots :
     Scattered-pilot FOE via (optionally SNR-weighted) least-squares phase slope fitting.
-estimate_frequency_offset_blockwise :
-    Time-varying FOE via sliding-window approach with cubic-spline interpolation.
-correct_frequency_offset :
-    Applies frequency offset correction via exact complex mixing (no bin quantisation).
+find_bias_tone :
+    Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment via
+    log-parabolic sub-bin interpolation.  Modulation-agnostic.
+correct_frequency_drift :
+    Estimate and correct a time-varying frequency drift in one call; uses a callable
+    estimator per block with PCHIP interpolation; fully MIMO-aware.
+correct_static_frequency_offset :
+    Applies a **constant** frequency offset correction via exact complex mixing.
+    Not suitable for streaming sub-block correction (phasor restarts at n=0).
 """
 
 from typing import Callable, Optional, Tuple, Union
@@ -262,6 +267,14 @@ def estimate_frequency_offset_mth_power(
     M = _modulation_power_m(modulation, order)
     mod_lower = modulation.lower()
 
+    if "qam" in mod_lower and order >= 64:
+        logger.warning(
+            f"QAM order {order}: M-th power lock range is ±fs/8 = ±{sampling_rate / 8:.0f} Hz "
+            "and AM spectral spreading reduces accuracy for high-order constellations. "
+            "Consider estimate_frequency_offset_mengali_morelli (blind) or find_bias_tone "
+            "(pilot tone)."
+        )
+
     if nfft is None:
         nfft = 1 << int(np.ceil(np.log2(N)))  # guaranteed Python int
 
@@ -307,27 +320,43 @@ def estimate_frequency_offset_mth_power(
     mag_combined = xp.sum(mag, axis=0)  # (nfft,)
 
     k_peak = int(xp.argmax(mag_combined))
-    k_safe = max(1, min(k_peak, nfft - 2))
+    k_prev = (k_peak - 1) % nfft  # circular — correct at Nyquist edge (k=nfft-1)
+    k_next = (k_peak + 1) % nfft
 
-    # Per-channel sub-bin interpolation at the shared global peak bin.
-    # Using the combined-magnitude peak for robustness (coherent noise averaging);
-    # per-channel complex/magnitude values give the channel-specific fractional correction.
-    f_per_ch = []
-    for c in range(C):
-        if interpolation == "jacobsen":
-            xa_c = complex(X_M[c, k_safe - 1])
-            xb_c = complex(X_M[c, k_safe])
-            xc_c = complex(X_M[c, k_safe + 1])
-            d_c = 2 * xb_c - xa_c - xc_c
-            mu_c = float(((xa_c - xc_c) / d_c).real) if abs(d_c) > 1e-30 else 0.0
-        else:
-            a_c = float(mag[c, k_safe - 1])
-            b_c = float(mag[c, k_safe])
-            cc_ = float(mag[c, k_safe + 1])
-            d_c = a_c - 2 * b_c + cc_
-            mu_c = 0.5 * (a_c - cc_) / d_c if abs(d_c) > 1e-15 else 0.0
-        mu_c = max(-0.5, min(0.5, mu_c))
-        f_per_ch.append((freqs_np[k_safe] + mu_c * (sampling_rate / nfft)) / M)
+    # Vectorised sub-bin interpolation across all C channels at the shared peak bin.
+    # Extract 3 neighbouring bins for all channels at once → 1 device→host transfer
+    # instead of 3C individual scalar round-trips.
+    X_km1 = X_M[:, k_prev]  # (C,) complex, on device
+    X_k0 = X_M[:, k_peak]
+    X_kp1 = X_M[:, k_next]
+
+    if interpolation == "jacobsen":
+        d_vec = 2.0 * X_k0 - X_km1 - X_kp1  # (C,) complex
+        safe_d = xp.where(xp.abs(d_vec) > 1e-30, d_vec, xp.ones_like(d_vec))
+        mu_raw = ((X_km1 - X_kp1) / safe_d).real  # (C,) float
+        mu_vec = xp.clip(
+            xp.where(xp.abs(d_vec) > 1e-30, mu_raw, xp.zeros_like(mu_raw)),
+            -0.5,
+            0.5,
+        )
+    else:  # parabolic — use the already-computed magnitude array
+        a_vec = mag[:, k_prev]  # (C,) float
+        b_vec = mag[:, k_peak]
+        cc_vec = mag[:, k_next]
+        d_vec = a_vec - 2.0 * b_vec + cc_vec
+        safe_d = xp.where(xp.abs(d_vec) > 1e-15, d_vec, xp.ones_like(d_vec))
+        mu_raw = 0.5 * (a_vec - cc_vec) / safe_d
+        mu_vec = xp.clip(
+            xp.where(xp.abs(d_vec) > 1e-15, mu_raw, xp.zeros_like(mu_raw)),
+            -0.5,
+            0.5,
+        )
+
+    mu_np = to_device(mu_vec, "cpu")  # one transfer: (C,) floats
+    f_per_ch = [
+        float((freqs_np[k_peak] + float(mu_np[c]) * (sampling_rate / nfft)) / M)
+        for c in range(C)
+    ]
 
     logger.info(
         f"FOE (M-th power, M={M}): {[f'{f:.2f}' for f in f_per_ch]} Hz "
@@ -350,7 +379,7 @@ def estimate_frequency_offset_mth_power(
     if was_1d:
         return float(f_per_ch[0])
     if combine_channels:
-        weights = [float(mag[c, k_peak]) for c in range(C)]
+        weights = to_device(mag[:, k_peak], "cpu").tolist()  # one batch transfer
         combined = float(np.average(f_per_ch, weights=weights))
         logger.info(
             f"FOE (M-th power, M={M}): combined={combined:.2f} Hz "
@@ -722,6 +751,7 @@ def estimate_frequency_offset_pilots(
     C, N = samples.shape
 
     pilot_indices_np = to_device(pilot_indices, "cpu").astype(np.intp)
+    pilot_indices_xp = xp.asarray(pilot_indices_np)  # device copy for GPU fancy-index
     pilot_values_xp = xp.asarray(pilot_values)
     P = len(pilot_indices_np)
 
@@ -729,7 +759,7 @@ def estimate_frequency_offset_pilots(
         pilot_values_xp = xp.broadcast_to(pilot_values_xp[None, :], (C, P))
 
     # Extract and demodulate: phase = angle(r · conj(s)) = 2π·Δf·t + φ₀ + noise
-    r_pilots = samples[:, pilot_indices_np]  # (C, P)
+    r_pilots = samples[:, pilot_indices_xp]  # (C, P)
     phi_pilots = xp.angle(r_pilots * xp.conj(pilot_values_xp))  # (C, P)
 
     # Unwrap in float64; cp.unwrap preserves input dtype so cast before calling
@@ -738,23 +768,25 @@ def estimate_frequency_offset_pilots(
     t_xp = xp.asarray(pilot_indices_np.astype(np.float64)) / sampling_rate  # (P,)
 
     if snr_weighted:
-        # WLSQ: weight each pilot by received power |r|² (averaged across channels).
-        # Normalise to unit mean so weights don't affect the units of the slope.
-        pwr = xp.mean(xp.abs(r_pilots) ** 2, axis=0)  # (P,) — mean over channels
-        v = pwr / (xp.mean(pwr) + 1e-30)  # (P,) normalised weights
+        # WLSQ: weight each pilot by received power |r|² independently per channel.
+        # Per-channel weights (C, P) handle independent spatial fading correctly;
+        # when all channels have equal SNR the weights reduce to the shared case.
+        pwr = xp.abs(r_pilots) ** 2  # (C, P)
+        pwr_mean = xp.mean(pwr, axis=-1, keepdims=True)  # (C, 1)
+        v = pwr / (pwr_mean + 1e-30)  # (C, P) normalised per-channel weights
 
-        # Weighted means
-        v_sum = xp.sum(v)
-        t_mean_v = xp.sum(v * t_xp) / v_sum  # scalar
-        t_c = t_xp - t_mean_v  # (P,) centred
-        phi_mean_v = (
-            xp.sum(v[None, :] * phi_pilots_u, axis=-1, keepdims=True) / v_sum
-        )  # (C,1)
+        # Per-channel weighted means
+        v_sum = xp.sum(v, axis=-1, keepdims=True)  # (C, 1)
+        t_mean_v = xp.sum(v * t_xp[None, :], axis=-1, keepdims=True) / v_sum  # (C, 1)
+        t_c = t_xp[None, :] - t_mean_v  # (C, P) centred times
+        phi_mean_v = xp.sum(v * phi_pilots_u, axis=-1, keepdims=True) / v_sum  # (C, 1)
         phi_c = phi_pilots_u - phi_mean_v  # (C, P)
 
-        # Weighted normal equations: slope = Σ v·(t-t̄)·(φ-φ̄) / Σ v·(t-t̄)²
-        t_var_w = float(xp.sum(v * t_c**2))  # scalar
-        slopes = xp.sum(v[None, :] * phi_c * t_c[None, :], axis=-1) / t_var_w  # (C,)
+        # Per-channel weighted normal equations: slope[c] = Σ_p v[c,p]·t_c[c,p]·φ_c[c,p]
+        #                                                    / Σ_p v[c,p]·t_c[c,p]²
+        t_var_w = xp.sum(v * t_c**2, axis=-1)  # (C,)
+        safe_denom = xp.where(xp.abs(t_var_w) > 1e-30, t_var_w, xp.ones_like(t_var_w))
+        slopes = xp.sum(v * phi_c * t_c, axis=-1) / safe_denom  # (C,)
     else:
         # Unweighted OLS: centered normal equations (Tretter 1985 MVUE).
         t_c = t_xp - xp.mean(t_xp)  # (P,) centred
@@ -799,188 +831,350 @@ def estimate_frequency_offset_pilots(
     return np.array(f_per_ch)
 
 
-def estimate_frequency_offset_blockwise(
+def find_bias_tone(
+    seg: ArrayType,
+    sampling_rate: float,
+    target_hz: Optional[float] = None,
+    search_band_hz: Optional[float] = None,
+) -> float:
+    """
+    Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment.
+
+    Finds the spectral peak in ``seg`` (optionally restricted to a search
+    window) and refines its frequency via **log-parabolic sub-bin
+    interpolation** on the three bins around the argmax.  The result is
+    modulation-agnostic: no nonlinear transform of the data is applied,
+    so there is no AM-induced spectral spreading regardless of constellation
+    order.
+
+    Parameters
+    ----------
+    seg : array_like
+        1-D complex IQ samples.  Must reside on a single backend (CPU or GPU).
+    sampling_rate : float
+        Sampling rate in Hz.
+    target_hz : float, optional
+        Centre of the frequency search window in Hz.  Must be paired with
+        ``search_band_hz``.  If both are given the argmax is restricted to
+        ``[target_hz - search_band_hz, target_hz + search_band_hz]``.
+        Use this after a coarse correction has placed the tone near a known
+        position; without it the wideband data signal typically wins the
+        argmax.
+    search_band_hz : float, optional
+        Half-width of the search window in Hz.  Must be paired with
+        ``target_hz``.
+
+    Returns
+    -------
+    float
+        Refined bias-tone frequency in Hz (always a Python ``float``).
+
+    Raises
+    ------
+    ValueError
+        If ``seg`` is not 1-D, is shorter than 4 samples, only one of
+        ``target_hz`` / ``search_band_hz`` is given, or the search window
+        maps to an empty set of FFT bins.
+
+    Notes
+    -----
+    **Log-parabolic sub-bin interpolation** fits the log-magnitude of the
+    three bins around the argmax peak *k*:
+
+    .. math::
+
+        y_-  &= \\log\\max(|X[k-1]|, \\varepsilon) \\\\
+        y_0  &= \\log\\max(|X[k]|,   \\varepsilon) \\\\
+        y_+  &= \\log\\max(|X[k+1]|, \\varepsilon) \\\\
+        d    &= y_- - 2y_0 + y_+ \\\\
+        \\delta &= \\tfrac{1}{2}(y_- - y_+)\\,/\\,d
+                  \\quad\\text{if } |d| > \\varepsilon \\\\
+        f_\\text{refined} &= f[k] + \\delta \\cdot f_s / N
+
+    Log-parabolic interpolation better matches the Gaussian shape of a
+    windowed spectral peak than standard parabolic (magnitude-domain) fits,
+    reducing estimation bias for non-integer tone frequencies.
+
+    References
+    ----------
+    M. Abe and S. Kobayashi, "Precise frequency estimation by log-parabolic
+    interpolation," *Proc. ICASSP*, 2000.
+    """
+    if (target_hz is None) != (search_band_hz is None):
+        raise ValueError(
+            "target_hz and search_band_hz must both be provided or both omitted."
+        )
+
+    seg, xp, _ = dispatch(seg)
+    if seg.ndim != 1:
+        raise ValueError(
+            f"find_bias_tone expects a 1-D segment, got shape {seg.shape}."
+        )
+    N = len(seg)
+    if N < 4:
+        raise ValueError(
+            f"Segment too short for bias tone search (N={N}). Minimum 4 samples required."
+        )
+
+    nfft = 1 << int(np.ceil(np.log2(N)))  # next power of 2 ≥ N
+    X = xp.fft.fft(seg, n=nfft)
+    mag = xp.abs(X)  # (nfft,)
+
+    freqs_np = np.fft.fftfreq(nfft, d=1.0 / sampling_rate)  # (nfft,) always on CPU
+
+    if target_hz is not None:
+        lo = target_hz - abs(search_band_hz)
+        hi = target_hz + abs(search_band_hz)
+        freqs_xp = xp.asarray(freqs_np)
+        mask = (freqs_xp >= lo) & (freqs_xp <= hi)
+        if not bool(xp.any(mask)):
+            raise ValueError(
+                f"target_hz={target_hz} ± search_band_hz={search_band_hz} produces an "
+                f"empty search window for fs={sampling_rate} Hz, nfft={nfft}."
+            )
+        mag_search = xp.where(mask, mag, xp.zeros_like(mag))
+    else:
+        mag_search = mag
+
+    k = int(xp.argmax(mag_search))
+    k_prev = (k - 1) % nfft  # circular — correct at spectral edges
+    k_next = (k + 1) % nfft
+
+    # Transfer 3 neighbourhood magnitudes to CPU — scalars, negligible transfer cost
+    eps = 1e-300
+    ym = np.log(max(float(mag[k_prev]), eps))
+    y0 = np.log(max(float(mag[k]), eps))
+    yp = np.log(max(float(mag[k_next]), eps))
+
+    denom = ym - 2.0 * y0 + yp
+    delta = 0.5 * (ym - yp) / denom if abs(denom) > 1e-30 else 0.0
+    delta = max(-0.5, min(0.5, delta))  # clamp to ±½ bin
+
+    f_refined = float(freqs_np[k]) + delta * (sampling_rate / nfft)
+
+    logger.info(
+        f"find_bias_tone: peak bin {k} ({freqs_np[k]:.2f} Hz), "
+        f"delta={delta:.4f} → {f_refined:.2f} Hz "
+        f"[nfft={nfft}, window="
+        f"{'full' if target_hz is None else f'{target_hz}±{search_band_hz} Hz'}]"
+    )
+
+    return float(f_refined)
+
+
+def correct_frequency_drift(
     samples: ArrayType,
     sampling_rate: float,
-    block_size: int = 4096,
-    overlap: float = 0.5,
-    method: str = "mth_power",
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    block_size: int,
+    overlap: float,
+    estimator: Callable[[np.ndarray, float], float],
+    combine_channels: bool = False,
     debug_plot: bool = False,
-) -> np.ndarray:
+) -> ArrayType:
     r"""
-    Estimates a time-varying frequency offset via a sliding-window approach.
+    Estimate and correct a time-varying frequency drift in one call.
 
-    Divides the signal into overlapping blocks, runs a scalar FOE on each
-    block, cubic-spline interpolates the block estimates to a dense per-sample
-    grid, then integrates to obtain a phase trajectory suitable for
-    :func:`correct_carrier_phase`.
+    Divides the signal into overlapping blocks, calls an arbitrary
+    ``estimator(block_1d_cpu, fs) → float`` independently on each channel,
+    interpolates the per-block estimates with **PCHIP** (monotone, no
+    overshoot), integrates to a phase trajectory, and applies the correction
+    by complex rotation — returning corrected samples on the same device and
+    dtype as the input.
 
     Parameters
     ----------
     samples : array_like
-        Complex IQ samples. Shape: ``(N,)`` or ``(C, N)``. For MIMO only the
-        first channel (row 0) is used for estimation; the returned phase array
-        is 1-D regardless.
+        Complex IQ samples.  Shape: ``(N,)`` or ``(C, N)``.
     sampling_rate : float
         Sampling rate in Hz.
-    block_size : int, default 4096
+    block_size : int
         Number of samples per analysis block.
-    overlap : float, default 0.5
-        Fractional overlap between consecutive blocks (``[0, 1)``).  Block
-        centers are spaced ``step = round(block_size * (1 - overlap))``
-        samples apart.  Values ≥ 0.5 are recommended to avoid under-sampling
-        fast frequency drifts.
-    method : {"mth_power", "mengali_morelli"}, default "mth_power"
-        Per-block estimator.
+    overlap : float
+        Fractional overlap between consecutive blocks, in ``[0, 1)``.  Block
+        centres are spaced ``step = round(block_size * (1 - overlap))``
+        samples apart.
+    estimator : callable
+        Signature ``(block: np.ndarray, fs: float) -> float``.  Receives a
+        1-D NumPy complex array on CPU and returns the estimated instantaneous
+        frequency offset in Hz.  Additional arguments can be bound with
+        :func:`functools.partial`:
 
-        * ``"mth_power"`` — M-th power spectral method with Jacobsen
-          sub-bin interpolation (:func:`estimate_frequency_offset_mth_power`).
-          Requires ``modulation`` and ``order``.
-        * ``"mengali_morelli"`` — multi-lag autocorrelation MVUE
-          (:func:`estimate_frequency_offset_mengali_morelli`).
-          Requires ``modulation`` and ``order`` for blind operation.
-    modulation : str, optional
-        Modulation scheme (e.g. ``'qam'``, ``'psk'``).  Required for blind
-        estimation with either method.
-    order : int, optional
-        Modulation order (e.g. 4, 16, 64).  Required alongside ``modulation``.
+        .. code-block:: python
+
+            from functools import partial
+            from commstools.frequency import find_bias_tone, correct_frequency_drift
+
+            track = partial(find_bias_tone, target_hz=352.6e6, search_band_hz=20e6)
+            corrected = correct_frequency_drift(
+                samples, fs, block_size=2048, overlap=0.5, estimator=track
+            )
+
+    combine_channels : bool, default False
+        For MIMO inputs (C > 1):
+
+        * ``False`` — estimate and correct each channel independently.
+          Each channel's own per-block estimates drive a separate PCHIP
+          interpolation and phase trajectory.
+        * ``True`` — average the per-channel block estimates, run one PCHIP
+          on the average, and apply the same phase trajectory to every channel.
+          Use this for coherent MIMO (e.g. polarisation diversity) where all
+          channels share the same laser / frequency offset.
+
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the per-block frequency
-        estimates, the interpolated frequency trajectory, and the integrated
-        phase trajectory.
+        estimates, PCHIP-interpolated trajectory, and integrated phase
+        trajectory.  For MIMO with ``combine_channels=False``, shows channel 0.
 
     Returns
     -------
-    np.ndarray, shape ``(N,)`` float64
-        Per-sample phase trajectory :math:`\theta(n)` in radians.  Apply via::
-
-            corrected = correct_carrier_phase(samples, theta)
-
-        Positive :math:`\theta(n)` corresponds to a positive instantaneous
-        frequency offset (carrier ahead of nominal).
+    array_like
+        Frequency-drift-corrected samples, **same shape and dtype as the
+        input**, on the same backend device.
 
     Notes
     -----
-    **Pipeline:**
+    **Pipeline (per channel):**
 
-    1. Slice into overlapping blocks centered at
-       :math:`t_k = \lfloor k \cdot \text{step} + \text{block\_size}/2 \rceil`
-       for :math:`k = 0, 1, \ldots, B-1`.
-    2. Run ``method`` on each block to obtain :math:`\Delta f[k]` in Hz.
-    3. Interpolate :math:`\Delta f[k]` to a dense per-sample grid:
+    1. Slice into overlapping blocks centred at
+       :math:`t_k = s_k + \text{block\_size}/2`.
+    2. Call ``estimator(block_np, fs)`` on each CPU block.
+    3. Interpolate estimates with :class:`scipy.interpolate.PchipInterpolator`;
+       clamp to ``[t_0, t_{B-1}]`` (no extrapolation).
+    4. Integrate: :math:`\theta(n) = (2\pi / f_s)\,\text{cumsum}(\Delta f)`.
+    5. Apply: :math:`y[n] = x[n]\,e^{-j\theta[n]}`.
 
-       * Interior (between first and last block centre): PCHIP spline.
-       * Exterior (before first / after last block centre): constant clamp to
-         the nearest edge estimate.  Extrapolation diverges rapidly for
-         noisy block estimates and is avoided.
-       * Fallback to linear interpolation when fewer than 4 blocks are
-         available (cubic requires ≥ 4 nodes for numerical stability).
+    The estimator always receives **NumPy arrays on CPU** regardless of the
+    input device.  Per-block CPU FFTs are faster than GPU for small block
+    sizes (512-4096 samples).  The correction is applied on the original
+    device.
 
-    4. Integrate:
-       :math:`\theta(n) = \frac{2\pi}{f_s} \sum_{m=0}^{n} \Delta f_\text{dense}(m)`.
-
-    **Minimum block count:** At least 2 blocks are required for interpolation.
-    If the signal is shorter than ``2 * block_size * (1 - overlap)`` samples,
-    the function falls back to a single-block global estimate.
+    **Single-block fallback:** if the signal is shorter than ``block_size``,
+    the entire signal forms one block and the result is a constant-rate phase
+    correction.
     """
-    if method not in ("mth_power", "mengali_morelli"):
-        raise ValueError(
-            f"method must be 'mth_power' or 'mengali_morelli', got {method!r}."
-        )
-    if method in ("mth_power", "mengali_morelli") and (
-        modulation is None or order is None
-    ):
-        raise ValueError(
-            f"method={method!r} requires modulation and order for blind estimation."
-        )
     if not (0.0 <= overlap < 1.0):
         raise ValueError(f"overlap must be in [0, 1), got {overlap}.")
 
-    samples_arr, _, _ = dispatch(samples)
-    # Use first channel for MIMO inputs
-    if samples_arr.ndim == 2:
-        sig1d = to_device(samples_arr[0], "cpu")
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples_2d = samples[None, :]  # (1, N)
     else:
-        sig1d = to_device(samples_arr, "cpu")
-    sig1d = np.asarray(sig1d)
-    N = len(sig1d)
+        samples_2d = samples
+    C, N = samples_2d.shape
 
     step = max(1, round(block_size * (1.0 - overlap)))
-    # Block start indices
     starts = list(range(0, N - block_size + 1, step))
     if not starts:
-        # Signal shorter than one block: estimate over full signal
         starts = [0]
-        block_size = N
-
-    t_centers = np.array([s + block_size / 2.0 for s in starts], dtype=np.float64)
-    df_estimates = np.empty(len(starts), dtype=np.float64)
-
-    for k, s in enumerate(starts):
-        block = sig1d[s : s + block_size]
-        if method == "mth_power":
-            est = estimate_frequency_offset_mth_power(
-                block, sampling_rate, modulation, order
-            )
-        else:
-            est = estimate_frequency_offset_mengali_morelli(
-                block, sampling_rate, modulation=modulation, order=order
-            )
-        df_estimates[k] = float(est)
-
-    # Interpolate to per-sample grid
-    n_grid = np.arange(N, dtype=np.float64)
-    n_blocks = len(t_centers)
-    if n_blocks == 1:
-        df_dense = np.full(N, df_estimates[0], dtype=np.float64)
+        _bsize = N
     else:
-        from scipy.interpolate import make_interp_spline  # noqa: PLC0415
+        _bsize = block_size
 
-        # Use cubic spline (k=3) for the interior when ≥ 4 nodes; fall back to
-        # linear (k=1) for small block counts. Clamp n_grid to [t_centers[0],
-        # t_centers[-1]] to avoid diverging polynomial extrapolation at the edges.
-        k = 3 if n_blocks >= 4 else 1
-        spline = make_interp_spline(t_centers, df_estimates, k=k)
-        df_dense = spline(np.clip(n_grid, t_centers[0], t_centers[-1]))
+    t_centers = np.array([s + _bsize / 2.0 for s in starts], dtype=np.float64)
+    B = len(starts)
+    n_grid = np.arange(N, dtype=np.float64)
 
-    # Integrate: θ(n) = (2π / fs) * cumsum(Δf_dense)
-    phase_trajectory = (2.0 * np.pi / sampling_rate) * np.cumsum(df_dense)
+    # Per-channel per-block estimation: df_all[c, k]
+    df_all = np.empty((C, B), dtype=np.float64)
+    for c in range(C):
+        sig1d = np.asarray(to_device(samples_2d[c], "cpu"))
+        for k, s in enumerate(starts):
+            df_all[c, k] = float(estimator(sig1d[s : s + _bsize], sampling_rate))
 
+    # Averaged or per-channel frequency estimates for interpolation
+    if combine_channels and C > 1:
+        df_for_interp = df_all.mean(axis=0, keepdims=True)  # (1, B) — shared
+    else:
+        df_for_interp = df_all  # (C, B) — per-channel
+
+    C_interp = df_for_interp.shape[0]
+
+    # Pre-import PCHIP once if multiple blocks
+    if B > 1:
+        from scipy.interpolate import PchipInterpolator  # noqa: PLC0415
+
+        n_clamped = np.clip(n_grid, t_centers[0], t_centers[-1])
+
+    # PCHIP interpolation + cumulative integration → (C_interp, N) phase array
+    theta_np = np.empty((C_interp, N), dtype=np.float64)
+    df_dense_plot: Optional[np.ndarray] = None
+    for c in range(C_interp):
+        df_est = df_for_interp[c]
+        if B == 1:
+            df_dense = np.full(N, df_est[0], dtype=np.float64)
+        else:
+            df_dense = PchipInterpolator(t_centers, df_est)(n_clamped)
+        theta_np[c] = (2.0 * np.pi / sampling_rate) * np.cumsum(df_dense)
+        if debug_plot and c == 0:
+            df_dense_plot = df_dense
+
+    # Broadcast averaged trajectory to all channels if needed
+    if combine_channels and C > 1:
+        theta_np_full = np.broadcast_to(theta_np, (C, N)).copy()
+    else:
+        theta_np_full = theta_np  # (C, N)
+
+    # Apply correction on the original device
+    theta_xp = xp.asarray(theta_np_full)  # (C, N) on device
+    two_pi = 2.0 * np.pi
+    phase_f64 = theta_xp.astype(xp.float64)
+    phase_wrapped = (phase_f64 - xp.round(phase_f64 / two_pi) * two_pi).astype(
+        xp.float32
+    )
+    phasor = xp.exp(-1j * phase_wrapped).astype(samples_2d.dtype)
+    corrected_2d = samples_2d * phasor
+
+    df_log = df_all.mean(axis=0) if (combine_channels and C > 1) else df_all[0]
     logger.debug(
-        f"FOE blockwise: {n_blocks} blocks, method={method}, "
-        f"freq range=[{df_estimates.min():.2f}, {df_estimates.max():.2f}] Hz, "
-        f"total phase drift={float(phase_trajectory[-1]):.3f} rad"
+        f"correct_frequency_drift: C={C}, B={B} blocks, "
+        f"freq range=[{df_log.min():.2f}, {df_log.max():.2f}] Hz, "
+        f"total phase drift={float(theta_np_full[0, -1]):.3f} rad"
     )
 
-    if debug_plot:
+    if debug_plot and df_dense_plot is not None:
         from . import plotting as _plotting  # noqa: PLC0415
 
+        title = (
+            f"correct_frequency_drift — channel 0 of {C}"
+            if C > 1 and not combine_channels
+            else "correct_frequency_drift"
+        )
         _plotting.foe_blockwise_result(
             t_centers=t_centers,
-            df_estimates=df_estimates,
+            df_estimates=df_for_interp[0],
             n_grid=n_grid,
-            df_dense=df_dense,
-            phase_trajectory=phase_trajectory,
+            df_dense=df_dense_plot,
+            phase_trajectory=theta_np_full[0],
             sampling_rate=sampling_rate,
             show=True,
+            title=title,
         )
 
-    return phase_trajectory
+    return corrected_2d[0] if was_1d else corrected_2d
 
 
-def correct_frequency_offset(
+def correct_static_frequency_offset(
     samples: ArrayType,
     sampling_rate: float,
     offset: Union[float, np.ndarray],
 ) -> ArrayType:
     """
-    Applies frequency offset correction by exact complex mixing.
+    Applies a **constant** frequency offset correction via exact complex mixing.
+
+    Multiplies ``samples`` by :math:`e^{-j 2\\pi \\Delta f \\cdot n / f_s}` where
+    *n* starts at 0 at the first sample of the passed array.
+
+    .. warning::
+        This function is designed for **full-signal correction** of a single
+        static offset.  Calling it on sub-blocks of a longer signal breaks phase
+        continuity because the phasor restarts at :math:`n=0` for each call.
+        For time-varying or block-streamed frequency correction use
+        :func:`correct_frequency_drift` instead.
 
     Unlike :func:`spectral.shift_frequency`, this function applies the
-    correction **without bin quantization**, preserving the full precision
-    of a sub-bin estimate (e.g. from parabolic interpolation in
+    correction **without bin quantization**, preserving the full precision of
+    a sub-bin estimate (e.g. from Jacobsen interpolation in
     :func:`estimate_frequency_offset_mth_power`).
 
     Parameters
@@ -1018,23 +1212,34 @@ def correct_frequency_offset(
         )
 
     n = samples.shape[-1]
-    t = xp.arange(n) / sampling_rate
+    t = xp.arange(n, dtype=xp.float64) / sampling_rate  # float64 — correct for all N
 
     if xp.iscomplexobj(samples):
         target_dtype = samples.dtype
     else:
         target_dtype = xp.complex64 if samples.dtype == xp.float32 else xp.complex128
 
+    # For complex64 targets: wrap to [-π, π] in float64, then cast to float32 before exp —
+    # matching the correct_carrier_phase / JAX BPS pattern in recovery.py / equalization.py.
+    # Wrapping is essential: casting a large unbounded ramp (e.g. 6000 rad) directly to
+    # float32 causes trig argument-reduction error (~|phase|·2⁻²³); wrapping first bounds
+    # the mantissa range to [-π, π] so float32 error is only ~3.7×10⁻⁷ rad.
+    # Avoids the original (C, N) complex128 intermediate for complex64 targets.
+    dtype_real = xp.float32 if target_dtype == xp.complex64 else xp.float64
+    two_pi = 2.0 * np.pi
+
     if per_channel:
         # Build a (C, N) mixer — one distinct tone per channel
         C = samples.shape[0]
         offsets_xp = xp.asarray(offset_arr.reshape(-1)[:C], dtype=xp.float64)  # (C,)
-        phase = -2.0 * xp.pi * offsets_xp[:, None] * t[None, :]  # (C, N)
-        mixer = xp.exp(1j * phase).astype(target_dtype)
+        phase = -2.0 * xp.pi * offsets_xp[:, None] * t[None, :]  # (C, N) float64
+        phase_exp = (phase - xp.round(phase / two_pi) * two_pi).astype(dtype_real)
+        mixer = xp.exp(1j * phase_exp).astype(target_dtype)
     else:
         # Scalar path — single mixer broadcast over all channels
-        phase = -2.0 * xp.pi * float(offset_arr) * t
-        mixer = xp.exp(1j * phase).astype(target_dtype)
+        phase = -2.0 * xp.pi * float(offset_arr) * t  # (N,) float64
+        phase_exp = (phase - xp.round(phase / two_pi) * two_pi).astype(dtype_real)
+        mixer = xp.exp(1j * phase_exp).astype(target_dtype)
         if samples.ndim > 1:
             mixer = mixer.reshape((1,) * (samples.ndim - 1) + (-1,))
 
