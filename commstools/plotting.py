@@ -30,7 +30,7 @@ frequency_offset_spectrum :
     M-th power spectrum with detected tone for blind FOE diagnostics.
 carrier_phase_trajectory :
     Per-symbol carrier phase trajectory for CPR algorithm diagnostics.
-foe_blockwise_result :
+frequency_drift_blockwise_result :
     Block-wise FOE diagnostic: interpolated frequency and integrated phase.
 pilot_phase_estimate :
     Pilot phase scatter, linear fit, and interpolated phase trajectory.
@@ -1932,7 +1932,7 @@ def carrier_phase_trajectory(
     return fig, axi
 
 
-def foe_blockwise_result(
+def frequency_drift_blockwise_result(
     t_centers,
     df_estimates,
     n_grid,
@@ -1986,11 +1986,11 @@ def foe_blockwise_result(
 
     # Panel 1: frequency trajectory
     ax_f = axes[0]
-    ax_f.plot(n_grid, df_dense * 1e-3, linewidth=1, label="Interpolated Δf")
+    ax_f.plot(n_grid, df_dense * 1e-3, label="Interpolated Δf")
     ax_f.scatter(
         t_centers,
         df_estimates * 1e-3,
-        s=20,
+        s=50,
         zorder=5,
         color="C1",
         label="Block estimate",
@@ -2003,7 +2003,7 @@ def foe_blockwise_result(
 
     # Panel 2: phase trajectory
     ax_p = axes[1]
-    ax_p.plot(n_grid, np.degrees(phase_trajectory), linewidth=1)
+    ax_p.plot(n_grid, np.degrees(phase_trajectory))
     ax_p.set_xlabel("Sample Index")
     ax_p.set_ylabel("Phase [deg]")
     ax_p.set_title(f"{title} — Integrated Phase")

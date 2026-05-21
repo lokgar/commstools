@@ -52,7 +52,10 @@ def _get_numba_dd_pll():
         import numba  # noqa: PLC0415
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_loop(sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0):
+        def _dd_pll_loop(
+            sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0,
+            is_sq_qam, levels, d_grid, lev_min, side,
+        ):
             """Inner DD-PLL loop compiled to machine code by Numba.
 
             Parameters
@@ -70,6 +73,17 @@ def _get_numba_dd_pll():
                 Initial phase state in radians.
             freq0 : float64
                 Initial frequency correction state in radians/symbol.
+            is_sq_qam : bool
+                True when the constellation is a square QAM grid.  Enables the
+                O(1) rounding decision path instead of the O(M) linear search.
+            levels : (side,) float64
+                Sorted unique axis levels for square QAM (ignored when not sq_qam).
+            d_grid : float64
+                Grid spacing (levels[1] - levels[0]).
+            lev_min : float64
+                Minimum level value (levels[0]).
+            side : int
+                Number of points per axis (sqrt of constellation order).
 
             Returns
             -------
@@ -91,15 +105,30 @@ def _get_numba_dd_pll():
                 yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
 
                 # Hard decision: argmin_{c ∈ C} |y − c|²
-                min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                d_r = const_r[0]
-                d_i = const_i[0]
-                for k in range(1, M):
-                    d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                    if d2 < min_d2:
-                        min_d2 = d2
-                        d_r = const_r[k]
-                        d_i = const_i[k]
+                if is_sq_qam:
+                    # O(1) grid rounding for square QAM
+                    r_idx = int(round((yr - lev_min) / d_grid))
+                    if r_idx < 0:
+                        r_idx = 0
+                    elif r_idx >= side:
+                        r_idx = side - 1
+                    d_r = levels[r_idx]
+                    i_idx = int(round((yi - lev_min) / d_grid))
+                    if i_idx < 0:
+                        i_idx = 0
+                    elif i_idx >= side:
+                        i_idx = side - 1
+                    d_i = levels[i_idx]
+                else:
+                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                    d_r = const_r[0]
+                    d_i = const_i[0]
+                    for k in range(1, M):
+                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                        if d2 < min_d2:
+                            min_d2 = d2
+                            d_r = const_r[k]
+                            d_i = const_i[k]
 
                 # Cross-product phase error:  e = Im(y · d*) = yi·d_r − yr·d_i
                 e = yi * d_r - yr * d_i
@@ -136,7 +165,10 @@ def _get_numba_dd_pll_butterworth():
         import numba  # noqa: PLC0415
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_bw_loop(sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2):
+        def _dd_pll_bw_loop(
+            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2,
+            is_sq_qam, levels, d_grid, lev_min, side,
+        ):
             """DD-PLL inner loop with a 2nd-order Butterworth loop filter.
 
             Parameters
@@ -151,6 +183,11 @@ def _get_numba_dd_pll_butterworth():
                 Numerator coefficients of the 2nd-order Butterworth IIR filter.
             a1, a2 : float64
                 Denominator coefficients (a[1], a[2]; a[0] is normalised to 1).
+            is_sq_qam : bool
+                Enables O(1) rounding decision for square QAM grids.
+            levels : (side,) float64
+            d_grid, lev_min : float64
+            side : int
 
             Returns
             -------
@@ -174,15 +211,29 @@ def _get_numba_dd_pll_butterworth():
                 yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
 
                 # Hard decision: argmin_{c ∈ C} |y − c|²
-                min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                d_r = const_r[0]
-                d_i = const_i[0]
-                for k in range(1, M):
-                    d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                    if d2 < min_d2:
-                        min_d2 = d2
-                        d_r = const_r[k]
-                        d_i = const_i[k]
+                if is_sq_qam:
+                    r_idx = int(round((yr - lev_min) / d_grid))
+                    if r_idx < 0:
+                        r_idx = 0
+                    elif r_idx >= side:
+                        r_idx = side - 1
+                    d_r = levels[r_idx]
+                    i_idx = int(round((yi - lev_min) / d_grid))
+                    if i_idx < 0:
+                        i_idx = 0
+                    elif i_idx >= side:
+                        i_idx = side - 1
+                    d_i = levels[i_idx]
+                else:
+                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                    d_r = const_r[0]
+                    d_i = const_i[0]
+                    for k in range(1, M):
+                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                        if d2 < min_d2:
+                            min_d2 = d2
+                            d_r = const_r[k]
+                            d_i = const_i[k]
 
                 # Cross-product phase error: e = Im(y · d*) = yi·d_r − yr·d_i
                 e = yi * d_r - yr * d_i
@@ -223,7 +274,10 @@ def _get_numba_dd_pll_joint():
         import numba  # noqa: PLC0415
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_joint_loop(sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0):
+        def _dd_pll_joint_loop(
+            sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0,
+            is_sq_qam, levels, d_grid, lev_min, side,
+        ):
             """Joint-channel DD-PLL with PI loop filter.
 
             Parameters
@@ -234,6 +288,11 @@ def _get_numba_dd_pll_joint():
                 Reference constellation.
             mu, beta, phi0, freq0 : float64
                 Loop parameters — same semantics as ``_dd_pll_loop``.
+            is_sq_qam : bool
+                Enables O(1) rounding decision for square QAM grids.
+            levels : (side,) float64
+            d_grid, lev_min : float64
+            side : int
 
             Returns
             -------
@@ -254,15 +313,29 @@ def _get_numba_dd_pll_joint():
                 for c in range(C):
                     yr = sym_r[c, n] * cos_phi + sym_i[c, n] * sin_phi
                     yi = -sym_r[c, n] * sin_phi + sym_i[c, n] * cos_phi
-                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                    d_r = const_r[0]
-                    d_i = const_i[0]
-                    for k in range(1, M):
-                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                        if d2 < min_d2:
-                            min_d2 = d2
-                            d_r = const_r[k]
-                            d_i = const_i[k]
+                    if is_sq_qam:
+                        r_idx = int(round((yr - lev_min) / d_grid))
+                        if r_idx < 0:
+                            r_idx = 0
+                        elif r_idx >= side:
+                            r_idx = side - 1
+                        d_r = levels[r_idx]
+                        i_idx = int(round((yi - lev_min) / d_grid))
+                        if i_idx < 0:
+                            i_idx = 0
+                        elif i_idx >= side:
+                            i_idx = side - 1
+                        d_i = levels[i_idx]
+                    else:
+                        min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                        d_r = const_r[0]
+                        d_i = const_i[0]
+                        for k in range(1, M):
+                            d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                            if d2 < min_d2:
+                                min_d2 = d2
+                                d_r = const_r[k]
+                                d_i = const_i[k]
                     e_sum += yi * d_r - yr * d_i
                 # Average error across channels — MVUE for shared LO
                 e = e_sum / float(C)
@@ -290,7 +363,8 @@ def _get_numba_dd_pll_joint_butterworth():
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_joint_bw_loop(
-            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2
+            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2,
+            is_sq_qam, levels, d_grid, lev_min, side,
         ):
             """Joint-channel DD-PLL with 2nd-order Butterworth loop filter.
 
@@ -301,6 +375,11 @@ def _get_numba_dd_pll_joint_butterworth():
             phi0 : float64
             b0, b1, b2, a1, a2 : float64
                 Butterworth biquad coefficients.
+            is_sq_qam : bool
+                Enables O(1) rounding decision for square QAM grids.
+            levels : (side,) float64
+            d_grid, lev_min : float64
+            side : int
 
             Returns
             -------
@@ -321,15 +400,29 @@ def _get_numba_dd_pll_joint_butterworth():
                 for c in range(C):
                     yr = sym_r[c, n] * cos_phi + sym_i[c, n] * sin_phi
                     yi = -sym_r[c, n] * sin_phi + sym_i[c, n] * cos_phi
-                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                    d_r = const_r[0]
-                    d_i = const_i[0]
-                    for k in range(1, M):
-                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                        if d2 < min_d2:
-                            min_d2 = d2
-                            d_r = const_r[k]
-                            d_i = const_i[k]
+                    if is_sq_qam:
+                        r_idx = int(round((yr - lev_min) / d_grid))
+                        if r_idx < 0:
+                            r_idx = 0
+                        elif r_idx >= side:
+                            r_idx = side - 1
+                        d_r = levels[r_idx]
+                        i_idx = int(round((yi - lev_min) / d_grid))
+                        if i_idx < 0:
+                            i_idx = 0
+                        elif i_idx >= side:
+                            i_idx = side - 1
+                        d_i = levels[i_idx]
+                    else:
+                        min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
+                        d_r = const_r[0]
+                        d_i = const_i[0]
+                        for k in range(1, M):
+                            d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
+                            if d2 < min_d2:
+                                min_d2 = d2
+                                d_r = const_r[k]
+                                d_i = const_i[k]
                     e_sum += yi * d_r - yr * d_i
                 e = e_sum / float(C)
                 phase_est[n] = phi
@@ -574,6 +667,23 @@ def recover_carrier_phase_pll(
     const_r = const_np.real.copy()
     const_i = const_np.imag.copy()
 
+    # Square-QAM O(1) decision parameters.  For square QAM (order a perfect
+    # square, e.g. 4/16/64/256/1024) the constellation is a uniform grid and
+    # the nearest point can be found by rounding to the closest axis level.
+    import math as _math  # noqa: PLC0415
+    _sq_root = _math.isqrt(order)
+    _is_sq_qam = ("qam" in modulation.lower()) and (_sq_root * _sq_root == order)
+    if _is_sq_qam:
+        _levels = np.unique(const_np.real).astype(np.float64)
+        _d_grid = float(_levels[1] - _levels[0]) if len(_levels) > 1 else 1.0
+        _lev_min = float(_levels[0])
+        _side = _sq_root
+    else:
+        _levels = np.empty(0, dtype=np.float64)
+        _d_grid = 1.0
+        _lev_min = 0.0
+        _side = 0
+
     # Move to CPU for sequential processing
     if xp is not np:
         symbols_cpu = to_device(symbols, "cpu")
@@ -613,6 +723,11 @@ def recover_carrier_phase_pll(
                 b2,
                 a1,
                 a2,
+                _is_sq_qam,
+                _levels,
+                _d_grid,
+                _lev_min,
+                _side,
             )
             for ch in range(C):
                 phi_full[ch] = phi_joint
@@ -631,6 +746,11 @@ def recover_carrier_phase_pll(
                     b2,
                     a1,
                     a2,
+                    _is_sq_qam,
+                    _levels,
+                    _d_grid,
+                    _lev_min,
+                    _side,
                 )
         loop_desc = f"Butterworth, BW={loop_bandwidth_normalized:.2g}"
     else:
@@ -645,6 +765,11 @@ def recover_carrier_phase_pll(
                 float(beta),
                 float(phase_init),
                 0.0,
+                _is_sq_qam,
+                _levels,
+                _d_grid,
+                _lev_min,
+                _side,
             )
             for ch in range(C):
                 phi_full[ch] = phi_joint
@@ -661,6 +786,11 @@ def recover_carrier_phase_pll(
                     float(beta),
                     float(phase_init),
                     0.0,
+                    _is_sq_qam,
+                    _levels,
+                    _d_grid,
+                    _lev_min,
+                    _side,
                 )
         loop_order = "2nd" if beta > 0.0 else "1st"
         loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
@@ -1882,9 +2012,10 @@ def _get_numba_cycle_slip():
             *corrected* blocks.  When the deviation exceeds ``threshold``, a
             ``π/2`` step correction is applied.
 
-            The linear regression is maintained in O(1) per step using
-            incremental sufficient statistics (Welford-style running sums):
-            ``Sx``, ``Sy``, ``Sxx``, ``Sxy``, ``n``.
+            The linear regression uses relative coordinates [0, W-1] so that
+            ``Sx`` and ``Sxx`` are exact compile-time constants.  Only ``Sy``
+            and ``Sxy`` are maintained as running state, updated in O(1) per
+            step via a closed-form sliding-window identity.
 
             Parameters
             ----------
@@ -1908,50 +2039,65 @@ def _get_numba_cycle_slip():
             two_pi = 2.0 * np.pi
             quantum = two_pi / float(symmetry)
             B = len(phi_u)
+            W = history_length
+            W_f = float(W)
 
-            # Incremental linear regression state
-            # We store the window as a circular buffer of (x, y) pairs.
-            buf_x = np.empty(history_length, dtype=np.float64)
-            buf_y = np.empty(history_length, dtype=np.float64)
-            buf_head = 0  # index of next write position (circular)
-            n_buf = 0  # current number of valid entries
+            # Precompute full-window regression constants in relative coords [0, W-1].
+            # With relative coords the x-values are always small integers, so Sx and
+            # Sxx never grow and there is no catastrophic cancellation regardless of
+            # how many total blocks have been processed.
+            Sx_full = W_f * (W_f - 1.0) / 2.0
+            Sxx_full = W_f * (W_f - 1.0) * (2.0 * W_f - 1.0) / 6.0
+            denom_full = W_f * Sxx_full - Sx_full * Sx_full  # W²(W²-1)/12
 
-            Sx = 0.0
+            # Only Sy and Sxy need to be maintained as running state.
+            buf_y = np.empty(W, dtype=np.float64)
+            buf_head = 0  # next write slot (circular)
+            n_buf = 0     # valid entries currently in buffer
+
             Sy = 0.0
-            Sxx = 0.0
             Sxy = 0.0
 
             for b in range(B):
-                x_b = float(b)
                 y_b = phi_u[b]
 
                 if n_buf == 0:
-                    # First block: trust it unconditionally
-                    buf_x[buf_head % history_length] = x_b
-                    buf_y[buf_head % history_length] = y_b
-                    buf_head += 1
-                    n_buf += 1
-                    Sx += x_b
-                    Sy += y_b
-                    Sxx += x_b * x_b
-                    Sxy += x_b * y_b
+                    # First block: trust it unconditionally (at relative position 0).
+                    buf_y[0] = y_b
+                    buf_head = 1
+                    n_buf = 1
+                    Sy = y_b
+                    Sxy = 0.0  # 0 * y_b
                     continue
 
-                if n_buf < min(10, history_length):
-                    # Zero-slope (constant) extrapolation for first few blocks
-                    # Prevents noisy early blocks from cementing false slips
-                    phi_pred = buf_y[(buf_head - 1) % history_length]
+                if n_buf < min(10, W):
+                    # Constant extrapolation during warmup to avoid cementing false slips.
+                    phi_pred = buf_y[(buf_head - 1) % W]
                 else:
-                    # Linear extrapolation: slope = (n·Sxy − Sx·Sy) / (n·Sxx − Sx²)
+                    # Linear extrapolation.  Prediction target is always one step past
+                    # the newest buffered entry, i.e. relative coordinate = n_buf.
+                    x_pred = float(n_buf)
                     n_f = float(n_buf)
-                    denom = n_f * Sxx - Sx * Sx
-                    if abs(denom) > 1e-30:
-                        slope = (n_f * Sxy - Sx * Sy) / denom
-                        intercept = (Sy - slope * Sx) / n_f
+                    if n_buf < W:
+                        # Partial window: derive exact Sx/Sxx from closed-form sums.
+                        Sx_p = n_f * (n_f - 1.0) / 2.0
+                        Sxx_p = n_f * (n_f - 1.0) * (2.0 * n_f - 1.0) / 6.0
+                        denom = n_f * Sxx_p - Sx_p * Sx_p
+                        if abs(denom) > 1e-30:
+                            slope = (n_f * Sxy - Sx_p * Sy) / denom
+                            intercept = (Sy - slope * Sx_p) / n_f
+                        else:
+                            slope = 0.0
+                            intercept = Sy / n_f
                     else:
-                        slope = 0.0
-                        intercept = Sy / n_f
-                    phi_pred = slope * x_b + intercept
+                        # Full window: use precomputed constants (numerically exact).
+                        if denom_full > 1e-30:
+                            slope = (W_f * Sxy - Sx_full * Sy) / denom_full
+                            intercept = (Sy - slope * Sx_full) / W_f
+                        else:
+                            slope = 0.0
+                            intercept = Sy / W_f
+                    phi_pred = slope * x_pred + intercept
 
                 diff = y_b - phi_pred
                 # Round to nearest correction quantum
@@ -1960,31 +2106,25 @@ def _get_numba_cycle_slip():
                     phi_u[b] -= float(k) * quantum
                     y_b = phi_u[b]
 
-                # Add corrected value to circular buffer, evicting oldest if full
-                if n_buf == history_length:
-                    # Evict the oldest entry
-                    old_idx = buf_head % history_length
-                    ox = buf_x[old_idx]
-                    oy = buf_y[old_idx]
-                    Sx -= ox
-                    Sy -= oy
-                    Sxx -= ox * ox
-                    Sxy -= ox * oy
-                    buf_x[old_idx] = x_b
+                # Update circular buffer using relative coordinates.
+                if n_buf == W:
+                    # Slide window: evict oldest (relative pos 0), shift all down by 1,
+                    # add y_b at relative position W-1.
+                    # Sxy update uses the identity:
+                    #   Sxy_new = Sxy_old − Sy_old + y_old + (W−1)·y_new
+                    # (derived by relabelling positions after eviction)
+                    old_idx = buf_head % W
+                    y_old = buf_y[old_idx]
+                    Sxy = Sxy - Sy + y_old + (W_f - 1.0) * y_b  # must precede Sy update
+                    Sy = Sy - y_old + y_b
                     buf_y[old_idx] = y_b
-                    Sx += x_b
-                    Sy += y_b
-                    Sxx += x_b * x_b
-                    Sxy += x_b * y_b
                     buf_head += 1
                 else:
-                    idx = buf_head % history_length
-                    buf_x[idx] = x_b
+                    # Append at relative position n_buf.
+                    idx = buf_head % W
                     buf_y[idx] = y_b
-                    Sx += x_b
+                    Sxy += float(n_buf) * y_b
                     Sy += y_b
-                    Sxx += x_b * x_b
-                    Sxy += x_b * y_b
                     buf_head += 1
                     n_buf += 1
 
@@ -2126,26 +2266,28 @@ def resolve_phase_ambiguity(
 
     out = xp.empty_like(symbols)
     for ch in range(C):
-        best_k = 0
-        best_ser = float("inf")
-        for k, rot in enumerate(candidates):
-            rotated = symbols[ch] * rot
-            s = float(
-                xp.mean(
-                    xp.asarray(
-                        _ser(
-                            rotated[num_skip_symbols:],
-                            ref[ch, num_skip_symbols:],
-                            modulation,
-                            order,
-                        )
+        # ML phase ambiguity estimator: the optimal rotation maximises
+        # Re(e^{jkθ} · Σ y_n s_n*), which equals choosing k closest to
+        # -∠(Σ y_n s_n*) / step.  Single inner product replaces symmetry_order
+        # full SER passes.
+        seg_y = symbols[ch, num_skip_symbols:]
+        seg_r = ref[ch, num_skip_symbols:]
+        correlation = xp.sum(seg_y * xp.conj(seg_r))
+        theta_est = -float(xp.angle(correlation))
+        best_k = int(round(theta_est / step)) % symmetry_order
+        out[ch] = symbols[ch] * candidates[best_k]
+        best_ser = float(
+            xp.mean(
+                xp.asarray(
+                    _ser(
+                        out[ch, num_skip_symbols:],
+                        seg_r,
+                        modulation,
+                        order,
                     )
                 )
             )
-            if s < best_ser:
-                best_ser = s
-                best_k = k
-        out[ch] = symbols[ch] * candidates[best_k]
+        )
         logger.info(
             f"Phase ambiguity resolution: ch={ch}, best_k={best_k}, "
             f"rotation={best_k * step * 180.0 / np.pi:.1f}°, SER={best_ser:.4f}"

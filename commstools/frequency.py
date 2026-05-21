@@ -952,7 +952,7 @@ def find_bias_tone(
 
     f_refined = float(freqs_np[k]) + delta * (sampling_rate / nfft)
 
-    logger.info(
+    logger.debug(
         f"find_bias_tone: peak bin {k} ({freqs_np[k]:.2f} Hz), "
         f"delta={delta:.4f} → {f_refined:.2f} Hz "
         f"[nfft={nfft}, window="
@@ -1131,6 +1131,12 @@ def correct_frequency_drift(
         f"freq range=[{df_log.min():.2f}, {df_log.max():.2f}] Hz, "
         f"total phase drift={float(theta_np_full[0, -1]):.3f} rad"
     )
+    logger.info(
+        f"correct_frequency_drift:  mean = {df_all.mean():+.1f} Hz,  "
+        f"std = {df_all.std():.1f} Hz,  "
+        f"range = [{df_all.min():+.1f}, {df_all.max():+.1f}] Hz "
+        f"({len(starts)} segments)"
+    )
 
     if debug_plot and df_dense_plot is not None:
         from . import plotting as _plotting  # noqa: PLC0415
@@ -1140,13 +1146,12 @@ def correct_frequency_drift(
             if C > 1 and not combine_channels
             else "correct_frequency_drift"
         )
-        _plotting.foe_blockwise_result(
+        _plotting.frequency_drift_blockwise_result(
             t_centers=t_centers,
             df_estimates=df_for_interp[0],
             n_grid=n_grid,
             df_dense=df_dense_plot,
             phase_trajectory=theta_np_full[0],
-            sampling_rate=sampling_rate,
             show=True,
             title=title,
         )

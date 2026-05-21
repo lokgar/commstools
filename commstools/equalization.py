@@ -369,14 +369,16 @@ def _get_numba_lms():
 
                 # Butterfly forward pass: y[i] = Σ_j conj(W[i,j]) · X_wins[j]
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # Desired symbol: training or decision-directed slicer
                 for i in range(C):
@@ -499,14 +501,16 @@ def _get_numba_rls():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(x_bar[j * num_taps + t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = x_bar[j * num_taps + t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # Desired and error
                 for i in range(C):
@@ -575,21 +579,19 @@ def _get_numba_rls():
                     for jj in range(N):
                         xH_P[jj] = np.conj(Px[jj])
 
-                    # Riccati: P = (P - outer(k, xH_P)) / λ
+                    # Riccati + Hermitian re-symmetrization in one pass (upper
+                    # triangle only). Halves memory traffic vs. two separate
+                    # O(N²) loops; correctness is identical.
                     for ii in range(N):
-                        for jj in range(N):
-                            P[ii, jj] = (P[ii, jj] - k[ii] * xH_P[jj]) / lam_f64
-
-                    # Hermitian re-symmetrization: P ← (P + Pᴴ)/2
-                    # The 1/λ division amplifies asymmetry from FP rounding each
-                    # step. Without re-symmetrization, accumulated asymmetry
-                    # causes P eigenvalues to diverge for λ < 1.
-                    for ii in range(N):
-                        for jj in range(ii + 1, N):
-                            avg = (P[ii, jj] + np.conj(P[jj, ii])) * np.float64(0.5)
-                            P[ii, jj] = avg
-                            P[jj, ii] = np.conj(avg)
-                        P[ii, ii] = np.complex128(P[ii, ii].real)
+                        for jj in range(ii, N):
+                            val = (P[ii, jj] - k[ii] * xH_P[jj]) / lam_f64
+                            if ii == jj:
+                                P[ii, ii] = np.complex128(val.real)
+                            else:
+                                conj_val = (P[jj, ii] - k[jj] * xH_P[ii]) / lam_f64
+                                avg = (val + np.conj(conj_val)) * np.float64(0.5)
+                                P[ii, jj] = avg
+                                P[jj, ii] = np.conj(avg)
 
                 if store_weights:
                     for i in range(C):
@@ -646,6 +648,7 @@ def _get_numba_lms_cpr():
             cs_buf_ptr,
             cs_buf_n,
             cs_stats,
+            bps_prev4,
             y_out,
             e_out,
             phase_out,
@@ -679,6 +682,7 @@ def _get_numba_lms_cpr():
             # cs_buf_ptr    : (C,) int64            — in-place
             # cs_buf_n      : (C,) int64            — in-place
             # cs_stats      : (C, 4) float64  [Sx,Sy,Sxx,Sxy] — in-place
+            # bps_prev4     : (C,) float64    — causal 4-fold unwrap state — in-place
             # y_out         : (N_sym, C) complex64
             # e_out         : (N_sym, C) complex64
             # phase_out     : (N_sym, C) float32
@@ -704,9 +708,6 @@ def _get_numba_lms_cpr():
             bps_dist_buf = np.zeros((C, bps_block_size, B), dtype=np.float32)
             bps_running_sum = np.zeros((C, B), dtype=np.float64)
             bps_dist_ptr = np.int64(0)
-            # Causal 4-fold phase unwrap state (equivalent to np.unwrap(phi*4)/4)
-            bps_prev4 = np.zeros(C, dtype=np.float64)
-            bps_offset4 = np.zeros(C, dtype=np.float64)
 
             for idx in range(n_sym):
                 sample_idx = idx * stride
@@ -718,13 +719,15 @@ def _get_numba_lms_cpr():
 
                 # Butterfly forward pass: y_raw[i] = Σ_j conj(W[i,j]) · X
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y_raw[i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y_raw[i] = acc_re + 1j * acc_im
 
                 # ── CPR: Phase estimation ──────────────────────────────────
 
@@ -790,8 +793,7 @@ def _get_numba_lms_cpr():
                                 diff4 / (np.float64(2.0 * np.pi))
                             )
                             bps_prev4[i] = bps_prev4[i] + diff4
-                            bps_offset4[i] = bps_offset4[i] + diff4
-                            phi_hat_bps[i] = bps_offset4[i] / np.float64(4.0)
+                            phi_hat_bps[i] = bps_prev4[i] / np.float64(4.0)
                     else:
                         for i in range(C):
                             best_k = np.int32(0)
@@ -807,8 +809,7 @@ def _get_numba_lms_cpr():
                                 diff4 / (np.float64(2.0 * np.pi))
                             )
                             bps_prev4[i] = bps_prev4[i] + diff4
-                            bps_offset4[i] = bps_offset4[i] + diff4
-                            phi_hat_bps[i] = bps_offset4[i] / np.float64(4.0)
+                            phi_hat_bps[i] = bps_prev4[i] / np.float64(4.0)
 
                 for i in range(C):
                     if cpr_mode == 1:  # PLL: read current integrator state
@@ -820,7 +821,6 @@ def _get_numba_lms_cpr():
                     if cs_enabled:
                         n_b = cs_buf_n[i]
                         ptr = cs_buf_ptr[i]
-                        x_b = np.float64(idx)
                         y_b = np.float64(phi_hat)
 
                         if n_b == 0:
@@ -832,19 +832,26 @@ def _get_numba_lms_cpr():
                                 )
                                 phi_expected = cs_buf_y[i, last_pos]
                             else:
-                                Sx = cs_stats[i, 0]
-                                Sy = cs_stats[i, 1]
-                                Sxx = cs_stats[i, 2]
-                                Sxy = cs_stats[i, 3]
+                                # cs_stats layout: [0]=Sy, [1]=Sxy (relative coords)
+                                Sy = cs_stats[i, 0]
+                                Sxy = cs_stats[i, 1]
                                 n_f = np.float64(n_b)
-                                denom = n_f * Sxx - Sx * Sx
+                                if n_b < np.int64(H):
+                                    Sx_c = n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
+                                    Sxx_c = n_f * (n_f - np.float64(1.0)) * (np.float64(2.0) * n_f - np.float64(1.0)) / np.float64(6.0)
+                                    denom = n_f * Sxx_c - Sx_c * Sx_c
+                                else:
+                                    H_f = np.float64(H)
+                                    Sx_c = H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
+                                    Sxx_c = H_f * (H_f - np.float64(1.0)) * (np.float64(2.0) * H_f - np.float64(1.0)) / np.float64(6.0)
+                                    denom = H_f * Sxx_c - Sx_c * Sx_c
                                 if np.abs(denom) > np.float64(1e-30):
-                                    slope = (n_f * Sxy - Sx * Sy) / denom
-                                    intercept = (Sy - slope * Sx) / n_f
+                                    slope = (n_f * Sxy - Sx_c * Sy) / denom
+                                    intercept = (Sy - slope * Sx_c) / n_f
                                 else:
                                     slope = np.float64(0.0)
                                     intercept = Sy / n_f
-                                phi_expected = slope * x_b + intercept
+                                phi_expected = slope * n_f + intercept
 
                             diff = y_b - phi_expected
                             k_slip = np.int64(np.round(diff / quantum))
@@ -854,21 +861,20 @@ def _get_numba_lms_cpr():
                                 y_b = y_b - np.float64(k_slip) * quantum
                             phi_corr = y_b
 
-                        # Update circular buffer and incremental stats
+                        # Update circular buffer — relative coords, only y needed
                         write_pos = ptr % np.int64(H)
                         if n_b == np.int64(H):
-                            old_x = cs_buf_x[i, write_pos]
                             old_y = cs_buf_y[i, write_pos]
-                            cs_stats[i, 0] -= old_x
-                            cs_stats[i, 1] -= old_y
-                            cs_stats[i, 2] -= old_x * old_x
-                            cs_stats[i, 3] -= old_x * old_y
-                        cs_buf_x[i, write_pos] = x_b
+                            H_f = np.float64(H)
+                            old_Sy = cs_stats[i, 0]
+                            # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
+                            cs_stats[i, 1] = cs_stats[i, 1] - old_Sy + old_y + (H_f - np.float64(1.0)) * phi_corr
+                            cs_stats[i, 0] = old_Sy - old_y + phi_corr
+                        else:
+                            n_b_f = np.float64(n_b)
+                            cs_stats[i, 1] += n_b_f * phi_corr
+                            cs_stats[i, 0] += phi_corr
                         cs_buf_y[i, write_pos] = phi_corr
-                        cs_stats[i, 0] += x_b
-                        cs_stats[i, 1] += phi_corr
-                        cs_stats[i, 2] += x_b * x_b
-                        cs_stats[i, 3] += x_b * phi_corr
                         cs_buf_ptr[i] = ptr + np.int64(1)
                         if n_b < np.int64(H):
                             cs_buf_n[i] = n_b + np.int64(1)
@@ -996,7 +1002,7 @@ def _get_numba_rls_cpr():
         if numba_mod is None:
             raise ImportError("Numba is required for backend='numba'.")
 
-        @numba_mod.njit(cache=True, fastmath=True, nogil=True)
+        @numba_mod.njit(cache=True, fastmath=False, nogil=True)
         def rls_cpr_loop(
             x_padded,
             training,
@@ -1026,6 +1032,7 @@ def _get_numba_rls_cpr():
             cs_buf_ptr,
             cs_buf_n,
             cs_stats,
+            bps_prev4,
             y_out,
             e_out,
             phase_out,
@@ -1059,8 +1066,6 @@ def _get_numba_rls_cpr():
             bps_dist_buf = np.zeros((C, bps_block_size, B), dtype=np.float32)
             bps_running_sum = np.zeros((C, B), dtype=np.float64)
             bps_dist_ptr = np.int64(0)
-            bps_prev4 = np.zeros(C, dtype=np.float64)
-            bps_offset4 = np.zeros(C, dtype=np.float64)
 
             lam_f64 = np.float64(lam)
             leak_term = np.float32(1.0) - np.float32(leakage)
@@ -1074,13 +1079,15 @@ def _get_numba_rls_cpr():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(x_bar[j * num_taps + t])
-                    y_raw[i] = acc
+                            w = W[i, j, t]
+                            x = x_bar[j * num_taps + t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y_raw[i] = acc_re + 1j * acc_im
 
                 # ── CPR: Phase estimation ──────────────────────────────────
 
@@ -1141,8 +1148,7 @@ def _get_numba_rls_cpr():
                                 diff4 / (np.float64(2.0 * np.pi))
                             )
                             bps_prev4[i] = bps_prev4[i] + diff4
-                            bps_offset4[i] = bps_offset4[i] + diff4
-                            phi_hat_bps[i] = bps_offset4[i] / np.float64(4.0)
+                            phi_hat_bps[i] = bps_prev4[i] / np.float64(4.0)
                     else:
                         for i in range(C):
                             best_k = np.int32(0)
@@ -1157,8 +1163,7 @@ def _get_numba_rls_cpr():
                                 diff4 / (np.float64(2.0 * np.pi))
                             )
                             bps_prev4[i] = bps_prev4[i] + diff4
-                            bps_offset4[i] = bps_offset4[i] + diff4
-                            phi_hat_bps[i] = bps_offset4[i] / np.float64(4.0)
+                            phi_hat_bps[i] = bps_prev4[i] / np.float64(4.0)
 
                 for i in range(C):
                     if cpr_mode == 1:
@@ -1170,7 +1175,6 @@ def _get_numba_rls_cpr():
                     if cs_enabled:
                         n_b = cs_buf_n[i]
                         ptr = cs_buf_ptr[i]
-                        x_b = np.float64(idx)
                         y_b = np.float64(phi_hat)
 
                         if n_b == 0:
@@ -1182,19 +1186,26 @@ def _get_numba_rls_cpr():
                                 )
                                 phi_expected = cs_buf_y[i, last_pos]
                             else:
-                                Sx = cs_stats[i, 0]
-                                Sy = cs_stats[i, 1]
-                                Sxx = cs_stats[i, 2]
-                                Sxy = cs_stats[i, 3]
+                                # cs_stats layout: [0]=Sy, [1]=Sxy (relative coords)
+                                Sy = cs_stats[i, 0]
+                                Sxy = cs_stats[i, 1]
                                 n_f = np.float64(n_b)
-                                denom = n_f * Sxx - Sx * Sx
+                                if n_b < np.int64(H):
+                                    Sx_c = n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
+                                    Sxx_c = n_f * (n_f - np.float64(1.0)) * (np.float64(2.0) * n_f - np.float64(1.0)) / np.float64(6.0)
+                                    denom = n_f * Sxx_c - Sx_c * Sx_c
+                                else:
+                                    H_f = np.float64(H)
+                                    Sx_c = H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
+                                    Sxx_c = H_f * (H_f - np.float64(1.0)) * (np.float64(2.0) * H_f - np.float64(1.0)) / np.float64(6.0)
+                                    denom = H_f * Sxx_c - Sx_c * Sx_c
                                 if np.abs(denom) > np.float64(1e-30):
-                                    slope = (n_f * Sxy - Sx * Sy) / denom
-                                    intercept = (Sy - slope * Sx) / n_f
+                                    slope = (n_f * Sxy - Sx_c * Sy) / denom
+                                    intercept = (Sy - slope * Sx_c) / n_f
                                 else:
                                     slope = np.float64(0.0)
                                     intercept = Sy / n_f
-                                phi_expected = slope * x_b + intercept
+                                phi_expected = slope * n_f + intercept
 
                             diff = y_b - phi_expected
                             k_slip = np.int64(np.round(diff / quantum))
@@ -1204,20 +1215,20 @@ def _get_numba_rls_cpr():
                                 y_b = y_b - np.float64(k_slip) * quantum
                             phi_corr = y_b
 
+                        # Update circular buffer — relative coords, only y needed
                         write_pos = ptr % np.int64(H)
                         if n_b == np.int64(H):
-                            old_x = cs_buf_x[i, write_pos]
                             old_y = cs_buf_y[i, write_pos]
-                            cs_stats[i, 0] -= old_x
-                            cs_stats[i, 1] -= old_y
-                            cs_stats[i, 2] -= old_x * old_x
-                            cs_stats[i, 3] -= old_x * old_y
-                        cs_buf_x[i, write_pos] = x_b
+                            H_f = np.float64(H)
+                            old_Sy = cs_stats[i, 0]
+                            # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
+                            cs_stats[i, 1] = cs_stats[i, 1] - old_Sy + old_y + (H_f - np.float64(1.0)) * phi_corr
+                            cs_stats[i, 0] = old_Sy - old_y + phi_corr
+                        else:
+                            n_b_f = np.float64(n_b)
+                            cs_stats[i, 1] += n_b_f * phi_corr
+                            cs_stats[i, 0] += phi_corr
                         cs_buf_y[i, write_pos] = phi_corr
-                        cs_stats[i, 0] += x_b
-                        cs_stats[i, 1] += phi_corr
-                        cs_stats[i, 2] += x_b * x_b
-                        cs_stats[i, 3] += x_b * phi_corr
                         cs_buf_ptr[i] = ptr + np.int64(1)
                         if n_b < np.int64(H):
                             cs_buf_n[i] = n_b + np.int64(1)
@@ -1311,7 +1322,15 @@ def _get_numba_rls_cpr():
                     e_eq[i] = np.complex64(er + ei * np.complex64(1j))
 
                 # ── Kalman gain ────────────────────────────────────────────
-                Px = np.dot(P, x_bar)
+                for ii in range(N):
+                    acc_re = 0.0
+                    acc_im = 0.0
+                    for jj in range(N):
+                        p_val = P[ii, jj]
+                        x_val = x_bar[jj]
+                        acc_re += p_val.real * x_val.real - p_val.imag * x_val.imag
+                        acc_im += p_val.real * x_val.imag + p_val.imag * x_val.real
+                    Px[ii] = acc_re + 1j * acc_im
                 denom_k = lam_f64
                 for jj in range(N):
                     denom_k = denom_k + (np.conj(x_bar[jj]) * Px[jj]).real
@@ -1331,14 +1350,15 @@ def _get_numba_rls_cpr():
                     for jj in range(N):
                         xH_P[jj] = np.conj(Px[jj])
                     for ii in range(N):
-                        for jj in range(N):
-                            P[ii, jj] = (P[ii, jj] - k_gain[ii] * xH_P[jj]) / lam_f64
-                    for ii in range(N):
-                        for jj in range(ii + 1, N):
-                            avg = (P[ii, jj] + np.conj(P[jj, ii])) * np.float64(0.5)
-                            P[ii, jj] = avg
-                            P[jj, ii] = np.conj(avg)
-                        P[ii, ii] = np.complex128(P[ii, ii].real)
+                        for jj in range(ii, N):
+                            val = (P[ii, jj] - k_gain[ii] * xH_P[jj]) / lam_f64
+                            if ii == jj:
+                                P[ii, ii] = np.complex128(val.real)
+                            else:
+                                conj_val = (P[jj, ii] - k_gain[jj] * xH_P[ii]) / lam_f64
+                                avg = (val + np.conj(conj_val)) * np.float64(0.5)
+                                P[ii, jj] = avg
+                                P[jj, ii] = np.conj(avg)
 
                 if store_weights:
                     for i in range(C):
@@ -1402,14 +1422,16 @@ def _get_numba_cma():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # CMA error: e[i] = y[i] * (|y[i]|² − R²)
                 # Real-valued |y|² prevents imaginary leakage from FP noise
@@ -1494,21 +1516,23 @@ def _get_numba_rde():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # RDE error: e[i] = y[i] * (|y[i]|² − R_d²)
                 # R_d is the magnitude of the nearest constellation ring.
                 # Linear scan over K unique radii is cheap (K ≤ 8 for typical QAM).
                 for i in range(C):
                     mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
-                    abs_y = mod2 ** np.float32(0.5)
+                    abs_y = np.sqrt(mod2)
 
                     best_rd = radii[0]
                     best_dist = abs(abs_y - radii[0])
@@ -1890,6 +1914,7 @@ def _get_jax_lms_cpr(
     bps_block_size,
     bps_joint_channels,
     cs_history_len,
+    symmetry=4,
     sq_side=0,
     sq_lev_min=0.0,
     sq_d_grid=1.0,
@@ -1916,6 +1941,7 @@ def _get_jax_lms_cpr(
         bps_block_size,
         bps_joint_channels,
         cs_history_len,
+        int(symmetry),
         sq_side,
         float(sq_lev_min),
         float(sq_d_grid),
@@ -1928,7 +1954,7 @@ def _get_jax_lms_cpr(
 
         import math as _math  # noqa: PLC0415
 
-        _quantum_static = jnp.float64(_math.pi / 2.0)  # symmetry=4 default
+        _quantum_static = jnp.float64(2.0 * _math.pi / symmetry)
 
         _PREC = jax.lax.Precision.HIGHEST
 
@@ -2005,8 +2031,11 @@ def _get_jax_lms_cpr(
                 )  # (C, T)
 
                 y_raw = jnp.einsum(
-                    "ijt,jt->i", jnp.conj(W), X_wins, precision=_PREC
-                )  # (C,)
+                    "ijt,jt->i",
+                    jnp.conj(W).astype(jnp.complex128),
+                    X_wins.astype(jnp.complex128),
+                    precision=_PREC,
+                ).astype(jnp.complex64)  # float64 accumulation → complex64, matches Numba
 
                 # ── Phase estimation (static branch at trace time) ──
                 if cpr_type == "pll":
@@ -2065,8 +2094,8 @@ def _get_jax_lms_cpr(
                         )
                     # Mask slots beyond fill
                     slot_mask = jnp.arange(KB)[None, :, None] < fill  # (1, KB, 1)
-                    d2_masked = jnp.where(slot_mask, d2_all, 0.0)
-                    metric = d2_masked.sum(axis=1)  # (B, C)
+                    d2_masked = jnp.where(slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0))
+                    metric = d2_masked.sum(axis=1)  # (B, C) float64 — matches Numba bps_running_sum
 
                     if bps_joint_channels:
                         # Sum over channels too → (B,); broadcast winner to all C
@@ -2086,18 +2115,35 @@ def _get_jax_lms_cpr(
 
                 # ── Cycle-slip correction ────────────────────────────
                 def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch):
+                    # buf_x_ch is retained for call-site compat but unused here.
                     fill_cs = jnp.minimum(ptr_ch, H)
-                    x_b = idx.astype(jnp.float64)
                     y_b = phi_h
 
                     mask = jnp.arange(H) < fill_cs
                     n_f = fill_cs.astype(jnp.float64)
-                    Sx = jnp.where(mask, buf_x_ch, 0.0).sum()
-                    Sy = jnp.where(mask, buf_y_ch, 0.0).sum()
-                    Sxx = jnp.where(mask, buf_x_ch * buf_x_ch, 0.0).sum()
-                    Sxy = jnp.where(mask, buf_x_ch * buf_y_ch, 0.0).sum()
 
+                    # Sx and Sxx are exact closed-form constants — no cancellation.
+                    Sx = n_f * (n_f - jnp.float64(1.0)) / jnp.float64(2.0)
+                    Sxx = n_f * (n_f - jnp.float64(1.0)) * (jnp.float64(2.0) * n_f - jnp.float64(1.0)) / jnp.float64(6.0)
                     denom = n_f * Sxx - Sx * Sx
+
+                    # Sxy uses relative positions [0, fill_cs-1].  In the circular
+                    # buffer the oldest entry is at slot ptr_ch%H and has position 0;
+                    # slot j has relative position (j - ptr_ch%H + H) % H for a full
+                    # window, or just j for a partial window (entries written 0..fill-1).
+                    oldest_slot = ptr_ch % H
+                    slots = jnp.arange(H)
+                    rel_pos_full = (slots - oldest_slot + H) % H
+                    rel_pos_partial = slots
+                    rel_pos = jnp.where(
+                        fill_cs >= H, rel_pos_full, rel_pos_partial
+                    ).astype(jnp.float64)
+                    Sy = jnp.where(mask, buf_y_ch, jnp.float64(0.0)).sum()
+                    Sxy = jnp.where(mask, rel_pos * buf_y_ch, jnp.float64(0.0)).sum()
+
+                    # Prediction target: one step past the newest entry (relative pos = fill_cs).
+                    x_pred = n_f
+
                     safe_denom = jnp.where(
                         jnp.abs(denom) > 1e-20, denom, jnp.float64(1.0)
                     )
@@ -2111,7 +2157,7 @@ def _get_jax_lms_cpr(
                         (Sy - slope * Sx) / jnp.maximum(n_f, jnp.float64(1.0)),
                         Sy / jnp.maximum(n_f, jnp.float64(1.0)),
                     )
-                    phi_exp_lin = slope * x_b + intercept
+                    phi_exp_lin = slope * x_pred + intercept
 
                     last_pos = (ptr_ch - 1 + H) % H
                     phi_last = jax.lax.dynamic_index_in_dim(
@@ -2130,14 +2176,11 @@ def _get_jax_lms_cpr(
                     )
 
                     write_pos = ptr_ch % H
-                    buf_x_new = jax.lax.dynamic_update_slice(
-                        buf_x_ch, x_b[None], [write_pos]
-                    )
                     buf_y_new = jax.lax.dynamic_update_slice(
                         buf_y_ch, phi_corr[None], [write_pos]
                     )
                     ptr_new = ptr_ch + 1
-                    return phi_corr, buf_x_new, buf_y_new, ptr_new
+                    return phi_corr, buf_x_ch, buf_y_new, ptr_new
 
                 phi_corr, cs_buf_x_new, cs_buf_y_new, cs_buf_ptr_new = jax.vmap(
                     correct_slip_ch
@@ -2266,6 +2309,7 @@ def _get_jax_rls_cpr(
     bps_block_size,
     bps_joint_channels,
     cs_history_len,
+    symmetry=4,
     sq_side=0,
     sq_lev_min=0.0,
     sq_d_grid=1.0,
@@ -2287,6 +2331,7 @@ def _get_jax_rls_cpr(
         bps_block_size,
         bps_joint_channels,
         cs_history_len,
+        int(symmetry),
         sq_side,
         float(sq_lev_min),
         float(sq_d_grid),
@@ -2298,7 +2343,7 @@ def _get_jax_rls_cpr(
         KB = bps_block_size
         import math as _math  # noqa: PLC0415
 
-        _quantum_static = jnp.float64(_math.pi / 2.0)
+        _quantum_static = jnp.float64(2.0 * _math.pi / symmetry)
 
         _PREC = jax.lax.Precision.HIGHEST
 
@@ -2346,7 +2391,12 @@ def _get_jax_rls_cpr(
                 X_wins = jax.lax.dynamic_slice(
                     x_input, (0, sample_idx), (num_ch, num_taps)
                 )
-                y_raw = jnp.einsum("ijt,jt->i", jnp.conj(W), X_wins, precision=_PREC)
+                y_raw = jnp.einsum(
+                    "ijt,jt->i",
+                    jnp.conj(W).astype(jnp.complex128),
+                    X_wins.astype(jnp.complex128),
+                    precision=_PREC,
+                ).astype(jnp.complex64)  # float64 accumulation → complex64, matches Numba
 
                 if cpr_type == "pll":
                     phi_hat = pll_phi
@@ -2400,7 +2450,7 @@ def _get_jax_rls_cpr(
                             axis=-1,
                         )
                     slot_mask = jnp.arange(KB)[None, :, None] < fill
-                    metric = jnp.where(slot_mask, d2_all, 0.0).sum(axis=1)  # (B, C)
+                    metric = jnp.where(slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)).sum(axis=1)  # (B, C) float64
 
                     if bps_joint_channels:
                         best_k = jnp.argmin(metric.sum(axis=-1))
@@ -2418,16 +2468,31 @@ def _get_jax_rls_cpr(
                     phi_hat = bps_prev4_new / jnp.float64(4.0)
 
                 def correct_slip_ch(phi_h, buf_x_ch, buf_y_ch, ptr_ch):
+                    # buf_x_ch is retained for call-site compat but unused here.
                     fill_cs = jnp.minimum(ptr_ch, H)
-                    x_b = idx.astype(jnp.float64)
                     y_b = phi_h
                     mask = jnp.arange(H) < fill_cs
                     n_f = fill_cs.astype(jnp.float64)
-                    Sx = jnp.where(mask, buf_x_ch, 0.0).sum()
-                    Sy = jnp.where(mask, buf_y_ch, 0.0).sum()
-                    Sxx = jnp.where(mask, buf_x_ch * buf_x_ch, 0.0).sum()
-                    Sxy = jnp.where(mask, buf_x_ch * buf_y_ch, 0.0).sum()
+
+                    # Sx and Sxx are exact closed-form constants — no cancellation.
+                    Sx = n_f * (n_f - jnp.float64(1.0)) / jnp.float64(2.0)
+                    Sxx = n_f * (n_f - jnp.float64(1.0)) * (jnp.float64(2.0) * n_f - jnp.float64(1.0)) / jnp.float64(6.0)
                     denom = n_f * Sxx - Sx * Sx
+
+                    # Sxy uses relative positions [0, fill_cs-1] derived from the
+                    # circular buffer layout (oldest slot = ptr_ch % H → position 0).
+                    oldest_slot = ptr_ch % H
+                    slots = jnp.arange(H)
+                    rel_pos_full = (slots - oldest_slot + H) % H
+                    rel_pos = jnp.where(
+                        fill_cs >= H, rel_pos_full, slots
+                    ).astype(jnp.float64)
+                    Sy = jnp.where(mask, buf_y_ch, jnp.float64(0.0)).sum()
+                    Sxy = jnp.where(mask, rel_pos * buf_y_ch, jnp.float64(0.0)).sum()
+
+                    # Prediction target: one step past newest (relative pos = fill_cs).
+                    x_pred = n_f
+
                     safe_denom = jnp.where(
                         jnp.abs(denom) > 1e-20, denom, jnp.float64(1.0)
                     )
@@ -2441,7 +2506,7 @@ def _get_jax_rls_cpr(
                         (Sy - slope * Sx) / jnp.maximum(n_f, jnp.float64(1.0)),
                         Sy / jnp.maximum(n_f, jnp.float64(1.0)),
                     )
-                    phi_exp_lin = slope * x_b + intercept
+                    phi_exp_lin = slope * x_pred + intercept
                     last_pos = (ptr_ch - 1 + H) % H
                     phi_last = jax.lax.dynamic_index_in_dim(
                         buf_y_ch, last_pos, keepdims=False
@@ -2457,14 +2522,11 @@ def _get_jax_rls_cpr(
                         should_correct, y_b - k_slip * _quantum_static, y_b
                     )
                     write_pos = ptr_ch % H
-                    buf_x_new = jax.lax.dynamic_update_slice(
-                        buf_x_ch, x_b[None], [write_pos]
-                    )
                     buf_y_new = jax.lax.dynamic_update_slice(
                         buf_y_ch, phi_corr[None], [write_pos]
                     )
                     ptr_new = ptr_ch + 1
-                    return phi_corr, buf_x_new, buf_y_new, ptr_new
+                    return phi_corr, buf_x_ch, buf_y_new, ptr_new
 
                 phi_corr, cs_buf_x_new, cs_buf_y_new, cs_buf_ptr_new = jax.vmap(
                     correct_slip_ch
@@ -2821,14 +2883,16 @@ def _get_numba_pa_cma():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # Error: DA-LMS at pilots, CMA Godard at data
                 for i in range(C):
@@ -2918,14 +2982,16 @@ def _get_numba_pa_rde():
 
                 # Butterfly forward pass
                 for i in range(C):
-                    acc = np.complex128(0.0)
+                    acc_re = 0.0
+                    acc_im = 0.0
                     for j in range(C):
                         for t in range(num_taps):
-                            acc = acc + np.complex128(
-                                np.conj(W[i, j, t])
-                            ) * np.complex128(X_wins[j, t])
-                    y[i] = acc
-                    y_out[idx, i] = acc
+                            w = W[i, j, t]
+                            x = X_wins[j, t]
+                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                    y[i] = acc_re + 1j * acc_im
+                    y_out[idx, i] = acc_re + 1j * acc_im
 
                 # Error: DA-LMS at pilots, RDE ring-directed at data
                 for i in range(C):
@@ -2935,7 +3001,7 @@ def _get_numba_pa_rde():
                         )  # inverted to match blind subtractive update
                     else:
                         mod2 = y[i].real * y[i].real + y[i].imag * y[i].imag
-                        abs_y = mod2 ** np.float32(0.5)
+                        abs_y = np.sqrt(mod2)
                         best_rd = radii[0]
                         best_dist = abs(abs_y - radii[0])
                         for k in range(1, K):
@@ -4137,6 +4203,11 @@ def lms(
                 if _st_ok
                 else np.zeros((num_ch, 4), dtype=np.float64)
             )
+            bps_prev4 = (
+                _st.bps_prev4.copy()
+                if (_st_ok and _st.bps_prev4 is not None)
+                else np.zeros(num_ch, dtype=np.float64)
+            )
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_lms_cpr()(
@@ -4165,6 +4236,7 @@ def lms(
                 cs_buf_ptr,
                 cs_buf_n,
                 cs_stats,
+                bps_prev4,
                 y_out,
                 e_out,
                 phase_out,
@@ -4190,6 +4262,7 @@ def lms(
             result.cpr_state = CPRState(
                 pll_phi=pll_phi.copy(),
                 pll_freq=pll_freq.copy(),
+                bps_prev4=bps_prev4.copy(),
                 cs_buf_x=cs_buf_x.copy(),
                 cs_buf_y=cs_buf_y.copy(),
                 cs_buf_ptr=cs_buf_ptr.copy(),
@@ -4344,6 +4417,7 @@ def lms(
             int(cpr_bps_block_size),
             bool(cpr_joint_channels),
             H,
+            int(symmetry),
             int(_sq_side_j),
             float(_sq_lev_min_j),
             float(_sq_d_grid_j),
@@ -4904,6 +4978,11 @@ def rls(
                 if _st_ok
                 else np.zeros((num_ch, 4), dtype=np.float64)
             )
+            bps_prev4 = (
+                _st.bps_prev4.copy()
+                if (_st_ok and _st.bps_prev4 is not None)
+                else np.zeros(num_ch, dtype=np.float64)
+            )
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_rls_cpr()(
@@ -4935,6 +5014,7 @@ def rls(
                 cs_buf_ptr,
                 cs_buf_n,
                 cs_stats,
+                bps_prev4,
                 y_out,
                 e_out,
                 phase_out,
@@ -4960,6 +5040,7 @@ def rls(
             result.cpr_state = CPRState(
                 pll_phi=pll_phi.copy(),
                 pll_freq=pll_freq.copy(),
+                bps_prev4=bps_prev4.copy(),
                 cs_buf_x=cs_buf_x.copy(),
                 cs_buf_y=cs_buf_y.copy(),
                 cs_buf_ptr=cs_buf_ptr.copy(),
@@ -5138,6 +5219,7 @@ def rls(
             int(cpr_bps_block_size),
             bool(cpr_joint_channels),
             H,
+            int(symmetry),
             int(_sq_side_j),
             float(_sq_lev_min_j),
             float(_sq_d_grid_j),
@@ -5265,21 +5347,24 @@ def _get_numba_cs_block():
             ----------
             phi_blk   : (C, B) float64 — BPS phase before correction (input)
             phi_corr  : (C, B) float64 — corrected phase (output, pre-allocated)
-            cs_buf_x  : (C, H) float64 — circular buffer of past x-coords
+            cs_buf_x  : (C, H) float64 — unused (retained for call-site compat)
             cs_buf_y  : (C, H) float64 — circular buffer of past corrected phases
             cs_buf_ptr: (C,)   int64   — write pointer (monotonically increasing)
             cs_buf_n  : (C,)   int64   — number of valid entries (≤ H)
-            cs_stats  : (C, 4) float64 — incremental regression sums [Sx,Sy,Sxx,Sxy]
-            b_start   : int            — global symbol index of block start
+            cs_stats  : (C, 4) float64 — [0]=Sy, [1]=Sxy (relative coords); [2..3] unused
+            b_start   : int            — global symbol index of block start (unused)
             quantum   : float64        — slip quantum (2π / symmetry)
             threshold : float64        — |diff| threshold for declaring a slip
             cs_H      : int            — circular buffer length
             """
             C = phi_blk.shape[0]
             B = phi_blk.shape[1]
+            H_f = float(cs_H)
+            Sx_full = H_f * (H_f - 1.0) / 2.0
+            Sxx_full = H_f * (H_f - 1.0) * (2.0 * H_f - 1.0) / 6.0
+            denom_full = H_f * Sxx_full - Sx_full * Sx_full
             for ci in range(C):
                 for i in range(B):
-                    x_b = float(b_start + i)
                     y_b = phi_blk[ci, i]
                     n_b = cs_buf_n[ci]
                     ptr = cs_buf_ptr[ci]
@@ -5290,18 +5375,23 @@ def _get_numba_cs_block():
                         last_pos = (ptr - 1 + cs_H) % cs_H
                         phi_expected = cs_buf_y[ci, last_pos]
                     else:
-                        sx = cs_stats[ci, 0]
-                        sy = cs_stats[ci, 1]
-                        sxx = cs_stats[ci, 2]
-                        sxy = cs_stats[ci, 3]
-                        denom = n_b * sxx - sx * sx
+                        sy = cs_stats[ci, 0]
+                        sxy = cs_stats[ci, 1]
+                        n_f = float(n_b)
+                        if n_b < cs_H:
+                            Sx_c = n_f * (n_f - 1.0) / 2.0
+                            Sxx_c = n_f * (n_f - 1.0) * (2.0 * n_f - 1.0) / 6.0
+                            denom = n_f * Sxx_c - Sx_c * Sx_c
+                        else:
+                            Sx_c = Sx_full
+                            denom = denom_full
                         if abs(denom) > 1e-30:
-                            slope = (n_b * sxy - sx * sy) / denom
-                            intercept = (sy - slope * sx) / n_b
+                            slope = (n_f * sxy - Sx_c * sy) / denom
+                            intercept = (sy - slope * Sx_c) / n_f
                         else:
                             slope = 0.0
-                            intercept = sy / n_b
-                        phi_expected = slope * x_b + intercept
+                            intercept = sy / n_f
+                        phi_expected = slope * n_f + intercept
 
                     diff = y_b - phi_expected
                     k_slip = int(round(diff / quantum))
@@ -5309,20 +5399,18 @@ def _get_numba_cs_block():
                         y_b -= float(k_slip) * quantum
                     phi_corr[ci, i] = y_b
 
+                    # Update circular buffer — relative coords, only y needed
                     write_pos = ptr % cs_H
                     if n_b == cs_H:
-                        ox = cs_buf_x[ci, write_pos]
-                        oy = cs_buf_y[ci, write_pos]
-                        cs_stats[ci, 0] -= ox
-                        cs_stats[ci, 1] -= oy
-                        cs_stats[ci, 2] -= ox * ox
-                        cs_stats[ci, 3] -= ox * oy
-                    cs_buf_x[ci, write_pos] = x_b
+                        old_y = cs_buf_y[ci, write_pos]
+                        old_sy = cs_stats[ci, 0]
+                        # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
+                        cs_stats[ci, 1] = cs_stats[ci, 1] - old_sy + old_y + (H_f - 1.0) * y_b
+                        cs_stats[ci, 0] = old_sy - old_y + y_b
+                    else:
+                        cs_stats[ci, 1] += float(n_b) * y_b
+                        cs_stats[ci, 0] += y_b
                     cs_buf_y[ci, write_pos] = y_b
-                    cs_stats[ci, 0] += x_b
-                    cs_stats[ci, 1] += y_b
-                    cs_stats[ci, 2] += x_b * x_b
-                    cs_stats[ci, 3] += x_b * y_b
                     cs_buf_ptr[ci] = ptr + 1
                     if n_b < cs_H:
                         cs_buf_n[ci] = n_b + 1
@@ -5917,9 +6005,9 @@ def block_lms(
                         _cs_H,
                     )
                 else:
+                    _H_f = float(_cs_H)
                     for ci in range(C):
                         for i in range(B):
-                            x_b = float(b_start + i)
                             y_b = phi_blk_np[ci, i]
                             n_b = int(cs_buf_n[ci])
                             ptr = int(cs_buf_ptr[ci])
@@ -5930,15 +6018,24 @@ def block_lms(
                                 last_pos = (ptr - 1 + _cs_H) % _cs_H
                                 phi_expected = cs_buf_y[ci, last_pos]
                             else:
-                                sx, sy, sxx, sxy = cs_stats[ci]
-                                denom = n_b * sxx - sx * sx
+                                sy = cs_stats[ci, 0]
+                                sxy = cs_stats[ci, 1]
+                                n_f = float(n_b)
+                                if n_b < _cs_H:
+                                    Sx_c = n_f * (n_f - 1.0) / 2.0
+                                    Sxx_c = n_f * (n_f - 1.0) * (2.0 * n_f - 1.0) / 6.0
+                                    denom = n_f * Sxx_c - Sx_c * Sx_c
+                                else:
+                                    Sx_c = _H_f * (_H_f - 1.0) / 2.0
+                                    Sxx_c = _H_f * (_H_f - 1.0) * (2.0 * _H_f - 1.0) / 6.0
+                                    denom = _H_f * Sxx_c - Sx_c * Sx_c
                                 if abs(denom) > 1e-30:
-                                    slope = (n_b * sxy - sx * sy) / denom
-                                    intercept = (sy - slope * sx) / n_b
+                                    slope = (n_f * sxy - Sx_c * sy) / denom
+                                    intercept = (sy - slope * Sx_c) / n_f
                                 else:
                                     slope = 0.0
-                                    intercept = sy / n_b
-                                phi_expected = slope * x_b + intercept
+                                    intercept = sy / n_f
+                                phi_expected = slope * n_f + intercept
 
                             diff = y_b - phi_expected
                             k_slip = int(round(diff / quantum))
@@ -5949,20 +6046,18 @@ def block_lms(
                                 y_b -= float(k_slip) * quantum
                             phi_corr_np[ci, i] = y_b
 
+                            # Update circular buffer — relative coords, only y needed
                             write_pos = ptr % _cs_H
                             if n_b == _cs_H:
-                                ox = cs_buf_x[ci, write_pos]
-                                oy = cs_buf_y[ci, write_pos]
-                                cs_stats[ci, 0] -= ox
-                                cs_stats[ci, 1] -= oy
-                                cs_stats[ci, 2] -= ox * ox
-                                cs_stats[ci, 3] -= ox * oy
-                            cs_buf_x[ci, write_pos] = x_b
+                                old_y = cs_buf_y[ci, write_pos]
+                                old_sy = cs_stats[ci, 0]
+                                # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
+                                cs_stats[ci, 1] = cs_stats[ci, 1] - old_sy + old_y + (_H_f - 1.0) * y_b
+                                cs_stats[ci, 0] = old_sy - old_y + y_b
+                            else:
+                                cs_stats[ci, 1] += float(n_b) * y_b
+                                cs_stats[ci, 0] += y_b
                             cs_buf_y[ci, write_pos] = y_b
-                            cs_stats[ci, 0] += x_b
-                            cs_stats[ci, 1] += y_b
-                            cs_stats[ci, 2] += x_b * x_b
-                            cs_stats[ci, 3] += x_b * y_b
                             cs_buf_ptr[ci] = ptr + 1
                             if n_b < _cs_H:
                                 cs_buf_n[ci] = n_b + 1
