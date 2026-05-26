@@ -35,6 +35,7 @@ def evm(
     mode: str = "data_aided",
     modulation: Optional[str] = None,
     order: Optional[int] = None,
+    pmf: Optional[np.ndarray] = None,
 ) -> Tuple[Union[float, ArrayType], Union[float, ArrayType]]:
     """
     Computes Error Vector Magnitude (EVM).
@@ -70,6 +71,14 @@ def evm(
         Required when ``mode="blind"``.
     order : int, optional
         Modulation order *M*. Required when ``mode="blind"``.
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(order,)`` for PS-QAM in ``mode="blind"``.
+        When provided, ``rx_symbols`` are rescaled by ``sqrt(E_PS)`` before
+        the nearest-neighbour search so unit-avg-power resolved symbols
+        line up with the ``{s_m}`` grid returned by
+        :func:`gray_constellation`.  Has no effect for uniform modulations
+        or for ``mode="data_aided"`` (which is scale-invariant by
+        per-channel power normalisation).
 
     Returns
     -------
@@ -129,9 +138,17 @@ def evm(
         # gray_constellation always returns unit-average-power constellations.
         # No gain correction of rx is applied here — the caller is responsible
         # for passing a gain-corrected signal at the expected constellation power.
-        constellation = xp.asarray(
-            gray_constellation(modulation, order)
-        )  # (M,) unit power
+        constellation_np = gray_constellation(modulation, order)
+        constellation = xp.asarray(constellation_np)  # (M,) unit-avg-power
+
+        # PS-QAM: receive-path symbols at unit average power live on the
+        # ``{s_m/sqrt(E_PS)}`` grid.  Rescale rx by ``sqrt(E_PS)`` so the
+        # nearest-neighbour decision against ``{s_m}`` is exact.
+        if pmf is not None:
+            pmf_arr = np.asarray(pmf, dtype=np.float64)
+            e_ps = float(np.dot(pmf_arr, np.abs(constellation_np) ** 2))
+            if e_ps < 1.0 - 1e-6:
+                rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 
         # ML hard decision: nearest constellation point per symbol.
         # rx shape (..., N) → (..., N, 1) vs (M,) → (..., N, M)
@@ -323,6 +340,7 @@ def ser(
     tx_symbols: ArrayType,
     modulation: str,
     order: int,
+    pmf: Optional[np.ndarray] = None,
 ) -> Union[float, ArrayType]:
     """
     Computes the Symbol Error Rate (SER) using ML hard decisions.
@@ -345,6 +363,13 @@ def ser(
         Modulation type: ``"psk"``, ``"qam"``, or ``"ask"``.
     order : int
         Modulation order *M*.
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(order,)`` for PS-QAM.  When provided, the
+        comparison constellation is scaled by ``1/sqrt(E_PS)`` so the
+        nearest-neighbour search matches the scale of unit-avg-power
+        received symbols.  Both ``rx_symbols`` and ``tx_symbols`` are
+        decided against the same scaled constellation.  Has no effect for
+        uniform modulations.
 
     Returns
     -------
@@ -366,7 +391,21 @@ def ser(
     if rx.shape != tx.shape:
         raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
 
-    constellation = xp.asarray(gray_constellation(modulation, order))  # (M,)
+    constellation_np = gray_constellation(modulation, order)
+    constellation = xp.asarray(constellation_np)  # (M,)
+
+    # PS-QAM: ``rx_symbols`` from :meth:`commstools.core.Signal.resolved_symbols`
+    # are normalised to unit average power, placing them on the
+    # ``{s_m/sqrt(E_PS)}`` grid.  ``tx_symbols`` (``source_symbols``) live on
+    # the un-rescaled ``{s_m}`` grid (their average power is ``E_PS < 1``).
+    # Rescale ``rx`` by ``sqrt(E_PS)`` so the nearest-neighbour search against
+    # ``gray_constellation`` is correct for both rx and tx.  Has no effect on
+    # uniform modulations.
+    if pmf is not None:
+        pmf_arr = np.asarray(pmf, dtype=np.float64)
+        e_ps = float(np.dot(pmf_arr, np.abs(constellation_np) ** 2))
+        if e_ps < 1.0 - 1e-6:
+            rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 
     # Broadcast: rx/tx (..., N) → (..., N, 1) vs constellation (M,) → (..., N, M)
     dist_rx = xp.abs(rx[..., None] - constellation) ** 2  # (..., N, M)

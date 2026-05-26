@@ -2033,6 +2033,10 @@ class Signal(BaseModel):
                 "first to decimate the signal to symbol rate."
             )
 
+        # Auto-forward ps_pmf for PS-QAM: receive-path symbols at unit avg
+        # power live on ``{s_m/sqrt(E_PS)}``; demap_symbols_hard rescales
+        # them to the ``{s_m}`` grid expected by ``gray_constellation``.
+        kwargs.setdefault("pmf", self.ps_pmf)
         bits = demap_symbols_hard(
             symbols=self.resolved_symbols,
             modulation=self.mod_scheme,
@@ -2083,6 +2087,7 @@ class Signal(BaseModel):
             ref_symbols=self.source_symbols,
             modulation=self.mod_scheme,
             order=self.mod_order,
+            pmf=self.ps_pmf,
         )
 
     # -------------------------------------------------------------------------
@@ -2169,7 +2174,13 @@ class Signal(BaseModel):
             if trim > 0:
                 logger.info(f"Discarding {trim} training symbols for EVM calculation.")
                 y = y[..., trim:]
-            return metrics.evm(y, mode="blind", modulation=mod, order=ord_)
+            return metrics.evm(
+                y,
+                mode="blind",
+                modulation=mod,
+                order=ord_,
+                pmf=self.ps_pmf,
+            )
 
         # data_aided
         ref = (
@@ -2423,7 +2434,7 @@ class Signal(BaseModel):
             y = y[..., trim:n]
             r = r[..., trim:n]
 
-        return metrics.ser(y, r, mod, ord_)
+        return metrics.ser(y, r, mod, ord_, pmf=self.ps_pmf)
 
     def mi(
         self,
@@ -2586,7 +2597,18 @@ class Signal(BaseModel):
             output="numpy",
         )
         src_bits = to_device(self.source_bits, "cpu")
-        return metrics.gmi(llrs, src_bits)
+
+        # ``metrics.gmi`` infers bits-per-symbol from the trailing axis of a
+        # 2D array.  ``compute_llr`` outputs ``(N*k,)`` for 1D symbols and
+        # ``(C, N*k)`` for MIMO — neither has bits-per-symbol on the trailing
+        # axis.  Reshape to ``(N_total, k)`` so ``k`` is inferred correctly.
+        k_bits = int(np.log2(ord_))
+        llrs_arr = np.asarray(llrs)
+        bits_arr = np.asarray(src_bits)
+        n_bits = llrs_arr.size
+        llrs_2d = llrs_arr.reshape(n_bits // k_bits, k_bits)
+        bits_2d = bits_arr.reshape(n_bits // k_bits, k_bits)
+        return metrics.gmi(llrs_2d, bits_2d)
 
 
 class Preamble(BaseModel):

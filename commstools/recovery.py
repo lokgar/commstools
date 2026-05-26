@@ -1103,6 +1103,7 @@ def recover_carrier_phase_bps(
     cycle_slip_correction: bool = False,
     cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
+    pmf: Optional[np.ndarray] = None,
     debug_plot: bool = False,
 ) -> ArrayType:
     """
@@ -1149,6 +1150,14 @@ def recover_carrier_phase_bps(
         Number of past corrected blocks used for linear extrapolation.
     cycle_slip_threshold : float, default π/4
         ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(order,)`` for PS-QAM.  When provided, the
+        reference constellation is scaled by ``1/sqrt(E_PS)`` (where
+        ``E_PS = Σ P(s_m) |s_m|²`` on the normalised grid) so the
+        nearest-neighbour distance metric matches the scale of the
+        unit-avg-power input.  Without this, mid-shell PS points cross
+        decision boundaries in the BPS metric and bias the phase estimate.
+        No-op for uniform modulations.
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the per-symbol phase
         trajectory alongside the block-phase estimates.
@@ -1208,6 +1217,16 @@ def recover_carrier_phase_bps(
 
     # Reference constellation on the same device
     const_np = gray_constellation(modulation, order)
+
+    # PS-QAM: unit-avg-power input lives on the ``{s_m/sqrt(E_PS)}`` grid.
+    # Rescale the comparison constellation to the same grid so the nearest-
+    # neighbour distance metric is correct.  Skip on uniform PMF.
+    if pmf is not None:
+        pmf_arr = np.asarray(pmf, dtype=np.float64)
+        e_ps = float(np.dot(pmf_arr, np.abs(const_np) ** 2))
+        if e_ps < 1.0 - 1e-6:
+            const_np = const_np / np.sqrt(e_ps)
+
     const_xp = xp.asarray(const_np)  # (M_const,)
 
     # Candidate test phases over [0, π/2)
@@ -2195,6 +2214,7 @@ def resolve_phase_ambiguity(
     order: int,
     symmetry_order: Optional[int] = None,
     num_skip_symbols: int = 0,
+    pmf: Optional[np.ndarray] = None,
 ) -> ArrayType:
     """
     Resolves rotational phase ambiguity after blind carrier phase recovery.
@@ -2230,6 +2250,12 @@ def resolve_phase_ambiguity(
         trimmed.  Useful when the first ``num_skip_symbols`` symbols have not
         yet converged and would bias the rotation choice.  Must be strictly
         less than the total symbol count.
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(order,)`` for PS-QAM.  Forwarded to
+        :func:`commstools.metrics.ser` so the diagnostic SER reported in
+        the log is unbiased for shaped constellations.  The phase-rotation
+        choice itself uses a scale-invariant inner product and does not
+        depend on ``pmf``.
 
     Returns
     -------
@@ -2284,6 +2310,7 @@ def resolve_phase_ambiguity(
                         seg_r,
                         modulation,
                         order,
+                        pmf=pmf,
                     )
                 )
             )

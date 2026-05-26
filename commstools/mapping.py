@@ -586,6 +586,7 @@ def demap_symbols_hard(
     modulation: str,
     order: int,
     unipolar: bool = False,
+    pmf: Optional[np.ndarray] = None,
 ) -> ArrayType:
     """
     Maps complex symbols back to a sequence of bits (hard decisions).
@@ -603,6 +604,15 @@ def demap_symbols_hard(
         Modulation order.
     unipolar : bool, default False
         Trigger unipolar demapping for ASK/PAM.
+    pmf : np.ndarray, optional
+        Symbol PMF of shape ``(order,)`` for PS-QAM.  When provided, the
+        input symbols are scaled by ``sqrt(E_PS)`` (where
+        ``E_PS = Σ P(s_m) |s_m|²`` on the normalised grid) before the
+        nearest-neighbour search, mapping unit-avg-power resolved symbols
+        back to the ``{s_m}`` grid used by :func:`gray_constellation`.
+        Use this when ``symbols`` comes from
+        :meth:`commstools.core.Signal.resolved_symbols` of a PS-QAM signal.
+        Has no effect for uniform modulations.
 
     Returns
     -------
@@ -623,6 +633,19 @@ def demap_symbols_hard(
 
     # Get constellation
     constellation = gray_constellation(modulation, order, unipolar=unipolar)
+
+    # PS-QAM: receive-path symbols at unit average power live on the
+    # ``{s_m/sqrt(E_PS)}`` grid.  Rescale by ``sqrt(E_PS)`` to bring them back
+    # to the ``{s_m}`` grid that :func:`gray_constellation` returns, so the
+    # nearest-neighbour search is exact.  No-op for uniform modulations.
+    if pmf is not None:
+        pmf_arr = np.asarray(pmf, dtype=np.float64)
+        e_ps = float(np.dot(pmf_arr, np.abs(constellation) ** 2))
+        if e_ps < 1.0 - 1e-6:
+            symbols_flat = symbols_flat * xp.asarray(
+                np.sqrt(e_ps), dtype=symbols_flat.real.dtype
+            )
+
     constellation = xp.asarray(constellation)
 
     # 1. Find nearest constellation point (Hard Decision)
