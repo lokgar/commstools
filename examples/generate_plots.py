@@ -41,29 +41,28 @@ def main():
     # Let's visualize the equalized/matched symbols at 1 sps
     const_sig = noisy_matched.copy().decimate_to_symbol_rate()
     fig, ax = const_sig.plot_constellation(overlay_ideal=True, show=False)
-    fig.set_size_inches(6, 6)
-    fig.savefig('examples/images/constellation.png', dpi=300, bbox_inches='tight')
+    # fig.set_size_inches(6, 6)
+    fig.savefig('examples/images/constellation.png', dpi=200, bbox_inches='tight')
     plt.close(fig)
     
     # 3. Generate and save PSD Plot
     print("Generating psd.png...")
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    fig, ax = plt.subplots()
     sig.plot_psd(ax=ax, label="Clean Transmitter Spectrum", show=False)
     noisy.plot_psd(ax=ax, label="Noisy Channel Spectrum (16 dB Es/N0)", alpha=0.7, show=False)
     ax.legend(loc="lower left")
     ax.set_title("Power Spectral Density of 16-QAM Signal")
-    fig.savefig('examples/images/psd.png', dpi=300, bbox_inches='tight')
+    fig.savefig('examples/images/psd.png', dpi=200, bbox_inches='tight')
     plt.close(fig)
     
     # 4. Generate and save Eye Diagram (I and Q components)
     print("Generating eye_diagram.png...")
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
     # Eye diagram requires oversampled matched-filtered signal
-    noisy_matched.plot_eye(ax=axes, type="hist", show=False)
+    fig, axes = noisy_matched.plot_eye(type="hist", show=False)
     axes[0].set_title("In-Phase (I) Component")
     axes[1].set_title("Quadrature (Q) Component")
-    fig.suptitle("16-QAM Eye Diagram (2D Density Histogram)", fontsize=14, fontweight="bold", y=1.02)
-    fig.savefig('examples/images/eye_diagram.png', dpi=300, bbox_inches='tight')
+    fig.suptitle("16-QAM Eye Diagram (2D Density Histogram)", fontsize=14, fontweight="bold")
+    fig.savefig('examples/images/eye_diagram.png', dpi=200, bbox_inches='tight')
     plt.close(fig)
     
     print("All plots generated successfully under examples/images/.")
