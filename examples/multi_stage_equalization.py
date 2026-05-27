@@ -47,9 +47,9 @@ import numpy as np
 from commstools import Signal
 from commstools import equalization, frequency, recovery
 from commstools.timing import estimate_timing, correct_timing
-from commstools.backend import to_device
-from commstools.metrics import evm, ser, snr, ber
-from commstools.mapping import demap_symbols_hard
+from commstools.backend import to_device, dispatch
+from commstools.impairments import apply_awgn
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Parameters
@@ -80,8 +80,8 @@ def _print_sep(title):
 
 def _mse_db(error, window=200):
     """Steady-state MSE over the last ``window`` symbols."""
-    e = np.asarray(error)
-    mse = float(np.mean(np.abs(e[..., -window:]) ** 2))
+    error, xp, _ = dispatch(error)
+    mse = float(xp.mean(xp.abs(error[..., -window:]) ** 2))
     return 10.0 * np.log10(mse + 1e-30)
 
 
@@ -100,13 +100,11 @@ sig_tx = Signal.qam(
     rrc_rolloff=ROLLOFF,
 )
 
-training_syms = to_device(sig_tx.source_symbols, "cpu").astype(
-    np.complex64
-)  # (N_SYM,) at 1 SPS
+training_syms = sig_tx.source_symbols
 
 idx_eval = slice(N_TRAIN, -100)
 bits_per_sym = int(np.log2(ORDER))
-tx_bits_eval = to_device(sig_tx.source_bits, "cpu")[N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+tx_bits_eval = sig_tx.source_bits[N_TRAIN * bits_per_sym:-100 * bits_per_sym]
 
 print(f"  TX samples : {sig_tx.samples.shape}  (dtype={sig_tx.samples.dtype})")
 print(f"  TX symbols : {training_syms.shape}  {ORDER}-{MOD.upper()}, SPS={SPS}")
@@ -121,20 +119,13 @@ _print_sep("2. Channel")
 
 # 3-tap multipath (ISI spans ±1 symbol at 2 SPS → 2 tap spacings)
 h_ch = np.array([0.85, 0.0, 0.12 + 0.07j, 0.0, 0.05 - 0.03j], dtype=np.complex64)
-tx_np = to_device(sig_tx.samples, "cpu").astype(np.complex64)
-rx = np.convolve(tx_np, h_ch, mode="same")
 
-# Frequency offset
-t = np.arange(len(rx), dtype=np.float64) / FS
-rx = rx * np.exp(1j * 2.0 * np.pi * FO_TRUE_HZ * t).astype(np.complex64)
-
-# AWGN
-sig_pwr = float(np.mean(np.abs(rx) ** 2))
-noise_var = sig_pwr / (10 ** (SNR_DB / 10))
-noise = np.sqrt(noise_var / 2) * (
-    rng.standard_normal(rx.shape) + 1j * rng.standard_normal(rx.shape)
-).astype(np.complex64)
-rx = (rx + noise).astype(np.complex64)
+# Apply impairments directly on the Signal object using library features!
+sig_rx = sig_tx.copy()
+sig_rx.fir_filter(h_ch)
+sig_rx.shift_frequency(FO_TRUE_HZ)
+sig_rx.samples = apply_awgn(sig_rx.samples, sps=SPS, esn0_db=SNR_DB, seed=42)
+rx = sig_rx.samples
 
 print(f"  Channel    : FIR {h_ch}")
 print(f"  FO true    : {FO_TRUE_HZ / 1e6:.2f} MHz")
@@ -166,11 +157,18 @@ print(f"  Weights: {result_rde.weights.shape}  (C, C, num_taps)")
 print(f"  MSE    : {_mse_db(result_rde.error):.1f} dB")
 
 # Evaluate direct metrics for Stage 1 RDE before carrier recovery (will reflect spinning carrier phase)
-evm_pct_s1, evm_db_s1 = evm(y_s1[idx_eval], training_syms[idx_eval])
-snr_val_s1 = snr(y_s1[idx_eval], training_syms[idx_eval])
-ser_val_s1 = ser(y_s1[idx_eval], training_syms[idx_eval], modulation=MOD, order=ORDER)
-rx_bits_s1 = demap_symbols_hard(y_s1, modulation=MOD, order=ORDER)
-ber_val_s1 = ber(rx_bits_s1[N_TRAIN * bits_per_sym:-100 * bits_per_sym], tx_bits_eval)
+sig_s1_eval = sig_tx.copy()
+sig_s1_eval.samples = y_s1[..., idx_eval]
+sig_s1_eval.sampling_rate = sig_tx.symbol_rate
+sig_s1_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
+sig_s1_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_s1_eval.resolve_symbols()
+
+evm_pct_s1, evm_db_s1 = sig_s1_eval.evm()
+snr_val_s1 = sig_s1_eval.snr()
+ser_val_s1 = sig_s1_eval.ser()
+sig_s1_eval.demap_symbols_hard()
+ber_val_s1 = sig_s1_eval.ber()
 
 print("\n  Stage 1 (RDE FSE) Raw Metrics (Before FOE/CPR/Sync):")
 print("  ───────────────────────────────────────────────────")
@@ -225,13 +223,12 @@ print(f"  Output  : {y_foe.shape} frequency-corrected and equalized symbols @ 1 
 
 _print_sep("6. apply_taps() — frozen weights on a second capture")
 
-# Simulate a second noisy capture (same channel, different noise realisation)
-noise2 = np.sqrt(noise_var / 2) * (
-    rng.standard_normal(rx.shape) + 1j * rng.standard_normal(rx.shape)
-).astype(np.complex64)
-rx2 = np.convolve(tx_np, h_ch, mode="same")
-t2 = np.arange(len(rx2), dtype=np.float64) / FS
-rx2 = rx2 * np.exp(1j * 2.0 * np.pi * FO_TRUE_HZ * t2).astype(np.complex64) + noise2
+# Simulate a second noisy capture (same channel, different noise realisation) using library features!
+sig_rx2 = sig_tx.copy()
+sig_rx2.fir_filter(h_ch)
+sig_rx2.shift_frequency(FO_TRUE_HZ)
+sig_rx2.samples = apply_awgn(sig_rx2.samples, sps=SPS, esn0_db=SNR_DB, seed=100)
+rx2 = sig_rx2.samples
 
 # First correct frequency offset on the new capture using the estimated offset!
 rx2_foe = frequency.correct_static_frequency_offset(rx2, sampling_rate=FS, offset=fo_est)
@@ -267,12 +264,13 @@ phase_vv = recovery.recover_carrier_phase_viterbi_viterbi(
 )
 
 y_cpr = recovery.correct_carrier_phase(y_foe, phase_vv)
+_, xp, _ = dispatch(y_cpr)
 
 # Coarse & fractional symbol timing alignment using library-standard timing functions.
 # We pre-pend a small zero-padding block of 20 symbols so that any negative delay offsets
 # (common in dynamic FSE tap adaptation) are shifted into the positive lag search window.
 PAD = 20
-y_cpr_padded = np.concatenate([np.zeros(PAD, dtype=np.complex64), y_cpr])
+y_cpr_padded = xp.concatenate([xp.zeros(PAD, dtype=xp.complex64), y_cpr])
 
 coarse_est, frac_est = estimate_timing(
     y_cpr_padded,
@@ -284,7 +282,7 @@ coarse_offset = int(coarse_est[0] - PAD)
 # Correct timing on the original y_cpr signal (without the temporary padding)
 y_cpr_sync = correct_timing(
     y_cpr,
-    coarse_offset=np.array([coarse_offset]),
+    coarse_offset=xp.array([coarse_offset]),
     fractional_offset=frac_est,
     mode="circular",
 )
@@ -304,11 +302,18 @@ print("  Block size : 64 symbols")
 print(f"  Output     : {y_cpr_resolved.shape} phase-resolved and delay-aligned symbols")
 
 # Evaluate direct metrics for Post-CPR
-evm_pct_cpr, evm_db_cpr = evm(y_cpr_resolved[idx_eval], training_syms[idx_eval])
-snr_val_cpr = snr(y_cpr_resolved[idx_eval], training_syms[idx_eval])
-ser_val_cpr = ser(y_cpr_resolved[idx_eval], training_syms[idx_eval], modulation=MOD, order=ORDER)
-rx_bits = demap_symbols_hard(y_cpr_resolved, modulation=MOD, order=ORDER)
-ber_val_cpr = ber(rx_bits[N_TRAIN * bits_per_sym:-100 * bits_per_sym], tx_bits_eval)
+sig_cpr_eval = sig_tx.copy()
+sig_cpr_eval.samples = y_cpr_resolved[..., idx_eval]
+sig_cpr_eval.sampling_rate = sig_tx.symbol_rate
+sig_cpr_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
+sig_cpr_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_cpr_eval.resolve_symbols()
+
+evm_pct_cpr, evm_db_cpr = sig_cpr_eval.evm()
+snr_val_cpr = sig_cpr_eval.snr()
+ser_val_cpr = sig_cpr_eval.ser()
+sig_cpr_eval.demap_symbols_hard()
+ber_val_cpr = sig_cpr_eval.ber()
 
 print("\n  Post-CPR (FOE + CPR + Timing Sync) Metrics:")
 print("  ───────────────────────────────────────────")
@@ -348,11 +353,18 @@ print(f"  Output : {y_final.shape} symbols")
 print(f"  MSE    : {_mse_db(result_lms2.error):.1f} dB")
 
 # Evaluate direct metrics for Stage 2
-evm_pct_s2, evm_db_s2 = evm(y_final[idx_eval], training_syms[idx_eval])
-snr_val_s2 = snr(y_final[idx_eval], training_syms[idx_eval])
-ser_val_s2 = ser(y_final[idx_eval], training_syms[idx_eval], modulation=MOD, order=ORDER)
-rx_bits_s2 = demap_symbols_hard(y_final, modulation=MOD, order=ORDER)
-ber_val_s2 = ber(rx_bits_s2[N_TRAIN * bits_per_sym:-100 * bits_per_sym], tx_bits_eval)
+sig_s2_eval = sig_tx.copy()
+sig_s2_eval.samples = y_final[..., idx_eval]
+sig_s2_eval.sampling_rate = sig_tx.symbol_rate
+sig_s2_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
+sig_s2_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_s2_eval.resolve_symbols()
+
+evm_pct_s2, evm_db_s2 = sig_s2_eval.evm()
+snr_val_s2 = sig_s2_eval.snr()
+ser_val_s2 = sig_s2_eval.ser()
+sig_s2_eval.demap_symbols_hard()
+ber_val_s2 = sig_s2_eval.ber()
 
 print("\n  Stage 2 (LMS SSE) Metrics (Direct against Reference):")
 print("  ─────────────────────────────────────────────────────")

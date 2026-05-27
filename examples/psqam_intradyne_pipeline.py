@@ -43,6 +43,11 @@ Run
   uv run python examples/psqam_intradyne_pipeline.py
 """
 
+import os
+import matplotlib
+# Headless backend for headless execution
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 
 from commstools import Signal
@@ -52,6 +57,7 @@ from commstools.impairments import (
     apply_awgn,
     apply_iq_imbalance,
     apply_pmd,
+    apply_phase_noise,
     compensate_iq_imbalance_lowdin,
 )
 from commstools.mapping import gray_constellation
@@ -122,7 +128,7 @@ tx = Signal.psqam(
     filter_span=FILTER_SPAN,
     num_streams=NUM_STREAMS,
     seed=SEED,
-).to("cpu")
+)
 
 pmf = np.asarray(tx.ps_pmf, dtype=np.float64)
 const_unit = gray_constellation("qam", ORDER)
@@ -145,37 +151,29 @@ source_bits = np.asarray(to_device(tx.source_bits, "cpu"))
 
 _sep("2. Channel impairments")
 
-rx_samples = np.ascontiguousarray(to_device(tx.samples, "cpu"), dtype=np.complex64)
+rx = tx.copy()
 
-# Per-pol 3-tap multipath (residual ISI for the FSE).
+# Per-pol 3-tap multipath (residual ISI for the FSE) using built-in fir_filter
 h_ch = np.array([0.92, 0.0, 0.10 + 0.06j, 0.0, 0.04 - 0.02j], dtype=np.complex64)
-rx_samples = np.stack(
-    [np.convolve(rx_samples[c], h_ch, mode="same") for c in range(NUM_STREAMS)]
-).astype(np.complex64)
+rx.fir_filter(h_ch)
 
-# Polarisation mode dispersion (frequency-dependent SOP rotation + DGD).
-rx_samples = np.asarray(
-    apply_pmd(rx_samples, tx.sampling_rate, dgd=PMD_DGD_S, theta=PMD_THETA)
-).astype(np.complex64)
+# Polarisation mode dispersion (frequency-dependent SOP rotation + DGD)
+rx.samples = apply_pmd(rx.samples, rx.sampling_rate, dgd=PMD_DGD_S, theta=PMD_THETA)
 
-# Laser phase noise (Wiener random walk, applied to both pols identically — they
-# share an LO).  BPS-CPR downstream tracks this.
-fs = tx.sampling_rate
-phase_walk = np.cumsum(
-    rng.standard_normal(rx_samples.shape[-1])
-    * np.sqrt(2 * np.pi * LASER_LINEWIDTH_HZ / fs)
+# Laser phase noise (using built-in apply_phase_noise with shared_lo=True)
+rx.samples = apply_phase_noise(
+    rx.samples,
+    sampling_rate=rx.sampling_rate,
+    linewidth_hz=LASER_LINEWIDTH_HZ,
+    shared_lo=True,
+    seed=SEED,
 )
-rx_samples = rx_samples * np.exp(1j * phase_walk).astype(np.complex64)[None, :]
 
-# Receiver IQ imbalance.
-rx_samples = np.asarray(
-    apply_iq_imbalance(rx_samples, IQ_AMP_DB, IQ_PHASE_DEG)
-).astype(np.complex64)
+# Receiver IQ imbalance
+rx.samples = apply_iq_imbalance(rx.samples, IQ_AMP_DB, IQ_PHASE_DEG)
 
-# AWGN calibrated against the actual sample power (PS-QAM safe).
-rx_samples = np.asarray(
-    apply_awgn(rx_samples, sps=SPS, esn0_db=ESN0_DB, seed=SEED)
-).astype(np.complex64)
+# AWGN calibrated against the actual sample power (PS-QAM safe)
+rx.samples = apply_awgn(rx.samples, sps=SPS, esn0_db=ESN0_DB, seed=SEED)
 
 print(f"  Multipath FIR: |h| = {np.abs(h_ch).tolist()}")
 print(f"  PMD          : DGD={PMD_DGD_S * 1e12:.1f} ps, θ={PMD_THETA:.3f} rad")
@@ -190,21 +188,12 @@ print(f"  Es/N0        : {ESN0_DB:.1f} dB")
 
 _sep("3. Receiver front-end")
 
-rx = Signal(
-    samples=rx_samples,
-    sampling_rate=tx.sampling_rate,
-    symbol_rate=tx.symbol_rate,
-    mod_scheme="PS-QAM",
-    mod_order=ORDER,
-    ps_pmf=tx.ps_pmf,
-    pulse_shape="rrc",
-    rrc_rolloff=ROLLOFF,
-    filter_span=FILTER_SPAN,
-).to("cpu")
+# Bring signal and metadata to CPU for subsequent CPU-based Numba LMS and CPR processing
+rx = rx.to("cpu")
+rx.source_symbols = to_device(rx.source_symbols, "cpu")
+rx.source_bits = to_device(rx.source_bits, "cpu")
 
 rx.samples = compensate_iq_imbalance_lowdin(rx.samples)
-rx.source_bits = source_bits.copy()
-rx.source_symbols = source_symbols.copy()
 
 print(f"  IQ comp      : Löwdin orthogonalisation")
 print(f"  RX samples   : {rx.samples.shape}")
@@ -289,13 +278,20 @@ _sep("6. Phase-ambiguity resolution + hard demap")
 eq = rx.copy()
 eq.samples = y_cpr
 eq.sampling_rate = rx.symbol_rate             # 1 SPS
-eq.source_symbols = rx.source_symbols
-eq.source_bits = rx.source_bits
+eq.source_symbols = to_device(rx.source_symbols, "cpu")
+eq.source_bits = to_device(rx.source_bits, "cpu")
 
 eq.resolve_symbols()                          # avg-power=1 on {s_m / √E_PS}
 eq.resolve_phase_ambiguity()                  # auto-forwards self.ps_pmf
 eq.demap_symbols_hard()                       # auto-forwards self.ps_pmf
 
+os.makedirs("examples/images", exist_ok=True)
+fig_and_ax = eq.plot_constellation(show=False, overlay_source=True)
+if fig_and_ax is not None:
+    fig, ax = fig_and_ax
+    fig.savefig("examples/images/psqam_intradyne_diagnostics.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+print("  Diagnostic plot saved to examples/images/psqam_intradyne_diagnostics.png")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7. METRICS  (all PS-QAM aware via auto-forwarded self.ps_pmf)
@@ -303,7 +299,7 @@ eq.demap_symbols_hard()                       # auto-forwards self.ps_pmf
 
 _sep("7. Metrics")
 
-discard = 2 * NUM_TRAIN
+discard = NUM_TRAIN
 
 evm_pct, evm_db = eq.evm(num_train_symbols=discard, mode="data_aided")
 snr_db = eq.snr(num_train_symbols=discard)
