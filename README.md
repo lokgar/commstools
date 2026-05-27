@@ -125,7 +125,7 @@ ax.legend()
 plt.show()
 ```
 
-![Power Spectral Density](examples/images/psd.png)
+<img src="examples/images/psd.png" width="50%" alt="Power Spectral Density">
 
 ---
 
@@ -154,23 +154,21 @@ plt.show()
 Finally, we decimate the matched-filtered signal down to the symbol rate ($1\text{ sps}$), plot the recovered constellation density map with a theoretical grid overlay, and measure performance metrics.
 
 ```python
-from commstools.metrics import evm, snr
-
 # 1. Slice / Decimate to 1 sps
 const_sig = noisy_matched.copy().decimate_to_symbol_rate()
 
 # 2. Plot constellation density diagram with theoretical overlay
 const_sig.plot_constellation(overlay_ideal=True, show=True)
 
-# 3. Calculate Error Vector Magnitude (EVM) and SNR
-evm_pct, evm_db = evm(const_sig.samples, sig.source_symbols)
-snr_lin, snr_db  = snr(const_sig.samples, sig.source_symbols)
+# 3. Calculate Error Vector Magnitude (EVM) and SNR using Signal methods
+evm_pct, evm_db = const_sig.evm(sig.source_symbols)
+snr_db = const_sig.snr(sig.source_symbols)
 
 print(f"Measured EVM: {evm_pct:.2f}% ({evm_db:.1f} dB)")
 print(f"Data-Aided SNR: {snr_db:.1f} dB")
 ```
 
-![Constellation Diagram](examples/images/constellation.png)
+<img src="examples/images/constellation.png" width="50%" alt="Constellation Diagram">
 
 ---
 
