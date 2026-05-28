@@ -5435,7 +5435,7 @@ def block_lms(
     cpr_type: Optional[str] = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
-    cpr_bps_joint_channels: bool = False,
+    cpr_joint_channels: bool = False,
     cpr_cycle_slip_correction: bool = False,
     cpr_cycle_slip_history: int = 100,
     cpr_cycle_slip_threshold: float = np.pi / 4,
@@ -5573,7 +5573,7 @@ def block_lms(
         independent of ``block_size``.  Larger values reduce phase-noise
         variance at the cost of increased tracking latency.
         ``cpr_bps_block_size=1`` gives single-symbol BPS.
-    cpr_bps_joint_channels : bool, default False
+    cpr_joint_channels : bool, default False
         For MIMO inputs (C > 1): if ``True``, the BPS distance metrics are
         summed across all C channels before ``argmin``, producing one shared
         phase estimate broadcast to all channels.  Reduces estimation
@@ -5805,7 +5805,7 @@ def block_lms(
             if cpr_cycle_slip_correction
             else ", cs_corr=False"
         )
-        _joint = ", joint" if cpr_bps_joint_channels and C > 1 else ""
+        _joint = ", joint" if cpr_joint_channels and C > 1 else ""
         _cpr_info = (
             f", cpr=bps(P={cpr_bps_test_phases}, K={cpr_bps_block_size}{_joint}{_cs})"
         )
@@ -5936,7 +5936,7 @@ def block_lms(
             metric = win_sum / xp.float32(K)  # (P, C, B) — always full K-sample window
 
             # Per-symbol argmin over P phases → raw (C, B) in [0, π/2)
-            if cpr_bps_joint_channels and C > 1:
+            if cpr_joint_channels and C > 1:
                 best_k = xp.argmin(metric.sum(axis=1), axis=0)  # (B,)
                 phi_raw = xp.broadcast_to(
                     bps_angles[best_k][None, :], (C, B)
