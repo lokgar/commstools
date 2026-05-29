@@ -18,7 +18,9 @@ SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 
 def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
-    sig = Signal.qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = Signal.qam(
+        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
+    )
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -27,7 +29,9 @@ def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
 
 def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
-    sig = Signal.psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = Signal.psk(
+        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
+    )
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -58,14 +62,23 @@ class TestCprViterbiViterbi:
     @pytest.mark.parametrize(
         "order,modulation,block_size",
         [
-            (4, "psk", 16), (4, "psk", 32), (4, "psk", 64),
-            (16, "qam", 16), (16, "qam", 32), (16, "qam", 64),
-            (64, "qam", 32), (64, "qam", 64),
+            (4, "psk", 16),
+            (4, "psk", 32),
+            (4, "psk", 64),
+            (16, "qam", 16),
+            (16, "qam", 32),
+            (16, "qam", 64),
+            (64, "qam", 32),
+            (64, "qam", 64),
         ],
     )
     def test_phase_residual(self, backend_device, xp, order, modulation, block_size):
         """VV CPR: mean phase estimate within 0.1 rad of true carrier phase (mod M-fold)."""
-        sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
+        sig = (
+            _qam_signal(xp, order, 2048)
+            if modulation == "qam"
+            else _psk_signal(xp, order, 2048)
+        )
         phi_true = 0.3  # radians
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
@@ -261,7 +274,11 @@ class TestCprTikhonov:
     )
     def test_phase_residual(self, backend_device, xp, order, modulation, block_size):
         """Tikhonov CPR: mean estimate within 0.1 rad of true carrier phase (mod M-fold)."""
-        sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
+        sig = (
+            _qam_signal(xp, order, 2048)
+            if modulation == "qam"
+            else _psk_signal(xp, order, 2048)
+        )
         phi_true = 0.3
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
@@ -284,7 +301,11 @@ class TestCprTikhonov:
         """Tikhonov CPR: 1D input → 1D output of same length."""
         sig = _qam_signal(xp, 16, 512)
         phase = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
+            sig.samples,
+            modulation="qam",
+            order=16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
         )
         assert phase.shape == sig.samples.shape
 
@@ -294,7 +315,11 @@ class TestCprTikhonov:
         sig_b = _qam_signal(xp, 16, 512)
         mimo = xp.stack([sig_a.samples, sig_b.samples])
         phase = recovery.recover_carrier_phase_tikhonov(
-            mimo, modulation="qam", order=16, linewidth_symbol_periods=1e-4, snr_db=SNR_DB
+            mimo,
+            modulation="qam",
+            order=16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
         )
         assert phase.shape == mimo.shape
 
@@ -303,8 +328,11 @@ class TestCprTikhonov:
         sig = _qam_signal(xp, 4, 20)
         with pytest.raises(ValueError, match="shorter than block_size"):
             recovery.recover_carrier_phase_tikhonov(
-                sig.samples[:10], modulation="qam", order=4,
-                linewidth_symbol_periods=1e-4, block_size=32,
+                sig.samples[:10],
+                modulation="qam",
+                order=4,
+                linewidth_symbol_periods=1e-4,
+                block_size=32,
             )
 
     def test_invalid_method_raises(self, backend_device, xp):
@@ -312,20 +340,31 @@ class TestCprTikhonov:
         sig = _qam_signal(xp, 16, 512)
         with pytest.raises(ValueError, match="Unknown method"):
             recovery.recover_carrier_phase_tikhonov(
-                sig.samples, modulation="qam", order=16,
-                linewidth_symbol_periods=1e-4, method="bad",
+                sig.samples,
+                modulation="qam",
+                order=16,
+                linewidth_symbol_periods=1e-4,
+                method="bad",
             )
 
     @pytest.mark.parametrize("order,modulation", [(4, "psk"), (16, "qam")])
     def test_sskf_phase_residual(self, backend_device, xp, order, modulation):
         """Tikhonov SSKF: mean estimate within 0.1 rad of true offset (mod M-fold)."""
-        sig = _qam_signal(xp, order, 2048) if modulation == "qam" else _psk_signal(xp, order, 2048)
+        sig = (
+            _qam_signal(xp, order, 2048)
+            if modulation == "qam"
+            else _psk_signal(xp, order, 2048)
+        )
         phi_true = 0.3
         sig.samples = sig.samples * xp.exp(1j * phi_true)
 
         phase_est = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, modulation=modulation, order=order,
-            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
+            sig.samples,
+            modulation=modulation,
+            order=order,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
+            method="sskf",
         )
 
         M = 4 if modulation == "qam" else order
@@ -340,12 +379,20 @@ class TestCprTikhonov:
         sig.samples = sig.samples * xp.exp(1j * 0.2)
 
         phi_exact = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, modulation="qam", order=16,
-            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="exact",
+            sig.samples,
+            modulation="qam",
+            order=16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
+            method="exact",
         )
         phi_sskf = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, modulation="qam", order=16,
-            linewidth_symbol_periods=1e-4, snr_db=SNR_DB, method="sskf",
+            sig.samples,
+            modulation="qam",
+            order=16,
+            linewidth_symbol_periods=1e-4,
+            snr_db=SNR_DB,
+            method="sskf",
         )
         rms_diff = float(xp.sqrt(xp.mean((phi_exact - phi_sskf) ** 2)))
         assert rms_diff < 0.05
@@ -361,8 +408,12 @@ class TestCprTikhonov:
             sig.samples, modulation="psk", order=4, block_size=32
         )
         phi_tik = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, modulation="psk", order=4,
-            linewidth_symbol_periods=linewidth_symbol_periods, block_size=32, snr_db=snr_test,
+            sig.samples,
+            modulation="psk",
+            order=4,
+            linewidth_symbol_periods=linewidth_symbol_periods,
+            block_size=32,
+            snr_db=snr_test,
         )
 
         assert float(xp.std(phi_tik)) < float(xp.std(phi_vv))
@@ -431,7 +482,9 @@ class TestJointChannels:
         """Tikhonov joint_channels=True: both phi_full rows are bitwise identical."""
         mimo = self._make_mimo(xp)
         phi = recovery.recover_carrier_phase_tikhonov(
-            mimo, "qam", 16,
+            mimo,
+            "qam",
+            16,
             linewidth_symbol_periods=1e-4,
             snr_db=SNR_DB,
             joint_channels=True,
@@ -476,7 +529,9 @@ class TestCycleSlipCorrection:
         """Smooth linear ramp with no slips is returned unchanged."""
         B = 200
         phi_u = np.linspace(0.0, 2.0, B)
-        phi_out = recovery.correct_cycle_slips(phi_u.copy(), symmetry=4, history_length=50)
+        phi_out = recovery.correct_cycle_slips(
+            phi_u.copy(), symmetry=4, history_length=50
+        )
         np.testing.assert_allclose(phi_out, phi_u, atol=1e-10)
 
     def test_standalone_single_slip(self, backend_device, xp):
@@ -485,7 +540,9 @@ class TestCycleSlipCorrection:
         phi_u = np.linspace(0.0, 1.0, B)
         phi_slipped = phi_u.copy()
         phi_slipped[150:] += np.pi / 2
-        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=4, history_length=100)
+        phi_out = recovery.correct_cycle_slips(
+            phi_slipped, symmetry=4, history_length=100
+        )
         np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
 
     def test_standalone_multiple_slips(self, backend_device, xp):
@@ -495,13 +552,17 @@ class TestCycleSlipCorrection:
         phi_slipped = phi_u.copy()
         phi_slipped[100:] += np.pi / 2
         phi_slipped[300:] -= np.pi / 2
-        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=4, history_length=80)
+        phi_out = recovery.correct_cycle_slips(
+            phi_slipped, symmetry=4, history_length=80
+        )
         np.testing.assert_allclose(phi_out, phi_u, atol=0.05)
 
     def test_bps_correction_bounded_output(self, backend_device, xp):
         """BPS cycle_slip_correction=True returns phase within reasonable bounds."""
         sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
-        phi = recovery.recover_carrier_phase_bps(sig.samples, "qam", 16, cycle_slip_correction=True)
+        phi = recovery.recover_carrier_phase_bps(
+            sig.samples, "qam", 16, cycle_slip_correction=True
+        )
         assert phi.shape == sig.samples.shape
         phi_np = phi if xp is np else phi.get()
         assert np.max(np.abs(phi_np)) < 10 * np.pi
@@ -518,7 +579,9 @@ class TestCycleSlipCorrection:
         """Tikhonov cycle_slip_correction=True returns correct shape."""
         sig = _qam_signal(xp, 16, 2048, snr_db=SNR_DB)
         phi = recovery.recover_carrier_phase_tikhonov(
-            sig.samples, "qam", 16,
+            sig.samples,
+            "qam",
+            16,
             linewidth_symbol_periods=1e-4,
             snr_db=SNR_DB,
             cycle_slip_correction=True,
@@ -540,19 +603,28 @@ class TestResolvePhaseAmbiguity:
         """Already-aligned symbols: k=0 chosen and SER is minimal."""
         from commstools.helpers import normalize
         from commstools.metrics import ser
+
         sig = _qam_signal(xp, 16, self.N, snr_db=30, seed=5)
         sym = normalize(sig.samples, "average_power")
         ref = normalize(xp.asarray(sig.source_symbols), "average_power")
         resolved = recovery.resolve_phase_ambiguity(sym, ref, "qam", 16)
         s0 = float(ser(resolved, ref, "qam", 16))
         for k in range(1, 4):
-            sk = float(ser(resolved * xp.exp(1j * k * np.pi / 2).astype(sym.dtype), ref, "qam", 16))
+            sk = float(
+                ser(
+                    resolved * xp.exp(1j * k * np.pi / 2).astype(sym.dtype),
+                    ref,
+                    "qam",
+                    16,
+                )
+            )
             assert s0 <= sk + 1e-6
 
     def test_corrects_pi_half_rotation(self, backend_device, xp):
         """Symbols rotated by pi/2 are corrected; post-resolution SER is low."""
         from commstools.helpers import normalize
         from commstools.metrics import ser
+
         sig = _qam_signal(xp, 16, self.N, snr_db=30, seed=5)
         sym = normalize(sig.samples, "average_power")
         ref = normalize(xp.asarray(sig.source_symbols), "average_power")
@@ -564,14 +636,20 @@ class TestResolvePhaseAmbiguity:
         """MIMO: channels with different rotations are each independently corrected."""
         from commstools.helpers import normalize
         from commstools.metrics import ser
+
         sig_a = _qam_signal(xp, 16, self.N, seed=1)
         sig_b = _qam_signal(xp, 16, self.N, seed=2)
         sym_a = normalize(sig_a.samples, "average_power")
         sym_b = normalize(sig_b.samples, "average_power")
         ref_a = normalize(xp.asarray(sig_a.source_symbols), "average_power")
         ref_b = normalize(xp.asarray(sig_b.source_symbols), "average_power")
-        mimo = xp.stack([sym_a * xp.exp(1j * np.pi / 2).astype(sym_a.dtype),
-                         sym_b * xp.exp(1j * np.pi).astype(sym_b.dtype)], axis=0)
+        mimo = xp.stack(
+            [
+                sym_a * xp.exp(1j * np.pi / 2).astype(sym_a.dtype),
+                sym_b * xp.exp(1j * np.pi).astype(sym_b.dtype),
+            ],
+            axis=0,
+        )
         ref_mimo = xp.stack([ref_a, ref_b], axis=0)
         resolved = recovery.resolve_phase_ambiguity(mimo, ref_mimo, "qam", 16)
         assert resolved.shape == (2, self.N)
@@ -584,6 +662,7 @@ class TestResolvePhaseAmbiguity:
         """Signal.resolve_phase_ambiguity() updates resolved_symbols in place."""
         from commstools.helpers import normalize
         from commstools.metrics import ser
+
         sig = Signal.qam(order=16, num_symbols=self.N, sps=1, symbol_rate=1e6, seed=9)
         sig.samples = apply_awgn(sig.samples, esn0_db=30, sps=1, seed=9)
         sym = normalize(sig.samples, "average_power")
@@ -639,7 +718,9 @@ class TestDDPLLEnhancements:
         """Butterworth loop + joint_channels=True: both phi rows are bitwise identical."""
         mimo = self._make_mimo(xp)
         phi = recovery.recover_carrier_phase_pll(
-            mimo, "qam", 16,
+            mimo,
+            "qam",
+            16,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
             joint_channels=True,
@@ -674,7 +755,9 @@ class TestDDPLLEnhancements:
         """cycle_slip_correction=True (Butterworth loop) returns correct shape."""
         sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
         phi = recovery.recover_carrier_phase_pll(
-            sig.samples, "qam", 16,
+            sig.samples,
+            "qam",
+            16,
             loop_filter="butterworth",
             loop_bandwidth_normalized=1e-3,
             cycle_slip_correction=True,
@@ -685,7 +768,9 @@ class TestDDPLLEnhancements:
         """joint_channels=True + cycle_slip_correction=True: rows remain identical."""
         mimo = self._make_mimo(xp)
         phi = recovery.recover_carrier_phase_pll(
-            mimo, "qam", 16,
+            mimo,
+            "qam",
+            16,
             joint_channels=True,
             cycle_slip_correction=True,
             cycle_slip_history=1000,
@@ -703,9 +788,13 @@ class TestDDPLLEnhancements:
 class TestPilotsCPREnhancements:
     """Pilots CPR joint_channels and cycle_slip_correction parameters."""
 
-    def _pilot_setup(self, xp, n_symbols=512, pilot_period=8, phase_per_sym=0.001, seed=42):
+    def _pilot_setup(
+        self, xp, n_symbols=512, pilot_period=8, phase_per_sym=0.001, seed=42
+    ):
         """Return (samples, pilot_indices, pilot_values) for a 16-QAM signal."""
-        sig = Signal.qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS, seed=seed)
+        sig = Signal.qam(
+            order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS, seed=seed
+        )
         ideal = xp.asarray(sig.samples.copy())
         sig.samples = apply_awgn(sig.samples, esn0_db=SNR_DB, sps=1, seed=seed)
         sig.samples = _apply_phase_ramp(xp, sig.samples, phase_per_sym)
@@ -767,7 +856,9 @@ class TestPilotsCPREnhancements:
         phi_u = np.linspace(0.0, 3.0, B)
         phi_slipped = phi_u.copy()
         phi_slipped[100:] += 2.0 * np.pi
-        phi_out = recovery.correct_cycle_slips(phi_slipped, symmetry=1, history_length=50)
+        phi_out = recovery.correct_cycle_slips(
+            phi_slipped, symmetry=1, history_length=50
+        )
         np.testing.assert_allclose(phi_out, phi_u, atol=0.1)
 
     def test_joint_cycle_slip_mimo_rows_identical(self, backend_device, xp):
@@ -877,7 +968,9 @@ class TestViterbiViterbi:
         """block_size > N should raise ValueError."""
         syms = self._qpsk_symbols(xp, N=16)
         with pytest.raises(ValueError, match="block_size"):
-            recovery.recover_carrier_phase_viterbi_viterbi(syms, "psk", 4, block_size=64)
+            recovery.recover_carrier_phase_viterbi_viterbi(
+                syms, "psk", 4, block_size=64
+            )
 
 
 # =============================================================================
@@ -1116,7 +1209,9 @@ def _make_ambiguous_qam16(n_sym=2000, corrupt_head=500, seed=0):
     rot1 = np.exp(1j * np.pi / 2).astype(np.complex64)
     symbols = ref * rot1
     # Corrupt only the first corrupt_head symbols with an additional π/2 (total π)
-    symbols[:corrupt_head] = ref[:corrupt_head] * np.exp(1j * np.pi).astype(np.complex64)
+    symbols[:corrupt_head] = ref[:corrupt_head] * np.exp(1j * np.pi).astype(
+        np.complex64
+    )
     return symbols, ref
 
 
@@ -1126,8 +1221,12 @@ def test_resolve_phase_ambiguity_skip(backend_device, xp, xpt):
     symbols_np, ref_np = _make_ambiguous_qam16(n_sym=n_sym, corrupt_head=corrupt_head)
     symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
 
-    out_no_skip = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
-    out_skip = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=corrupt_head)
+    out_no_skip = recovery.resolve_phase_ambiguity(
+        symbols, ref, "qam", 16, num_skip_symbols=0
+    )
+    out_skip = recovery.resolve_phase_ambiguity(
+        symbols, ref, "qam", 16, num_skip_symbols=corrupt_head
+    )
 
     from commstools.metrics import ser as _ser_fn
 
@@ -1147,7 +1246,9 @@ def test_resolve_phase_ambiguity_skip_zero_is_baseline(backend_device, xp, xpt):
     symbols, ref = xp.asarray(symbols_np), xp.asarray(ref_np)
 
     out_default = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16)
-    out_skip0 = recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=0)
+    out_skip0 = recovery.resolve_phase_ambiguity(
+        symbols, ref, "qam", 16, num_skip_symbols=0
+    )
 
     assert bool(xp.all(out_default == out_skip0))
 

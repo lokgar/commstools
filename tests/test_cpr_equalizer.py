@@ -21,7 +21,10 @@ import pytest
 
 from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
-from commstools.frequency import correct_frequency_drift, estimate_frequency_offset_mth_power
+from commstools.frequency import (
+    correct_frequency_drift,
+    estimate_frequency_offset_mth_power,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +121,9 @@ def test_numba_jax_parity_lms(cpr_type, backend_device, xp):
     res_nb = lms(xp.asarray(samples), **kwargs, backend="numba")
     res_jx = lms(xp.asarray(samples), **kwargs, backend="jax")
 
-    max_diff = float(xp.max(xp.abs(xp.asarray(res_nb.y_hat) - xp.asarray(res_jx.y_hat))))
+    max_diff = float(
+        xp.max(xp.abs(xp.asarray(res_nb.y_hat) - xp.asarray(res_jx.y_hat)))
+    )
     assert max_diff < 1e-4, (
         f"LMS cpr={cpr_type}: Numba vs JAX y_hat mismatch (max diff {max_diff:.2e})"
     )
@@ -236,7 +241,6 @@ def test_blockwise_foe_chirp(backend_device, xp):
     sps = 2
     f_start, f_end = 1e6, 5e6
 
-    t = np.arange(n) / fs
     f_t = np.linspace(f_start, f_end, n)
     phase_chirp = 2 * np.pi * np.cumsum(f_t) / fs
     carrier = np.exp(1j * phase_chirp).astype(np.complex64)
@@ -400,7 +404,9 @@ def test_bps_phase_noise_tracking(backend_device, xp):
         rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
     ).astype(np.complex64)
     samples = xp.asarray(
-        (syms * np.exp(1j * phase_noise).astype(np.complex64) + awgn).astype(np.complex64)
+        (syms * np.exp(1j * phase_noise).astype(np.complex64) + awgn).astype(
+            np.complex64
+        )
     )
 
     res_bps = lms(
@@ -455,7 +461,9 @@ def test_bps_block_size_convergence(backend_device, xp):
         rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
     ).astype(np.complex64)
     samples = xp.asarray(
-        (syms * np.exp(1j * phase_noise).astype(np.complex64) + awgn).astype(np.complex64)
+        (syms * np.exp(1j * phase_noise).astype(np.complex64) + awgn).astype(
+            np.complex64
+        )
     )
 
     res_k1 = lms(
@@ -559,10 +567,14 @@ def test_pll_joint_channels(backend_device, xp):
         ).astype(np.complex64)
 
     phasor = np.exp(1j * phase_noise).astype(np.complex64)
-    samples = xp.asarray(np.stack([
-        syms_a * phasor + _awgn(),
-        syms_b * phasor + _awgn(),
-    ]))
+    samples = xp.asarray(
+        np.stack(
+            [
+                syms_a * phasor + _awgn(),
+                syms_b * phasor + _awgn(),
+            ]
+        )
+    )
     training = np.stack([syms_a[:500], syms_b[:500]])
 
     res = lms(
@@ -624,30 +636,56 @@ def test_cpr_state_warmstart_lms(cpr_mode, backend_device, xp):
     t1, t2 = syms_np[:half], syms_np[half:]
 
     r1 = lms(
-        s1, t1, num_taps=5, sps=1, step_size=5e-3,
-        modulation="psk", order=4, cpr_type=cpr_mode,
-        cpr_bps_block_size=16, cpr_bps_test_phases=32,
+        s1,
+        t1,
+        num_taps=5,
+        sps=1,
+        step_size=5e-3,
+        modulation="psk",
+        order=4,
+        cpr_type=cpr_mode,
+        cpr_bps_block_size=16,
+        cpr_bps_test_phases=32,
     )
     assert r1.cpr_state is not None, "cpr_state must be populated when cpr_type is set"
     assert r1.cpr_state.cpr_type == cpr_mode
     assert r1.cpr_state.num_ch == 1
 
     r2_warm = lms(
-        s2, t2[:20], num_taps=5, sps=1, step_size=5e-3,
-        modulation="psk", order=4, cpr_type=cpr_mode,
-        cpr_bps_block_size=16, cpr_bps_test_phases=32,
-        w_init=r1.weights, cpr_state=r1.cpr_state,
+        s2,
+        t2[:20],
+        num_taps=5,
+        sps=1,
+        step_size=5e-3,
+        modulation="psk",
+        order=4,
+        cpr_type=cpr_mode,
+        cpr_bps_block_size=16,
+        cpr_bps_test_phases=32,
+        w_init=r1.weights,
+        cpr_state=r1.cpr_state,
         input_norm_factor=r1.input_norm_factor,
     )
     r2_cold = lms(
-        s2, t2[:20], num_taps=5, sps=1, step_size=5e-3,
-        modulation="psk", order=4, cpr_type=cpr_mode,
-        cpr_bps_block_size=16, cpr_bps_test_phases=32,
+        s2,
+        t2[:20],
+        num_taps=5,
+        sps=1,
+        step_size=5e-3,
+        modulation="psk",
+        order=4,
+        cpr_type=cpr_mode,
+        cpr_bps_block_size=16,
+        cpr_bps_test_phases=32,
         w_init=r1.weights,
     )
     n_eval_start, n_eval_end = 20, 50
-    mse_warm = _mse_db(r2_warm.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end])
-    mse_cold = _mse_db(r2_cold.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end])
+    mse_warm = _mse_db(
+        r2_warm.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end]
+    )
+    mse_cold = _mse_db(
+        r2_cold.y_hat[n_eval_start:n_eval_end], t2[n_eval_start:n_eval_end]
+    )
     assert mse_warm < mse_cold + 3.0, (
         f"Warm CPRState should not be worse than cold by >3 dB: "
         f"warm={mse_warm:.1f} dB  cold={mse_cold:.1f} dB"
@@ -658,13 +696,20 @@ def test_cpr_state_none_is_baseline_lms(backend_device, xp):
     """cpr_state=None must produce byte-exact output matching omitted cpr_state."""
     samples, syms = _wiener_phase_signal(n_sym=1000)
     kw = dict(
-        num_taps=5, sps=1, step_size=5e-3,
-        modulation="psk", order=4, cpr_type="pll",
+        num_taps=5,
+        sps=1,
+        step_size=5e-3,
+        modulation="psk",
+        order=4,
+        cpr_type="pll",
     )
     r_default = lms(samples, syms[:50], **kw)
-    r_explicit_none = lms(samples, syms[:50], **kw, cpr_state=None, input_norm_factor=None)
+    r_explicit_none = lms(
+        samples, syms[:50], **kw, cpr_state=None, input_norm_factor=None
+    )
     np.testing.assert_array_equal(
-        np.asarray(r_default.y_hat), np.asarray(r_explicit_none.y_hat),
+        np.asarray(r_default.y_hat),
+        np.asarray(r_explicit_none.y_hat),
     )
 
 
@@ -677,17 +722,28 @@ def test_cpr_state_warmstart_rls(backend_device, xp):
     t1 = syms_np[:half]
 
     r1 = rls(
-        s1, t1, num_taps=5, sps=1,
-        modulation="psk", order=4, cpr_type="pll",
+        s1,
+        t1,
+        num_taps=5,
+        sps=1,
+        modulation="psk",
+        order=4,
+        cpr_type="pll",
     )
     assert r1.cpr_state is not None
     assert isinstance(r1.cpr_state, CPRState)
     assert r1.cpr_state.pll_phi is not None
 
     r2 = rls(
-        s2, None, num_taps=5, sps=1,
-        modulation="psk", order=4, cpr_type="pll",
-        w_init=r1.weights, cpr_state=r1.cpr_state,
+        s2,
+        None,
+        num_taps=5,
+        sps=1,
+        modulation="psk",
+        order=4,
+        cpr_type="pll",
+        w_init=r1.weights,
+        cpr_state=r1.cpr_state,
         input_norm_factor=r1.input_norm_factor,
     )
     assert r2.cpr_state is not None
@@ -710,7 +766,9 @@ def test_input_norm_factor_lms_skips_rms(backend_device, xp, xpt):
 
     r_supplied = lms(samples, syms[:50], **kw, input_norm_factor=nf)
     xpt.assert_allclose(
-        xp.asarray(r_supplied.y_hat), xp.asarray(r_auto.y_hat),
-        rtol=1e-5, atol=1e-6,
+        xp.asarray(r_supplied.y_hat),
+        xp.asarray(r_auto.y_hat),
+        rtol=1e-5,
+        atol=1e-6,
     )
     assert r_supplied.input_norm_factor == pytest.approx(float(nf), rel=1e-6)

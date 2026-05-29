@@ -128,6 +128,8 @@ def xpt(backend_device):
     """
     if backend_device == "gpu":
         import cupy.testing as cpt
+
         return cpt
     import numpy.testing as npt
+
     return npt

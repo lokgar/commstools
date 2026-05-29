@@ -53,8 +53,19 @@ def _get_numba_dd_pll():
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_loop(
-            sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0,
-            is_sq_qam, levels, d_grid, lev_min, side,
+            sym_r,
+            sym_i,
+            const_r,
+            const_i,
+            mu,
+            beta,
+            phi0,
+            freq0,
+            is_sq_qam,
+            levels,
+            d_grid,
+            lev_min,
+            side,
         ):
             """Inner DD-PLL loop compiled to machine code by Numba.
 
@@ -166,8 +177,21 @@ def _get_numba_dd_pll_butterworth():
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_bw_loop(
-            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2,
-            is_sq_qam, levels, d_grid, lev_min, side,
+            sym_r,
+            sym_i,
+            const_r,
+            const_i,
+            phi0,
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            is_sq_qam,
+            levels,
+            d_grid,
+            lev_min,
+            side,
         ):
             """DD-PLL inner loop with a 2nd-order Butterworth loop filter.
 
@@ -275,8 +299,19 @@ def _get_numba_dd_pll_joint():
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_joint_loop(
-            sym_r, sym_i, const_r, const_i, mu, beta, phi0, freq0,
-            is_sq_qam, levels, d_grid, lev_min, side,
+            sym_r,
+            sym_i,
+            const_r,
+            const_i,
+            mu,
+            beta,
+            phi0,
+            freq0,
+            is_sq_qam,
+            levels,
+            d_grid,
+            lev_min,
+            side,
         ):
             """Joint-channel DD-PLL with PI loop filter.
 
@@ -363,8 +398,21 @@ def _get_numba_dd_pll_joint_butterworth():
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_joint_bw_loop(
-            sym_r, sym_i, const_r, const_i, phi0, b0, b1, b2, a1, a2,
-            is_sq_qam, levels, d_grid, lev_min, side,
+            sym_r,
+            sym_i,
+            const_r,
+            const_i,
+            phi0,
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            is_sq_qam,
+            levels,
+            d_grid,
+            lev_min,
+            side,
         ):
             """Joint-channel DD-PLL with 2nd-order Butterworth loop filter.
 
@@ -671,6 +719,7 @@ def recover_carrier_phase_pll(
     # square, e.g. 4/16/64/256/1024) the constellation is a uniform grid and
     # the nearest point can be found by rounding to the closest axis level.
     import math as _math  # noqa: PLC0415
+
     _sq_root = _math.isqrt(order)
     _is_sq_qam = ("qam" in modulation.lower()) and (_sq_root * _sq_root == order)
     if _is_sq_qam:
@@ -2072,7 +2121,7 @@ def _get_numba_cycle_slip():
             # Only Sy and Sxy need to be maintained as running state.
             buf_y = np.empty(W, dtype=np.float64)
             buf_head = 0  # next write slot (circular)
-            n_buf = 0     # valid entries currently in buffer
+            n_buf = 0  # valid entries currently in buffer
 
             Sy = 0.0
             Sxy = 0.0

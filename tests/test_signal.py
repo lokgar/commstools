@@ -564,7 +564,12 @@ def test_evm_with_explicit_num_train_symbols(backend_device, xp):
     n_symbols = 600
     n_train = 100
     orig = Signal.psk(
-        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=7
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=7,
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
@@ -598,7 +603,12 @@ def test_snr_with_explicit_num_train_symbols(backend_device, xp):
 
     n_symbols = 600
     orig = Signal.psk(
-        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=8
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=8,
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
@@ -630,7 +640,12 @@ def test_ber_with_explicit_num_train_symbols(backend_device, xp):
 
     n_symbols = 600
     orig = Signal.psk(
-        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=11
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=11,
     )
     result = equalization.lms(
         xp.asarray(orig.samples),
@@ -667,7 +682,12 @@ def test_rls_tail_trim_field(backend_device, xp):
     n_symbols = 400
     num_taps = 7
     orig = Signal.psk(
-        symbol_rate=1e6, num_symbols=n_symbols, order=4, pulse_shape="rrc", sps=2, seed=3
+        symbol_rate=1e6,
+        num_symbols=n_symbols,
+        order=4,
+        pulse_shape="rrc",
+        sps=2,
+        seed=3,
     )
     result = equalization.rls(
         xp.asarray(orig.samples),

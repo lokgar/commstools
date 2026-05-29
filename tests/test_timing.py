@@ -241,7 +241,9 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
     signal[start_pos : start_pos + 13] = preamble_syms
 
     # Detect using Preamble object as reference (key: Preamble as second arg)
-    coarse, _frac = timing.estimate_timing(signal, preamble, sps=1, pulse_shape="none", threshold=2.0)
+    coarse, _frac = timing.estimate_timing(
+        signal, preamble, sps=1, pulse_shape="none", threshold=2.0
+    )
 
     assert abs(coarse[0] - start_pos) <= 1
 
@@ -332,7 +334,6 @@ def test_sequences_device(backend_device, xp):
 
 def test_estimate_fractional_delay_known_shift(backend_device, xp):
     """Verify parabolic interpolation recovers a known fractional delay."""
-    import numpy as np
 
     # Create a sharp peak via a sinc-like correlation centered at k=50
     # with a known fractional offset
@@ -361,7 +362,6 @@ def test_estimate_fractional_delay_edge_peak(backend_device, xp):
 
 def test_estimate_fractional_delay_mimo(backend_device, xp):
     """Verify per-channel fractional delay estimation."""
-    import numpy as np
 
     N = 100
     corr = xp.zeros((2, N), dtype="float32")
@@ -383,7 +383,6 @@ def test_estimate_fractional_delay_mimo(backend_device, xp):
 
 def test_fft_fractional_delay_zero_delay(backend_device, xp, xpt):
     """Verify delay=0 is a perfect passthrough (identity operation)."""
-    import numpy as np
 
     n = np.arange(100, dtype="float32")
     signal = xp.asarray(np.sin(2 * np.pi * 0.05 * n).astype("complex64"))
@@ -395,7 +394,6 @@ def test_fft_fractional_delay_zero_delay(backend_device, xp, xpt):
 
 def test_fft_fractional_delay_known_sine(backend_device, xp, xpt):
     """Verify fractional delay of a sinusoid against ground truth."""
-    import numpy as np
 
     f = 0.02  # Normalized frequency
     N = 200
@@ -414,7 +412,6 @@ def test_fft_fractional_delay_known_sine(backend_device, xp, xpt):
 
 def test_fft_fractional_delay_mimo(backend_device, xp, xpt):
     """Verify per-channel fractional delays for 2-channel signal."""
-    import numpy as np
 
     f = 0.02
     N = 200
@@ -436,7 +433,6 @@ def test_fft_fractional_delay_mimo(backend_device, xp, xpt):
 
 def test_fft_fractional_delay_power_conservation(backend_device, xp):
     """Verify FFT-based delay preserves signal power."""
-    import numpy as np
 
     np.random.seed(42)
     N = 1000
@@ -457,7 +453,6 @@ def test_fft_fractional_delay_power_conservation(backend_device, xp):
 
 def test_fft_fractional_delay_roundtrip(backend_device, xp, xpt):
     """Verify round-trip (delay + undo) recovers original signal."""
-    import numpy as np
 
     np.random.seed(42)
     N = 1000
@@ -490,7 +485,6 @@ def test_correct_timing_coarse_only(backend_device, xp):
 
 def test_correct_timing_combined(backend_device, xp, xpt):
     """Verify coarse + fractional timing correction."""
-    import numpy as np
 
     f = 0.02
     N = 200
@@ -527,7 +521,6 @@ def test_estimate_timing_fractional(backend_device, xp):
 
 def test_estimate_fractional_delay_methods(backend_device, xp):
     """Verify different fractional delay estimation methods."""
-    import numpy as np
 
     # 1. Gaussian Pulse -> Log-Parabolic (Gaussian) fit should be superior
     N = 64
@@ -574,7 +567,6 @@ def test_estimate_fractional_delay_methods(backend_device, xp):
 
 def test_fft_fractional_delay_scalar_ndarray(backend_device, xp, xpt):
     """Verify fft_fractional_delay with 0-d array delay input."""
-    import numpy as np
 
     f = 0.02
     N = 100
@@ -660,7 +652,6 @@ def test_correct_timing_per_channel(backend_device, xp):
 
 def test_correct_timing_fractional_array(backend_device, xp, xpt):
     """Verify fractional offset as array applies per-channel FFT delay and returns 2D output."""
-    import numpy as np
 
     f = 0.02
     N = 200
@@ -673,7 +664,9 @@ def test_correct_timing_fractional_array(backend_device, xp, xpt):
 
     # Correct with array of fractional offsets
     fractional = xp.array([0.3, -0.2])
-    corrected = timing.correct_timing(sig, coarse_offset=0, fractional_offset=fractional)
+    corrected = timing.correct_timing(
+        sig, coarse_offset=0, fractional_offset=fractional
+    )
 
     # Should return 2D (not squeezed)
     assert corrected.ndim == 2
@@ -687,7 +680,6 @@ def test_correct_timing_fractional_array(backend_device, xp, xpt):
 
 def test_estimate_fractional_delay_dft_edge_fallback(backend_device, xp):
     """Verify DFT upsample with edge peak falls back to standard parabolic estimation."""
-    import numpy as np
 
     N = 100
     true_mu = 0.25
@@ -776,7 +768,6 @@ def test_estimate_timing_mimo_identity(backend_device, xp):
 
 def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     """MIMO unique-root ZC: mixed channel (both streams present on each RX)."""
-    import numpy as np
 
     preamble_pos = 150
     angle = np.radians(40)
@@ -843,7 +834,6 @@ def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
 
 def test_fft_fractional_delay_preserves_complex64_dtype(backend_device, xp):
     """fft_fractional_delay: complex64 signal → complex64 output."""
-    import numpy as np
 
     n = np.arange(200)
     sig = xp.asarray(np.exp(2j * np.pi * 0.05 * n).astype(np.complex64))
@@ -853,7 +843,6 @@ def test_fft_fractional_delay_preserves_complex64_dtype(backend_device, xp):
 
 def test_fft_fractional_delay_preserves_float32_dtype(backend_device, xp):
     """fft_fractional_delay: float32 signal → float32 output."""
-    import numpy as np
 
     n = np.arange(200, dtype=np.float32)
     sig = xp.asarray(np.sin(2 * np.pi * 0.05 * n))
@@ -871,7 +860,6 @@ class TestCorrectTiming:
 
     def test_scalar_zero_mode_positive_shift(self, backend_device, xp):
         """Scalar coarse offset with mode='zero': signal shifts left, tail zero-padded."""
-        import numpy as np
 
         N, shift = 100, 10
         sig = xp.asarray(np.arange(N, dtype=np.complex64))
@@ -883,7 +871,6 @@ class TestCorrectTiming:
 
     def test_scalar_zero_mode_negative_shift(self, backend_device, xp):
         """Scalar negative coarse offset with mode='zero': signal shifts right, head zero-padded."""
-        import numpy as np
 
         N, shift = 100, -5
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
@@ -894,7 +881,6 @@ class TestCorrectTiming:
 
     def test_scalar_slice_mode(self, backend_device, xp):
         """Scalar coarse offset with mode='slice': output is shorter by offset."""
-        import numpy as np
 
         N, shift = 100, 15
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
@@ -903,7 +889,6 @@ class TestCorrectTiming:
 
     def test_per_channel_circular_mode(self, backend_device, xp):
         """Per-channel array offset with mode='circular': each channel rolled independently."""
-        import numpy as np
 
         C, N = 2, 64
         rng = np.random.default_rng(20)
@@ -918,7 +903,6 @@ class TestCorrectTiming:
 
     def test_per_channel_zero_mode(self, backend_device, xp):
         """Per-channel array offset with mode='zero': output same shape, tail zeroed."""
-        import numpy as np
 
         C, N = 2, 64
         sig = xp.asarray(np.ones((C, N), dtype=np.complex64))
@@ -928,7 +912,6 @@ class TestCorrectTiming:
 
     def test_per_channel_slice_mode(self, backend_device, xp):
         """Per-channel array offset with mode='slice': output length is N - max(offset)."""
-        import numpy as np
 
         C, N = 2, 64
         offsets = np.array([3, 10])
@@ -941,7 +924,6 @@ class TestCorrectTiming:
         *full pre-slice buffer*, so the new sample 0 is free of circular
         wrap-around from the buffer's trailing edge.
         """
-        import numpy as np
 
         N, coarse, fract = 1024, 200, 0.3
         f0 = 51.0 / N
@@ -955,9 +937,7 @@ class TestCorrectTiming:
         n_out = np.arange(out.shape[-1], dtype=np.float64) + coarse + fract
         expected = np.exp(1j * 2 * np.pi * f0 * n_out).astype(np.complex64)
 
-        xpt.assert_allclose(
-            xp.asarray(out)[:20], xp.asarray(expected)[:20], atol=1e-4
-        )
+        xpt.assert_allclose(xp.asarray(out)[:20], xp.asarray(expected)[:20], atol=1e-4)
 
     def test_slice_mode_fractional_matches_delay_then_slice(
         self, backend_device, xp, xpt
@@ -965,13 +945,12 @@ class TestCorrectTiming:
         """mode='slice' with fractional offset must be algebraically equivalent
         to (fft_fractional_delay on full buffer) followed by (integer slice).
         """
-        import numpy as np
 
         rng = np.random.default_rng(7)
         N, coarse, fract = 512, 50, -0.27
-        sig = (
-            rng.standard_normal(N) + 1j * rng.standard_normal(N)
-        ).astype(np.complex64)
+        sig = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
+            np.complex64
+        )
         sig[-10:] += 5.0 + 5.0j
         sig_xp = xp.asarray(sig)
 
@@ -991,7 +970,6 @@ class TestCorrectTimingErrors:
 
     def test_scalar_unknown_mode_raises(self, backend_device, xp):
         """Scalar offset with unsupported mode raises ValueError."""
-        import numpy as np
 
         sig = xp.asarray(np.ones(64, dtype=np.complex64))
         with pytest.raises(ValueError, match="Unknown mode"):
@@ -999,7 +977,6 @@ class TestCorrectTimingErrors:
 
     def test_per_channel_unknown_mode_raises(self, backend_device, xp):
         """Per-channel offset with unsupported mode raises ValueError."""
-        import numpy as np
 
         sig = xp.asarray(np.ones((2, 64), dtype=np.complex64))
         offsets = xp.asarray(np.array([2, 4], dtype=np.int64))

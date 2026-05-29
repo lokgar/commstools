@@ -17,7 +17,9 @@ SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 
 def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
-    sig = Signal.qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = Signal.qam(
+        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
+    )
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -26,7 +28,9 @@ def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
 
 def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
-    sig = Signal.psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
+    sig = Signal.psk(
+        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
+    )
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -156,7 +160,9 @@ class TestCorrectionFunctions:
         """correct_static_frequency_offset: complex64 input → complex64 output."""
         sig = _qam_signal(xp, 4, 1024)
         assert sig.samples.dtype == xp.complex64
-        corrected = frequency.correct_static_frequency_offset(sig.samples, offset=5_000.0, sampling_rate=FS)
+        corrected = frequency.correct_static_frequency_offset(
+            sig.samples, offset=5_000.0, sampling_rate=FS
+        )
         assert corrected.dtype == xp.complex64
 
     def test_correct_static_frequency_offset_roundtrip(self, backend_device, xp):
@@ -166,7 +172,9 @@ class TestCorrectionFunctions:
         # shift_frequency quantizes to the nearest bin; capture actual offset so
         # the correction can cancel it exactly (no residual due to quantization)
         shifted, actual_fo = spectral.shift_frequency(sig.samples, 10_000.0, FS)
-        restored = frequency.correct_static_frequency_offset(shifted, offset=actual_fo, sampling_rate=FS)
+        restored = frequency.correct_static_frequency_offset(
+            shifted, offset=actual_fo, sampling_rate=FS
+        )
         assert float(xp.max(xp.abs(restored - original))) < 1e-4
 
 
@@ -209,7 +217,7 @@ class TestFoePilots:
         samples = xp.asarray(symbols)
         # Apply exact frequency offset (no bin quantization)
         t = xp.arange(n_samples, dtype=xp.float64) / fs
-        samples = (samples * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64))
+        samples = samples * xp.exp(1j * 2 * np.pi * fo_hz * t).astype(xp.complex64)
         return samples, pilot_indices, pilot_values
 
     @pytest.mark.parametrize("fo_hz", [1_000.0, 5_000.0, -3_000.0])
@@ -217,7 +225,10 @@ class TestFoePilots:
         """Estimated offset within 1 % of true offset at 30 dB SNR."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
         est = frequency.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            sampling_rate=FS,
         )
         assert abs(est - fo_hz) < 0.01 * abs(fo_hz) + 1.0
 
@@ -225,7 +236,10 @@ class TestFoePilots:
         """Zero frequency offset: estimate is within ±20 Hz."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz=0.0)
         est = frequency.estimate_frequency_offset_pilots(
-            samples, pilot_indices=pilot_indices, pilot_values=pilot_values, sampling_rate=FS
+            samples,
+            pilot_indices=pilot_indices,
+            pilot_values=pilot_values,
+            sampling_rate=FS,
         )
         assert abs(est) < 20.0
 
@@ -307,7 +321,9 @@ class TestFoeMengaliMorelli:
         n = xp.arange(N, dtype=xp.float64)
         tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
         # Generic blind mode (no modulation — pure tone)
-        est = frequency.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
+        est = frequency.estimate_frequency_offset_mengali_morelli(
+            tone, sampling_rate=FS
+        )
         assert abs(est - fo_hz) < 0.02 * fo_hz
 
     def test_generic_blind_pure_tone(self, backend_device, xp):
@@ -316,7 +332,9 @@ class TestFoeMengaliMorelli:
         fo_hz = 7_500.0
         n = xp.arange(N, dtype=xp.float64)
         tone = xp.exp(1j * 2 * np.pi * fo_hz / FS * n).astype(xp.complex64)
-        est = frequency.estimate_frequency_offset_mengali_morelli(tone, sampling_rate=FS)
+        est = frequency.estimate_frequency_offset_mengali_morelli(
+            tone, sampling_rate=FS
+        )
         assert abs(est - fo_hz) < 500.0
 
     def test_mimo_returns_per_channel(self, backend_device, xp):
@@ -368,16 +386,23 @@ class TestFoeMengaliMorelli:
 
 
 class TestFoeRegression:
-
     def test_jacobsen_vs_parabolic_accuracy(self, backend_device, xp):
         """Jacobsen interpolation accuracy is at least as good as parabolic for N=256."""
         fo_hz = 7_777.0  # non-round number to stress sub-bin interpolation
         sig = _qam_signal(xp, 4, 256, fo_hz=fo_hz)
         est_j = frequency.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="jacobsen"
+            sig.samples,
+            sampling_rate=FS,
+            modulation="qam",
+            order=4,
+            interpolation="jacobsen",
         )
         est_p = frequency.estimate_frequency_offset_mth_power(
-            sig.samples, sampling_rate=FS, modulation="qam", order=4, interpolation="parabolic"
+            sig.samples,
+            sampling_rate=FS,
+            modulation="qam",
+            order=4,
+            interpolation="parabolic",
         )
         # Jacobsen error must be ≤ parabolic error (with generous 20 % slack for noise)
         assert abs(est_j - fo_hz) <= abs(est_p - fo_hz) * 1.2 + 100.0
@@ -437,7 +462,9 @@ class TestCorrectFrequencyOffsetBranches:
         # Simple real cosine as stand-in for a real-baseband signal
         sig = xp.cos(t)
         sig = sig.astype(xp.float32)
-        out = frequency.correct_static_frequency_offset(sig, offset=5000.0, sampling_rate=1e6)
+        out = frequency.correct_static_frequency_offset(
+            sig, offset=5000.0, sampling_rate=1e6
+        )
         assert out.dtype == xp.complex64
         assert out.shape == sig.shape
 
@@ -452,7 +479,9 @@ class TestCorrectFrequencyOffsetBranches:
                 np.complex64
             )
         )
-        out = frequency.correct_static_frequency_offset(sig, offset=3000.0, sampling_rate=1e6)
+        out = frequency.correct_static_frequency_offset(
+            sig, offset=3000.0, sampling_rate=1e6
+        )
         assert out.shape == (C, N)
         assert out.dtype == xp.complex64
 
@@ -465,12 +494,15 @@ class TestCorrectFrequencyOffsetBranches:
 class TestFindBiasTone:
     """Tests for find_bias_tone (log-parabolic CW tone locator)."""
 
-    @pytest.mark.parametrize("fs,tone_hz", [
-        (1e6,   100e3),    # 100 kHz at 1 MHz  → bin ~409  (well away from DC/Nyquist)
-        (1e9,   250e6),    # 250 MHz at 1 GHz  → bin ~1024
-        (2.5e9, 500e6),    # 500 MHz at 2.5 GHz → bin ~819
-        (2.5e9, -400e6),   # -400 MHz at 2.5 GHz → bin ~3424 (negative freq)
-    ])
+    @pytest.mark.parametrize(
+        "fs,tone_hz",
+        [
+            (1e6, 100e3),  # 100 kHz at 1 MHz  → bin ~409  (well away from DC/Nyquist)
+            (1e9, 250e6),  # 250 MHz at 1 GHz  → bin ~1024
+            (2.5e9, 500e6),  # 500 MHz at 2.5 GHz → bin ~819
+            (2.5e9, -400e6),  # -400 MHz at 2.5 GHz → bin ~3424 (negative freq)
+        ],
+    )
     def test_pure_cw_within_one_bin(self, backend_device, xp, fs, tone_hz):
         """Recovered frequency is within 1 FFT bin of the true tone (N=4096)."""
         N = 4096
@@ -509,7 +541,9 @@ class TestFindBiasTone:
         N = 4096
         n = xp.arange(N, dtype=xp.float64)
         target = xp.exp(1j * 2 * np.pi * 100e6 / fs * n).astype(xp.complex128)
-        interferer = 10.0 * xp.exp(1j * 2 * np.pi * 400e6 / fs * n).astype(xp.complex128)
+        interferer = 10.0 * xp.exp(1j * 2 * np.pi * 400e6 / fs * n).astype(
+            xp.complex128
+        )
         seg = (target + interferer).astype(xp.complex64)
         est = frequency.find_bias_tone(
             seg, sampling_rate=fs, target_hz=100e6, search_band_hz=50e6
@@ -543,7 +577,7 @@ class TestFindBiasTone:
             frequency.find_bias_tone(
                 seg,
                 sampling_rate=1e6,
-                target_hz=2e6,   # beyond Nyquist for fs=1 MHz
+                target_hz=2e6,  # beyond Nyquist for fs=1 MHz
                 search_band_hz=100.0,
             )
 
@@ -567,7 +601,9 @@ class TestFindBiasTone:
         # Place tone 2 bins below Nyquist — peak at nfft-2, neighbors wrap to nfft-3 and nfft-1
         tone_hz = -(fs / 2) + 2 * bin_width
         n_np = np.arange(N, dtype=np.float64)
-        seg = xp.asarray(np.exp(1j * 2 * np.pi * tone_hz / fs * n_np).astype(np.complex64))
+        seg = xp.asarray(
+            np.exp(1j * 2 * np.pi * tone_hz / fs * n_np).astype(np.complex64)
+        )
         est = frequency.find_bias_tone(seg, sampling_rate=fs)
         assert abs(est - tone_hz) < 2 * bin_width
 
@@ -589,7 +625,10 @@ class TestCorrectFrequencyDrift:
         N = 4096
         sig = _qam_signal(xp, 4, N, fo_hz=fo_hz)
         corrected = frequency.correct_frequency_drift(
-            sig.samples, fs, block_size=512, overlap=0.5,
+            sig.samples,
+            fs,
+            block_size=512,
+            overlap=0.5,
             estimator=lambda block, _fs: fo_hz,
         )
         # Residual FOE on corrected signal should be within 500 Hz
@@ -602,7 +641,10 @@ class TestCorrectFrequencyDrift:
         """Output array is on the same backend as the input."""
         sig = xp.ones(2048, dtype=xp.complex64)
         out = frequency.correct_frequency_drift(
-            sig, self.FS, block_size=512, overlap=0.5,
+            sig,
+            self.FS,
+            block_size=512,
+            overlap=0.5,
             estimator=lambda b, f: 0.0,
         )
         assert type(out) is type(sig)
@@ -622,8 +664,10 @@ class TestCorrectFrequencyDrift:
             return 0.0
 
         frequency.correct_frequency_drift(
-            xp.zeros(N, dtype=xp.complex64), self.FS,
-            block_size=block_size, overlap=overlap,
+            xp.zeros(N, dtype=xp.complex64),
+            self.FS,
+            block_size=block_size,
+            overlap=overlap,
             estimator=counting_estimator,
         )
         assert len(call_log) == expected_calls
@@ -639,8 +683,10 @@ class TestCorrectFrequencyDrift:
             return v
 
         out = frequency.correct_frequency_drift(
-            xp.ones(N, dtype=xp.complex64), self.FS,
-            block_size=512, overlap=0.5,
+            xp.ones(N, dtype=xp.complex64),
+            self.FS,
+            block_size=512,
+            overlap=0.5,
             estimator=monotone_estimator,
         )
         out_np = out if xp is np else out.get()
@@ -649,8 +695,10 @@ class TestCorrectFrequencyDrift:
     def test_overlap_zero(self, backend_device, xp):
         """overlap=0: output has correct shape and is finite."""
         out = frequency.correct_frequency_drift(
-            xp.ones(4096, dtype=xp.complex64), self.FS,
-            block_size=512, overlap=0.0,
+            xp.ones(4096, dtype=xp.complex64),
+            self.FS,
+            block_size=512,
+            overlap=0.0,
             estimator=lambda b, f: 1000.0,
         )
         out_np = out if xp is np else out.get()
@@ -661,8 +709,10 @@ class TestCorrectFrequencyDrift:
         """Signal shorter than block_size: single block, output shape matches input."""
         N = 200
         out = frequency.correct_frequency_drift(
-            xp.ones(N, dtype=xp.complex64), self.FS,
-            block_size=512, overlap=0.5,
+            xp.ones(N, dtype=xp.complex64),
+            self.FS,
+            block_size=512,
+            overlap=0.5,
             estimator=lambda b, _f: 3_000.0,
         )
         out_np = out if xp is np else out.get()
@@ -677,7 +727,10 @@ class TestCorrectFrequencyDrift:
         sig_b = _qam_signal(xp, 4, N, fo_hz=fo_b)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
         out = frequency.correct_frequency_drift(
-            mimo, self.FS, block_size=512, overlap=0.5,
+            mimo,
+            self.FS,
+            block_size=512,
+            overlap=0.5,
             estimator=lambda b, _f: frequency.estimate_frequency_offset_mth_power(
                 b, sampling_rate=self.FS, modulation="qam", order=4
             ),
@@ -692,7 +745,10 @@ class TestCorrectFrequencyDrift:
         sig_b = _qam_signal(xp, 4, N, fo_hz=fo_hz)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
         out = frequency.correct_frequency_drift(
-            mimo, self.FS, block_size=512, overlap=0.5,
+            mimo,
+            self.FS,
+            block_size=512,
+            overlap=0.5,
             estimator=lambda b, _f: fo_hz,
             combine_channels=True,
         )

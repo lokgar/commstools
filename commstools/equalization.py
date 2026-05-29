@@ -375,8 +375,12 @@ def _get_numba_lms():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -507,8 +511,12 @@ def _get_numba_rls():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = x_bar[j * num_taps + t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -725,8 +733,12 @@ def _get_numba_lms_cpr():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y_raw[i] = acc_re + 1j * acc_im
 
                 # ── CPR: Phase estimation ──────────────────────────────────
@@ -837,13 +849,27 @@ def _get_numba_lms_cpr():
                                 Sxy = cs_stats[i, 1]
                                 n_f = np.float64(n_b)
                                 if n_b < np.int64(H):
-                                    Sx_c = n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
-                                    Sxx_c = n_f * (n_f - np.float64(1.0)) * (np.float64(2.0) * n_f - np.float64(1.0)) / np.float64(6.0)
+                                    Sx_c = (
+                                        n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
+                                    )
+                                    Sxx_c = (
+                                        n_f
+                                        * (n_f - np.float64(1.0))
+                                        * (np.float64(2.0) * n_f - np.float64(1.0))
+                                        / np.float64(6.0)
+                                    )
                                     denom = n_f * Sxx_c - Sx_c * Sx_c
                                 else:
                                     H_f = np.float64(H)
-                                    Sx_c = H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
-                                    Sxx_c = H_f * (H_f - np.float64(1.0)) * (np.float64(2.0) * H_f - np.float64(1.0)) / np.float64(6.0)
+                                    Sx_c = (
+                                        H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
+                                    )
+                                    Sxx_c = (
+                                        H_f
+                                        * (H_f - np.float64(1.0))
+                                        * (np.float64(2.0) * H_f - np.float64(1.0))
+                                        / np.float64(6.0)
+                                    )
                                     denom = H_f * Sxx_c - Sx_c * Sx_c
                                 if np.abs(denom) > np.float64(1e-30):
                                     slope = (n_f * Sxy - Sx_c * Sy) / denom
@@ -868,7 +894,12 @@ def _get_numba_lms_cpr():
                             H_f = np.float64(H)
                             old_Sy = cs_stats[i, 0]
                             # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
-                            cs_stats[i, 1] = cs_stats[i, 1] - old_Sy + old_y + (H_f - np.float64(1.0)) * phi_corr
+                            cs_stats[i, 1] = (
+                                cs_stats[i, 1]
+                                - old_Sy
+                                + old_y
+                                + (H_f - np.float64(1.0)) * phi_corr
+                            )
                             cs_stats[i, 0] = old_Sy - old_y + phi_corr
                         else:
                             n_b_f = np.float64(n_b)
@@ -1085,8 +1116,12 @@ def _get_numba_rls_cpr():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = x_bar[j * num_taps + t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y_raw[i] = acc_re + 1j * acc_im
 
                 # ── CPR: Phase estimation ──────────────────────────────────
@@ -1191,13 +1226,27 @@ def _get_numba_rls_cpr():
                                 Sxy = cs_stats[i, 1]
                                 n_f = np.float64(n_b)
                                 if n_b < np.int64(H):
-                                    Sx_c = n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
-                                    Sxx_c = n_f * (n_f - np.float64(1.0)) * (np.float64(2.0) * n_f - np.float64(1.0)) / np.float64(6.0)
+                                    Sx_c = (
+                                        n_f * (n_f - np.float64(1.0)) / np.float64(2.0)
+                                    )
+                                    Sxx_c = (
+                                        n_f
+                                        * (n_f - np.float64(1.0))
+                                        * (np.float64(2.0) * n_f - np.float64(1.0))
+                                        / np.float64(6.0)
+                                    )
                                     denom = n_f * Sxx_c - Sx_c * Sx_c
                                 else:
                                     H_f = np.float64(H)
-                                    Sx_c = H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
-                                    Sxx_c = H_f * (H_f - np.float64(1.0)) * (np.float64(2.0) * H_f - np.float64(1.0)) / np.float64(6.0)
+                                    Sx_c = (
+                                        H_f * (H_f - np.float64(1.0)) / np.float64(2.0)
+                                    )
+                                    Sxx_c = (
+                                        H_f
+                                        * (H_f - np.float64(1.0))
+                                        * (np.float64(2.0) * H_f - np.float64(1.0))
+                                        / np.float64(6.0)
+                                    )
                                     denom = H_f * Sxx_c - Sx_c * Sx_c
                                 if np.abs(denom) > np.float64(1e-30):
                                     slope = (n_f * Sxy - Sx_c * Sy) / denom
@@ -1222,7 +1271,12 @@ def _get_numba_rls_cpr():
                             H_f = np.float64(H)
                             old_Sy = cs_stats[i, 0]
                             # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
-                            cs_stats[i, 1] = cs_stats[i, 1] - old_Sy + old_y + (H_f - np.float64(1.0)) * phi_corr
+                            cs_stats[i, 1] = (
+                                cs_stats[i, 1]
+                                - old_Sy
+                                + old_y
+                                + (H_f - np.float64(1.0)) * phi_corr
+                            )
                             cs_stats[i, 0] = old_Sy - old_y + phi_corr
                         else:
                             n_b_f = np.float64(n_b)
@@ -1428,8 +1482,12 @@ def _get_numba_cma():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -1522,8 +1580,12 @@ def _get_numba_rde():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -2035,7 +2097,9 @@ def _get_jax_lms_cpr(
                     jnp.conj(W).astype(jnp.complex128),
                     X_wins.astype(jnp.complex128),
                     precision=_PREC,
-                ).astype(jnp.complex64)  # float64 accumulation → complex64, matches Numba
+                ).astype(
+                    jnp.complex64
+                )  # float64 accumulation → complex64, matches Numba
 
                 # ── Phase estimation (static branch at trace time) ──
                 if cpr_type == "pll":
@@ -2094,8 +2158,12 @@ def _get_jax_lms_cpr(
                         )
                     # Mask slots beyond fill
                     slot_mask = jnp.arange(KB)[None, :, None] < fill  # (1, KB, 1)
-                    d2_masked = jnp.where(slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0))
-                    metric = d2_masked.sum(axis=1)  # (B, C) float64 — matches Numba bps_running_sum
+                    d2_masked = jnp.where(
+                        slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)
+                    )
+                    metric = d2_masked.sum(
+                        axis=1
+                    )  # (B, C) float64 — matches Numba bps_running_sum
 
                     if bps_joint_channels:
                         # Sum over channels too → (B,); broadcast winner to all C
@@ -2124,7 +2192,12 @@ def _get_jax_lms_cpr(
 
                     # Sx and Sxx are exact closed-form constants — no cancellation.
                     Sx = n_f * (n_f - jnp.float64(1.0)) / jnp.float64(2.0)
-                    Sxx = n_f * (n_f - jnp.float64(1.0)) * (jnp.float64(2.0) * n_f - jnp.float64(1.0)) / jnp.float64(6.0)
+                    Sxx = (
+                        n_f
+                        * (n_f - jnp.float64(1.0))
+                        * (jnp.float64(2.0) * n_f - jnp.float64(1.0))
+                        / jnp.float64(6.0)
+                    )
                     denom = n_f * Sxx - Sx * Sx
 
                     # Sxy uses relative positions [0, fill_cs-1].  In the circular
@@ -2396,7 +2469,9 @@ def _get_jax_rls_cpr(
                     jnp.conj(W).astype(jnp.complex128),
                     X_wins.astype(jnp.complex128),
                     precision=_PREC,
-                ).astype(jnp.complex64)  # float64 accumulation → complex64, matches Numba
+                ).astype(
+                    jnp.complex64
+                )  # float64 accumulation → complex64, matches Numba
 
                 if cpr_type == "pll":
                     phi_hat = pll_phi
@@ -2450,7 +2525,9 @@ def _get_jax_rls_cpr(
                             axis=-1,
                         )
                     slot_mask = jnp.arange(KB)[None, :, None] < fill
-                    metric = jnp.where(slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)).sum(axis=1)  # (B, C) float64
+                    metric = jnp.where(
+                        slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)
+                    ).sum(axis=1)  # (B, C) float64
 
                     if bps_joint_channels:
                         best_k = jnp.argmin(metric.sum(axis=-1))
@@ -2476,7 +2553,12 @@ def _get_jax_rls_cpr(
 
                     # Sx and Sxx are exact closed-form constants — no cancellation.
                     Sx = n_f * (n_f - jnp.float64(1.0)) / jnp.float64(2.0)
-                    Sxx = n_f * (n_f - jnp.float64(1.0)) * (jnp.float64(2.0) * n_f - jnp.float64(1.0)) / jnp.float64(6.0)
+                    Sxx = (
+                        n_f
+                        * (n_f - jnp.float64(1.0))
+                        * (jnp.float64(2.0) * n_f - jnp.float64(1.0))
+                        / jnp.float64(6.0)
+                    )
                     denom = n_f * Sxx - Sx * Sx
 
                     # Sxy uses relative positions [0, fill_cs-1] derived from the
@@ -2484,9 +2566,9 @@ def _get_jax_rls_cpr(
                     oldest_slot = ptr_ch % H
                     slots = jnp.arange(H)
                     rel_pos_full = (slots - oldest_slot + H) % H
-                    rel_pos = jnp.where(
-                        fill_cs >= H, rel_pos_full, slots
-                    ).astype(jnp.float64)
+                    rel_pos = jnp.where(fill_cs >= H, rel_pos_full, slots).astype(
+                        jnp.float64
+                    )
                     Sy = jnp.where(mask, buf_y_ch, jnp.float64(0.0)).sum()
                     Sxy = jnp.where(mask, rel_pos * buf_y_ch, jnp.float64(0.0)).sum()
 
@@ -2889,8 +2971,12 @@ def _get_numba_pa_cma():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -2988,8 +3074,12 @@ def _get_numba_pa_rde():
                         for t in range(num_taps):
                             w = W[i, j, t]
                             x = X_wins[j, t]
-                            acc_re += np.float64(w.real) * np.float64(x.real) + np.float64(w.imag) * np.float64(x.imag)
-                            acc_im += np.float64(w.real) * np.float64(x.imag) - np.float64(w.imag) * np.float64(x.real)
+                            acc_re += np.float64(w.real) * np.float64(
+                                x.real
+                            ) + np.float64(w.imag) * np.float64(x.imag)
+                            acc_im += np.float64(w.real) * np.float64(
+                                x.imag
+                            ) - np.float64(w.imag) * np.float64(x.real)
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
@@ -3947,7 +4037,7 @@ def lms(
         ``EqualizerResult.cpr_state``).  When provided and the CPR type and
         channel count match, the PLL integrators, BPS unwrap accumulators,
         and cycle-slip buffers are pre-loaded rather than zero-initialized.
-        This eliminates the ~5–10 k symbol CPR convergence transient that
+        This eliminates the ~5-10 k symbol CPR convergence transient that
         occurs at every block boundary in streaming pipelines.  Pass
         ``None`` (default) to cold-start the CPR from zero.  Ignored when
         ``cpr_type=None`` or when the stored state is incompatible (mismatched
@@ -3994,7 +4084,7 @@ def lms(
           or ``(C, N_sym)`` MIMO, at 1 SPS (symbol rate).
         * ``weights`` — final tap-weight tensor, shape ``(num_taps,)`` SISO
           or ``(C, C, num_taps)`` MIMO.
-        * ``error`` — complex error signal ``e[n] = d[n] − y[n]``, same
+        * ``error`` — complex error signal ``e[n] = d[n] - y[n]``, same
           shape as ``y_hat``.
         * ``weights_history`` — tap weights recorded at each symbol (only
           when ``store_weights=True``); shape ``(N_sym, num_taps)`` SISO or
@@ -5405,7 +5495,9 @@ def _get_numba_cs_block():
                         old_y = cs_buf_y[ci, write_pos]
                         old_sy = cs_stats[ci, 0]
                         # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
-                        cs_stats[ci, 1] = cs_stats[ci, 1] - old_sy + old_y + (H_f - 1.0) * y_b
+                        cs_stats[ci, 1] = (
+                            cs_stats[ci, 1] - old_sy + old_y + (H_f - 1.0) * y_b
+                        )
                         cs_stats[ci, 0] = old_sy - old_y + y_b
                     else:
                         cs_stats[ci, 1] += float(n_b) * y_b
@@ -5511,8 +5603,12 @@ def block_lms(
            h \\mathrel{+}= \\mu \\cdot \\mathrm{IFFT}(\\Delta H_{\\text{fd}})[\\ldots:T]
 
        :math:`\\mu` is applied to the **summed** block gradient (all B per-symbol
-       contributions).  The stability bound is therefore B× tighter than for
-       per-symbol LMS; use a correspondingly smaller ``step_size``.
+       contributions).  This sum is exactly what a frozen-weight per-symbol LMS
+       would accumulate over the same B symbols, so ``step_size`` is on the
+       **same scale as** :func:`lms`: the same :math:`\\mu` yields the same
+       convergence and steady-state MSE (see ``step_size`` below).  Only the
+       *stability ceiling* is B× lower — the operating step that matches
+       :func:`lms` is unchanged.
 
     Parameters
     ----------
@@ -5528,10 +5624,21 @@ def block_lms(
     sps : int, default 2
         Samples per symbol.  ``sps=2`` (T/2-spaced) is the default.
     step_size : float, default 2e-4
-        LMS step size μ.  Applied to the **summed** gradient over all B symbols
-        in the block, so the stability bound is
-        ``0 < μ < 2/(B·C·T·P_x)`` — B times tighter than per-symbol LMS.
-        Scale down relative to :func:`lms` by roughly 1/block_size.
+        LMS step size μ, on the **same scale as** :func:`lms`.  Use the same
+        value you would use for :func:`lms`: because the block update is the
+        summed gradient over all B symbols — exactly what a frozen-weight
+        per-symbol LMS accumulates over those symbols — the same μ produces the
+        same convergence speed and steady-state MSE, independent of
+        ``block_size``.  **Do not** divide by ``block_size``; doing so
+        under-adapts the filter by that factor.
+
+        The only ``block_size`` dependence is the *stability ceiling*: because
+        the weights are frozen across the block, the maximum stable μ is
+        ``2/(B·C·T·P_x)`` — roughly ``block_size`` times lower than
+        :func:`lms`.  Reduce μ below your :func:`lms` value **only if** it
+        exceeds this ceiling (i.e. the run raises the divergence error); the
+        default ``2e-4`` is conservative and safe for ``block_size`` up to a
+        few thousand.
     block_size : int, default 256
         Number of output symbols per LMS gradient accumulation block.  Larger
         values increase GPU efficiency but reduce adaptation speed.  Independent
@@ -5655,12 +5762,16 @@ def block_lms(
     or ``lms(backend='jax')`` for CPU workloads instead.
 
     **Stability / overflow:** ``step_size`` is applied to the **summed**
-    gradient over all ``block_size`` symbols (not averaged), so the LMS
-    stability bound is ``0 < μ < 2/(block_size·C·T·P_x)`` — roughly
-    ``block_size`` times tighter than per-symbol LMS.  Using the same
-    ``step_size`` as :func:`lms` with a large ``block_size`` will cause
-    divergence (NaN weights, detected at end of run).  Divide the
-    per-symbol ``step_size`` by ``block_size`` as a starting point.
+    gradient over all ``block_size`` symbols (not averaged).  This keeps μ on
+    the same scale as :func:`lms` (same μ → same convergence and steady-state
+    MSE), but it also means the *stability ceiling* —
+    ``0 < μ < 2/(block_size·C·T·P_x)`` — is roughly ``block_size`` times lower
+    than per-symbol LMS, because the weights are frozen across the block.  So
+    start from the **same** ``step_size`` you use for :func:`lms`; if a large
+    ``block_size`` pushes that value above the ceiling the run diverges (NaN
+    weights, detected at end of run), in which case reduce μ until stable —
+    do **not** routinely divide by ``block_size`` (that under-adapts the
+    filter by the same factor).
     """
     if cpr_type is not None and cpr_type != "bps":
         raise ValueError(
@@ -6027,7 +6138,9 @@ def block_lms(
                                     denom = n_f * Sxx_c - Sx_c * Sx_c
                                 else:
                                     Sx_c = _H_f * (_H_f - 1.0) / 2.0
-                                    Sxx_c = _H_f * (_H_f - 1.0) * (2.0 * _H_f - 1.0) / 6.0
+                                    Sxx_c = (
+                                        _H_f * (_H_f - 1.0) * (2.0 * _H_f - 1.0) / 6.0
+                                    )
                                     denom = _H_f * Sxx_c - Sx_c * Sx_c
                                 if abs(denom) > 1e-30:
                                     slope = (n_f * sxy - Sx_c * sy) / denom
@@ -6052,7 +6165,12 @@ def block_lms(
                                 old_y = cs_buf_y[ci, write_pos]
                                 old_sy = cs_stats[ci, 0]
                                 # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
-                                cs_stats[ci, 1] = cs_stats[ci, 1] - old_sy + old_y + (_H_f - 1.0) * y_b
+                                cs_stats[ci, 1] = (
+                                    cs_stats[ci, 1]
+                                    - old_sy
+                                    + old_y
+                                    + (_H_f - 1.0) * y_b
+                                )
                                 cs_stats[ci, 0] = old_sy - old_y + y_b
                             else:
                                 cs_stats[ci, 1] += float(n_b) * y_b
@@ -6153,10 +6271,11 @@ def block_lms(
     if bool(_div_flag[0]):
         raise RuntimeError(
             f"block_lms diverged (step_size={step_size}, block_size={block_size}). "
-            f"The block gradient is the sum over all {block_size} symbols, so the "
-            f"stability bound is ~{block_size}x tighter than per-symbol LMS. "
-            f"Try step_size <= {step_size / block_size:.2e} (i.e. divide current "
-            f"step_size by block_size)."
+            f"step_size is on the same scale as lms(), but because the weights are "
+            f"frozen across the block the stability ceiling is ~{block_size}x lower "
+            f"than per-symbol LMS. Reduce step_size until stable (e.g. try "
+            f"{step_size / 2:.2e}, then keep halving) rather than dividing by "
+            f"block_size, which would under-adapt the filter by that factor."
         )
 
     # ── Pack result ───────────────────────────────────────────────────────────

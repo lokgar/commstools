@@ -163,7 +163,9 @@ class TestAddAWGN:
         noise = noisy - data
         measured = float(xp.mean(xp.abs(noise) ** 2))
         # Signal power = 1, SNR = 10 dB → noise power = 10^(-1) = 0.1
-        assert 0.08 < measured < 0.12, f"Noise power {measured:.4f} outside expected range"
+        assert 0.08 < measured < 0.12, (
+            f"Noise power {measured:.4f} outside expected range"
+        )
 
     def test_awgn_real_data(self, backend_device, xp):
         """apply_awgn should handle real-valued input and return a real output."""
@@ -190,7 +192,9 @@ class TestApplyIQImbalance:
         rng = xp.random.RandomState(42)
         samples = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex64)
 
-        out = apply_iq_imbalance(samples, amplitude_imbalance_db=0.0, phase_imbalance_deg=0.0)
+        out = apply_iq_imbalance(
+            samples, amplitude_imbalance_db=0.0, phase_imbalance_deg=0.0
+        )
 
         xpt.assert_allclose(out, samples, atol=1e-5)
 
@@ -202,10 +206,12 @@ class TestApplyIQImbalance:
 
         # κ = |E[r²]| / E[|r|²]: zero for a circular signal
         def kappa(x):
-            return float(xp.abs(xp.mean(x ** 2))) / float(xp.mean(xp.abs(x) ** 2))
+            return float(xp.abs(xp.mean(x**2))) / float(xp.mean(xp.abs(x) ** 2))
 
         kappa_before = kappa(samples)
-        out = apply_iq_imbalance(samples, amplitude_imbalance_db=2.0, phase_imbalance_deg=5.0)
+        out = apply_iq_imbalance(
+            samples, amplitude_imbalance_db=2.0, phase_imbalance_deg=5.0
+        )
         kappa_after = kappa(out)
 
         assert kappa_after > kappa_before + 0.05
@@ -213,19 +219,25 @@ class TestApplyIQImbalance:
     def test_output_shape_siso(self, backend_device, xp):
         """Output shape should match SISO input."""
         samples = xp.ones(512, dtype=xp.complex64)
-        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0)
+        out = apply_iq_imbalance(
+            samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0
+        )
         assert out.shape == (512,)
 
     def test_output_shape_mimo(self, backend_device, xp):
         """Output shape should match MIMO input."""
         samples = xp.ones((4, 512), dtype=xp.complex64)
-        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0)
+        out = apply_iq_imbalance(
+            samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=3.0
+        )
         assert out.shape == (4, 512)
 
     def test_output_dtype_preserved(self, backend_device, xp):
         """Output dtype should match input dtype."""
         samples = xp.ones(256, dtype=xp.complex64)
-        out = apply_iq_imbalance(samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=2.0)
+        out = apply_iq_imbalance(
+            samples, amplitude_imbalance_db=1.0, phase_imbalance_deg=2.0
+        )
         assert out.dtype == xp.complex64
 
 
@@ -268,6 +280,7 @@ class TestApplyPhaseNoise:
         angle(out[n]) = cumulative phase, so diff(angle(out)) = increments.
         """
         import math
+
         N = 200000
         linewidth = 100e3
         fs = 64e9
@@ -275,7 +288,9 @@ class TestApplyPhaseNoise:
 
         # Unit-amplitude input so abs(out)=1 and angle(out) = cumulative phase
         samples = xp.ones(N, dtype=xp.complex128)
-        out = apply_phase_noise(samples, linewidth_hz=linewidth, sampling_rate=fs, seed=42)
+        out = apply_phase_noise(
+            samples, linewidth_hz=linewidth, sampling_rate=fs, seed=42
+        )
 
         cumphase = xp.angle(out)  # (N,) wrapped, but increments are tiny
         increments = xp.diff(cumphase)  # (N-1,)
@@ -288,8 +303,9 @@ class TestApplyPhaseNoise:
         """shared_lo=True: all channels receive identical phase trajectory."""
         C, N = 4, 512
         samples = xp.ones((C, N), dtype=xp.complex128)
-        out = apply_phase_noise(samples, linewidth_hz=1e6, sampling_rate=64e9,
-                                seed=7, shared_lo=True)
+        out = apply_phase_noise(
+            samples, linewidth_hz=1e6, sampling_rate=64e9, seed=7, shared_lo=True
+        )
         # All channels should have identical output since same phase is applied
         for c in range(1, C):
             assert float(xp.max(xp.abs(out[c] - out[0]))) < 1e-10
@@ -298,8 +314,9 @@ class TestApplyPhaseNoise:
         """shared_lo=False (default): channels have independent phase trajectories."""
         C, N = 2, 512
         samples = xp.ones((C, N), dtype=xp.complex128)
-        out = apply_phase_noise(samples, linewidth_hz=10e6, sampling_rate=64e9,
-                                seed=5, shared_lo=False)
+        out = apply_phase_noise(
+            samples, linewidth_hz=10e6, sampling_rate=64e9, seed=5, shared_lo=False
+        )
         # Independent trajectories should differ
         diff = float(xp.max(xp.abs(out[0] - out[1])))
         assert diff > 1e-4
@@ -465,9 +482,11 @@ class TestIQImbalanceCompensation:
         """After Löwdin, I and Q should have equal power and be orthogonal."""
         _, r = self._make_imbalanced(xp)
         out = compensate_iq_imbalance_lowdin(r)
-        I, Q = out.real, out.imag
-        power_ratio = float(xp.mean(I**2)) / float(xp.mean(Q**2))
-        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
+        Iquad, Qquad = out.real, out.imag
+        power_ratio = float(xp.mean(Iquad**2)) / float(xp.mean(Qquad**2))
+        cross_corr = float(xp.abs(xp.mean(Iquad * Qquad))) / float(
+            xp.mean(xp.abs(out) ** 2)
+        )
         assert abs(power_ratio - 1.0) < 0.05
         assert cross_corr < 0.02
 
@@ -521,8 +540,10 @@ class TestIQImbalanceCompensation:
         """After Gram-Schmidt, I and Q should be orthogonal."""
         _, r = self._make_imbalanced(xp)
         out = compensate_iq_imbalance_gram_schmidt(r)
-        I, Q = out.real, out.imag
-        cross_corr = float(xp.abs(xp.mean(I * Q))) / float(xp.mean(xp.abs(out) ** 2))
+        Iquad, Qquad = out.real, out.imag
+        cross_corr = float(xp.abs(xp.mean(Iquad * Qquad))) / float(
+            xp.mean(xp.abs(out) ** 2)
+        )
         assert cross_corr < 0.02
 
     def test_gram_schmidt_preserves_power(self, backend_device, xp):

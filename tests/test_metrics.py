@@ -294,7 +294,7 @@ def test_evm_blind_decreases_with_snr(backend_device, xp):
 
 def test_evm_blind_vs_data_aided_converge(backend_device, xp):
     """At high SNR blind and data-aided EVM should agree closely."""
-    from commstools.mapping import gray_constellation, map_bits
+    from commstools.mapping import map_bits
     from commstools.impairments import apply_awgn
 
     rng = np.random.default_rng(42)

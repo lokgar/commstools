@@ -4,7 +4,6 @@ import numpy as np
 from commstools import mapping
 
 
-
 def test_qam_mapping(xp):
     """Verify QAM mapping produces the correct number of symbols."""
     # Use xp to create array on device

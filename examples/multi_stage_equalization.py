@@ -26,7 +26,7 @@ DSP Metrics & Phase Alignment (Offline vs. Blind Recovery)
 -----------------------------------------------------------
   This script highlights a key DSP phenomenon comparing reference-aided alignment
   vs. blind receiver phase recovery:
-  
+
   * Blind Equalization (RDE FSE) blindly compensates for the dispersion/multipath
     and downsamples the signal to 1 SPS. Since RDE is phase-blind, the signal
     retains its carrier frequency offset and laser phase noise.
@@ -47,7 +47,7 @@ import numpy as np
 from commstools import Signal
 from commstools import equalization, frequency, recovery
 from commstools.timing import estimate_timing, correct_timing
-from commstools.backend import to_device, dispatch
+from commstools.backend import dispatch
 from commstools.impairments import apply_awgn
 
 
@@ -63,7 +63,9 @@ MOD = "qam"
 ORDER = 16
 ROLLOFF = 0.2
 N_TAPS_FSE = 15  # Stage 1: fractionally-spaced filter length (spans 7.5 symbols)
-N_TAPS_SSE = 31  # Stage 2: symbol-spaced filter (spans 31 symbols to clean up residual ISI)
+N_TAPS_SSE = (
+    31  # Stage 2: symbol-spaced filter (spans 31 symbols to clean up residual ISI)
+)
 N_TRAIN = 512  # DA pilot symbols for LMS stages
 
 SNR_DB = 22.0
@@ -85,7 +87,6 @@ def _mse_db(error, window=200):
     return 10.0 * np.log10(mse + 1e-30)
 
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. TRANSMITTER
 # ──────────────────────────────────────────────────────────────────────────────
@@ -104,7 +105,7 @@ training_syms = sig_tx.source_symbols
 
 idx_eval = slice(N_TRAIN, -100)
 bits_per_sym = int(np.log2(ORDER))
-tx_bits_eval = sig_tx.source_bits[N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+tx_bits_eval = sig_tx.source_bits[N_TRAIN * bits_per_sym : -100 * bits_per_sym]
 
 print(f"  TX samples : {sig_tx.samples.shape}  (dtype={sig_tx.samples.dtype})")
 print(f"  TX symbols : {training_syms.shape}  {ORDER}-{MOD.upper()}, SPS={SPS}")
@@ -161,7 +162,9 @@ sig_s1_eval = sig_tx.copy()
 sig_s1_eval.samples = y_s1[..., idx_eval]
 sig_s1_eval.sampling_rate = sig_tx.symbol_rate
 sig_s1_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
-sig_s1_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_s1_eval.source_bits = sig_tx.source_bits[
+    ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
+]
 sig_s1_eval.resolve_symbols()
 
 evm_pct_s1, evm_db_s1 = sig_s1_eval.evm()
@@ -172,7 +175,9 @@ ber_val_s1 = sig_s1_eval.ber()
 
 print("\n  Stage 1 (RDE FSE) Raw Metrics (Before FOE/CPR/Sync):")
 print("  ───────────────────────────────────────────────────")
-print(f"  EVM : {evm_pct_s1:.2f}% ({evm_db_s1:.1f} dB)  ← expected due to spinning carrier phase")
+print(
+    f"  EVM : {evm_pct_s1:.2f}% ({evm_db_s1:.1f} dB)  ← expected due to spinning carrier phase"
+)
 print(f"  SNR : {snr_val_s1:.2f} dB")
 print(f"  SER : {ser_val_s1:.2e}")
 print(f"  BER : {ber_val_s1:.2e}")
@@ -211,8 +216,6 @@ print(f"  Error   : {(fo_est - FO_TRUE_HZ) / 1e3:.2f} kHz")
 print(f"  Output  : {y_foe.shape} frequency-corrected and equalized symbols @ 1 SPS")
 
 
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 6. BONUS: apply_taps() — re-use frozen Stage-1 weights on a new capture
 #
@@ -231,7 +234,9 @@ sig_rx2.samples = apply_awgn(sig_rx2.samples, sps=SPS, esn0_db=SNR_DB, seed=100)
 rx2 = sig_rx2.samples
 
 # First correct frequency offset on the new capture using the estimated offset!
-rx2_foe = frequency.correct_static_frequency_offset(rx2, sampling_rate=FS, offset=fo_est)
+rx2_foe = frequency.correct_static_frequency_offset(
+    rx2, sampling_rate=FS, offset=fo_est
+)
 
 y_frozen = equalization.apply_taps(
     rx2_foe,
@@ -287,7 +292,9 @@ y_cpr_sync = correct_timing(
     mode="circular",
 )
 
-print(f"  Timing Sync: Coarse={coarse_offset:d} symbols, Fractional={frac_est[0]:.3f} symbols")
+print(
+    f"  Timing Sync: Coarse={coarse_offset:d} symbols, Fractional={frac_est[0]:.3f} symbols"
+)
 
 # Resolve remaining 4-fold rotational phase ambiguity before Stage 2 LMS refinement
 y_cpr_resolved = recovery.resolve_phase_ambiguity(
@@ -306,7 +313,9 @@ sig_cpr_eval = sig_tx.copy()
 sig_cpr_eval.samples = y_cpr_resolved[..., idx_eval]
 sig_cpr_eval.sampling_rate = sig_tx.symbol_rate
 sig_cpr_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
-sig_cpr_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_cpr_eval.source_bits = sig_tx.source_bits[
+    ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
+]
 sig_cpr_eval.resolve_symbols()
 
 evm_pct_cpr, evm_db_cpr = sig_cpr_eval.evm()
@@ -357,7 +366,9 @@ sig_s2_eval = sig_tx.copy()
 sig_s2_eval.samples = y_final[..., idx_eval]
 sig_s2_eval.sampling_rate = sig_tx.symbol_rate
 sig_s2_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
-sig_s2_eval.source_bits = sig_tx.source_bits[..., N_TRAIN * bits_per_sym:-100 * bits_per_sym]
+sig_s2_eval.source_bits = sig_tx.source_bits[
+    ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
+]
 sig_s2_eval.resolve_symbols()
 
 evm_pct_s2, evm_db_s2 = sig_s2_eval.evm()
@@ -391,23 +402,47 @@ print("  Receiver Metrics Progression (Direct calculations - no grid search):")
 print("  ─────────────────────────────────────────────────────────────────────────────")
 print("  Stage                         | EVM (%)    | EVM (dB)   | SNR (dB)   | BER")
 print("  ─────────────────────────────────────────────────────────────────────────────")
-print(f"  1. Stage 1 RDE (Raw Spinning) |   {evm_pct_s1:>6.2f}%  |   {evm_db_s1:>5.1f}    |    {snr_val_s1:>5.2f}   | {ber_val_s1:.2e}")
-print(f"  2. Post-CPR (FOE + CPR + Sync)|   {evm_pct_cpr:>6.2f}%  |   {evm_db_cpr:>5.1f}    |    {snr_val_cpr:>5.2f}   | {ber_val_cpr:.2e}")
-print(f"  3. Stage 2 (LMS SSE)          |   {evm_pct_s2:>6.2f}%  |   {evm_db_s2:>5.1f}    |    {snr_val_s2:>5.2f}   | {ber_val_s2:.2e}")
+print(
+    f"  1. Stage 1 RDE (Raw Spinning) |   {evm_pct_s1:>6.2f}%  |   {evm_db_s1:>5.1f}    |    {snr_val_s1:>5.2f}   | {ber_val_s1:.2e}"
+)
+print(
+    f"  2. Post-CPR (FOE + CPR + Sync)|   {evm_pct_cpr:>6.2f}%  |   {evm_db_cpr:>5.1f}    |    {snr_val_cpr:>5.2f}   | {ber_val_cpr:.2e}"
+)
+print(
+    f"  3. Stage 2 (LMS SSE)          |   {evm_pct_s2:>6.2f}%  |   {evm_db_s2:>5.1f}    |    {snr_val_s2:>5.2f}   | {ber_val_s2:.2e}"
+)
 print("  ─────────────────────────────────────────────────────────────────────────────")
 print()
 print("  DSP Insights & Progression Analysis:")
 print("  ─────────────────────────────────────────────────────────────────────────────")
-print("  * Stage 1 (RDE FSE at 2 SPS) raw metrics show the expected 140.6% EVM and -3.0 dB SNR.")
-print("    RDE FSE blindly inverts the dispersion/multipath (opening the symbol eyes) but leaves")
-print("    the frequency offset and phase noise intact, causing the constellation to spin into")
-print("    three concentric rings. This highlights the absolute necessity of subsequent stages.")
-print("  * Post-CPR (FOE + CPR + Symbol Timing Sync) corrects carrier frequency offset on raw")
-print("    samples, applies frozen RDE weights, corrects carrier phase blindly (Viterbi-Viterbi),")
-print("    and aligns symbol delay using standard timing synchronization. Constellation eyes")
+print(
+    "  * Stage 1 (RDE FSE at 2 SPS) raw metrics show the expected 140.6% EVM and -3.0 dB SNR."
+)
+print(
+    "    RDE FSE blindly inverts the dispersion/multipath (opening the symbol eyes) but leaves"
+)
+print(
+    "    the frequency offset and phase noise intact, causing the constellation to spin into"
+)
+print(
+    "    three concentric rings. This highlights the absolute necessity of subsequent stages."
+)
+print(
+    "  * Post-CPR (FOE + CPR + Symbol Timing Sync) corrects carrier frequency offset on raw"
+)
+print(
+    "    samples, applies frozen RDE weights, corrects carrier phase blindly (Viterbi-Viterbi),"
+)
+print(
+    "    and aligns symbol delay using standard timing synchronization. Constellation eyes"
+)
 print("    open fully, delivering a very strong metrics floor (~9.81% EVM).")
-print("  * Stage 2 (LMS SSE at 1 SPS) symbol-spaced equalizer operates in the clean, despun,")
-print("    synchronized environment, correcting fine residual ISI to achieve the absolute best")
+print(
+    "  * Stage 2 (LMS SSE at 1 SPS) symbol-spaced equalizer operates in the clean, despun,"
+)
+print(
+    "    synchronized environment, correcting fine residual ISI to achieve the absolute best"
+)
 print("    steady-state receiver performance (~8.67% EVM).")
 print("  ─────────────────────────────────────────────────────────────────────────────")
 print()
@@ -429,6 +464,7 @@ _print_sep("10. Visualization — Saving Constellation Diagnostics")
 try:
     import os
     import matplotlib
+
     matplotlib.use("Agg")  # Headless backend
     import matplotlib.pyplot as plt
     from commstools.plotting import apply_default_theme
@@ -482,7 +518,12 @@ try:
     )
 
     os.makedirs("examples/images", exist_ok=True)
-    fig.suptitle("Coherent Receiver Multi-Stage DSP Pipeline Diagnostics", fontsize=16, fontweight="bold", y=0.98)
+    fig.suptitle(
+        "Coherent Receiver Multi-Stage DSP Pipeline Diagnostics",
+        fontsize=16,
+        fontweight="bold",
+        y=0.98,
+    )
     fig.tight_layout()
     output_path = "examples/images/multi_stage_equalization_diagnostics.png"
     fig.savefig(output_path, dpi=300, bbox_inches="tight")

@@ -177,9 +177,6 @@ def test_sc_frame_structure_map_cp():
     assert not struct["guard"][5]
 
 
-
-
-
 def test_independent_preamble_normalization(backend_device, xp):
     """
     Verify frame normalization contract:

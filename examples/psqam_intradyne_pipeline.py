@@ -45,8 +45,9 @@ Run
 
 import os
 import matplotlib
+
 # Headless backend for headless execution
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -71,13 +72,13 @@ from commstools.recovery import (
 # ──────────────────────────────────────────────────────────────────────────────
 
 SPS = 2
-SYMBOL_RATE = 32e9                  # 32 GBaud
+SYMBOL_RATE = 32e9  # 32 GBaud
 ORDER = 64
-ENTROPY = 5.4                       # bits/symbol  (cap = log2(64) = 6.0)
+ENTROPY = 5.4  # bits/symbol  (cap = log2(64) = 6.0)
 ROLLOFF = 0.1
-N_SYM = 1 << 16                     # 65 536 symbols
+N_SYM = 1 << 16  # 65 536 symbols
 FILTER_SPAN = 10
-NUM_STREAMS = 2                     # dual-pol
+NUM_STREAMS = 2  # dual-pol
 
 # Channel
 ESN0_DB = 22.0
@@ -85,11 +86,11 @@ IQ_AMP_DB = 0.4
 IQ_PHASE_DEG = 3.0
 PMD_DGD_S = 2e-12
 PMD_THETA = np.pi / 5
-LASER_LINEWIDTH_HZ = 50e3           # combined Tx+Rx phase noise
+LASER_LINEWIDTH_HZ = 50e3  # combined Tx+Rx phase noise
 
 # Equalizer
 NUM_TAPS = 31
-NUM_TRAIN = 1 << 13                 # 8 192 training symbols
+NUM_TRAIN = 1 << 13  # 8 192 training symbols
 STEP_SIZE = 1e-3
 
 # CPR
@@ -139,7 +140,9 @@ print(f"  Entropy H(X) : {ENTROPY:.3f} bits/symbol  (max = {np.log2(ORDER):.1f})
 print(f"  E_PS         : {E_PS:.4f}  ({-10 * np.log10(E_PS):.2f} dB below uniform QAM)")
 print(f"  Streams      : {NUM_STREAMS}  (dual-pol)")
 print(f"  Tx samples   : {tx.samples.shape}  dtype={tx.samples.dtype}")
-print(f"  Symbol rate  : {SYMBOL_RATE / 1e9:.1f} GBaud  |  fs = {SPS * SYMBOL_RATE / 1e9:.1f} GSa/s")
+print(
+    f"  Symbol rate  : {SYMBOL_RATE / 1e9:.1f} GBaud  |  fs = {SPS * SYMBOL_RATE / 1e9:.1f} GSa/s"
+)
 
 source_symbols = np.asarray(to_device(tx.source_symbols, "cpu"), dtype=np.complex64)
 source_bits = np.asarray(to_device(tx.source_bits, "cpu"))
@@ -195,7 +198,7 @@ rx.source_bits = to_device(rx.source_bits, "cpu")
 
 rx.samples = compensate_iq_imbalance_lowdin(rx.samples)
 
-print(f"  IQ comp      : Löwdin orthogonalisation")
+print("  IQ comp      : Löwdin orthogonalisation")
 print(f"  RX samples   : {rx.samples.shape}")
 
 
@@ -216,7 +219,7 @@ eq_kwargs = dict(
     num_taps=NUM_TAPS,
     step_size=STEP_SIZE,
     sps=SPS,
-    pmf=tx.ps_pmf,                  # ← PS-QAM scale correction
+    pmf=tx.ps_pmf,  # ← PS-QAM scale correction
     backend="numba",
 )
 
@@ -238,7 +241,9 @@ res = lms(
 mse2 = float(np.mean(np.abs(np.asarray(res.error)[..., -512:]) ** 2))
 print(f"  pass 2 (warm) : MSE_tail = {10 * np.log10(mse2 + 1e-30):>6.2f} dB")
 print(f"  y_hat shape   : {res.y_hat.shape}")
-print(f"  y_hat power   : {_fmt([float(np.mean(np.abs(np.asarray(res.y_hat)[c])**2)) for c in range(NUM_STREAMS)])}")
+print(
+    f"  y_hat power   : {_fmt([float(np.mean(np.abs(np.asarray(res.y_hat)[c]) ** 2)) for c in range(NUM_STREAMS)])}"
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -258,15 +263,17 @@ phi_bps = recover_carrier_phase_bps(
     order=ORDER,
     num_test_phases=BPS_TEST_PHASES,
     block_size=BPS_BLOCK_SIZE,
-    joint_channels=True,            # shared LO across pols
-    pmf=tx.ps_pmf,                  # ← PS-QAM scale correction
+    joint_channels=True,  # shared LO across pols
+    pmf=tx.ps_pmf,  # ← PS-QAM scale correction
 )
 y_cpr = correct_carrier_phase(y_eq, phi_bps)
 
 print(f"  Test phases  : {BPS_TEST_PHASES}")
 print(f"  Block size   : {BPS_BLOCK_SIZE} symbols")
-print(f"  Phase trajectory range : "
-      f"{float(np.asarray(phi_bps).min()):+.2f} → {float(np.asarray(phi_bps).max()):+.2f} rad")
+print(
+    f"  Phase trajectory range : "
+    f"{float(np.asarray(phi_bps).min()):+.2f} → {float(np.asarray(phi_bps).max()):+.2f} rad"
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -277,19 +284,21 @@ _sep("6. Phase-ambiguity resolution + hard demap")
 
 eq = rx.copy()
 eq.samples = y_cpr
-eq.sampling_rate = rx.symbol_rate             # 1 SPS
+eq.sampling_rate = rx.symbol_rate  # 1 SPS
 eq.source_symbols = to_device(rx.source_symbols, "cpu")
 eq.source_bits = to_device(rx.source_bits, "cpu")
 
-eq.resolve_symbols()                          # avg-power=1 on {s_m / √E_PS}
-eq.resolve_phase_ambiguity()                  # auto-forwards self.ps_pmf
-eq.demap_symbols_hard()                       # auto-forwards self.ps_pmf
+eq.resolve_symbols()  # avg-power=1 on {s_m / √E_PS}
+eq.resolve_phase_ambiguity()  # auto-forwards self.ps_pmf
+eq.demap_symbols_hard()  # auto-forwards self.ps_pmf
 
 os.makedirs("examples/images", exist_ok=True)
 fig_and_ax = eq.plot_constellation(show=False, overlay_source=True)
 if fig_and_ax is not None:
     fig, ax = fig_and_ax
-    fig.savefig("examples/images/psqam_intradyne_diagnostics.png", dpi=300, bbox_inches="tight")
+    fig.savefig(
+        "examples/images/psqam_intradyne_diagnostics.png", dpi=300, bbox_inches="tight"
+    )
     plt.close(fig)
 print("  Diagnostic plot saved to examples/images/psqam_intradyne_diagnostics.png")
 

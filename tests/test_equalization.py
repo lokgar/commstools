@@ -2458,7 +2458,9 @@ class TestNormalizationLengthIndependence:
 
         const = gray_constellation("qam", 16).astype(np.complex64)
         syms = const[rng.integers(0, 16, n_sym)]
-        noise = (0.05 * (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym))).astype(np.complex64)
+        noise = (
+            0.05 * (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym))
+        ).astype(np.complex64)
         sig = (syms + noise).astype(np.complex64)
 
         fn = lms if algo == "lms" else rls
@@ -2486,16 +2488,21 @@ def _make_qpsk(xp, n_sym=2000, snr_db=20.0, seed=77):
     const = gray_constellation("psk", 4).astype(np.complex64)
     syms_np = const[rng.integers(0, 4, n_sym)]
     noise_std = np.sqrt(10 ** (-snr_db / 10) / 2)
-    samples_np = (syms_np + noise_std * (
-        rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
-    )).astype(np.complex64)
+    samples_np = (
+        syms_np
+        + noise_std * (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym))
+    ).astype(np.complex64)
     return xp.asarray(samples_np), xp.asarray(syms_np)
 
 
 def _algo_kw(algo, num_taps):
     """Return algorithm-specific kwargs (lms uses step_size, rls uses forgetting_factor)."""
     base = dict(num_taps=num_taps, sps=1, modulation="psk", order=4)
-    return {**base, "step_size": 1e-2} if algo == "lms" else {**base, "forgetting_factor": 0.999}
+    return (
+        {**base, "step_size": 1e-2}
+        if algo == "lms"
+        else {**base, "forgetting_factor": 0.999}
+    )
 
 
 class TestPrefixPadNormPhase4:
@@ -2510,32 +2517,43 @@ class TestPrefixPadNormPhase4:
         r_default = fn(samples, syms[:50], **kw)
         r_explicit = fn(samples, syms[:50], **kw, pad_mode="zeros", samples_prefix=None)
         xpt.assert_array_equal(
-            xp.asarray(r_default.y_hat), xp.asarray(r_explicit.y_hat),
+            xp.asarray(r_default.y_hat),
+            xp.asarray(r_explicit.y_hat),
         )
 
     @pytest.mark.parametrize("algo", ["lms", "rls"])
-    def test_samples_prefix_does_not_worsen_leading_error(self, algo, backend_device, xp):
+    def test_samples_prefix_does_not_worsen_leading_error(
+        self, algo, backend_device, xp
+    ):
         """Warm prefix must not increase MSE on the first num_taps output symbols."""
         n_total, half, num_taps = 4000, 2000, 11
         samples, syms = _make_qpsk(xp, n_sym=n_total, snr_db=30.0)
         fn = getattr(equalization, algo)
         kw = _algo_kw(algo, num_taps=num_taps)
 
-        r1 = fn(samples[:half], syms[:half // 2], **kw)
+        r1 = fn(samples[:half], syms[: half // 2], **kw)
 
         r_cold = fn(
-            samples[half:], syms[half:half + 50], **kw,
-            w_init=r1.weights, input_norm_factor=r1.input_norm_factor,
+            samples[half:],
+            syms[half : half + 50],
+            **kw,
+            w_init=r1.weights,
+            input_norm_factor=r1.input_norm_factor,
         )
-        prefix = samples[half - num_taps + 1:half]
+        prefix = samples[half - num_taps + 1 : half]
         r_prefix = fn(
-            samples[half:], syms[half:half + 50], **kw,
-            w_init=r1.weights, input_norm_factor=r1.input_norm_factor,
+            samples[half:],
+            syms[half : half + 50],
+            **kw,
+            w_init=r1.weights,
+            input_norm_factor=r1.input_norm_factor,
             samples_prefix=prefix,
         )
-        ref = xp.asarray(syms[half:half + num_taps])
+        ref = xp.asarray(syms[half : half + num_taps])
         e_cold = float(xp.mean(xp.abs(xp.asarray(r_cold.y_hat[:num_taps]) - ref) ** 2))
-        e_prefix = float(xp.mean(xp.abs(xp.asarray(r_prefix.y_hat[:num_taps]) - ref) ** 2))
+        e_prefix = float(
+            xp.mean(xp.abs(xp.asarray(r_prefix.y_hat[:num_taps]) - ref) ** 2)
+        )
         assert e_prefix <= e_cold + 1e-3, (
             f"{algo}: prefix raised leading MSE ({e_prefix:.4f} > {e_cold:.4f})"
         )
@@ -2546,8 +2564,13 @@ class TestPrefixPadNormPhase4:
         # pad_left = min(num_taps//2, ...) = min(5, ...) — prefix of 1 is too short
         with pytest.raises(ValueError, match="pad_left"):
             equalization.lms(
-                samples, syms[:20], num_taps=11, sps=1,
-                step_size=1e-2, modulation="psk", order=4,
+                samples,
+                syms[:20],
+                num_taps=11,
+                sps=1,
+                step_size=1e-2,
+                modulation="psk",
+                order=4,
                 samples_prefix=xp.zeros(1, dtype=xp.complex64),
             )
 
@@ -2555,8 +2578,13 @@ class TestPrefixPadNormPhase4:
         """pad_mode='edge' must not raise and must produce finite output."""
         samples, syms = _make_qpsk(xp, n_sym=500)
         r = equalization.lms(
-            samples, syms[:20], num_taps=11, sps=1,
-            step_size=1e-2, modulation="psk", order=4,
+            samples,
+            syms[:20],
+            num_taps=11,
+            sps=1,
+            step_size=1e-2,
+            modulation="psk",
+            order=4,
             pad_mode="edge",
         )
         assert bool(xp.all(xp.isfinite(xp.asarray(r.y_hat))))
@@ -2565,8 +2593,13 @@ class TestPrefixPadNormPhase4:
         """EqualizerResult.input_norm_factor must be a positive scalar for SISO."""
         samples, syms = _make_qpsk(xp, n_sym=500)
         r = equalization.lms(
-            samples, syms[:20], num_taps=5, sps=1,
-            step_size=1e-2, modulation="psk", order=4,
+            samples,
+            syms[:20],
+            num_taps=5,
+            sps=1,
+            step_size=1e-2,
+            modulation="psk",
+            order=4,
         )
         assert isinstance(r.input_norm_factor, float)
         assert r.input_norm_factor > 0.0

@@ -66,8 +66,13 @@ def _qpsk(n_sym=4096, snr_db=20.0, sps=2, rng=None):
 def test_output_shape_siso(backend_device, xp):
     samples, syms = _qam16(n_sym=1024, sps=2)
     r = block_lms(
-        xp.asarray(samples), xp.asarray(syms),
-        num_taps=11, sps=2, modulation="qam", order=16, block_size=128,
+        xp.asarray(samples),
+        xp.asarray(syms),
+        num_taps=11,
+        sps=2,
+        modulation="qam",
+        order=16,
+        block_size=128,
     )
     n_sym = len(syms)
     assert r.y_hat.shape == (n_sym,), f"y_hat shape {r.y_hat.shape}"
@@ -321,8 +326,13 @@ def test_num_train_symbols_respected(backend_device, xp):
 def test_non_multiple_block_size(backend_device, xp):
     samples, syms = _qam16(n_sym=1000, sps=2)  # 1000 is not a multiple of 128
     r = block_lms(
-        xp.asarray(samples), xp.asarray(syms),
-        num_taps=11, sps=2, modulation="qam", order=16, block_size=128,
+        xp.asarray(samples),
+        xp.asarray(syms),
+        num_taps=11,
+        sps=2,
+        modulation="qam",
+        order=16,
+        block_size=128,
     )
     assert r.y_hat.shape == (1000,)
     assert r.error.shape == (1000,)
@@ -391,9 +401,10 @@ def test_bps_reduces_mse_under_phase_noise(backend_device, xp):
     phase_noise = np.cumsum(0.03 * rng.standard_normal(n_sym)).astype(np.float32)
     samples_pn = (
         np.repeat(syms * np.exp(1j * phase_noise), sps)
-        + 0.1 * (
-            rng.standard_normal(2 * n_sym) + 1j * rng.standard_normal(2 * n_sym)
-        ).astype(np.complex64)
+        + 0.1
+        * (rng.standard_normal(2 * n_sym) + 1j * rng.standard_normal(2 * n_sym)).astype(
+            np.complex64
+        )
     ).astype(np.complex64)
 
     n_eval = n_sym // 2
@@ -484,7 +495,9 @@ def test_single_tap(backend_device, xp):
     const = normalize(const, "average_power").astype(np.complex64)
     syms = xp.asarray(const[rng.integers(0, 4, n_sym)].astype(np.complex64))
     noise = 0.05 * xp.asarray(
-        (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)).astype(np.complex64)
+        (rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)).astype(
+            np.complex64
+        )
     )
     samples = syms + noise
 
@@ -512,7 +525,9 @@ def test_isi_channel_convergence(backend_device, xp):
     const = gray_constellation("qam", 4).astype(np.complex64)
     const = normalize(const, "average_power").astype(np.complex64)
     syms_np = const[rng.integers(0, 4, n_sym)].astype(np.complex64)
-    received_np = np.convolve(syms_np, channel, mode="full")[:n_sym].astype(np.complex64)
+    received_np = np.convolve(syms_np, channel, mode="full")[:n_sym].astype(
+        np.complex64
+    )
     received = xp.asarray(received_np)
     syms = xp.asarray(syms_np)
 
@@ -533,7 +548,9 @@ def test_isi_channel_convergence(backend_device, xp):
             / xp.mean(xp.abs(syms[n_eval:]) ** 2)
         )
     )
-    assert evm < 0.10, f"EVM {evm:.3f} — ISI equalization failed across block boundaries"
+    assert evm < 0.10, (
+        f"EVM {evm:.3f} — ISI equalization failed across block boundaries"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -566,9 +583,16 @@ def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
     t1, t2 = syms_np[:half], syms_np[half:]
 
     r1 = block_lms(
-        s1, t1, num_taps=11, sps=1, step_size=5e-4,
-        modulation="qam", order=16, cpr_type="bps",
-        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+        s1,
+        t1,
+        num_taps=11,
+        sps=1,
+        step_size=5e-4,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
     )
     assert r1.cpr_state is not None, "cpr_state must be set when cpr_type='bps'"
     assert isinstance(r1.cpr_state, CPRState)
@@ -577,10 +601,18 @@ def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
     assert r1.cpr_state.bps_d2_hist is not None
 
     r2 = block_lms(
-        s2, t2[:50], num_taps=11, sps=1, step_size=5e-4,
-        modulation="qam", order=16, cpr_type="bps",
-        cpr_bps_test_phases=32, cpr_bps_block_size=16,
-        w_init=r1.weights, cpr_state=r1.cpr_state,
+        s2,
+        t2[:50],
+        num_taps=11,
+        sps=1,
+        step_size=5e-4,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
+        w_init=r1.weights,
+        cpr_state=r1.cpr_state,
         input_norm_factor=r1.input_norm_factor,
     )
     assert r2.cpr_state is not None
@@ -592,14 +624,22 @@ def test_cpr_state_none_is_baseline_block_lms(backend_device, xp):
     """cpr_state=None must be byte-exact with the default (no cpr_state) call."""
     samples_np, syms_np = _wiener_qam16_block(n_sym=2048)
     kw = dict(
-        num_taps=11, sps=1, step_size=5e-4,
-        modulation="qam", order=16, cpr_type="bps",
-        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+        num_taps=11,
+        sps=1,
+        step_size=5e-4,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
     )
     r_default = block_lms(samples_np, syms_np[:100], **kw)
-    r_none = block_lms(samples_np, syms_np[:100], **kw, cpr_state=None, input_norm_factor=None)
+    r_none = block_lms(
+        samples_np, syms_np[:100], **kw, cpr_state=None, input_norm_factor=None
+    )
     np.testing.assert_array_equal(
-        np.asarray(r_default.y_hat), np.asarray(r_none.y_hat),
+        np.asarray(r_default.y_hat),
+        np.asarray(r_none.y_hat),
     )
 
 
@@ -648,12 +688,14 @@ def test_block_lms_cycle_slip_correction(backend_device, xp):
     assert res.cpr_state.cs_buf_y is not None  # regression buffer populated
 
     # Steady-state MSE on the last quarter (well past training); y_hat is 1D for SISO
-    y_tail = res.y_hat[-n_sym // 4:]
+    y_tail = res.y_hat[-n_sym // 4 :]
     const_xp = xp.asarray(const)
     d2 = xp.abs(y_tail[:, None] - const_xp[None, :]) ** 2
     decisions = const_xp[xp.argmin(d2, axis=1)]
     mse = float(xp.mean(xp.abs(y_tail - decisions) ** 2))
-    assert mse < 0.05, f"Steady-state MSE too large after cycle-slip correction: {mse:.4f}"
+    assert mse < 0.05, (
+        f"Steady-state MSE too large after cycle-slip correction: {mse:.4f}"
+    )
 
 
 def test_block_lms_cycle_slip_regression_warmstart(backend_device, xp):
@@ -661,9 +703,14 @@ def test_block_lms_cycle_slip_regression_warmstart(backend_device, xp):
     samples_np, syms_np = _wiener_qam16_block(n_sym=2048)
     half = 1024
     kw = dict(
-        num_taps=11, sps=1, step_size=5e-4,
-        modulation="qam", order=16, cpr_type="bps",
-        cpr_bps_test_phases=32, cpr_bps_block_size=16,
+        num_taps=11,
+        sps=1,
+        step_size=5e-4,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
         cpr_cycle_slip_correction=True,
     )
 
@@ -674,8 +721,11 @@ def test_block_lms_cycle_slip_regression_warmstart(backend_device, xp):
 
     # Warm-start: regression buffer must be accepted and produce finite output
     r2 = block_lms(
-        xp.asarray(samples_np[half:]), xp.asarray(syms_np[half : half + 50]),
-        **kw, w_init=r1.weights, cpr_state=r1.cpr_state,
+        xp.asarray(samples_np[half:]),
+        xp.asarray(syms_np[half : half + 50]),
+        **kw,
+        w_init=r1.weights,
+        cpr_state=r1.cpr_state,
         input_norm_factor=r1.input_norm_factor,
     )
     assert r2.cpr_state is not None
@@ -699,6 +749,8 @@ def test_input_norm_factor_block_lms(backend_device, xp, xpt):
 
     r_supplied = block_lms(samples, syms[:100], **kw, input_norm_factor=nf)
     xpt.assert_allclose(
-        xp.asarray(r_supplied.y_hat), xp.asarray(r_auto.y_hat),
-        rtol=1e-5, atol=1e-6,
+        xp.asarray(r_supplied.y_hat),
+        xp.asarray(r_auto.y_hat),
+        rtol=1e-5,
+        atol=1e-6,
     )

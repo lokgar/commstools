@@ -15,9 +15,16 @@ CommsTools is a Python library for high-performance digital communications resea
 All environment and script executions **must** use `uv` (Astral's Python package manager). Python 3.12+ is required.
 
 ### Environment Management
+
 ```bash
-# Sync environment (ensures .venv matches pyproject.toml / uv.lock)
+# Sync environment (core dependencies only)
 uv sync
+
+# Sync environment with all extras (includes local GPU development packages)
+uv sync --all-extras
+
+# Re-resolve and upgrade all packages in the lockfile to their latest matched versions
+uv lock --upgrade
 
 # Add a dependency / dev dependency
 uv add <package>
@@ -28,6 +35,7 @@ uv run <script.py>
 ```
 
 ### Testing (pytest)
+
 ```bash
 # Run tests on CPU only (default)
 uv run pytest --device=cpu
@@ -49,6 +57,7 @@ uv run pytest --cov=commstools
 ```
 
 ### Linting & Formatting
+
 ```bash
 # Run Ruff linter
 uv run ruff check .
@@ -60,13 +69,45 @@ uv run ruff format .
 uv run mypy commstools/
 ```
 
-### Version Management
-```bash
-# Bump project version
-uvx bump-my-version bump patch   # 0.1.0 → 0.1.1
-uvx bump-my-version bump minor   # 0.1.0 → 0.2.0
-uvx bump-my-version bump major   # 0.1.0 → 1.0.0
-```
+### Version Management & Release Workflow
+
+Since `bump-my-version` is defined in the project's development dependencies, always use `uv run bump-my-version` to run it directly from your local virtual environment (it is faster and avoids re-downloading packages compared to `uvx`).
+
+#### Release Step-by-Step Guide
+
+1. **Commit your active code changes**:
+   Make sure all your actual development features or bugfixes are committed in Git first:
+
+   ```bash
+   git add .
+   git commit -m "feat: add digital transceiver enhancement"
+   ```
+
+2. **Verify tests & package build correctness**:
+   Ensure all tests are passing and the library compiles cleanly:
+
+   ```bash
+   uv run pytest --device=cpu
+   uv build
+   ```
+
+3. **Bump the version locally**:
+   Because `[tool.bumpversion]` in `pyproject.toml` is configured with `commit = true` and `tag = true` by default, running the bump command **automatically** updates version strings, commits the version changes to Git, and generates the Git release tag in a single atomic transaction:
+
+   ```bash
+   uv run bump-my-version bump patch   # e.g., 3.4.1 → 3.4.2
+   uv run bump-my-version bump minor   # e.g., 3.4.1 → 3.5.0
+   uv run bump-my-version bump major   # e.g., 3.4.1 → 4.0.0
+   ```
+
+4. **Push the release commits and tags to GitHub**:
+   Push the feature commits, version bump commit, and release tags to your origin repository:
+
+   ```bash
+   git push origin main --tags
+   ```
+
+*Note: You only need to run `uv sync --all-extras` during release preparation if you explicitly added or modified package dependencies in `pyproject.toml`.*
 
 ---
 
@@ -88,7 +129,9 @@ For complete end-to-end digital transceiver pipelines and visualization setups, 
 ## 4. DSP & Coding Guidelines
 
 ### Multi-Backend Dispatching
+
 Always utilize the `backend.dispatch(samples)` helper in DSP functions. It dynamically returns the raw device array, the corresponding array module (`xp`), and the signal processing module (`sp`) based on the location of the data:
+
 ```python
 from commstools.backend import dispatch
 
@@ -99,6 +142,7 @@ def my_dsp_function(samples):
 ```
 
 ### Data Types & Precision
+
 To maximize GPU throughput and minimize memory footprint, CommsTools utilizes mixed-precision layouts. Adhere strictly to the following dtype conventions:
 
 * **Default Storage**: Use `complex64` (`np.complex64` / `cp.complex64`) for raw IQ samples and `float32` (`np.float32` / `cp.float32`) for real-valued signals.
@@ -108,25 +152,32 @@ To maximize GPU throughput and minimize memory footprint, CommsTools utilizes mi
 * **Phase Unwrapping & Kalman Smoothers (CPR)**: In carrier phase recovery (e.g., Viterbi-Viterbi, BPS, pilot-aided), phase angle arrays must be promoted to double precision (`float64`) before calling `xp.unwrap()`. Unwrapping is extremely sensitive to $\pm\pi/M$ boundaries; single-precision `float32` rounding error can trigger spurious quadrant wrap-around slips. Tikhonov Kalman smoothers must also compute block transitions in `float64` to prevent underflow in small noise covariance variables.
 
 ### Signal Normalisation Invariant
+
 To prevent scaling issues across cascaded DSP operations, CommsTools maintains a strict power normalisation invariant:
+
 * **Symbol power representation**: A signal oversampled at `sps` has average sample energy `E[|x|²] = 1 / sps`.
 * **Symbol-rate representation**: A signal at `sps=1` has average sample energy `E[|x|²] = 1`.
 * Any new DSP blocks (e.g. filters, upsamplers, decimators) that alter the rate **must** apply the exact deterministic gain corrections (e.g., `sps_before / sps_after` scaling) to preserve this invariant.
 
 ### Reproducibility & Randomness
+
 Never call `np.random` directly inside library code. Every function performing stochastic modeling (e.g. noise injection, impairments) must:
+
 1. Accept an optional `seed: Optional[int] = None` parameter.
 2. Initialize an active-backend-aware random number generator:
+
    ```python
    rng = xp.random.RandomState(seed) if seed is not None else xp.random
    noise = rng.normal(0, std, samples.shape)
    ```
 
 ### Performance JIT Compilation
+
 * **Numba**: Use `@numba.njit(cache=True, fastmath=True, nogil=True)` for serial loops (like sequential LMS/RLS adaptive updates on CPU). Keep kernels compiled lazily and cached.
 * **JAX**: Use `jax.lax.scan` for compiling sequential weight updates to GPU.
 
 ### Array Shapes
+
 * **SISO**: 1-D array: `(N_samples,)`
 * **MIMO**: 2-D array: `(N_channels, N_samples)` — **time is always on the last axis**.
 
@@ -136,6 +187,7 @@ Never call `np.random` directly inside library code. Every function performing s
 
 * **Parametrization**: Test cases must utilize `backend_device` and `xp` fixtures from `conftest.py` to automatically validate code correctness on both CPU and GPU backends.
 * **Assertions**: Standard `numpy.testing` assertions raise `TypeError` when evaluated on GPU arrays. Always use the `xpt` helper assertion module. Use `xp.asarray(expected)` to cast expectation variables to the active backend, and cast reductions to standard Python scalars before comparison:
+
   ```python
   from commstools.testing import xpt
   # ...

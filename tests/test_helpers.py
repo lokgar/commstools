@@ -76,6 +76,7 @@ def test_normalize_peak_complex_envelope(backend_device, xp):
     # After a 45-degree rotation (worst case for per-component spread),
     # both components must still be within [-1, 1].
     import numpy as _np
+
     rotated = norm * _np.exp(1j * _np.pi / 4)
     assert float(xp.max(xp.abs(rotated.real))) <= 1.0 + 1e-6
     assert float(xp.max(xp.abs(rotated.imag))) <= 1.0 + 1e-6
@@ -190,8 +191,6 @@ def test_zc_mimo_root(backend_device, xp):
     for k in range(12):
         r = zc_mimo_root(k, 1, 13)
         assert 1 <= r <= 12
-
-
 
 
 # -----------------------------------------------------------------------------

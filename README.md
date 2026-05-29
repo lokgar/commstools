@@ -47,15 +47,36 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 
 **Requires Python 3.12+** and [`uv`](https://github.com/astral-sh/uv).
 
+#### A. Direct Installation (For Users)
+To install the core CPU-only package (fully lightweight and portable):
+```bash
+pip install commstools
+# or with uv:
+uv add commstools
+```
+
+To install with GPU acceleration (includes CUDA 13 JAX and CuPy stacks):
+```bash
+pip install commstools[gpu]
+# or with uv:
+uv add commstools --extra gpu
+```
+
+#### B. Development Installation (For Contributors)
 ```bash
 git clone https://github.com/yourusername/commstools.git
 cd commstools
+
+# Sync environment with core dependencies only
 uv sync
+
+# Sync environment with all dependencies including GPU development packages:
+uv sync --all-extras
 ```
 
 ### GPU Support
 
-GPU execution requires CUDA 13.x drivers. The library depends on `cupy-cuda13x` and `jax[cuda13]`, which are listed as standard dependencies. If a CUDA-capable GPU is detected at import time, new Signal objects will default to GPU placement.
+GPU execution requires CUDA 13.x drivers. The library supports hardware acceleration via `cupy-cuda13x` and `jax[cuda13]`, which are defined as **optional dependencies** under the `gpu` extra. If these dependencies are installed and a CUDA-capable GPU is detected at import time, new `Signal` objects will default to GPU placement.
 
 To force CPU-only mode regardless of hardware:
 
@@ -284,9 +305,9 @@ Contributions are welcome. Please open an issue to discuss large changes before 
 The project uses `uv` for environment management:
 
 ```bash
-uv sync              # install all dependencies
-uv run pytest        # run the test suite
-uv run ruff check .  # lint
+uv sync --all-extras  # install all dependencies including GPU optional packages
+uv run pytest         # run the test suite
+uv run ruff check .   # lint
 ```
 
 ---
