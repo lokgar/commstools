@@ -109,13 +109,13 @@ def _get_numba_dd_pll():
 
             for n in range(N):
                 # Rotate received symbol by current phase estimate:
-                # y[n] = s[n] · exp(−jφ[n])
+                # y[n] = s[n] · exp(-jφ[n])
                 cos_phi = np.cos(phi)
                 sin_phi = np.sin(phi)
                 yr = sym_r[n] * cos_phi + sym_i[n] * sin_phi
                 yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
 
-                # Hard decision: argmin_{c ∈ C} |y − c|²
+                # Hard decision: argmin_{c ∈ C} |y - c|²
                 if is_sq_qam:
                     # O(1) grid rounding for square QAM
                     r_idx = int(round((yr - lev_min) / d_grid))
@@ -141,7 +141,7 @@ def _get_numba_dd_pll():
                             d_r = const_r[k]
                             d_i = const_i[k]
 
-                # Cross-product phase error:  e = Im(y · d*) = yi·d_r − yr·d_i
+                # Cross-product phase error:  e = Im(y · d*) = yi·d_r - yr·d_i
                 e = yi * d_r - yr * d_i
 
                 # Record the phase used to derotate symbol n — before the update.
@@ -149,7 +149,7 @@ def _get_numba_dd_pll():
 
                 # 2nd-order loop filter (reduces to 1st order when beta=0):
                 #   φ[n+1] = φ[n] + μ·e[n] + ν[n]
-                #   ν[n]   = ν[n−1] + β·e[n]
+                #   ν[n]   = ν[n-1] + β·e[n]
                 phi = phi + mu * e + freq
                 freq = freq + beta * e
 
@@ -1886,7 +1886,7 @@ def _get_numba_cycle_slip():
                     # Slide window: evict oldest (relative pos 0), shift all down by 1,
                     # add y_b at relative position W-1.
                     # Sxy update uses the identity:
-                    #   Sxy_new = Sxy_old − Sy_old + y_old + (W−1)·y_new
+                    #   Sxy_new = Sxy_old - Sy_old + y_old + (W-1)·y_new
                     # (derived by relabelling positions after eviction)
                     old_idx = buf_head % W
                     y_old = buf_y[old_idx]

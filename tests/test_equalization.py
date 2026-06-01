@@ -516,12 +516,12 @@ class TestRDE:
         sequence is not a reliable comparison.  Instead we compare the
         steady-state magnitude of each algorithm's *own* error signal.
 
-        For 16-QAM (3 rings), CMA's error e = y*(|y|²−R²_Godard) is bounded
+        For 16-QAM (3 rings), CMA's error e = y*(|y|²-R²_Godard) is bounded
         below by a non-zero "design residual": since R²_Godard is a single
         average radius, inner-ring and outer-ring symbols always have large
         signed errors that cancel only in expectation, not per-symbol.
 
-        RDE's error e = y*(|y|²−R_d²) uses the nearest ring for each symbol,
+        RDE's error e = y*(|y|²-R_d²) uses the nearest ring for each symbol,
         so it approaches zero as the equalizer converges to correct ISI
         compensation.  Therefore: mean(|e_RDE|) << mean(|e_CMA|) at steady state.
         """

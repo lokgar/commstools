@@ -58,8 +58,8 @@ def _get_jitted_soft_demap():
             Uniform case: pass log_pmf = jnp.zeros(M) — constant offset cancels.
             PS case: log_pmf = log P(sₘ).
 
-            Effective metric: eff_m = d_m/σ² − log P(sₘ)
-            LLR_k = min_{b=1} eff − min_{b=0} eff
+            Effective metric: eff_m = d_m/σ² - log P(sₘ)
+            LLR_k = min_{b=1} eff - min_{b=0} eff
             """
             distances_sq = (
                 jnp.abs(symbols[:, None] - constellation[None, :]) ** 2
@@ -81,8 +81,8 @@ def _get_jitted_soft_demap():
             Uniform case: pass log_pmf = jnp.zeros(M).
             PS case: log_pmf = log P(sₘ).
 
-            log_terms_m = log P(sₘ) − d_m/σ²
-            LLR_k = LSE_{b=0}(log_terms) − LSE_{b=1}(log_terms)
+            log_terms_m = log P(sₘ) - d_m/σ²
+            LLR_k = LSE_{b=0}(log_terms) - LSE_{b=1}(log_terms)
             """
             distances_sq = (
                 jnp.abs(symbols[:, None] - constellation[None, :]) ** 2
@@ -1012,7 +1012,7 @@ def optimal_nu(order: int, entropy_bits: float) -> tuple:
     Finds the MB shaping parameter ``ν`` that achieves a target per-symbol entropy.
 
     Uses ``scipy.optimize.brentq`` to bisect on
-    ``ps_entropy(order, ν) − entropy_bits = 0``.
+    ``ps_entropy(order, ν) - entropy_bits = 0``.
 
     Parameters
     ----------

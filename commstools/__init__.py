@@ -36,13 +36,24 @@ equalization :
     Adaptive and block channel equalization (LMS, RLS, CMA, ZF/MMSE).
 spectral :
     Frequency domain analysis and transformations.
+analysis :
+    Signal analysis and characterization routines (e.g. carrier-phase /
+    laser characterization).
 """
 
 import warnings
 
 __version__ = "3.4.3"
 
-from . import equalization, frequency, impairments, metrics, recovery, timing
+from . import (
+    analysis,
+    equalization,
+    frequency,
+    impairments,
+    metrics,
+    recovery,
+    timing,
+)
 from .core import Preamble, Signal, SingleCarrierFrame
 from .io import load_npz, save_npz
 from .logger import set_log_level
@@ -56,6 +67,7 @@ __all__ = [
     "Preamble",
     "Signal",
     "SingleCarrierFrame",
+    "analysis",
     "equalization",
     "frequency",
     "impairments",

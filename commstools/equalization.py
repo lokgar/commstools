@@ -574,7 +574,7 @@ def _get_numba_rls():
                     k[ii] = Px[ii] * inv_denom
 
                 if idx < n_update_halt:
-                    # Leaky W update: W[i,j,t] = (1−γ)W[i,j,t] + k[j*T+t]*conj(e[i])
+                    # Leaky W update: W[i,j,t] = (1-γ)W[i,j,t] + k[j*T+t]*conj(e[i])
                     for i in range(C):
                         ce_i = np.conj(e[i])
                         for j in range(C):
@@ -1492,7 +1492,7 @@ def _get_numba_cma():
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
-                # CMA error: e[i] = y[i] * (|y[i]|² − R²)
+                # CMA error: e[i] = y[i] * (|y[i]|² - R²)
                 # Real-valued |y|² prevents imaginary leakage from FP noise
                 # from causing a parasitic phase rotation via multiplication by y.
                 for i in range(C):
@@ -1590,7 +1590,7 @@ def _get_numba_rde():
                     y[i] = acc_re + 1j * acc_im
                     y_out[idx, i] = acc_re + 1j * acc_im
 
-                # RDE error: e[i] = y[i] * (|y[i]|² − R_d²)
+                # RDE error: e[i] = y[i] * (|y[i]|² - R_d²)
                 # R_d is the magnitude of the nearest constellation ring.
                 # Linear scan over K unique radii is cheap (K ≤ 8 for typical QAM).
                 for i in range(C):
@@ -1648,7 +1648,7 @@ def _get_numba_rde():
 # All kernels share the same output convention:
 #   y_hat  : (N_sym, C)              complex64 — equalized symbols
 #              (transposed by _unpack_result_jax to (C, N_sym) before return)
-#   errors : (N_sym, C)              complex64 — complex errors d − y
+#   errors : (N_sym, C)              complex64 — complex errors d - y
 #   w_hist : (N_sym, C, C, num_taps) complex64 — weight snapshots per symbol
 #
 # Performance notes:
@@ -1858,7 +1858,7 @@ def _get_jax_rls(
             # lam             : scalar float32           — forgetting factor λ ∈ (0,1]
             # n_train         : scalar int32             — training/DD boundary (dynamic)
             # leakage         : scalar float32           — weight-decay coefficient γ ∈ [0,1):
-            #                    W ← (1−γ)W + k⊗ē  each step; P update is unchanged.
+            #                    W ← (1-γ)W + k⊗ē  each step; P update is unchanged.
             #                    Decays null-subspace weights without inflating P eigenvalues.
             # n_update_halt   : scalar int32             — freeze W and P beyond this index;
             #                    = n_sym - num_taps//2 to avoid zero-padding contamination
@@ -1879,7 +1879,7 @@ def _get_jax_rls(
             #   e      = d - y                                                   (C,)
             #   Px     = P @ x_bar                                               (C*T,)
             #   k      = Px / (λ + x_bar^H @ Px)                                (C*T,) Kalman gain
-            #   W     ← (1−γ)W + k ⊗ conj(e)              (if idx < n_update_halt)
+            #   W     ← (1-γ)W + k ⊗ conj(e)              (if idx < n_update_halt)
             #   P      = (P - outer(k, x_bar^H P)) / λ     (if idx < n_update_halt)
 
             _P = jax.lax.Precision.HIGHEST
@@ -2778,7 +2778,7 @@ def _get_jax_cma(num_taps, stride, num_ch):
             # lax.scan carry  : W  (C, C, num_taps)
             # lax.scan xs     : jnp.arange(n_sym)
             # lax.scan output : y_hat   (n_sym, C)
-            #                   errors  (n_sym, C)   Godard errors y*(|y|²−R²)
+            #                   errors  (n_sym, C)   Godard errors y*(|y|²-R²)
             #                   w_hist  (n_sym, C, C, num_taps)
             #
             # Per-step gradient descent (Godard criterion):
@@ -2853,14 +2853,14 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
             # lax.scan carry  : W  (C, C, num_taps)
             # lax.scan xs     : jnp.arange(n_sym)
             # lax.scan output : y_hat   (n_sym, C)
-            #                   errors  (n_sym, C)   RDE errors y*(|y|²−R_d²)
+            #                   errors  (n_sym, C)   RDE errors y*(|y|²-R_d²)
             #                   w_hist  (n_sym, C, C, num_taps)
             #
             # Per-step RDE gradient:
             #   y     = einsum('ijt,jt->i', conj(W), X_wins)    (C,)
             #   abs_y = sqrt(real(y*conj(y)))                   (C,)
-            #   R_d   = radii[argmin(|radii−abs_y|)]            (C,)  nearest ring
-            #   e     = y * (real(y*conj(y)) − R_d²)            (C,)
+            #   R_d   = radii[argmin(|radii-abs_y|)]            (C,)  nearest ring
+            #   e     = y * (real(y*conj(y)) - R_d²)            (C,)
             #   W    -= μ * einsum('i,jt->ijt', conj(e), X_wins)
             _P = jax.lax.Precision.HIGHEST
 
@@ -4870,7 +4870,7 @@ def rls(
           or ``(C, N_sym)`` MIMO, at 1 SPS.
         * ``weights`` — final tap-weight tensor, shape ``(num_taps,)`` SISO
           or ``(C, C, num_taps)`` MIMO.
-        * ``error`` — complex error signal ``e[n] = d[n] − y[n]``, same
+        * ``error`` — complex error signal ``e[n] = d[n] - y[n]``, same
           shape as ``y_hat``.
         * ``weights_history`` — tap weights at each symbol when
           ``store_weights=True``; ``None`` otherwise.
