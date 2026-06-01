@@ -36,6 +36,7 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 | **Channel Models** | AWGN (Es/N0 with SPS correction), PMD (differential group delay, Jones matrix) |
 | **Soft Demapping** | LLR computation via max-log and exact log-sum-exp (JAX JIT compiled) |
 | **Metrics** | EVM (%, dB), data-aided SNR, BER |
+| **Phase & Laser Analysis** | Data-aided carrier-phase trajectory, zero-phase drift detrending, AWGN-free lag-slope linewidth fit, Di Domenico $\beta$-separation line FWHM, overlapping Allan deviation |
 | **Spectral** | Welch PSD, frequency shift with bin-quantized mixing |
 | **Frames** | `SingleCarrierFrame` with block/comb pilots, guard intervals, structure map for receiver parsing |
 | **MIMO** | All operations shape-aware for `(N_channels, N_samples)` arrays |
@@ -193,6 +194,40 @@ print(f"Data-Aided SNR: {snr_db:.1f} dB")
 
 ---
 
+### 4. Laser Phase & Frequency Characterization
+
+For advanced diagnostics of coherent transceiver optical front-ends, CommsTools provides a powerful `analysis` module. It extracts the continuous, cycle-slip-free carrier-phase trajectory and separates it into low-frequency drift and high-frequency Wiener phase noise.
+
+It characterizes laser linewidth through both a robust time-domain increment-variance fit and the frequency-domain Di Domenico $\beta$-separation line, and performs multi-scale stability analysis using overlapping Allan Deviation.
+
+```python
+from commstools import analysis
+
+# 1. End-to-end carrier characterization
+report = analysis.characterize_carrier_phase(
+    y_eq=equalized_symbols,         # Equalized symbols (sps=1, CPR disabled)
+    ref_symbols=source_symbols,      # Reference symbols
+    symbol_rate=32e9,                # 32 GBaud
+    drift_cutoff_hz=3.0e6,           # Low-pass cutoff separating drift
+    noise_var=1.5e-3,                # Additive noise variance estimate
+    nperseg=8192,
+)
+
+# 2. Extract metrics
+dm = report["drift_metrics"]
+lw_inc = report["linewidth_increment"]
+lw_beta = report["linewidth_beta"]
+allan = report["allan"]
+
+print(f"Residual Freq Wander Std: {dm['std_hz'] / 1e3:.1f} kHz")
+print(f"Lag-Slope Wiener Linewidth: {lw_inc['linewidth_hz'] / 1e6:.2f} MHz")
+print(f"FM-PSD White-FM Linewidth: {lw_beta['linewidth_floor_hz'] / 1e6:.2f} MHz")
+```
+
+![Laser Phase Characterization](examples/images/laser_phase_characterization.png)
+
+---
+
 ## Other Key Capabilities
 
 ### Timing & Carrier Synchronization
@@ -255,6 +290,7 @@ result_cma = cma(rx_samples, num_taps=31, step_size=1e-4)
 | `commstools.equalization` | `lms()`, `rls()`, `cma()`, `rde()`, `zf_equalizer()`, `EqualizerResult` |
 | `commstools.impairments` | `apply_awgn()`, `apply_pmd()`, `apply_phase_noise()`, `apply_iq_imbalance()`, `apply_chromatic_dispersion()` |
 | `commstools.metrics` | `evm()`, `snr()`, `ber()` |
+| `commstools.analysis` | Laser phase characterization (`characterize_carrier_phase()`, `carrier_phase_trajectory()`, `separate_drift_phase_noise()`, `linewidth_increment()`, `linewidth_beta_separation()`, `allan_deviation()`) |
 | `commstools.spectral` | `welch_psd()`, `shift_frequency()` |
 | `commstools.plotting` | `constellation()`, `eye_diagram()`, `psd()`, `time_domain()`, `filter_response()`, `equalizer_result()` |
 | `commstools.helpers` | `random_bits()`, `random_symbols()`, `normalize()`, `rms()`, `format_si()` |
