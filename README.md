@@ -36,7 +36,7 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 | **Channel Models** | AWGN (Es/N0 with SPS correction), PMD (differential group delay, Jones matrix) |
 | **Soft Demapping** | LLR computation via max-log and exact log-sum-exp (JAX JIT compiled) |
 | **Metrics** | EVM (%, dB), data-aided SNR, BER |
-| **Phase & Laser Analysis** | Data-aided carrier-phase trajectory, zero-phase drift detrending, AWGN-free lag-slope linewidth fit, Di Domenico $\beta$-separation line FWHM, overlapping Allan deviation |
+| **Analysis** | Data-aided carrier-phase trajectory, zero-phase drift detrending, AWGN-free lag-slope linewidth fit, Di Domenico $\beta$-separation line FWHM, overlapping Allan deviation |
 | **Spectral** | Welch PSD, frequency shift with bin-quantized mixing |
 | **Frames** | `SingleCarrierFrame` with block/comb pilots, guard intervals, structure map for receiver parsing |
 | **MIMO** | All operations shape-aware for `(N_channels, N_samples)` arrays |
