@@ -40,7 +40,7 @@ spectral :
 
 import warnings
 
-__version__ = "3.4.2"
+__version__ = "3.4.3"
 
 from . import equalization, frequency, impairments, metrics, recovery, timing
 from .core import Preamble, Signal, SingleCarrierFrame
