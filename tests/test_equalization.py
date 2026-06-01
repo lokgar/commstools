@@ -1724,6 +1724,18 @@ class TestNumbaBackendCoverage:
         assert result.y_hat.ndim == 1
         assert result.weights.shape == (9,)
 
+    def test_rls_divergence_guard(self, backend_device, xp):
+        """Non-finite RLS weights raise an actionable error instead of silently
+        returning garbage taps (mirrors the block_lms divergence safeguard)."""
+        good = xp.ones((2, 2, 5), dtype=xp.complex64)
+        # Finite weights pass through untouched.
+        equalization._check_rls_divergence(good, xp, 0.99, 0.01)
+
+        bad = good.copy()
+        bad[0, 0, 0] = float("nan")
+        with pytest.raises(RuntimeError, match="RLS equalizer diverged"):
+            equalization._check_rls_divergence(bad, xp, 0.99, 0.01)
+
     def test_rls_numba_mimo(self, backend_device, xp):
         """RLS numba MIMO path correctly handles (num_channels, n_samples) input shape."""
         from commstools import Signal

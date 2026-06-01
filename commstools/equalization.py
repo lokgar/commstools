@@ -4478,7 +4478,12 @@ def lms(
             input_norm_factor=eq_norm,
         )
     else:
-        if not jax.config.read("jax_enable_x64"):
+        x64_enabled = (
+            jax.config.jax_enable_x64
+            if hasattr(jax.config, "jax_enable_x64")
+            else jax.config.read("jax_enable_x64")
+        )
+        if not x64_enabled:
             raise RuntimeError(
                 "JAX x64 mode must be enabled for CPR phase tracking: "
                 "call jax.config.update('jax_enable_x64', True) before using "
@@ -4594,6 +4599,23 @@ def lms(
             cs_H=H,
         )
     return _log_equalizer_exit(result, name="LMS", debug_plot=debug_plot)
+
+
+def _check_rls_divergence(weights, xp, forgetting_factor, delta):
+    """Raise if RLS produced non-finite weights (silent divergence guard).
+
+    Mirrors the ``_div_flag`` check in ``block_lms``: a single device→host sync on
+    the assembled weights catches loss of positive-definiteness in the inverse
+    correlation matrix P (which surfaces as NaN/Inf taps) and converts it into an
+    actionable error instead of returning garbage weights.
+    """
+    if not bool(xp.isfinite(weights).all()):
+        raise RuntimeError(
+            f"RLS equalizer diverged (forgetting_factor={forgetting_factor}, "
+            f"delta={delta}). RLS requires a positive-definite correlation matrix. "
+            "Try increasing regularization 'delta', reducing 'forgetting_factor', "
+            "or adding 'leakage' (e.g. 1e-4) to stabilize fractionally-spaced inputs."
+        )
 
 
 def rls(
@@ -5148,13 +5170,19 @@ def rls(
             result, name="RLS", debug_plot=debug_plot, plot_smoothing=plot_smoothing
         )
         result.tail_trim = tail_trim
+        _check_rls_divergence(result.weights, xp, forgetting_factor, delta)
         return result
 
     # JAX backend
     jax, jnp, _ = _get_jax()
     if jax is None:
         raise ImportError("JAX is required for backend='jax'.")
-    if not jax.config.read("jax_enable_x64"):
+    x64_enabled = (
+        jax.config.jax_enable_x64
+        if hasattr(jax.config, "jax_enable_x64")
+        else jax.config.read("jax_enable_x64")
+    )
+    if not x64_enabled:
         raise RuntimeError(
             "JAX x64 mode must be enabled for RLS: the P (Riccati) matrix requires "
             "complex128 precision to remain positive-definite. "
@@ -5401,6 +5429,7 @@ def rls(
     # Truncate last num_taps//2 symbols (zero-padding contamination).
     result = _log_equalizer_exit(result, name="RLS", debug_plot=debug_plot)
     result.tail_trim = tail_trim
+    _check_rls_divergence(result.weights, xp, forgetting_factor, delta)
     return result
 
 
