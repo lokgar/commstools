@@ -26,14 +26,14 @@ compute_llr :
 import numpy as np
 
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from .backend import ArrayType, dispatch, is_jax_array, to_jax, _get_jax
 from .logger import logger
 
 
 # Lazy cache for JIT-compiled soft demapping kernels
-_JITTED_SOFT_DEMAP = {}
+_JITTED_SOFT_DEMAP: dict[str, Any] = {}
 
 
 def _get_jitted_soft_demap():
@@ -857,7 +857,9 @@ def compute_llr(
         log_pmf_np = np.zeros(order, dtype=np.float32)
 
     # JAX path
+    jax_module, jnp, _ = _get_jax()
     if is_jax_array(symbols):
+        assert jnp is not None
         if hasattr(symbols, "shape"):
             original_shape = symbols.shape
         else:
@@ -880,11 +882,13 @@ def compute_llr(
         ).flatten()
         device = jax_symbols_flat.device
 
+        assert jax_module is not None
+        assert jnp is not None
         # device_put accepts NumPy arrays directly — no intermediate jnp.asarray needed
-        constellation_jax = jax.device_put(const, device)
-        bits_table_t_jax = jax.device_put(bits_table_np, device)
-        sigma_sq = jax.device_put(jnp.asarray(sigma_np), device)
-        log_pmf_jax = jax.device_put(log_pmf_np, device)
+        constellation_jax = jax_module.device_put(const, device)
+        bits_table_t_jax = jax_module.device_put(bits_table_np, device)
+        sigma_sq = jax_module.device_put(jnp.asarray(sigma_np), device)
+        log_pmf_jax = jax_module.device_put(log_pmf_np, device)
 
     # Compute LLRs via JIT-compiled kernels
     maxlog_fn, exact_fn = _get_jitted_soft_demap()

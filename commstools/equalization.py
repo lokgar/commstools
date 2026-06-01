@@ -1663,7 +1663,7 @@ def _get_numba_rde():
 #     for large MIMO widths (C >> 4) that saturate the cuBLAS kernel.
 #     Use backend='numba' for CPU-optimal throughput on typical SISO/2x2.
 
-_JITTED_EQ = {}
+_JITTED_EQ: dict[tuple[Any, ...], Any] = {}
 
 
 def _cpr_state_to_jax_inits(state: "CPRState", num_ch: int, KB: int, H: int):
@@ -3146,6 +3146,8 @@ def _get_jax_pa_cma(num_taps: int, stride: int, num_ch: int):
     key = ("pa_cma", num_taps, stride, num_ch)
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
+        assert jax is not None
+        assert jnp is not None
 
         @functools.partial(jax.jit, static_argnums=(6,))
         def pa_cma_scan(
@@ -3180,8 +3182,8 @@ def _get_jax_pa_cma(num_taps: int, stride: int, num_ch: int):
             W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
             return y_all, e_all, W_final, wh_all
 
-        _JITTED_EQ[key] = pa_cma_scan
-    return _JITTED_EQ[key]
+        _JITTED_EQ[key] = pa_cma_scan  # type: ignore[index]
+    return _JITTED_EQ[key]  # type: ignore[index]
 
 
 def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
@@ -3210,6 +3212,8 @@ def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
     key = ("pa_rde", num_taps, stride, num_radii, num_ch)
     if key not in _JITTED_EQ:
         jax, jnp, _ = _get_jax()
+        assert jax is not None
+        assert jnp is not None
 
         @functools.partial(jax.jit, static_argnums=(6,))
         def pa_rde_scan(
@@ -3248,8 +3252,8 @@ def _get_jax_pa_rde(num_taps: int, stride: int, num_radii: int, num_ch: int):
             W_final, (y_all, e_all, wh_all) = jax.lax.scan(step, w_init, xs)
             return y_all, e_all, W_final, wh_all
 
-        _JITTED_EQ[key] = pa_rde_scan
-    return _JITTED_EQ[key]
+        _JITTED_EQ[key] = pa_rde_scan  # type: ignore[index]
+    return _JITTED_EQ[key]  # type: ignore[index]
 
 
 # -----------------------------------------------------------------------------
@@ -4266,38 +4270,32 @@ def lms(
                 and _st.cs_H == H
                 and _st.pll_phi is not None
             )
-            pll_phi = (
-                _st.pll_phi.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
-            )
-            pll_freq = (
-                _st.pll_freq.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
-            )
-            cs_buf_x = (
-                _st.cs_buf_x.copy()
-                if _st_ok
-                else np.zeros((num_ch, H), dtype=np.float64)
-            )
-            cs_buf_y = (
-                _st.cs_buf_y.copy()
-                if _st_ok
-                else np.zeros((num_ch, H), dtype=np.float64)
-            )
-            cs_buf_ptr = (
-                _st.cs_buf_ptr.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
-            )
-            cs_buf_n = (
-                _st.cs_buf_n.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
-            )
-            cs_stats = (
-                _st.cs_stats.copy()
-                if _st_ok
-                else np.zeros((num_ch, 4), dtype=np.float64)
-            )
-            bps_prev4 = (
-                _st.bps_prev4.copy()
-                if (_st_ok and _st.bps_prev4 is not None)
-                else np.zeros(num_ch, dtype=np.float64)
-            )
+            if _st_ok:
+                assert _st is not None
+                assert _st.pll_phi is not None
+                assert _st.pll_freq is not None
+                assert _st.cs_buf_x is not None
+                assert _st.cs_buf_y is not None
+                assert _st.cs_buf_ptr is not None
+                assert _st.cs_buf_n is not None
+                assert _st.cs_stats is not None
+                pll_phi = _st.pll_phi.copy()
+                pll_freq = _st.pll_freq.copy()
+                cs_buf_x = _st.cs_buf_x.copy()
+                cs_buf_y = _st.cs_buf_y.copy()
+                cs_buf_ptr = _st.cs_buf_ptr.copy()
+                cs_buf_n = _st.cs_buf_n.copy()
+                cs_stats = _st.cs_stats.copy()
+                bps_prev4 = _st.bps_prev4.copy() if _st.bps_prev4 is not None else np.zeros(num_ch, dtype=np.float64)
+            else:
+                pll_phi = np.zeros(num_ch, dtype=np.float64)
+                pll_freq = np.zeros(num_ch, dtype=np.float64)
+                cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
+                cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
+                cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
+                cs_buf_n = np.zeros(num_ch, dtype=np.int64)
+                cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+                bps_prev4 = np.zeros(num_ch, dtype=np.float64)
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_lms_cpr()(
@@ -4371,7 +4369,7 @@ def lms(
 
     # JAX backend
     jax, jnp, _ = _get_jax()
-    if jax is None:
+    if jax is None or jnp is None:
         raise ImportError("JAX is required for backend='jax'.")
 
     samples, training_symbols, eq_norm = _normalize_inputs(
@@ -5063,38 +5061,32 @@ def rls(
                 and _st.cs_H == H
                 and _st.pll_phi is not None
             )
-            pll_phi = (
-                _st.pll_phi.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
-            )
-            pll_freq = (
-                _st.pll_freq.copy() if _st_ok else np.zeros(num_ch, dtype=np.float64)
-            )
-            cs_buf_x = (
-                _st.cs_buf_x.copy()
-                if _st_ok
-                else np.zeros((num_ch, H), dtype=np.float64)
-            )
-            cs_buf_y = (
-                _st.cs_buf_y.copy()
-                if _st_ok
-                else np.zeros((num_ch, H), dtype=np.float64)
-            )
-            cs_buf_ptr = (
-                _st.cs_buf_ptr.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
-            )
-            cs_buf_n = (
-                _st.cs_buf_n.copy() if _st_ok else np.zeros(num_ch, dtype=np.int64)
-            )
-            cs_stats = (
-                _st.cs_stats.copy()
-                if _st_ok
-                else np.zeros((num_ch, 4), dtype=np.float64)
-            )
-            bps_prev4 = (
-                _st.bps_prev4.copy()
-                if (_st_ok and _st.bps_prev4 is not None)
-                else np.zeros(num_ch, dtype=np.float64)
-            )
+            if _st_ok:
+                assert _st is not None
+                assert _st.pll_phi is not None
+                assert _st.pll_freq is not None
+                assert _st.cs_buf_x is not None
+                assert _st.cs_buf_y is not None
+                assert _st.cs_buf_ptr is not None
+                assert _st.cs_buf_n is not None
+                assert _st.cs_stats is not None
+                pll_phi = _st.pll_phi.copy()
+                pll_freq = _st.pll_freq.copy()
+                cs_buf_x = _st.cs_buf_x.copy()
+                cs_buf_y = _st.cs_buf_y.copy()
+                cs_buf_ptr = _st.cs_buf_ptr.copy()
+                cs_buf_n = _st.cs_buf_n.copy()
+                cs_stats = _st.cs_stats.copy()
+                bps_prev4 = _st.bps_prev4.copy() if _st.bps_prev4 is not None else np.zeros(num_ch, dtype=np.float64)
+            else:
+                pll_phi = np.zeros(num_ch, dtype=np.float64)
+                pll_freq = np.zeros(num_ch, dtype=np.float64)
+                cs_buf_x = np.zeros((num_ch, H), dtype=np.float64)
+                cs_buf_y = np.zeros((num_ch, H), dtype=np.float64)
+                cs_buf_ptr = np.zeros(num_ch, dtype=np.int64)
+                cs_buf_n = np.zeros(num_ch, dtype=np.int64)
+                cs_stats = np.zeros((num_ch, 4), dtype=np.float64)
+                bps_prev4 = np.zeros(num_ch, dtype=np.float64)
             phase_out = np.empty((n_sym, num_ch), dtype=np.float64)
             cpr_mode_int = np.int32(1 if cpr_type == "pll" else 2)
             _get_numba_rls_cpr()(
@@ -5175,7 +5167,7 @@ def rls(
 
     # JAX backend
     jax, jnp, _ = _get_jax()
-    if jax is None:
+    if jax is None or jnp is None:
         raise ImportError("JAX is required for backend='jax'.")
     x64_enabled = (
         jax.config.jax_enable_x64
@@ -5912,25 +5904,31 @@ def block_lms(
             and _st.bps_K == _bps_K
             and _st.bps_prev4 is not None
         )
-        bps_prev4 = _st.bps_prev4.copy() if _st_ok else np.zeros(C, dtype=np.float64)
-        bps_offset4 = (
-            _st.bps_offset4.copy() if _st_ok else np.zeros(C, dtype=np.float64)
-        )
-        # Cycle-slip regression state (CPU — negligible overhead vs GPU compute).
-        # Tracks last corrected boundary symbol per block; history depth = cpr_cycle_slip_history.
-        cs_buf_x = (
-            _st.cs_buf_x.copy() if _st_ok else np.zeros((C, _cs_H), dtype=np.float64)
-        )
-        cs_buf_y = (
-            _st.cs_buf_y.copy() if _st_ok else np.zeros((C, _cs_H), dtype=np.float64)
-        )
-        cs_buf_ptr = _st.cs_buf_ptr.copy() if _st_ok else np.zeros(C, dtype=np.int64)
-        cs_buf_n = _st.cs_buf_n.copy() if _st_ok else np.zeros(C, dtype=np.int64)
-        cs_stats = _st.cs_stats.copy() if _st_ok else np.zeros((C, 4), dtype=np.float64)
-        # Cross-block sliding-window history for BPS metric (K-1 prev samples)
-        if _st_ok and _st.bps_d2_hist is not None:
-            bps_d2_hist = xp.asarray(_st.bps_d2_hist)
+        if _st_ok:
+            assert _st is not None
+            assert _st.bps_prev4 is not None
+            assert _st.bps_offset4 is not None
+            assert _st.cs_buf_x is not None
+            assert _st.cs_buf_y is not None
+            assert _st.cs_buf_ptr is not None
+            assert _st.cs_buf_n is not None
+            assert _st.cs_stats is not None
+            bps_prev4 = _st.bps_prev4.copy()
+            bps_offset4 = _st.bps_offset4.copy()
+            cs_buf_x = _st.cs_buf_x.copy()
+            cs_buf_y = _st.cs_buf_y.copy()
+            cs_buf_ptr = _st.cs_buf_ptr.copy()
+            cs_buf_n = _st.cs_buf_n.copy()
+            cs_stats = _st.cs_stats.copy()
+            bps_d2_hist = xp.asarray(_st.bps_d2_hist) if _st.bps_d2_hist is not None else xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
         else:
+            bps_prev4 = np.zeros(C, dtype=np.float64)
+            bps_offset4 = np.zeros(C, dtype=np.float64)
+            cs_buf_x = np.zeros((C, _cs_H), dtype=np.float64)
+            cs_buf_y = np.zeros((C, _cs_H), dtype=np.float64)
+            cs_buf_ptr = np.zeros(C, dtype=np.int64)
+            cs_buf_n = np.zeros(C, dtype=np.int64)
+            cs_stats = np.zeros((C, 4), dtype=np.float64)
             bps_d2_hist = xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
 
     # ── OLS block size ────────────────────────────────────────────────────────
@@ -6231,6 +6229,7 @@ def block_lms(
 
             phi_c = phi_c_dev  # wrapped float32, for rotation
             y_rot = y_block * xp.exp(-1j * phi_c.astype(xp.complex64))  # (C, B)
+            assert phi_all is not None
             phi_all[:, b_start:b_end] = phi_c_traj  # unwrapped float32, for trajectory
         else:
             y_rot = y_block
@@ -6274,6 +6273,7 @@ def block_lms(
         y_all[:, b_start:b_end] = y_rot
         e_all[:, b_start:b_end] = e_clean
         if store_weights:
+            assert w_hist is not None
             w_hist[b_start:b_end] = h[None, :, :, :]
 
         # ── Back-rotate error to tap plane and compute gradient ───────────
@@ -6312,8 +6312,15 @@ def block_lms(
         y_out = y_all[0]
         e_out = e_all[0]
         W_out = h[0, 0]
-        w_history = w_hist[:, 0, 0, :] if store_weights else None
-        phase_traj = phi_all[0] if cpr_type == "bps" else None
+        if store_weights and w_hist is not None:
+            w_history = w_hist[:, 0, 0, :]
+        else:
+            w_history = None
+        
+        if cpr_type == "bps" and phi_all is not None:
+            phase_traj = phi_all[0]
+        else:
+            phase_traj = None
     else:
         y_out = y_all
         e_out = e_all
@@ -6661,6 +6668,7 @@ def cma(
         # Deboost pilot positions before global normalisation so boosted pilots
         # don't inflate the RMS estimate and bias the Godard convergence target.
         if use_pilots and pilot_gain_db != 0.0:
+            assert pilot_mask is not None
             _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
             _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
             samples_np[..., _smask] /= _amp
@@ -6737,16 +6745,17 @@ def cma(
 
     # JAX backend
     jax, jnp, _ = _get_jax()
-    if jax is None:
+    if jax is None or jnp is None:
         raise ImportError("JAX is required for backend='jax'.")
 
     # Deboost pilot positions before global normalisation so boosted pilots
     # don't inflate the RMS estimate and bias the Godard convergence target.
     if use_pilots and pilot_gain_db != 0.0:
-        _amp = float(10.0 ** (pilot_gain_db / 20.0))
-        _smask = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
+        assert pilot_mask is not None
+        _amp_jax = float(10.0 ** (pilot_gain_db / 20.0))
+        _smask_jax = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
         samples = samples.copy()
-        samples[..., _smask] /= xp.float32(_amp)
+        samples[..., _smask_jax] /= xp.float32(_amp_jax)
     # RMS-normalize samples to unit symbol-rate power (CMA has no training)
     samples, _, eq_norm = _normalize_inputs(
         samples, None, sps, input_norm_factor=input_norm_factor
@@ -7059,6 +7068,7 @@ def rde(
         # Deboost pilot positions before global normalisation so boosted pilots
         # don't inflate the RMS estimate and bias the ring-radius convergence targets.
         if use_pilots and pilot_gain_db != 0.0:
+            assert pilot_mask is not None
             _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
             _smask = np.repeat(pilot_mask.astype(bool), stride)  # (N_samples,)
             samples_np[..., _smask] /= _amp
@@ -7138,16 +7148,17 @@ def rde(
 
     # JAX backend
     jax, jnp, _ = _get_jax()
-    if jax is None:
+    if jax is None or jnp is None:
         raise ImportError("JAX is required for backend='jax'.")
 
     # Deboost pilot positions before global normalisation so boosted pilots
     # don't inflate the RMS estimate and bias the ring-radius convergence targets.
     if use_pilots and pilot_gain_db != 0.0:
-        _amp = float(10.0 ** (pilot_gain_db / 20.0))
-        _smask = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
+        assert pilot_mask is not None
+        _amp_jax = float(10.0 ** (pilot_gain_db / 20.0))
+        _smask_jax = xp.asarray(np.repeat(pilot_mask.astype(bool), stride))
         samples = samples.copy()
-        samples[..., _smask] /= xp.float32(_amp)
+        samples[..., _smask_jax] /= xp.float32(_amp_jax)
     samples, _, eq_norm = _normalize_inputs(
         samples, None, sps, input_norm_factor=input_norm_factor
     )

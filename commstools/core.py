@@ -285,7 +285,7 @@ class Signal(BaseModel):
                     self.source_bits,
                     self.mod_scheme,
                     self.mod_order,
-                    self.mod_unipolar,
+                    unipolar=self.mod_unipolar or False,
                 )
 
         # Ensure source_symbols are normalized to unit average power for consistent metrics.
@@ -461,7 +461,7 @@ class Signal(BaseModel):
         else:
             logger.info("\n" + df.to_string(index=False))
 
-    def copy(self) -> "Signal":
+    def copy(self) -> "Signal":  # type: ignore[override]
         """
         Creates a deep copy of the `Signal` instance.
 
@@ -744,7 +744,7 @@ class Signal(BaseModel):
             average=average,
             center_frequency=self.center_frequency,
             domain=self.physical_domain if self.physical_domain else "RF",
-            x_axis=x_axis,
+            x_axis=x_axis or "frequency",
             ax=ax,
             title=title,
             show=show,
@@ -754,7 +754,7 @@ class Signal(BaseModel):
     def plot_waveform(
         self,
         start_symbol: int = 0,
-        num_symbols: int = None,
+        num_symbols: Optional[int] = None,
         ax: Optional[Any] = None,
         title: Optional[str] = "Waveform",
         show: bool = False,
@@ -1269,7 +1269,7 @@ class Signal(BaseModel):
             )
         elif self.pulse_shape == "smoothrect":
             taps = filtering.smoothrect_taps(
-                sps=self.sps,
+                sps=int(self.sps),
                 span=self.filter_span,
                 rise_time=self.rise_time,
                 duty_cycle=duty_cycle,
@@ -1871,6 +1871,7 @@ class Signal(BaseModel):
         if entropy is not None:
             nu_val, _ = mapping.optimal_nu(order, entropy)
         else:
+            assert nu is not None
             nu_val = float(nu)
             if nu_val < 0:
                 raise ValueError("`nu` must be non-negative.")
@@ -2041,7 +2042,7 @@ class Signal(BaseModel):
             symbols=self.resolved_symbols,
             modulation=self.mod_scheme,
             order=self.mod_order,
-            unipolar=self.mod_unipolar,
+            unipolar=self.mod_unipolar or False,
             **kwargs,
         )
         self.resolved_bits = bits
@@ -2102,7 +2103,7 @@ class Signal(BaseModel):
         mode: str = "data_aided",
         modulation: Optional[str] = None,
         order: Optional[int] = None,
-    ) -> Tuple[float, float]:
+    ) -> Optional[Tuple[Any, Any]]:
         """
         Computes the Error Vector Magnitude (EVM).
 
@@ -2152,7 +2153,7 @@ class Signal(BaseModel):
                 "metrics, extract the payload (or pilot) segment manually via "
                 "frame.get_structure_map() and create a plain Signal first."
             )
-            return
+            return None
 
         if self.resolved_symbols is None:
             raise ValueError(
@@ -2204,7 +2205,7 @@ class Signal(BaseModel):
         self,
         reference_symbols: Optional[ArrayType] = None,
         num_train_symbols: Optional[int] = None,
-    ) -> float:
+    ) -> Optional[Any]:
         """
         Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
 
@@ -2245,7 +2246,7 @@ class Signal(BaseModel):
                 "metrics, extract the payload (or pilot) segment manually via "
                 "frame.get_structure_map() and create a plain Signal first."
             )
-            return
+            return None
 
         ref = (
             reference_symbols if reference_symbols is not None else self.source_symbols
@@ -2276,7 +2277,7 @@ class Signal(BaseModel):
         self,
         reference_bits: Optional[ArrayType] = None,
         num_train_symbols: Optional[int] = None,
-    ) -> Union[float, ArrayType]:
+    ) -> Optional[Union[float, ArrayType]]:
         """
         Computes the Bit Error Rate (BER).
 
@@ -2319,7 +2320,7 @@ class Signal(BaseModel):
                 "metrics, extract the payload (or pilot) segment manually via "
                 "frame.get_structure_map() and create a plain Signal first."
             )
-            return
+            return None
 
         ref = reference_bits if reference_bits is not None else self.source_bits
         if ref is None:
@@ -2339,6 +2340,7 @@ class Signal(BaseModel):
         if trim > 0 and self.mod_order is not None:
             logger.info(f"Discarding {trim} training symbols for BER calculation.")
             bps = self.bits_per_symbol
+            assert bps is not None
             bit_trim = trim * bps
             n = min(y.shape[-1], r.shape[-1])
             y = y[..., bit_trim:n]
@@ -2353,7 +2355,7 @@ class Signal(BaseModel):
         *,
         modulation: Optional[str] = None,
         order: Optional[int] = None,
-    ) -> Union[float, ArrayType]:
+    ) -> Optional[Union[float, ArrayType]]:
         """
         Computes the Symbol Error Rate (SER) using ML hard decisions.
 
@@ -2400,7 +2402,7 @@ class Signal(BaseModel):
                 "metrics, extract the payload (or pilot) segment manually via "
                 "frame.get_structure_map() and create a plain Signal first."
             )
-            return
+            return None
 
         ref = (
             reference_symbols if reference_symbols is not None else self.source_symbols
@@ -2705,7 +2707,8 @@ class Preamble(BaseModel):
                 self._symbols = to_device(self._symbols, "gpu")
 
             # Ensure consistent internal dtype (complex64)
-            self._symbols = self._symbols.astype("complex64")
+            if self._symbols is not None:
+                self._symbols = self._symbols.astype("complex64")
 
     # -------------------------------------------------------------------------
     # Properties
@@ -3054,7 +3057,7 @@ class SingleCarrierFrame(BaseModel):
         scheme = self.payload_mod_scheme.lower()
         is_ps = self.payload_nu is not None or self.payload_entropy is not None
 
-        common = dict(
+        common: dict[str, Any] = dict(
             num_symbols=self.payload_len,
             sps=1,
             symbol_rate=1.0,
@@ -3117,7 +3120,7 @@ class SingleCarrierFrame(BaseModel):
 
         scheme = self.pilot_mod_scheme.lower()
 
-        common = dict(
+        common: dict[str, Any] = dict(
             num_symbols=pilot_count,
             sps=1,
             symbol_rate=1.0,
@@ -3254,6 +3257,7 @@ class SingleCarrierFrame(BaseModel):
 
             if self.pilot_pattern != "none":
                 pilot_symbols = self.pilot_symbols
+                assert pilot_symbols is not None
                 # Apply pilot boosting/gain (dB to linear)
                 if self.pilot_gain_db != 0.0:
                     pilot_symbols = pilot_symbols * (10 ** (self.pilot_gain_db / 20))
@@ -3265,6 +3269,7 @@ class SingleCarrierFrame(BaseModel):
             body = xp.zeros(body_length, dtype="complex64")
             if self.pilot_pattern != "none":
                 pilot_symbols = self.pilot_symbols
+                assert pilot_symbols is not None
                 # Apply pilot boosting/gain (dB to linear)
                 if self.pilot_gain_db != 0.0:
                     pilot_symbols = pilot_symbols * (10 ** (self.pilot_gain_db / 20))

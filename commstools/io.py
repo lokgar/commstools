@@ -31,7 +31,7 @@ The .npz file contains the following named entries:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, Any
 
 import numpy as np
 import yaml
@@ -128,7 +128,7 @@ def save_npz(
     # -------------------------------------------------------------------------
     # Collect arrays
     # -------------------------------------------------------------------------
-    arrays: dict[str, np.ndarray] = {
+    arrays: dict[str, Any] = {
         "samples": _backend.to_device(signal.samples, "CPU")
     }
 
@@ -187,8 +187,10 @@ def save_npz(
     # -------------------------------------------------------------------------
     # Write
     # -------------------------------------------------------------------------
-    save_fn = np.savez_compressed if compressed else np.savez
-    save_fn(path, **arrays)
+    if compressed:
+        np.savez_compressed(path, **arrays)  # type: ignore[arg-type]
+    else:
+        np.savez(path, **arrays)  # type: ignore[arg-type]
 
 
 def load_npz(

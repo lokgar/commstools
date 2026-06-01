@@ -32,6 +32,7 @@ compensate_chromatic_dispersion :
 
 import numpy as np
 import scipy
+from typing import Optional
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -625,7 +626,7 @@ def _ols_backward(X_hat_f: ArrayType, meta: dict) -> ArrayType:
 
 
 def ols_fir_filter(
-    samples: ArrayType, taps: ArrayType, N_fft: int = None, center: bool = True
+    samples: ArrayType, taps: ArrayType, N_fft: Optional[int] = None, center: bool = True
 ) -> ArrayType:
     """
     Overlap-and-save FIR filter for long-tap or large-signal convolution.
@@ -888,7 +889,7 @@ def shape_pulse(
         h = rect_taps(int(sps), duty_cycle=duty_cycle, rise_time=rise_time)
     elif pulse_shape == "smoothrect":
         h = smoothrect_taps(
-            sps, span=filter_span, rise_time=rise_time, duty_cycle=duty_cycle
+            int(sps), span=filter_span, rise_time=rise_time, duty_cycle=duty_cycle
         )
     elif pulse_shape == "gaussian":
         h = gaussian_taps(sps, span=filter_span, duty_cycle=duty_cycle)

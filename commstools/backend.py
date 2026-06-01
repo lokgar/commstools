@@ -63,7 +63,7 @@ ArrayType = Union[
 ]  # Any for CuPy array to avoid hard dependency in type hint if not installed
 
 # JAX lazy loading cache
-_JAX_CACHE = {}
+_JAX_CACHE: dict[str, Any] = {}
 
 
 def _get_jax() -> Tuple[
@@ -326,7 +326,7 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
         local JAX environment.
     """
     jax, jnp, jax_dlpack = _get_jax()
-    if jax is None:
+    if jax is None or jnp is None:
         raise ImportError("JAX is not installed.")
 
     # Check for JAX x64 mode
@@ -393,12 +393,13 @@ def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None)
             if needs_copy:
                 data = cp.array(data, copy=True, order="C")
 
-            # DLPack is the fastest way for zero-copy GPU transfer
-            jax_arr = jax_dlpack.from_dlpack(data)
-            if target_device and jax_arr.device != target_device:
-                result = jax.device_put(jax_arr, target_device)
-            else:
-                result = jax_arr
+            if jax_dlpack is not None:
+                jax_arr = jax_dlpack.from_dlpack(data)
+                if target_device and jax_arr.device != target_device:
+                    result = jax.device_put(jax_arr, target_device)
+                else:
+                    result = jax_arr
+
         except Exception as e:
             logger.debug(
                 f"DLPack transfer from CuPy to JAX failed: {e}. Falling back to explicit conversion."

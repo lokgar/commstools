@@ -923,6 +923,7 @@ def find_bias_tone(
     freqs_np = np.fft.fftfreq(nfft, d=1.0 / sampling_rate)  # (nfft,) always on CPU
 
     if target_hz is not None:
+        assert search_band_hz is not None
         lo = target_hz - abs(search_band_hz)
         hi = target_hz + abs(search_band_hz)
         freqs_xp = xp.asarray(freqs_np)

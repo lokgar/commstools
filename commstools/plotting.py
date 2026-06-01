@@ -38,7 +38,7 @@ zf_equalizer_response :
     Channel, equalizer, and combined frequency responses for ZF/MMSE.
 """
 
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, Sequence
 
 import matplotlib as mpl
 import matplotlib.font_manager as fm
@@ -1281,7 +1281,7 @@ def constellation(
     # Compute 2D histogram
     # Determine range based on RMS (robust to noise outliers)
     # Using np.sqrt(np.mean(|I|² + |Q|²)) is equivalent to rms(complex_signal)
-    signal_rms = helpers.rms(i_data + 1j * q_data)
+    signal_rms = float(helpers.rms(i_data + 1j * q_data))
     # Use ~3x RMS as limit (covers most constellation points + noise spread)
     limit = signal_rms * 2.0
     if limit == 0:
@@ -1305,7 +1305,7 @@ def constellation(
         h = h / h_max
 
     # Plot using imshow
-    imshow_kwargs = {
+    imshow_kwargs: dict[str, Any] = {
         "origin": "lower",
         "extent": [-limit, limit, -limit, limit],
         "aspect": "equal",
@@ -2020,7 +2020,7 @@ def pilot_phase_estimate(
     pilot_indices,
     phi_pilots_u,
     phi_full=None,
-    f_est: float = 0.0,
+    f_est: Union[float, Sequence[float], np.ndarray] = 0.0,
     sampling_rate: float = 1.0,
     ax=None,
     show: bool = False,
@@ -2065,10 +2065,10 @@ def pilot_phase_estimate(
         phi_pilots_u = phi_pilots_u[None, :]
     C, P = phi_pilots_u.shape
 
-    if hasattr(f_est, "__len__"):
-        f_ests = [float(f) for f in f_est]
+    if isinstance(f_est, (np.ndarray, list, tuple)):
+        f_ests = [float(f) for f in f_est]  # type: ignore[union-attr]
     else:
-        f_ests = [float(f_est)] * C
+        f_ests = [float(f_est)] * C  # type: ignore[arg-type]
 
     has_full = phi_full is not None
     if has_full:
@@ -2078,6 +2078,7 @@ def pilot_phase_estimate(
         N = phi_full.shape[1]
 
     n_cols = 2 if has_full else 1
+    axes: Any = None
     if ax is None:
         fig, axes = plt.subplots(
             C, n_cols, figsize=(5 * n_cols, 3.5 * C), squeeze=False

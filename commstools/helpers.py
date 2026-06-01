@@ -73,7 +73,7 @@ def random_symbols(
     modulation: str,
     order: int,
     seed: Optional[int] = None,
-    unipolar: Optional[bool] = None,
+    unipolar: bool = False,
 ) -> ArrayType:
     """
     Generates a sequence of random modulation symbols.
