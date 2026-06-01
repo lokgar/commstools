@@ -160,128 +160,6 @@ def _get_numba_dd_pll():
     return _NUMBA_PLL["dd_pll"]
 
 
-def _get_numba_dd_pll_butterworth():
-    """JIT-compile and cache the Numba DD-PLL loop with Butterworth loop filter.
-
-    The Butterworth loop filter replaces the simple PI (proportional-integral)
-    structure with a 2nd-order IIR biquad.  This gives a flatter passband and
-    sharper roll-off, improving phase noise rejection near the loop bandwidth.
-
-    Returns
-    -------
-    callable
-        Numba-compiled ``_dd_pll_bw_loop``.
-    """
-    if "dd_pll_bw" not in _NUMBA_PLL:
-        import numba  # noqa: PLC0415
-
-        @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_bw_loop(
-            sym_r,
-            sym_i,
-            const_r,
-            const_i,
-            phi0,
-            b0,
-            b1,
-            b2,
-            a1,
-            a2,
-            is_sq_qam,
-            levels,
-            d_grid,
-            lev_min,
-            side,
-        ):
-            """DD-PLL inner loop with a 2nd-order Butterworth loop filter.
-
-            Parameters
-            ----------
-            sym_r, sym_i : (N,) float64
-                Real and imaginary parts of received symbols.
-            const_r, const_i : (M,) float64
-                Real and imaginary parts of reference constellation.
-            phi0 : float64
-                Initial phase state in radians.
-            b0, b1, b2 : float64
-                Numerator coefficients of the 2nd-order Butterworth IIR filter.
-            a1, a2 : float64
-                Denominator coefficients (a[1], a[2]; a[0] is normalised to 1).
-            is_sq_qam : bool
-                Enables O(1) rounding decision for square QAM grids.
-            levels : (side,) float64
-            d_grid, lev_min : float64
-            side : int
-
-            Returns
-            -------
-            phase_est : (N,) float64
-                Per-symbol phase trajectory φ[n].
-            """
-            N = len(sym_r)
-            M = len(const_r)
-            phase_est = np.empty(N, dtype=np.float64)
-            phi = phi0
-
-            # Biquad Direct Form II Transposed state variables
-            w1 = 0.0
-            w2 = 0.0
-
-            for n in range(N):
-                # Rotate received symbol by current phase estimate
-                cos_phi = np.cos(phi)
-                sin_phi = np.sin(phi)
-                yr = sym_r[n] * cos_phi + sym_i[n] * sin_phi
-                yi = -sym_r[n] * sin_phi + sym_i[n] * cos_phi
-
-                # Hard decision: argmin_{c ∈ C} |y − c|²
-                if is_sq_qam:
-                    r_idx = int(round((yr - lev_min) / d_grid))
-                    if r_idx < 0:
-                        r_idx = 0
-                    elif r_idx >= side:
-                        r_idx = side - 1
-                    d_r = levels[r_idx]
-                    i_idx = int(round((yi - lev_min) / d_grid))
-                    if i_idx < 0:
-                        i_idx = 0
-                    elif i_idx >= side:
-                        i_idx = side - 1
-                    d_i = levels[i_idx]
-                else:
-                    min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                    d_r = const_r[0]
-                    d_i = const_i[0]
-                    for k in range(1, M):
-                        d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                        if d2 < min_d2:
-                            min_d2 = d2
-                            d_r = const_r[k]
-                            d_i = const_i[k]
-
-                # Cross-product phase error: e = Im(y · d*) = yi·d_r − yr·d_i
-                e = yi * d_r - yr * d_i
-
-                # Record phase before update
-                phase_est[n] = phi
-
-                # Biquad (Direct Form II Transposed):
-                #   v[n] = b0·e[n] + w1[n-1]
-                #   w1[n] = b1·e[n] - a1·v[n] + w2[n-1]
-                #   w2[n] = b2·e[n] - a2·v[n]
-                v_out = b0 * e + w1
-                w1 = b1 * e - a1 * v_out + w2
-                w2 = b2 * e - a2 * v_out
-
-                phi = phi + v_out
-
-            return phase_est
-
-        _NUMBA_PLL["dd_pll_bw"] = _dd_pll_bw_loop
-
-    return _NUMBA_PLL["dd_pll_bw"]
-
-
 def _get_numba_dd_pll_joint():
     """JIT-compile and cache the joint-channel DD-PLL PI kernel.
 
@@ -385,107 +263,6 @@ def _get_numba_dd_pll_joint():
     return _NUMBA_PLL["dd_pll_joint"]
 
 
-def _get_numba_dd_pll_joint_butterworth():
-    """JIT-compile and cache the joint-channel DD-PLL Butterworth kernel.
-
-    Returns
-    -------
-    callable
-        Numba-compiled ``_dd_pll_joint_bw_loop``.
-    """
-    if "dd_pll_joint_bw" not in _NUMBA_PLL:
-        import numba  # noqa: PLC0415
-
-        @numba.njit(cache=True, fastmath=True, nogil=True)
-        def _dd_pll_joint_bw_loop(
-            sym_r,
-            sym_i,
-            const_r,
-            const_i,
-            phi0,
-            b0,
-            b1,
-            b2,
-            a1,
-            a2,
-            is_sq_qam,
-            levels,
-            d_grid,
-            lev_min,
-            side,
-        ):
-            """Joint-channel DD-PLL with 2nd-order Butterworth loop filter.
-
-            Parameters
-            ----------
-            sym_r, sym_i : (C, N) float64
-            const_r, const_i : (M,) float64
-            phi0 : float64
-            b0, b1, b2, a1, a2 : float64
-                Butterworth biquad coefficients.
-            is_sq_qam : bool
-                Enables O(1) rounding decision for square QAM grids.
-            levels : (side,) float64
-            d_grid, lev_min : float64
-            side : int
-
-            Returns
-            -------
-            phase_est : (N,) float64
-            """
-            C = sym_r.shape[0]
-            N = sym_r.shape[1]
-            M = len(const_r)
-            phase_est = np.empty(N, dtype=np.float64)
-            phi = phi0
-            w1 = 0.0
-            w2 = 0.0
-
-            for n in range(N):
-                cos_phi = np.cos(phi)
-                sin_phi = np.sin(phi)
-                e_sum = 0.0
-                for c in range(C):
-                    yr = sym_r[c, n] * cos_phi + sym_i[c, n] * sin_phi
-                    yi = -sym_r[c, n] * sin_phi + sym_i[c, n] * cos_phi
-                    if is_sq_qam:
-                        r_idx = int(round((yr - lev_min) / d_grid))
-                        if r_idx < 0:
-                            r_idx = 0
-                        elif r_idx >= side:
-                            r_idx = side - 1
-                        d_r = levels[r_idx]
-                        i_idx = int(round((yi - lev_min) / d_grid))
-                        if i_idx < 0:
-                            i_idx = 0
-                        elif i_idx >= side:
-                            i_idx = side - 1
-                        d_i = levels[i_idx]
-                    else:
-                        min_d2 = (yr - const_r[0]) ** 2 + (yi - const_i[0]) ** 2
-                        d_r = const_r[0]
-                        d_i = const_i[0]
-                        for k in range(1, M):
-                            d2 = (yr - const_r[k]) ** 2 + (yi - const_i[k]) ** 2
-                            if d2 < min_d2:
-                                min_d2 = d2
-                                d_r = const_r[k]
-                                d_i = const_i[k]
-                    e_sum += yi * d_r - yr * d_i
-                e = e_sum / float(C)
-                phase_est[n] = phi
-                v_out = b0 * e + w1
-                w1 = b1 * e - a1 * v_out + w2
-                w2 = b2 * e - a2 * v_out
-                phi = phi + v_out
-
-            return phase_est
-
-        _NUMBA_PLL["dd_pll_joint_bw"] = _dd_pll_joint_bw_loop
-
-    return _NUMBA_PLL["dd_pll_joint_bw"]
-
-
 _NUMBA_RTS: dict = {}
 
 
@@ -546,10 +323,9 @@ def recover_carrier_phase_pll(
     symbols: ArrayType,
     modulation: str,
     order: int,
-    mu: float = 1e-2,
-    beta: float = 0.0,
+    mu: Optional[float] = 1e-2,
+    beta: Optional[float] = None,
     phase_init: float = 0.0,
-    loop_filter: str = "pi",
     loop_bandwidth_normalized: float = 1e-3,
     joint_channels: bool = False,
     cycle_slip_correction: bool = False,
@@ -586,37 +362,30 @@ def recover_carrier_phase_pll(
         :func:`~commstools.mapping.gray_constellation`.
     order : int
         Modulation order (4, 16, 64, …).
-    mu : float, default 1e-2
+    mu : float or None, default 1e-2
         Proportional gain — controls convergence speed and steady-state
         jitter.  Larger ``mu`` converges faster but amplifies noise.
         Typical range: ``1e-3`` (high-SNR, high-order QAM) to ``5e-2``
-        (QPSK, low latency).
-    beta : float, default 0.0
-        Integral gain — enables 2nd-order frequency tracking.
-        Set ``beta > 0`` when a residual frequency offset remains after
-        FOE (e.g. ``beta ≈ mu² / 4``).  Zero gives a 1st-order loop.
+        (QPSK, low latency).  Set ``mu=None`` to opt into the
+        ``loop_bandwidth_normalized`` shortcut instead (see below).  These
+        gains are interchangeable with the inline equalizer PLL's
+        ``cpr_pll_mu``/``cpr_pll_beta`` (``lms``/``rls``, ``cpr_type='pll'``).
+    beta : float or None, default None
+        Integral gain — enables 2nd-order frequency tracking.  ``None`` (or
+        ``0.0``) gives a 1st-order loop; set ``beta > 0`` when a residual
+        frequency offset remains after FOE (e.g. ``beta ≈ mu² / 4``).
+        Requires ``mu`` to be set (passing ``beta`` with ``mu=None`` raises
+        ``ValueError``).
     phase_init : float, default 0.0
         Initial phase state in radians.  Use the last sample of a
         preceding BPS or pilot-aided estimate to warm-start the loop.
-    loop_filter : {"pi", "butterworth"}, default "pi"
-        Loop filter type.
-
-        * ``"pi"`` (default) — classic proportional-integral filter
-          controlled by ``mu`` and ``beta``.
-        * ``"butterworth"`` — 2nd-order Butterworth IIR loop filter
-          designed via bilinear (Tustin) transform.  Controlled by
-          ``loop_bandwidth_normalized`` instead of ``mu``/``beta``.
-          Provides a flatter passband and sharper roll-off than PI,
-          improving phase noise rejection at the cost of a small
-          transient overshoot.
-
-        When ``loop_filter='butterworth'``, ``mu`` and ``beta`` are
-        ignored.
     loop_bandwidth_normalized : float, default 1e-3
-        Normalised one-sided loop bandwidth as a fraction of the symbol
-        rate (i.e. in the range ``(0, 0.5)``).  Only used when
-        ``loop_filter='butterworth'``.  Typical values: ``1e-4``
-        (narrow, low phase noise) to ``1e-2`` (wide, fast tracking).
+        Critically-damped (ζ=1) loop-bandwidth shortcut, used only when
+        ``mu is None``: the PI gains are derived as ``μ = 4·B_L``,
+        ``β = 4·B_L²``.  Normalised one-sided bandwidth as a fraction of the
+        symbol rate, in ``(0, 0.5)``.  Typical values: ``1e-4`` (narrow, low
+        phase noise) to ``1e-2`` (wide, fast tracking).  Numerically equal to
+        the inline equalizer's ``cpr_pll_bandwidth`` path.
     joint_channels : bool, default False
         For MIMO inputs (C > 1): if ``True``, average the cross-product
         phase error across all channels at each symbol before updating the
@@ -680,23 +449,16 @@ def recover_carrier_phase_pll(
     J. G. Proakis, *Digital Communications*, 4th ed., McGraw-Hill, 2001,
     ch. 6 (carrier phase synchronisation).
     """
-    from .helpers import normalize
+    from .helpers import resolve_pll_gains, normalize
     from .mapping import gray_constellation
 
-    if loop_filter not in ("pi", "butterworth"):
-        raise ValueError(
-            f"loop_filter must be 'pi' or 'butterworth', got {loop_filter!r}."
-        )
-    if loop_filter == "butterworth" and not (0.0 < loop_bandwidth_normalized < 0.5):
+    # Resolve PI gains: raw mu/beta if given, else the critically-damped
+    # bandwidth shortcut (mu=None).  Validate the bandwidth only on that path.
+    if mu is None and not (0.0 < loop_bandwidth_normalized < 0.5):
         raise ValueError(
             f"loop_bandwidth_normalized must be in (0, 0.5), got {loop_bandwidth_normalized}."
         )
-    if loop_filter == "butterworth":
-        if mu != 1e-2 or beta != 0.0:
-            logger.warning(
-                "loop_filter='butterworth': mu and beta are ignored. "
-                "Use loop_bandwidth_normalized to control loop bandwidth."
-            )
+    mu, beta = resolve_pll_gains(loop_bandwidth_normalized, mu, beta)
 
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
@@ -748,66 +510,32 @@ def recover_carrier_phase_pll(
         sym_r_all = np.ascontiguousarray(symbols_np.real)  # (C, N) float64
         sym_i_all = np.ascontiguousarray(symbols_np.imag)
 
-    if loop_filter == "butterworth":
-        import scipy.signal as _ss  # noqa: PLC0415
-
-        # Design 2nd-order Butterworth lowpass at loop_bandwidth_normalized
-        # (normalised by Nyquist = 0.5 symbol rate, so Wn = 2 * lbw).
-        b_arr, a_arr = _ss.butter(
-            2, 2.0 * loop_bandwidth_normalized, btype="low", analog=False
+    if use_joint:
+        j_kernel = _get_numba_dd_pll_joint()
+        phi_joint = j_kernel(
+            sym_r_all,
+            sym_i_all,
+            const_r,
+            const_i,
+            float(mu),
+            float(beta),
+            float(phase_init),
+            0.0,
+            _is_sq_qam,
+            _levels,
+            _d_grid,
+            _lev_min,
+            _side,
         )
-        b0, b1, b2 = float(b_arr[0]), float(b_arr[1]), float(b_arr[2])
-        a1, a2 = float(a_arr[1]), float(a_arr[2])
-
-        if use_joint:
-            jbw_kernel = _get_numba_dd_pll_joint_butterworth()
-            phi_joint = jbw_kernel(
-                sym_r_all,
-                sym_i_all,
-                const_r,
-                const_i,
-                float(phase_init),
-                b0,
-                b1,
-                b2,
-                a1,
-                a2,
-                _is_sq_qam,
-                _levels,
-                _d_grid,
-                _lev_min,
-                _side,
-            )
-            for ch in range(C):
-                phi_full[ch] = phi_joint
-        else:
-            bw_kernel = _get_numba_dd_pll_butterworth()
-            for ch in range(C):
-                sym = symbols_cpu[ch].astype(np.complex128)
-                phi_full[ch] = bw_kernel(
-                    sym.real.copy(),
-                    sym.imag.copy(),
-                    const_r,
-                    const_i,
-                    float(phase_init),
-                    b0,
-                    b1,
-                    b2,
-                    a1,
-                    a2,
-                    _is_sq_qam,
-                    _levels,
-                    _d_grid,
-                    _lev_min,
-                    _side,
-                )
-        loop_desc = f"Butterworth, BW={loop_bandwidth_normalized:.2g}"
+        for ch in range(C):
+            phi_full[ch] = phi_joint
     else:
-        if use_joint:
-            j_kernel = _get_numba_dd_pll_joint()
-            phi_joint = j_kernel(
-                sym_r_all,
-                sym_i_all,
+        pi_kernel = _get_numba_dd_pll()
+        for ch in range(C):
+            sym = symbols_cpu[ch].astype(np.complex128)
+            phi_full[ch] = pi_kernel(
+                sym.real.copy(),
+                sym.imag.copy(),
                 const_r,
                 const_i,
                 float(mu),
@@ -820,29 +548,8 @@ def recover_carrier_phase_pll(
                 _lev_min,
                 _side,
             )
-            for ch in range(C):
-                phi_full[ch] = phi_joint
-        else:
-            pi_kernel = _get_numba_dd_pll()
-            for ch in range(C):
-                sym = symbols_cpu[ch].astype(np.complex128)
-                phi_full[ch] = pi_kernel(
-                    sym.real.copy(),
-                    sym.imag.copy(),
-                    const_r,
-                    const_i,
-                    float(mu),
-                    float(beta),
-                    float(phase_init),
-                    0.0,
-                    _is_sq_qam,
-                    _levels,
-                    _d_grid,
-                    _lev_min,
-                    _side,
-                )
-        loop_order = "2nd" if beta > 0.0 else "1st"
-        loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
+    loop_order = "2nd" if beta > 0.0 else "1st"
+    loop_desc = f"PI {loop_order}-order, mu={mu}, beta={beta}"
 
     if cycle_slip_correction:
         if use_joint:

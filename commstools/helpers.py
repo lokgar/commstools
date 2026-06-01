@@ -1,29 +1,4 @@
-"""
-General library utility functions.
-
-This module provides essential helper routines used throughout the library,
-including random sequence generation, SI prefix formatting, and
-multi-backend array validation.
-
-Functions
----------
-random_bits :
-    Generates reproducible random binary sequences.
-random_symbols :
-    Generates random modulation symbols.
-rms :
-    Computes the Root-Mean-Square (RMS) value of an array.
-normalize :
-    Applies various normalization strategies (unit energy, max amplitude, etc.).
-format_si :
-    Converts numeric values into human-readable SI-formatted strings.
-validate_array :
-    Ensures input data is coerced into a supported backend array type.
-cross_correlate_fft :
-    Vectorized FFT-based cross-correlation for 1D and multichannel signals.
-zc_mimo_root :
-    Deterministic unique ZC root assignment per TX stream for MIMO preambles.
-"""
+"""General library utility functions."""
 
 from typing import Any, Optional
 
@@ -462,3 +437,51 @@ def zc_mimo_root(stream_idx: int, base_root: int, length: int) -> int:
     [10, 11, 12, 1]
     """
     return ((base_root - 1 + stream_idx) % (length - 1)) + 1
+
+
+def cpr_pll_gains(bandwidth: float):
+    """Convert normalised loop bandwidth to PI gains (mu, beta).
+
+    Uses the standard 2nd-order loop approximation for a critically-damped
+    (ζ = 1) PI loop:  μ ≈ 4·B_L,  β ≈ 4·B_L².  (With ``ωₙT = √β = 2B`` and
+    ``ζ = μ/(2√β) = 1``.)
+
+    Parameters
+    ----------
+    bandwidth : float
+        Normalised one-sided loop bandwidth as a fraction of the symbol rate,
+        e.g. ``1e-3`` for a narrow loop.
+
+    Returns
+    -------
+    mu, beta : float32
+    """
+    mu = np.float32(4.0 * bandwidth)
+    beta = np.float32(4.0 * bandwidth**2)
+    return mu, beta
+
+
+def resolve_pll_gains(bandwidth: float, mu: Optional[float], beta: Optional[float]):
+    """Resolve decision-directed PLL PI gains from a raw/bandwidth parameterization.
+
+    Shared by the inline equalizer PLL (``lms``/``rls`` with ``cpr_type='pll'``)
+    and the standalone :func:`commstools.recovery.recover_carrier_phase_pll`, so
+    the bandwidth→gain mapping is defined in exactly one place.
+
+    Precedence
+    ----------
+    * ``mu`` given → raw PI gains; ``beta`` defaults to ``0.0`` (1st-order loop).
+    * ``mu`` is ``None`` → derive critically-damped (ζ=1) gains ``μ=4B, β=4B²``
+      from ``bandwidth`` via :func:`cpr_pll_gains`.
+
+    ``beta`` without ``mu`` is ambiguous and raises ``ValueError``.
+
+    Returns
+    -------
+    mu, beta : float
+    """
+    if mu is not None:
+        return float(mu), float(beta if beta is not None else 0.0)
+    if beta is not None:  # beta without mu is ambiguous
+        raise ValueError("beta requires mu to be set (or use the bandwidth shortcut).")
+    return cpr_pll_gains(bandwidth)

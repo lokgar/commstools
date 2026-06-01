@@ -16,7 +16,7 @@ The decision-directed PLL exists in two places with **inconsistent control surfa
   Butterworth IIR.
 - **Inline** (`lms`/`rls`, `cpr_type='pll'`): exposes **only** `cpr_pll_bandwidth`
   ([equalization.py:3703](commstools/equalization.py#L3703)). The PI gains are derived
-  internally by [`_cpr_pll_gains`](commstools/equalization.py#L3613) as `μ=4B, β=4B²`
+  internally by [`cpr_pll_gains`](commstools/equalization.py#L3613) as `μ=4B, β=4B²`
   (fixed damping; the formula gives **ζ=1**, not the ζ=1/√2 the docstring claims).
 
 Consequences of the inline limitation:
@@ -54,7 +54,7 @@ The gains are computed at the **four call sites** that wrap these kernels:
 [5199](commstools/equalization.py#L5199) (`rls` numba/jax), each as:
 
 ```python
-pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+pll_mu, pll_beta = cpr_pll_gains(cpr_pll_bandwidth)
 ```
 
 **So the kernels do not change at all.** We only change how `pll_mu`/`pll_beta` are
@@ -73,23 +73,23 @@ produced at those four sites.
    `recover_carrier_phase_pll` — see Part C). Unambiguous precedence with `mu is None`
    as the bandwidth trigger:
    ```python
-   def _resolve_pll_gains(bandwidth, mu, beta):
+   def resolve_pll_gains(bandwidth, mu, beta):
        """mu given → raw PI gains (beta defaults 0.0 → 1st-order).
        mu is None → derive critically-damped (mu=4B, beta=4B²) from bandwidth."""
        if mu is not None:
            return float(mu), float(beta if beta is not None else 0.0)
        if beta is not None:                      # beta without mu is ambiguous
            raise ValueError("beta requires mu to be set (or use bandwidth).")
-       return _cpr_pll_gains(bandwidth)          # the single 4B/4B² mapping
+       return cpr_pll_gains(bandwidth)          # the single 4B/4B² mapping
    ```
 
    **Placement:** must be importable by both `equalization.py` and `recovery.py` without a
    circular import — verify the import direction first; if there's any risk, host
-   `_cpr_pll_gains` + `_resolve_pll_gains` in a small neutral helper rather than
+   `cpr_pll_gains` + `resolve_pll_gains` in a small neutral helper rather than
    duplicating the `4B/4B²` formula (duplication is exactly what would let the two drift
    back apart).
 
-3. **Swap the four call sites** to use `_resolve_pll_gains(cpr_pll_bandwidth,
+3. **Swap the four call sites** to use `resolve_pll_gains(cpr_pll_bandwidth,
    cpr_pll_mu, cpr_pll_beta)`. Default `cpr_pll_mu=None` ⇒ bandwidth path ⇒ **inline
    output unchanged**.
 
@@ -97,7 +97,7 @@ produced at those four sites.
    rule, that `beta=0` ⇒ 1st-order, the `(μ,β)↔(B_L,ζ)` mapping
    (`ωₙT=√β`, `ζ=μ/(2√β)`), and that the values are interchangeable with
    `recover_carrier_phase_pll`'s `mu`/`beta`. Fix the stale "ζ=1/√2" note on
-   `_cpr_pll_gains` (actual ζ=1).
+   `cpr_pll_gains` (actual ζ=1).
 
 ### State / warm-start
 No change. `CPRState` already carries `pll_phi`, `pll_freq`
@@ -171,7 +171,7 @@ the standalone `recover_carrier_phase_pll(loop_filter='butterworth')` **already 
 ## Part C — Bandwidth shortcut on the standalone PI loop  ✅ recommended (pairs with A)
 
 The symmetric half: let `recover_carrier_phase_pll`'s **PI** path also accept a bandwidth
-shortcut, via the **same `_resolve_pll_gains`** helper from Part A. This gives
+shortcut, via the **same `resolve_pll_gains`** helper from Part A. This gives
 `loop_bandwidth_normalized` a coherent meaning for `loop_filter='pi'` (critically-damped
 gains), not just for Butterworth.
 
@@ -182,7 +182,7 @@ gains), not just for Butterworth.
 
    ```python
    if loop_filter == "pi":
-       mu, beta = _resolve_pll_gains(loop_bandwidth_normalized, mu, beta)
+       mu, beta = resolve_pll_gains(loop_bandwidth_normalized, mu, beta)
    ```
 
 2. **Preserve current default behavior:** the historical default was `mu=1e-2, beta=0`
@@ -209,7 +209,7 @@ carefully — this is the only behavior-compat trap on the standalone side.
 |---|---|---|
 | `mu`, `beta` (raw PI gains) | ✅ (existing) | ✅ (new `cpr_pll_mu`/`cpr_pll_beta`) |
 | bandwidth shortcut (critical damping) | ✅ (new, Part C, via `loop_bandwidth_normalized`) | ✅ (existing `cpr_pll_bandwidth`) |
-| shared `_resolve_pll_gains` mapping | ✅ | ✅ (same helper) |
+| shared `resolve_pll_gains` mapping | ✅ | ✅ (same helper) |
 | 1st-order (`beta=0`) | ✅ | ✅ |
 | damping control | ✅ (via μ,β) | ✅ (via μ,β) |
 | Butterworth IIR | ✅ | ❌ (documented; use standalone — Part B) |

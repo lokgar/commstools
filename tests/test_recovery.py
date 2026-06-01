@@ -714,22 +714,6 @@ class TestDDPLLEnhancements:
         phi_np = phi if xp is np else phi.get()
         np.testing.assert_array_equal(phi_np[0], phi_np[1])
 
-    def test_butterworth_joint_rows_identical(self, backend_device, xp):
-        """Butterworth loop + joint_channels=True: both phi rows are bitwise identical."""
-        mimo = self._make_mimo(xp)
-        phi = recovery.recover_carrier_phase_pll(
-            mimo,
-            "qam",
-            16,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-            joint_channels=True,
-            cycle_slip_correction=False,
-        )
-        assert phi.shape == (2, self.N)
-        phi_np = phi if xp is np else phi.get()
-        np.testing.assert_array_equal(phi_np[0], phi_np[1])
-
     def test_siso_joint_noop(self, backend_device, xp):
         """joint_channels=True on SISO returns identical result to False."""
         sig = _qam_signal(xp, 16, self.N, seed=12)
@@ -748,19 +732,6 @@ class TestDDPLLEnhancements:
         sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
         phi = recovery.recover_carrier_phase_pll(
             sig.samples, "qam", 16, cycle_slip_correction=True
-        )
-        assert phi.shape == sig.samples.shape
-
-    def test_butterworth_cycle_slip_shape(self, backend_device, xp):
-        """cycle_slip_correction=True (Butterworth loop) returns correct shape."""
-        sig = _qam_signal(xp, 16, self.N, snr_db=SNR_DB)
-        phi = recovery.recover_carrier_phase_pll(
-            sig.samples,
-            "qam",
-            16,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-            cycle_slip_correction=True,
         )
         assert phi.shape == sig.samples.shape
 
@@ -1108,90 +1079,79 @@ class TestDDPLL:
         # First estimate should be close to phase_init before any loop correction
         assert abs(float(phi[0]) - phi_init) < 0.5
 
-    def test_butterworth_output_shape_siso(self, backend_device, xp):
-        """loop_filter='butterworth': SISO output shape is (N,)."""
+    def test_bandwidth_shortcut_shape(self, backend_device, xp):
+        """mu=None opts into the loop_bandwidth_normalized shortcut; shape/dtype hold."""
         syms = self._qpsk_symbols(xp, N=512)
         phi = recovery.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
+            syms, "psk", 4, mu=None, loop_bandwidth_normalized=1e-3
         )
         assert phi.shape == syms.shape
-
-    def test_butterworth_output_dtype(self, backend_device, xp):
-        """loop_filter='butterworth': output dtype is float64."""
-        syms = self._qpsk_symbols(xp, N=256)
-        phi = recovery.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-        )
         assert phi.dtype == xp.float64
 
-    def test_butterworth_output_finite(self, backend_device, xp):
-        """Butterworth loop output should be finite for clean QPSK symbols."""
+    def test_bandwidth_shortcut_equals_raw_gains(self, backend_device, xp):
+        """mu=None, bandwidth=B is identical to raw mu=4B, beta=4B² (the resolver mapping)."""
         import numpy as np
         from commstools.mapping import gray_constellation
 
         N = 512
-        phase_offset = 0.15  # radians
         const = gray_constellation("qpsk", 4)
-        rng = np.random.default_rng(42)
-        syms_clean = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
-        syms_rotated = syms_clean * np.exp(1j * phase_offset)
+        rng = np.random.default_rng(7)
+        syms = xp.asarray(const[rng.integers(0, 4, N)].astype(np.complex64))
+        syms = syms * np.exp(1j * 0.2)
 
-        phi = recovery.recover_carrier_phase_pll(
-            syms_rotated,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-2,
+        B = 1e-3
+        phi_bw = recovery.recover_carrier_phase_pll(
+            syms, "psk", 4, mu=None, loop_bandwidth_normalized=B
         )
-        assert bool(xp.all(xp.isfinite(phi))), (
-            "Butterworth PLL output contains non-finite values"
+        phi_raw = recovery.recover_carrier_phase_pll(
+            syms, "psk", 4, mu=4.0 * B, beta=4.0 * B**2
         )
+        phi_bw_np = phi_bw if xp is np else phi_bw.get()
+        phi_raw_np = phi_raw if xp is np else phi_raw.get()
+        np.testing.assert_allclose(phi_bw_np, phi_raw_np, rtol=1e-6, atol=1e-9)
 
-    def test_butterworth_mimo_output_shape(self, backend_device, xp):
-        """loop_filter='butterworth': MIMO (C, N) output shape is (C, N)."""
+    def test_first_vs_second_order_under_frequency_offset(self, backend_device, xp):
+        """Under a frequency offset, a 1st-order loop (beta=0) settles to a constant
+        phase lag; a 2nd-order loop (beta>0) nulls it to ~zero steady-state error."""
         import numpy as np
         from commstools.mapping import gray_constellation
 
-        C, N = 2, 256
+        N = 4000
         const = gray_constellation("qpsk", 4)
-        rng = np.random.default_rng(3)
-        syms = xp.asarray(
-            const[rng.integers(0, 4, C * N)].reshape(C, N).astype(np.complex64)
-        )
-        phi = recovery.recover_carrier_phase_pll(
-            syms,
-            "psk",
-            4,
-            loop_filter="butterworth",
-            loop_bandwidth_normalized=1e-3,
-        )
-        assert phi.shape == (C, N)
+        rng = np.random.default_rng(5)
+        clean = const[rng.integers(0, 4, N)].astype(np.complex64)
+        # Small constant frequency offset (rad/sample) → phase ramp the loop tracks.
+        df = 1e-3
+        ramp = np.exp(1j * df * np.arange(N)).astype(np.complex64)
+        syms = xp.asarray(clean * ramp)
 
-    def test_butterworth_invalid_bandwidth_raises(self, backend_device, xp):
-        """loop_bandwidth_normalized outside (0, 0.5) should raise ValueError."""
+        true_phase = df * np.arange(N)
+        tail = slice(N // 2, N)
+
+        phi1 = recovery.recover_carrier_phase_pll(syms, "psk", 4, mu=0.02, beta=0.0)
+        phi2 = recovery.recover_carrier_phase_pll(syms, "psk", 4, mu=0.02, beta=2e-4)
+        phi1_np = phi1 if xp is np else phi1.get()
+        phi2_np = phi2 if xp is np else phi2.get()
+
+        # The steady-state error is a constant lag (its std ≈ 0), so measure the mean.
+        lag1 = abs(float(np.mean(np.unwrap(phi1_np[tail]) - true_phase[tail])))
+        lag2 = abs(float(np.mean(np.unwrap(phi2_np[tail]) - true_phase[tail])))
+        assert lag1 > 1e-3, "1st-order loop should exhibit a finite lag under freq offset"
+        assert lag2 < lag1 / 100.0, "2nd-order loop should null the frequency-induced lag"
+
+    def test_bandwidth_shortcut_invalid_bandwidth_raises(self, backend_device, xp):
+        """On the bandwidth path (mu=None), bandwidth outside (0, 0.5) raises ValueError."""
         syms = self._qpsk_symbols(xp, N=64)
         with pytest.raises(ValueError, match="loop_bandwidth_normalized"):
             recovery.recover_carrier_phase_pll(
-                syms,
-                "psk",
-                4,
-                loop_filter="butterworth",
-                loop_bandwidth_normalized=0.6,
+                syms, "psk", 4, mu=None, loop_bandwidth_normalized=0.6
             )
 
-    def test_invalid_loop_filter_raises(self, backend_device, xp):
-        """Unknown loop_filter value should raise ValueError."""
+    def test_beta_without_mu_raises(self, backend_device, xp):
+        """Passing beta with mu=None is ambiguous and must raise ValueError."""
         syms = self._qpsk_symbols(xp, N=64)
-        with pytest.raises(ValueError, match="loop_filter"):
-            recovery.recover_carrier_phase_pll(syms, "psk", 4, loop_filter="kalman")
+        with pytest.raises(ValueError, match="beta requires mu"):
+            recovery.recover_carrier_phase_pll(syms, "psk", 4, mu=None, beta=1e-3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

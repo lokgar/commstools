@@ -772,3 +772,98 @@ def test_input_norm_factor_lms_skips_rms(backend_device, xp, xpt):
         atol=1e-6,
     )
     assert r_supplied.input_norm_factor == pytest.approx(float(nf), rel=1e-6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. Inline PLL raw mu/beta parameterization (cpr_pll_mu / cpr_pll_beta)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("backend", ["numba", "jax"])
+def test_inline_raw_gains_match_bandwidth(backend, backend_device, xp):
+    """cpr_pll_mu/beta set to the bandwidth-equivalent gains reproduces the
+    cpr_pll_bandwidth path (the shared resolver mapping μ=4B, β=4B²)."""
+    if backend == "jax":
+        pytest.importorskip("jax").config.update("jax_enable_x64", True)
+    samples, syms = _qpsk_signal(n_sym=1500)
+    samples = (samples * np.exp(1j * 0.2)).astype(np.complex64)
+    bw = 5e-3
+    kw = dict(
+        training_symbols=syms[:300],
+        num_taps=11,
+        sps=2,
+        modulation="psk",
+        order=4,
+        cpr_type="pll",
+        cpr_cycle_slip_correction=False,
+        backend=backend,
+    )
+    res_bw = lms(xp.asarray(samples), **kw, cpr_pll_bandwidth=bw)
+    # Match the float32 gains the bandwidth path produces, so the loops are identical.
+    res_raw = lms(
+        xp.asarray(samples),
+        **kw,
+        cpr_pll_mu=float(np.float32(4.0 * bw)),
+        cpr_pll_beta=float(np.float32(4.0 * bw**2)),
+    )
+    max_diff = float(
+        xp.max(xp.abs(xp.asarray(res_bw.y_hat) - xp.asarray(res_raw.y_hat)))
+    )
+    assert max_diff < 1e-5, f"raw vs bandwidth y_hat mismatch (max diff {max_diff:.2e})"
+
+
+def test_inline_beta_without_mu_raises(backend_device, xp):
+    """cpr_pll_beta with cpr_pll_mu=None is ambiguous and must raise ValueError."""
+    samples, syms = _qpsk_signal(n_sym=400)
+    with pytest.raises(ValueError, match="beta requires mu"):
+        lms(
+            xp.asarray(samples),
+            training_symbols=syms[:100],
+            num_taps=11,
+            sps=2,
+            modulation="psk",
+            order=4,
+            cpr_type="pll",
+            cpr_pll_beta=1e-3,
+            backend="numba",
+        )
+
+
+def test_inline_pll_parity_with_standalone(backend_device, xp):
+    """A frozen 1-tap identity equalizer (step_size=0, w_init=[1]) reduces the inline
+    PLL to the standalone DD-PLL: phase trajectories match for the same mu/beta."""
+    from commstools.recovery import recover_carrier_phase_pll
+
+    rng = np.random.default_rng(3)
+    n_sym = 2000
+    const = gray_constellation("psk", 4).astype(np.complex64)
+    syms = const[rng.integers(0, 4, n_sym)]
+    samples = (syms * np.exp(1j * 0.3).astype(np.complex64)).astype(np.complex64)
+
+    m, b = 0.02, 1e-4
+    res = lms(
+        xp.asarray(samples),
+        training_symbols=syms[:200],
+        num_taps=1,
+        sps=1,
+        step_size=0.0,
+        w_init=xp.asarray(np.array([1.0 + 0j], dtype=np.complex64)),
+        modulation="psk",
+        order=4,
+        cpr_type="pll",
+        cpr_pll_mu=m,
+        cpr_pll_beta=b,
+        cpr_cycle_slip_correction=False,
+        backend="numba",
+    )
+    phi_inline = np.asarray(
+        res.phase_trajectory if xp is np else res.phase_trajectory.get()
+    )
+
+    phi_std = recover_carrier_phase_pll(xp.asarray(samples), "psk", 4, mu=m, beta=b)
+    phi_std = np.asarray(phi_std if xp is np else phi_std.get())
+
+    # Compare the settled tail (skip the lock-in transient).
+    tail = slice(n_sym // 4, n_sym)
+    diff = np.unwrap(phi_inline[tail]) - np.unwrap(phi_std[tail])
+    assert np.std(diff) < 1e-3, f"inline vs standalone phase std {np.std(diff):.2e}"

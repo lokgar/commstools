@@ -65,6 +65,7 @@ import numpy as np
 
 from .backend import ArrayType, _get_jax, dispatch, from_jax, to_jax, to_device
 from .filtering import _ols_backward, _ols_forward
+from .helpers import resolve_pll_gains
 from .logger import logger
 
 
@@ -3704,27 +3705,6 @@ def _unpack_result_numpy(
     )
 
 
-def _cpr_pll_gains(bandwidth: float):
-    """Convert normalised loop bandwidth to PI gains (mu, beta).
-
-    Uses the standard 2nd-order loop approximation for a critically-damped
-    (ζ = 1/√2) PI loop:  μ ≈ 4·B_L,  β ≈ 4·B_L².
-
-    Parameters
-    ----------
-    bandwidth : float
-        Normalised one-sided loop bandwidth as a fraction of the symbol rate,
-        e.g. ``1e-3`` for a narrow loop.
-
-    Returns
-    -------
-    mu, beta : float32
-    """
-    mu = np.float32(4.0 * bandwidth)
-    beta = np.float32(4.0 * bandwidth**2)
-    return mu, beta
-
-
 def _cpr_symmetry(modulation: Optional[str], order: Optional[int]) -> int:
     """Return the rotational symmetry order used for cycle-slip correction.
 
@@ -3795,6 +3775,8 @@ def lms(
     pmf: Optional[Any] = None,
     cpr_type: Optional[str] = None,
     cpr_pll_bandwidth: float = 1e-3,
+    cpr_pll_mu: Optional[float] = None,
+    cpr_pll_beta: Optional[float] = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_joint_channels: bool = False,
@@ -3982,9 +3964,20 @@ def lms(
     cpr_pll_bandwidth : float, default 1e-3
         Normalised loop bandwidth ``B_L · T_s`` for the PLL.  Gains are
         computed as ``K_p = 4 B_L``, ``K_i = 4 B_L²`` (critically-damped
-        approximation).  Typical range: ``5e-4`` (low phase noise) to
-        ``5e-3`` (high phase noise / fast drift).  Ignored when
-        ``cpr_type != 'pll'``.
+        approximation, ζ=1).  Typical range: ``5e-4`` (low phase noise) to
+        ``5e-3`` (high phase noise / fast drift).  Used only when
+        ``cpr_pll_mu is None`` (the bandwidth shortcut) and ``cpr_type == 'pll'``.
+    cpr_pll_mu : float, optional
+        Raw proportional PLL gain ``μ``.  If given, overrides
+        ``cpr_pll_bandwidth`` and uses raw PI gains directly; ``cpr_pll_beta``
+        then defaults to ``0.0`` (a 1st-order loop).  Leave ``None`` to derive
+        critically-damped gains from ``cpr_pll_bandwidth``.  Interchangeable
+        with the ``mu`` of :func:`~commstools.recovery.recover_carrier_phase_pll`.
+    cpr_pll_beta : float, optional
+        Raw integral PLL gain ``β``.  ``β=0`` ⇒ 1st-order loop (no frequency
+        integrator); ``β>0`` ⇒ 2nd-order loop.  Requires ``cpr_pll_mu`` to be
+        set (passing ``cpr_pll_beta`` alone raises ``ValueError``).  The
+        ``(μ,β) ↔ (B_L,ζ)`` mapping is ``ωₙT = √β``, ``ζ = μ/(2√β)``.
     cpr_bps_test_phases : int, default 64
         Number of candidate phase angles for the BPS search in ``[0, π/2)``.
         Higher values improve phase resolution at the cost of ``B`` extra
@@ -4254,7 +4247,9 @@ def lms(
                 input_norm_factor=eq_norm,
             )
         else:
-            pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+            pll_mu, pll_beta = resolve_pll_gains(
+                cpr_pll_bandwidth, cpr_pll_mu, cpr_pll_beta
+            )
             symmetry = _cpr_symmetry(modulation, order)
             B = int(cpr_bps_test_phases)
             bps_angles_np = np.linspace(
@@ -4286,7 +4281,11 @@ def lms(
                 cs_buf_ptr = _st.cs_buf_ptr.copy()
                 cs_buf_n = _st.cs_buf_n.copy()
                 cs_stats = _st.cs_stats.copy()
-                bps_prev4 = _st.bps_prev4.copy() if _st.bps_prev4 is not None else np.zeros(num_ch, dtype=np.float64)
+                bps_prev4 = (
+                    _st.bps_prev4.copy()
+                    if _st.bps_prev4 is not None
+                    else np.zeros(num_ch, dtype=np.float64)
+                )
             else:
                 pll_phi = np.zeros(num_ch, dtype=np.float64)
                 pll_freq = np.zeros(num_ch, dtype=np.float64)
@@ -4487,7 +4486,9 @@ def lms(
                 "call jax.config.update('jax_enable_x64', True) before using "
                 "backend='jax' with cpr_type set."
             )
-        pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        pll_mu, pll_beta = resolve_pll_gains(
+            cpr_pll_bandwidth, cpr_pll_mu, cpr_pll_beta
+        )
         symmetry = _cpr_symmetry(modulation, order)
         B = int(cpr_bps_test_phases)
         H = int(cpr_cycle_slip_history)
@@ -4635,6 +4636,8 @@ def rls(
     pmf: Optional[Any] = None,
     cpr_type: Optional[str] = None,
     cpr_pll_bandwidth: float = 1e-3,
+    cpr_pll_mu: Optional[float] = None,
+    cpr_pll_beta: Optional[float] = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_joint_channels: bool = False,
@@ -4792,9 +4795,19 @@ def rls(
           ``[0, π/2)`` argmin to full-range radians symbol by symbol.
     cpr_pll_bandwidth : float, default 1e-3
         Normalised loop bandwidth ``B_L · T_s`` for the PLL.  Gains are
-        ``K_p = 4 B_L``, ``K_i = 4 B_L²`` (critically-damped).  Typical
+        ``K_p = 4 B_L``, ``K_i = 4 B_L²`` (critically-damped, ζ=1).  Typical
         range: ``5e-4`` (low phase noise) to ``5e-3`` (high drift).
-        Ignored when ``cpr_type != 'pll'``.
+        Used only when ``cpr_pll_mu is None`` and ``cpr_type == 'pll'``.
+    cpr_pll_mu : float, optional
+        Raw proportional PLL gain ``μ``.  If given, overrides
+        ``cpr_pll_bandwidth``; ``cpr_pll_beta`` then defaults to ``0.0``
+        (1st-order).  Leave ``None`` for critically-damped gains from
+        ``cpr_pll_bandwidth``.  Interchangeable with the ``mu`` of
+        :func:`~commstools.recovery.recover_carrier_phase_pll`.
+    cpr_pll_beta : float, optional
+        Raw integral PLL gain ``β``.  ``β=0`` ⇒ 1st-order, ``β>0`` ⇒ 2nd-order.
+        Requires ``cpr_pll_mu`` to be set.  Mapping: ``ωₙT = √β``,
+        ``ζ = μ/(2√β)``.
     cpr_bps_test_phases : int, default 64
         Number of BPS candidate phase angles in ``[0, π/2)``.  32-64 is
         sufficient for ≤ 16-QAM; use 64-128 for 64-QAM.  Ignored when
@@ -5045,7 +5058,9 @@ def rls(
                 input_norm_factor=eq_norm,
             )
         else:
-            pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+            pll_mu, pll_beta = resolve_pll_gains(
+                cpr_pll_bandwidth, cpr_pll_mu, cpr_pll_beta
+            )
             symmetry = _cpr_symmetry(modulation, order)
             B = int(cpr_bps_test_phases)
             bps_angles_np = np.linspace(
@@ -5077,7 +5092,11 @@ def rls(
                 cs_buf_ptr = _st.cs_buf_ptr.copy()
                 cs_buf_n = _st.cs_buf_n.copy()
                 cs_stats = _st.cs_stats.copy()
-                bps_prev4 = _st.bps_prev4.copy() if _st.bps_prev4 is not None else np.zeros(num_ch, dtype=np.float64)
+                bps_prev4 = (
+                    _st.bps_prev4.copy()
+                    if _st.bps_prev4 is not None
+                    else np.zeros(num_ch, dtype=np.float64)
+                )
             else:
                 pll_phi = np.zeros(num_ch, dtype=np.float64)
                 pll_freq = np.zeros(num_ch, dtype=np.float64)
@@ -5306,7 +5325,9 @@ def rls(
             input_norm_factor=eq_norm,
         )
     else:
-        pll_mu, pll_beta = _cpr_pll_gains(cpr_pll_bandwidth)
+        pll_mu, pll_beta = resolve_pll_gains(
+            cpr_pll_bandwidth, cpr_pll_mu, cpr_pll_beta
+        )
         symmetry = _cpr_symmetry(modulation, order)
         B = int(cpr_bps_test_phases)
         H = int(cpr_cycle_slip_history)
@@ -5920,7 +5941,11 @@ def block_lms(
             cs_buf_ptr = _st.cs_buf_ptr.copy()
             cs_buf_n = _st.cs_buf_n.copy()
             cs_stats = _st.cs_stats.copy()
-            bps_d2_hist = xp.asarray(_st.bps_d2_hist) if _st.bps_d2_hist is not None else xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
+            bps_d2_hist = (
+                xp.asarray(_st.bps_d2_hist)
+                if _st.bps_d2_hist is not None
+                else xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
+            )
         else:
             bps_prev4 = np.zeros(C, dtype=np.float64)
             bps_offset4 = np.zeros(C, dtype=np.float64)
@@ -6316,7 +6341,7 @@ def block_lms(
             w_history = w_hist[:, 0, 0, :]
         else:
             w_history = None
-        
+
         if cpr_type == "bps" and phi_all is not None:
             phase_traj = phi_all[0]
         else:
