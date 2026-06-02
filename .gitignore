@@ -15,3 +15,14 @@ wheels/
 .mypy_cache/
 
 .vscode/
+
+# DSP captures / large binaries
+*.npy
+*.npz
+*.mat
+*.wav
+*.bin
+*.h5
+*.hdf5
+*.pdf
+
