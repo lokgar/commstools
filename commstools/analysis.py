@@ -150,6 +150,7 @@ def separate_drift_phase_noise(
     cutoff_hz: float,
     method: str = "butterworth",
     order: int = 4,
+    debug_plot: bool = False,
 ) -> Tuple[ArrayType, ArrayType]:
     r"""Split a phase trajectory into slow drift and fast phase-noise residual.
 
@@ -185,6 +186,9 @@ def separate_drift_phase_noise(
     order : int, default 4
         Butterworth order, Savitzky-Golay polynomial order, or — reinterpreted
         — ignored for the boxcar.
+    debug_plot : bool, default False
+        If True, plot the phase trajectory with the drift overlaid
+        (:func:`commstools.plotting.carrier_phase_decomposition`).
 
     Returns
     -------
@@ -221,7 +225,10 @@ def separate_drift_phase_noise(
     elif method == "boxcar":
         w = max(1, int(round(fs / cutoff_hz)))
         kern = xp.ones(w, dtype=xp.float64) / w
-        drift = xp.stack([xp.convolve(row, kern, mode="same") for row in phi2.astype(xp.float64)], axis=0)
+        drift = xp.stack(
+            [xp.convolve(row, kern, mode="same") for row in phi2.astype(xp.float64)],
+            axis=0,
+        )
     else:
         raise ValueError(f"Unknown method {method!r}.")
 
@@ -229,7 +236,17 @@ def separate_drift_phase_noise(
     if was_1d:
         drift, pn = drift[0], pn[0]
 
-    return drift.astype(in_dtype, copy=False), pn.astype(in_dtype, copy=False)
+    drift = drift.astype(in_dtype, copy=False)
+    pn = pn.astype(in_dtype, copy=False)
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.carrier_phase_decomposition(
+            phi, drift, symbol_rate=symbol_rate, show=True
+        )
+
+    return drift, pn
 
 
 def frequency_drift_metrics(
@@ -237,6 +254,8 @@ def frequency_drift_metrics(
     symbol_rate: float,
     *,
     edge_trim: int = 0,
+    amp_ref_hz: Optional[float] = None,
+    debug_plot: bool = False,
 ) -> Dict[str, Union[float, np.ndarray]]:
     r"""Residual frequency-wander statistics from a smoothed phase ramp.
 
@@ -258,6 +277,12 @@ def frequency_drift_metrics(
     edge_trim : int, default 0
         Number of samples to discard from each end before differencing
         (removes low-pass filter transients).
+    amp_ref_hz : float, optional
+        Reference wander amplitude (Hz) drawn as ``±amp_ref_hz`` guides when
+        ``debug_plot=True`` (e.g. an injected amplitude in a simulation).
+    debug_plot : bool, default False
+        If True, plot the residual frequency vs time
+        (:func:`commstools.plotting.frequency_drift`).
 
     Returns
     -------
@@ -278,8 +303,17 @@ def frequency_drift_metrics(
     pp = to_device(xp.max(df, axis=-1) - xp.min(df, axis=-1), "cpu")
     max_abs = to_device(xp.max(xp.abs(df), axis=-1), "cpu")
 
+    df_out = df[0] if was_1d else df
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.frequency_drift(
+            df_out, symbol_rate=symbol_rate, amp_ref_hz=amp_ref_hz, show=True
+        )
+
     return {
-        "df_hz": df[0] if was_1d else df,
+        "df_hz": df_out,
         "std_hz": _scalar_or_array(std),
         "pp_hz": _scalar_or_array(pp),
         "max_abs_hz": _scalar_or_array(max_abs),
@@ -424,6 +458,7 @@ def fm_noise_psd(
     *,
     nperseg: Optional[int] = None,
     detrend: Union[str, bool] = "constant",
+    debug_plot: bool = False,
 ) -> Tuple[ArrayType, ArrayType]:
     r"""One-sided frequency-noise PSD :math:`S_f(f)` [Hz²/Hz] from the phase.
 
@@ -447,6 +482,8 @@ def fm_noise_psd(
     detrend : str or bool, default "constant"
         Per-segment detrend passed to Welch; ``"constant"`` removes the mean
         residual frequency offset.
+    debug_plot : bool, default False
+        If True, plot the PSD (:func:`commstools.plotting.frequency_noise_psd`).
 
     Returns
     -------
@@ -473,7 +510,14 @@ def fm_noise_psd(
         return_onesided=True,
         axis=-1,
     )
-    return f, (S_f[0] if was_1d else S_f)
+    S_out = S_f[0] if was_1d else S_f
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.frequency_noise_psd(f, S_out, show=True)
+
+    return f, S_out
 
 
 def linewidth_beta_separation(
@@ -483,6 +527,7 @@ def linewidth_beta_separation(
     nperseg: Optional[int] = None,
     f_min: Optional[float] = None,
     f_max: Optional[float] = None,
+    debug_plot: bool = False,
 ) -> Dict[str, Union[float, np.ndarray]]:
     r"""Linewidth via the Di Domenico β-separation line (canonical method).
 
@@ -508,6 +553,9 @@ def linewidth_beta_separation(
     f_max : float, optional
         Upper integration bound in Hz.  **Set this below the AWGN ``f²`` knee**
         to avoid biasing ``Δν`` high; defaults to the Nyquist bin.
+    debug_plot : bool, default False
+        If True, plot the PSD with the β-line, white-FM floor, and integration
+        band (:func:`commstools.plotting.frequency_noise_psd`).
 
     Returns
     -------
@@ -545,7 +593,7 @@ def linewidth_beta_separation(
     S_cpu = np.asarray(to_device(S_f, "cpu"), dtype=np.float64)
     beta_cpu = np.asarray(to_device(beta, "cpu"), dtype=np.float64)
 
-    return {
+    result = {
         "linewidth_hz": _scalar_or_array(lw_cpu),
         "linewidth_floor_hz": _scalar_or_array(lw_floor_cpu),
         "area_hz2": _scalar_or_array(area_cpu),
@@ -554,6 +602,20 @@ def linewidth_beta_separation(
         "beta_line": beta_cpu,
     }
 
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.frequency_noise_psd(
+            f_cpu,
+            S_cpu,
+            beta_line=beta_cpu,
+            floor_hz=result["linewidth_floor_hz"],
+            band=(fmin, fmax),
+            show=True,
+        )
+
+    return result
+
 
 def allan_deviation(
     df_hz: ArrayType,
@@ -561,6 +623,7 @@ def allan_deviation(
     *,
     taus: Optional[np.ndarray] = None,
     n_taus: int = 30,
+    debug_plot: bool = False,
 ) -> Dict[str, np.ndarray]:
     r"""Overlapping Allan deviation of an instantaneous-frequency series.
 
@@ -580,6 +643,9 @@ def allan_deviation(
         geometrically spaced from ``τ_0`` to ``N//4·τ_0``.
     n_taus : int, default 30
         Number of log-spaced averaging times when ``taus`` is None.
+    debug_plot : bool, default False
+        If True, plot the Allan deviation
+        (:func:`commstools.plotting.allan_deviation`).
 
     Returns
     -------
@@ -594,7 +660,9 @@ def allan_deviation(
 
     # Cumulative phase (time error) x_i = Σ y · τ0.
     zeros_col = xp.zeros((c, 1), dtype=xp.float64)
-    x = xp.concatenate([zeros_col, xp.cumsum(y2.astype(xp.float64), axis=-1) * tau0], axis=-1)
+    x = xp.concatenate(
+        [zeros_col, xp.cumsum(y2.astype(xp.float64), axis=-1) * tau0], axis=-1
+    )
 
     if taus is None:
         m_max = max(1, n // 4)
@@ -618,8 +686,14 @@ def allan_deviation(
 
     tau_s_cpu = np.asarray(tau_s, dtype=np.float64)
     adev_cpu = to_device(adev, "cpu")
+    adev_out = adev_cpu[0] if was_1d else adev_cpu
 
-    return {"tau_s": tau_s_cpu, "adev": adev_cpu[0] if was_1d else adev_cpu}
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.allan_deviation(tau_s_cpu, adev_out, show=True)
+
+    return {"tau_s": tau_s_cpu, "adev": adev_out}
 
 
 def characterize_carrier_phase(
@@ -636,6 +710,8 @@ def characterize_carrier_phase(
     channel_pairing: str = "auto",
     detrend_method: str = "butterworth",
     increment_method: str = "slope",
+    amp_ref_hz: Optional[float] = None,
+    debug_plot: bool = False,
 ) -> Dict[str, object]:
     r"""End-to-end carrier-phase characterization report.
 
@@ -661,6 +737,13 @@ def characterize_carrier_phase(
         Forwarded to :func:`carrier_phase_trajectory`.
     detrend_method : str, default "butterworth"
         Forwarded to :func:`separate_drift_phase_noise`.
+    increment_method : {"slope", "subtract"}, default "slope"
+        Forwarded to :func:`linewidth_increment`.
+    amp_ref_hz : float, optional
+        Wander-amplitude reference for the drift panel when ``debug_plot=True``.
+    debug_plot : bool, default False
+        If True, render the full 2×2 dashboard
+        (:func:`commstools.plotting.carrier_phase_characterization`).
 
     Returns
     -------
@@ -691,7 +774,7 @@ def characterize_carrier_phase(
     )
     allan = allan_deviation(drift_metrics["df_hz"], symbol_rate)
 
-    return {
+    report = {
         "phi": phi,
         "drift": drift,
         "pn": pn,
@@ -700,3 +783,20 @@ def characterize_carrier_phase(
         "linewidth_beta": lw_beta,
         "allan": allan,
     }
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        band = None
+        if f_min is not None and f_max is not None:
+            band = (float(f_min), float(f_max))
+        _plotting.carrier_phase_characterization(
+            report,
+            symbol_rate=symbol_rate,
+            drift_cutoff_hz=drift_cutoff_hz,
+            band=band,
+            amp_ref_hz=amp_ref_hz,
+            show=True,
+        )
+
+    return report

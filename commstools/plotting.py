@@ -36,6 +36,16 @@ pilot_phase_estimate :
     Pilot phase scatter, linear fit, and interpolated phase trajectory.
 zf_equalizer_response :
     Channel, equalizer, and combined frequency responses for ZF/MMSE.
+carrier_phase_decomposition :
+    Recovered carrier phase with its slow drift component overlaid.
+frequency_drift :
+    Instantaneous residual frequency offset (carrier wander) vs time.
+frequency_noise_psd :
+    Frequency-noise PSD with β-separation line and white-FM floor overlays.
+allan_deviation :
+    Allan deviation vs averaging time for frequency-stability classification.
+carrier_phase_characterization :
+    2×2 dashboard combining the four carrier-phase diagnostics above.
 """
 
 from typing import Any, Optional, Tuple, Union, Sequence
@@ -2272,6 +2282,455 @@ def zf_equalizer_response(
             _draw_triplet(H_f, axes[row], row_label=f"[rx{i}→tx{j}]")
 
     fig.suptitle(title, fontweight="bold")
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axes
+
+
+# -----------------------------------------------------------------------------
+# CARRIER-PHASE CHARACTERIZATION DIAGNOSTICS
+# -----------------------------------------------------------------------------
+
+
+def _set_eng_formatter(ax, which: str, unit: str) -> None:
+    """Apply an engineering (SI-prefix) tick formatter to an axis."""
+    fmt = mpl.ticker.EngFormatter(unit=unit, sep=" ")
+    if which in ("x", "both"):
+        ax.xaxis.set_major_formatter(fmt)
+    if which in ("y", "both"):
+        ax.yaxis.set_major_formatter(fmt)
+
+
+def _as_channels(arr) -> np.ndarray:
+    """Bring to CPU and promote ``(N,)`` → ``(1, N)``."""
+    arr = np.atleast_2d(np.asarray(to_device(arr, "cpu")))
+    return arr
+
+
+def carrier_phase_decomposition(
+    phi,
+    drift=None,
+    *,
+    symbol_rate: float,
+    n_train: int = 0,
+    ax=None,
+    show: bool = False,
+    title: str = "Recovered carrier phase",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the recovered carrier-phase trajectory and its slow drift component.
+
+    The total unwrapped phase :math:`\\phi(t)` is drawn faintly with the
+    low-pass drift overlaid in bold, visualising the
+    :func:`commstools.analysis.separate_drift_phase_noise` split.  MIMO inputs
+    overlay all channels.
+
+    Parameters
+    ----------
+    phi : array_like
+        Unwrapped carrier phase in radians. Shape ``(N,)`` or ``(C, N)``.
+    drift : array_like, optional
+        Drift (low-pass) component, same shape as ``phi``.  Overlaid in bold.
+    symbol_rate : float
+        Symbol rate in Baud; sets the (seconds) time axis.
+    n_train : int, default 0
+        If > 0, draws a dashed training/DD boundary marker.
+    ax : Axes, optional
+        Target axes; a new figure is created when None.
+    show : bool, default False
+        If True, calls ``plt.show()`` and returns None.
+    title : str
+
+    Returns
+    -------
+    (fig, ax) or None
+    """
+    phi_c = _as_channels(phi)
+    C, N = phi_c.shape
+    drift_c = _as_channels(drift) if drift is not None else None
+
+    if ax is None:
+        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+    else:
+        axi = ax
+        fig = axi.figure
+
+    t = np.arange(N) / float(symbol_rate)
+    for i in range(C):
+        clabel = f"pol {i}" if C > 1 else "φ total"
+        axi.plot(
+            t,
+            phi_c[i],
+            color=f"C{i}",
+            lw=0.5,
+            alpha=0.5,
+            label=clabel if drift_c is None else None,
+        )
+        if drift_c is not None:
+            axi.plot(
+                t,
+                drift_c[i],
+                color=f"C{i}",
+                lw=1.8,
+                label=f"drift (pol {i})" if C > 1 else "drift",
+            )
+
+    if n_train > 0:
+        axi.axvline(
+            n_train / float(symbol_rate),
+            color="white",
+            ls="--",
+            lw=1,
+            label=f"DD start ({n_train})",
+        )
+
+    _set_eng_formatter(axi, "x", "s")
+    axi.set_xlabel("time")
+    axi.set_ylabel("phase (rad)")
+    axi.set_title(title)
+    axi.legend(fontsize=8, loc="best")
+    axi.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axi
+
+
+def frequency_drift(
+    df_hz,
+    *,
+    symbol_rate: float,
+    amp_ref_hz: Optional[float] = None,
+    ax=None,
+    show: bool = False,
+    title: str = "Residual frequency drift",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the instantaneous residual frequency offset vs time.
+
+    ``df_hz`` is the per-symbol frequency wander from
+    :func:`commstools.analysis.frequency_drift_metrics` — the slope of the
+    smoothed (drift) phase.  This is the spin the carrier-phase recovery must
+    track.
+
+    Parameters
+    ----------
+    df_hz : array_like
+        Residual frequency in Hz. Shape ``(M,)`` or ``(C, M)``.
+    symbol_rate : float
+        Symbol rate in Baud (time axis).
+    amp_ref_hz : float, optional
+        If given, draws dashed ``±amp_ref_hz`` reference lines (e.g. the
+        injected wander amplitude in a simulation).
+    ax : Axes, optional
+    show : bool, default False
+    title : str
+
+    Returns
+    -------
+    (fig, ax) or None
+    """
+    df_c = _as_channels(df_hz)
+    C, M = df_c.shape
+
+    if ax is None:
+        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+    else:
+        axi = ax
+        fig = axi.figure
+
+    t = np.arange(M) / float(symbol_rate)
+    for i in range(C):
+        axi.plot(t, df_c[i], color=f"C{i}", lw=0.8, label=f"pol {i}" if C > 1 else None)
+
+    if amp_ref_hz is not None:
+        axi.axhline(amp_ref_hz, color="white", ls="--", lw=0.8, label="±amplitude")
+        axi.axhline(-amp_ref_hz, color="white", ls="--", lw=0.8)
+
+    _set_eng_formatter(axi, "x", "s")
+    _set_eng_formatter(axi, "y", "Hz")
+    axi.set_xlabel("time")
+    axi.set_ylabel("Δf")
+    axi.set_title(title)
+    if C > 1 or amp_ref_hz is not None:
+        axi.legend(fontsize=8, loc="best")
+    axi.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axi
+
+
+def frequency_noise_psd(
+    f,
+    S_f,
+    *,
+    beta_line=None,
+    floor_hz=None,
+    band: Optional[Tuple[float, float]] = None,
+    ax=None,
+    show: bool = False,
+    title: str = "Frequency-noise PSD",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the frequency-noise PSD :math:`S_f(f)` on log-log axes.
+
+    Overlays the optional Di Domenico β-separation line and the white-FM-noise
+    floor, and shades the integration band.  See
+    :func:`commstools.analysis.fm_noise_psd` /
+    :func:`commstools.analysis.linewidth_beta_separation`.
+
+    Parameters
+    ----------
+    f : array_like
+        One-sided frequency axis in Hz, shape ``(nfreq,)``.
+    S_f : array_like
+        Frequency-noise PSD in Hz²/Hz, shape ``(nfreq,)`` or ``(C, nfreq)``.
+    beta_line : array_like, optional
+        β-separation line ``(8 ln2/π²)·f``, shape ``(nfreq,)``.  Drawn dashed.
+    floor_hz : float or array_like, optional
+        White-FM linewidth estimate(s); a horizontal guide is drawn at the
+        corresponding PSD level ``S_f = Δν/π``.
+    band : (float, float), optional
+        ``(f_min, f_max)`` integration band, shaded.
+    ax : Axes, optional
+    show : bool, default False
+    title : str
+
+    Returns
+    -------
+    (fig, ax) or None
+    """
+    f_c = np.asarray(to_device(f, "cpu"), dtype=np.float64)
+    S_c = _as_channels(S_f)
+    C = S_c.shape[0]
+    pos = f_c > 0
+
+    if ax is None:
+        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+    else:
+        axi = ax
+        fig = axi.figure
+
+    for i in range(C):
+        axi.loglog(
+            f_c[pos],
+            S_c[i, pos],
+            color=f"C{i}",
+            lw=0.9,
+            label=f"$S_f$ pol {i}" if C > 1 else "$S_f(f)$",
+        )
+
+    if beta_line is not None:
+        b_c = np.asarray(to_device(beta_line, "cpu"), dtype=np.float64)
+        axi.loglog(
+            f_c[pos],
+            b_c[pos],
+            color="#ff5555",
+            ls="--",
+            lw=1.2,
+            label="β-separation line",
+        )
+
+    if floor_hz is not None:
+        floors = np.atleast_1d(np.asarray(floor_hz, dtype=np.float64))
+        floor_mean = float(np.mean(floors))
+        axi.axhline(
+            floor_mean / np.pi,
+            color="#ffd166",
+            ls=":",
+            lw=1.6,
+            label="white-FM floor  Δν/π",
+        )
+
+    if band is not None:
+        axi.axvspan(
+            band[0],
+            band[1],
+            color="#06d6a0",
+            alpha=0.12,
+            label="floor / integration band",
+        )
+
+    _set_eng_formatter(axi, "x", "Hz")
+    axi.set_xlabel("frequency")
+    axi.set_ylabel("$S_f$ (Hz²/Hz)")
+    axi.set_title(title)
+    axi.legend(fontsize=8, loc="best")
+    axi.grid(True, which="both", alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axi
+
+
+def allan_deviation(
+    tau_s,
+    adev,
+    *,
+    reference_slopes: bool = True,
+    ax=None,
+    show: bool = False,
+    title: str = "Allan deviation",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the (overlapping) Allan deviation vs averaging time on log-log axes.
+
+    The local slope classifies the dominant frequency-noise process:
+    white-FM ``∝ τ^{-1/2}``, flicker-FM ``∝ τ^0`` (flat), random-walk-FM
+    ``∝ τ^{+1/2}``, linear drift ``∝ τ^{+1}``.  See
+    :func:`commstools.analysis.allan_deviation`.
+
+    Parameters
+    ----------
+    tau_s : array_like
+        Averaging times in seconds, shape ``(n_tau,)``.
+    adev : array_like
+        Allan deviation in Hz, shape ``(n_tau,)`` or ``(C, n_tau)``.
+    reference_slopes : bool, default True
+        If True, overlays a faint ``τ^{-1/2}`` (white-FM) guide line.
+    ax : Axes, optional
+    show : bool, default False
+    title : str
+
+    Returns
+    -------
+    (fig, ax) or None
+    """
+    tau = np.asarray(to_device(tau_s, "cpu"), dtype=np.float64)
+    adv = _as_channels(adev)
+    C = adv.shape[0]
+
+    if ax is None:
+        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+    else:
+        axi = ax
+        fig = axi.figure
+
+    for i in range(C):
+        axi.loglog(
+            tau,
+            adv[i],
+            "o-",
+            ms=3,
+            lw=0.9,
+            color=f"C{i}",
+            label=f"pol {i}" if C > 1 else "σ$_y$(τ)",
+        )
+
+    if reference_slopes:
+        good = np.isfinite(adv[0]) & (adv[0] > 0)
+        if np.any(good):
+            tau0, a0 = tau[good][0], adv[0][good][0]
+            guide = a0 * np.sqrt(tau0 / tau)  # τ^{-1/2} anchored at first point
+            axi.loglog(
+                tau,
+                guide,
+                color="gray",
+                ls=":",
+                lw=1.0,
+                label=r"$\tau^{-1/2}$ (white-FM)",
+            )
+
+    _set_eng_formatter(axi, "x", "s")
+    _set_eng_formatter(axi, "y", "Hz")
+    axi.set_xlabel("averaging time τ")
+    axi.set_ylabel("Allan deviation σ$_y$(τ)")
+    axi.set_title(title)
+    axi.legend(fontsize=8, loc="best")
+    axi.grid(True, which="both", alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, axi
+
+
+def carrier_phase_characterization(
+    report: dict,
+    *,
+    symbol_rate: float,
+    drift_cutoff_hz: Optional[float] = None,
+    band: Optional[Tuple[float, float]] = None,
+    floor_hz=None,
+    amp_ref_hz: Optional[float] = None,
+    show: bool = False,
+    title: Optional[str] = None,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Full 2×2 carrier-phase characterization dashboard.
+
+    Combines :func:`carrier_phase_decomposition`, :func:`frequency_drift`,
+    :func:`frequency_noise_psd`, and :func:`allan_deviation` into one figure
+    from the report dict returned by
+    :func:`commstools.analysis.characterize_carrier_phase`.
+
+    Parameters
+    ----------
+    report : dict
+        Output of :func:`commstools.analysis.characterize_carrier_phase`.
+    symbol_rate : float
+        Symbol rate in Baud.
+    drift_cutoff_hz : float, optional
+        Annotated in the phase-decomposition panel title.
+    band : (float, float), optional
+        ``(f_min, f_max)`` integration band, shaded on the PSD panel.
+    floor_hz : float or array_like, optional
+        White-FM floor guide; defaults to the report's estimated floor.
+    amp_ref_hz : float, optional
+        Injected wander amplitude reference for the drift panel.
+    show : bool, default False
+    title : str, optional
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+
+    lp = f"  (LP {drift_cutoff_hz / 1e6:.1f} MHz)" if drift_cutoff_hz else ""
+    carrier_phase_decomposition(
+        report["phi"],
+        report.get("drift"),
+        symbol_rate=symbol_rate,
+        ax=axes[0, 0],
+        title=f"Recovered carrier phase{lp}",
+    )
+    frequency_drift(
+        report["drift_metrics"]["df_hz"],
+        symbol_rate=symbol_rate,
+        amp_ref_hz=amp_ref_hz,
+        ax=axes[0, 1],
+    )
+
+    lw_beta = report["linewidth_beta"]
+    if floor_hz is None:
+        floor_hz = lw_beta.get("linewidth_floor_hz")
+    frequency_noise_psd(
+        lw_beta["f"],
+        lw_beta["S_f"],
+        beta_line=lw_beta.get("beta_line"),
+        floor_hz=floor_hz,
+        band=band,
+        ax=axes[1, 0],
+    )
+    allan_deviation(
+        report["allan"]["tau_s"],
+        report["allan"]["adev"],
+        ax=axes[1, 1],
+    )
+
+    if title:
+        fig.suptitle(title, fontweight="bold")
     plt.tight_layout()
     if show:
         plt.show()

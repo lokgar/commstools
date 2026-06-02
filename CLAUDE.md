@@ -87,7 +87,7 @@ Since `bump-my-version` is defined in the project's development dependencies, al
    Ensure all tests are passing and the library compiles cleanly:
 
    ```bash
-   uv run pytest --device=cpu
+   uv run pytest
    uv build
    ```
 

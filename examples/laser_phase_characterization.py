@@ -35,7 +35,7 @@ matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, analysis
+from commstools import Signal, analysis, plotting
 from commstools.backend import to_device
 from commstools.equalization import apply_taps, lms
 from commstools.impairments import apply_awgn, apply_phase_noise
@@ -230,57 +230,22 @@ print(f"  Fitted AWGN intercept (2σ_φ²)      : {_fmt(lw_inc['awgn_var'])}")
 # ──────────────────────────────────────────────────────────────────────────────
 _sep("5. Diagnostic plots")
 
-phi = np.asarray(report["phi"], dtype=np.float64)
-drift = np.asarray(report["drift"], dtype=np.float64)
-pn = np.asarray(report["pn"], dtype=np.float64)
-f = lw_beta["f"]
-S_f = np.atleast_2d(lw_beta["S_f"])
-beta = lw_beta["beta_line"]
-allan = report["allan"]
-
-ch = 0  # plot pol 0 (pols share the LO)
-t_sym = np.arange(phi.shape[-1]) / SYMBOL_RATE * 1e6  # µs
-
-fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-
-ax = axes[0, 0]
-ax.plot(t_sym, phi[ch], lw=0.4, alpha=0.6, label="φ total")
-ax.plot(t_sym, drift[ch], lw=1.8, label=f"drift (LP {DRIFT_CUTOFF_HZ / 1e6:.0f} MHz)")
-ax.set(xlabel="time (µs)", ylabel="phase (rad)", title="Recovered carrier phase")
-ax.legend(loc="best", fontsize=8)
-
-ax = axes[0, 1]
-ax.plot(t_sym[1:], np.diff(drift[ch]) / (2 * np.pi / SYMBOL_RATE) / 1e6, lw=0.8)
-ax.axhline(DRIFT_AMP_HZ / 1e6, color="k", ls="--", lw=0.8, label="±A (injected)")
-ax.axhline(-DRIFT_AMP_HZ / 1e6, color="k", ls="--", lw=0.8)
-ax.set(xlabel="time (µs)", ylabel="Δf (MHz)", title="Residual frequency drift")
-ax.legend(loc="best", fontsize=8)
-
-ax = axes[1, 0]
-ax.loglog(f[1:], S_f[ch, 1:], lw=0.8, label="$S_f(f)$ (FM noise)")
-ax.loglog(f[1:], beta[1:], "k--", lw=1.0, label="β-separation line")
-floor = LASER_LINEWIDTH_HZ / np.pi
-ax.axhline(floor, color="C3", ls=":", lw=1.5, label="white-FM floor Δν/π")
-ax.axvspan(FLOOR_F_MIN, FLOOR_F_MAX, color="C2", alpha=0.12, label="floor band")
-ax.set(xlabel="frequency (Hz)", ylabel="$S_f$ (Hz²/Hz)", title="Frequency-noise PSD")
-ax.legend(loc="best", fontsize=8)
-
-ax = axes[1, 1]
-adev = np.atleast_2d(allan["adev"])
-ax.loglog(allan["tau_s"] * 1e6, adev[ch], "o-", ms=3, lw=0.8)
-ax.set(
-    xlabel="averaging time τ (µs)",
-    ylabel="Allan deviation σ$_y$ (Hz)",
-    title="Allan deviation of instantaneous frequency",
+# The library's plotting helpers build the full 2×2 dashboard from the report
+# dict (same panels as analysis.characterize_carrier_phase(debug_plot=True),
+# but here we keep the figure to save it headlessly).
+fig, _ = plotting.carrier_phase_characterization(
+    report,
+    symbol_rate=SYMBOL_RATE,
+    drift_cutoff_hz=DRIFT_CUTOFF_HZ,
+    band=(FLOOR_F_MIN, FLOOR_F_MAX),
+    floor_hz=LASER_LINEWIDTH_HZ,  # draw the *injected* white-FM floor as reference
+    amp_ref_hz=DRIFT_AMP_HZ,
+    show=False,
+    title=(
+        f"Laser carrier-phase characterization — {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz Δν, "
+        f"±{DRIFT_AMP_HZ / 1e6:.1f} MHz wander, {ESN0_DB:.0f} dB Es/N0"
+    ),
 )
-ax.grid(True, which="both", alpha=0.3)
-
-fig.suptitle(
-    f"Laser carrier-phase characterization — {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz Δν, "
-    f"±{DRIFT_AMP_HZ / 1e6:.1f} MHz wander, {ESN0_DB:.0f} dB Es/N0",
-    fontsize=12,
-)
-fig.tight_layout()
 
 os.makedirs("examples/images", exist_ok=True)
 out = "examples/images/laser_phase_characterization.png"
