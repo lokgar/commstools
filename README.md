@@ -49,23 +49,42 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 **Requires Python 3.12+** and [`uv`](https://github.com/astral-sh/uv).
 
 #### A. Direct Installation (For Users)
+
+Since the package is not yet registered on PyPI, you can install it directly from GitHub:
+
+##### Using `uv` (Recommended)
+
 To install the core CPU-only package (fully lightweight and portable):
 ```bash
-pip install commstools
-# or with uv:
-uv add commstools
+uv pip install git+https://github.com/lokgar/commstools.git
+# or to add as a project dependency:
+uv add "commstools @ git+https://github.com/lokgar/commstools.git"
 ```
 
 To install with GPU acceleration (includes CUDA 13 JAX and CuPy stacks):
 ```bash
-pip install commstools[gpu]
-# or with uv:
-uv add commstools --extra gpu
+uv pip install "commstools[gpu] @ git+https://github.com/lokgar/commstools.git"
+# or to add as a project dependency:
+uv add "commstools[gpu] @ git+https://github.com/lokgar/commstools.git"
 ```
+
+##### Using standard `pip`
+
+To install the core CPU-only package:
+```bash
+pip install git+https://github.com/lokgar/commstools.git
+```
+
+To install with GPU acceleration:
+```bash
+pip install "commstools[gpu] @ git+https://github.com/lokgar/commstools.git"
+```
+
+*(Note: In the future, once registered on PyPI, you will be able to run `uv add commstools` or `pip install commstools` directly.)*
 
 #### B. Development Installation (For Contributors)
 ```bash
-git clone https://github.com/yourusername/commstools.git
+git clone https://github.com/lokgar/commstools.git
 cd commstools
 
 # Sync environment with core dependencies only
