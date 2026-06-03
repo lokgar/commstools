@@ -563,6 +563,10 @@ class Signal(BaseModel):
         nperseg: int = 256,
         detrend: Optional[Union[str, bool]] = False,
         average: Optional[str] = "mean",
+        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        scaling: str = "density",
     ) -> Tuple[ArrayType, ArrayType]:
         """
         Compute the Power Spectral Density (PSD) using Welch's method.
@@ -575,6 +579,14 @@ class Signal(BaseModel):
             Specifies how to detrend each segment (e.g., 'constant', 'linear').
         average : {"mean", "median"}, default "mean"
             Method to use for averaging overlapping segments.
+        window : str or tuple or array_like, default "hann"
+            Desired window to use.
+        noverlap : int, optional
+            Number of points to overlap between segments.
+        nfft : int, optional
+            Length of the FFT used.
+        scaling : {"density", "spectrum"}, default "density"
+            Selects between computing power spectral density or power spectrum.
 
         Returns
         -------
@@ -592,6 +604,10 @@ class Signal(BaseModel):
             nperseg=nperseg,
             detrend=detrend,
             average=average,
+            window=window,
+            noverlap=noverlap,
+            nfft=nfft,
+            scaling=scaling,
             axis=-1,  # Explicitly specify time axis
         )
 
@@ -701,6 +717,10 @@ class Signal(BaseModel):
         nperseg: int = 128,
         detrend: Optional[Union[str, bool]] = False,
         average: Optional[str] = "mean",
+        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        scaling: str = "density",
         ax: Optional[Any] = None,
         title: Optional[str] = "Power Spectral Density",
         x_axis: Optional[str] = "frequency",
@@ -718,6 +738,14 @@ class Signal(BaseModel):
             Specifies how to detrend each segment.
         average : {"mean", "median"}, default "mean"
             Method to use for averaging segments.
+        window : str or tuple or array_like, default "hann"
+            Desired window to use.
+        noverlap : int, optional
+            Number of points to overlap between segments.
+        nfft : int, optional
+            Length of the FFT used.
+        scaling : {"density", "spectrum"}, default "density"
+            Selects between computing power spectral density or power spectrum.
         ax : matplotlib.axes.Axes, optional
             Pre-existing axis for plotting.
         title : str, default "Spectrum"
@@ -742,6 +770,10 @@ class Signal(BaseModel):
             nperseg=nperseg,
             detrend=detrend,
             average=average,
+            window=window,
+            noverlap=noverlap,
+            nfft=nfft,
+            scaling=scaling,
             center_frequency=self.center_frequency,
             domain=self.physical_domain if self.physical_domain else "RF",
             x_axis=x_axis or "frequency",

@@ -152,6 +152,10 @@ def psd(
     nperseg: int = 256,
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
+    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    noverlap: Optional[int] = None,
+    nfft: Optional[int] = None,
+    scaling: str = "density",
     center_frequency: float = 0.0,
     domain: str = "RF",
     x_axis: str = "frequency",
@@ -182,6 +186,19 @@ def psd(
         Specifies how to detrend each segment (e.g., 'constant', 'linear').
     average : str, default "mean"
         Method to use for averaging segments ('mean' or 'median').
+    window : str or tuple or array_like, default "hann"
+        Desired window to use. If `window` is a string or tuple, it is
+        passed to `scipy.signal.get_window` to generate the window values.
+    noverlap : int, optional
+        Number of points to overlap between segments. If None,
+        `noverlap = nperseg // 2`.
+    nfft : int, optional
+        Length of the FFT used, if a zero padded FFT is desired. If None,
+        the FFT length is `nperseg`.
+    scaling : {"density", "spectrum"}, default "density"
+        Selects between computing the power spectral density ('density')
+        where Pxx has units of V**2/Hz and computing the power spectrum
+        ('spectrum') where Pxx has units of V**2.
     center_frequency : float, default 0.0
         Frequency offset to apply to the x-axis in Hz.
     domain : {"RF", "OPT"}, default "RF"
@@ -252,6 +269,10 @@ def psd(
                 nperseg=nperseg,
                 detrend=detrend,
                 average=average,
+                window=window,
+                noverlap=noverlap,
+                nfft=nfft,
+                scaling=scaling,
                 center_frequency=center_frequency,
                 domain=domain,
                 x_axis=x_axis,
@@ -284,6 +305,10 @@ def psd(
         nperseg=nperseg,
         detrend=detrend,
         average=average,
+        window=window,
+        noverlap=noverlap,
+        nfft=nfft,
+        scaling=scaling,
     )
 
     # Move to cpu for plotting

@@ -13,7 +13,7 @@ welch_psd :
     Estimates the Power Spectral Density using Welch's method.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -104,6 +104,10 @@ def welch_psd(
     nperseg: int = 256,
     detrend: Optional[Union[str, bool]] = False,
     average: Optional[str] = "mean",
+    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    noverlap: Optional[int] = None,
+    nfft: Optional[int] = None,
+    scaling: str = "density",
     return_onesided: Optional[bool] = None,
     axis: int = -1,
 ) -> Tuple[ArrayType, ArrayType]:
@@ -128,6 +132,19 @@ def welch_psd(
     average : {"mean", "median"}, default "mean"
         Method to use for averaging segments. Median is more robust to
         transient outliers.
+    window : str or tuple or array_like, default "hann"
+        Desired window to use. If `window` is a string or tuple, it is
+        passed to `scipy.signal.get_window` to generate the window values.
+    noverlap : int, optional
+        Number of points to overlap between segments. If None,
+        `noverlap = nperseg // 2`.
+    nfft : int, optional
+        Length of the FFT used, if a zero padded FFT is desired. If None,
+        the FFT length is `nperseg`.
+    scaling : {"density", "spectrum"}, default "density"
+        Selects between computing the power spectral density ('density')
+        where Pxx has units of V**2/Hz and computing the power spectrum
+        ('spectrum') where Pxx has units of V**2.
     return_onesided : bool, optional
         If True, returns a one-sided spectrum (frequencies 0 to $f_s/2$)
         for real-valued data. For complex data, only two-sided spectra
@@ -165,11 +182,15 @@ def welch_psd(
     f, Pxx = sp.signal.welch(
         samples,
         fs=sampling_rate,
+        window=window,
         nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
         detrend=detrend,
-        average=average,
         return_onesided=return_onesided,
+        scaling=scaling,
         axis=axis,
+        average=average,
     )
 
     if not return_onesided:

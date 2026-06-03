@@ -117,6 +117,17 @@ def test_welch_psd(backend_device, xp):
     assert f.shape == p.shape
     assert isinstance(f, xp.ndarray)
 
+    # Test custom parameters
+    f2, p2 = s.welch_psd(
+        nperseg=64,
+        window=("kaiser", 8.0),
+        noverlap=32,
+        nfft=128,
+        scaling="spectrum",
+    )
+    assert len(f2) == 128
+    assert f2.shape == p2.shape
+
 
 def test_signal_print_info(backend_device, xp, capsys):
     """Verify print_info() execution and output detection."""
@@ -355,6 +366,14 @@ def test_signal_wrappers(backend_device, xp):
     # Plotting wrappers (just call them, assume plotting logic tested elsewhere)
     # We pass show=False to avoid blocking
     sig.plot_psd(show=False, nperseg=32)
+    sig.plot_psd(
+        show=False,
+        nperseg=32,
+        window=("kaiser", 8.0),
+        noverlap=16,
+        nfft=64,
+        scaling="spectrum",
+    )
     sig.plot_waveform(num_symbols=10, show=False)
     sig.plot_eye(show=False)
     sig.plot_constellation(show=False)

@@ -67,6 +67,28 @@ def test_welch_psd_complex(backend_device, xp):
         spectral.welch_psd(samples, sampling_rate=fs, return_onesided=True)
 
 
+def test_welch_psd_parameters(backend_device, xp):
+    """Verify Welch PSD estimation with custom window, noverlap, nfft, and scaling."""
+    fs = 100.0
+    t = xp.arange(1000) / fs
+    freq = 20.0
+    samples = xp.sin(2 * xp.pi * freq * t)
+
+    # Test custom window, noverlap, nfft, and scaling
+    f, p = spectral.welch_psd(
+        samples,
+        sampling_rate=fs,
+        nperseg=256,
+        window=("kaiser", 8.0),
+        noverlap=128,
+        nfft=512,
+        scaling="spectrum",
+    )
+    assert len(f) == 257  # nfft // 2 + 1 for real
+    assert isinstance(f, xp.ndarray)
+    assert isinstance(p, xp.ndarray)
+
+
 def test_shift_frequency(backend_device, xp):
     """Verify complex frequency shifting and energy preservation."""
     # 1. Exact integer shift

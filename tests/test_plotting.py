@@ -74,6 +74,20 @@ def test_psd(backend_device, xp):
     assert fig is not None
     plt.close("all")
 
+    # Test custom parameters (window, noverlap, nfft, scaling)
+    fig2, ax2 = psd(
+        samples,
+        sampling_rate=10.0,
+        nperseg=64,
+        window=("kaiser", 8.0),
+        noverlap=32,
+        nfft=128,
+        scaling="spectrum",
+        show=False,
+    )
+    assert fig2 is not None
+    plt.close("all")
+
 
 def test_filter_response(backend_device, xp):
     """Verify filter response plotting (Impulse, Mag, Phase)."""
