@@ -141,3 +141,66 @@ def test_shift_frequency_preserves_float32_dtype(backend_device, xp):
     s = xp.asarray(rng.standard_normal(512).astype(np.float32))
     out, _ = spectral.shift_frequency(s, offset=100.0, sampling_rate=1000.0)
     assert out.dtype == xp.complex64, f"Expected complex64, got {out.dtype}"
+
+
+def test_spectrogram_real(backend_device, xp):
+    """Verify spectrogram calculation for real-valued signals, including shape and peak frequency."""
+    fs = 100.0
+    t_vec = xp.arange(1000) / fs
+    freq = 20.0
+    samples = xp.sin(2 * xp.pi * freq * t_vec)
+
+    # 1. Default (one-sided for real)
+    f, t, Sxx = spectral.spectrogram(samples, sampling_rate=fs, nperseg=256, noverlap=128)
+
+    assert isinstance(f, xp.ndarray)
+    assert isinstance(t, xp.ndarray)
+    assert isinstance(Sxx, xp.ndarray)
+
+    # Check shapes
+    # 256 nperseg -> 129 frequency bins (onesided)
+    assert len(f) == 129
+    assert Sxx.shape == (129, len(t))
+
+    # Frequency range: 0 to fs/2
+    assert xp.min(f) >= 0
+    assert xp.max(f) <= fs / 2 + 1e-6
+
+    # Peak frequency should be close to 20Hz
+    # We find peak for each time slice
+    for col in range(Sxx.shape[1]):
+        peak_idx = xp.argmax(Sxx[:, col])
+        peak_freq = f[peak_idx]
+        assert xp.abs(peak_freq - freq) < (fs / 256)
+
+
+def test_spectrogram_complex_mimo(backend_device, xp):
+    """Verify spectrogram calculation for complex-valued MIMO signals with two-sided spectrum."""
+    fs = 100.0
+    t_vec = xp.arange(1000) / fs
+    freq = 20.0
+    samples = xp.exp(1j * 2 * xp.pi * freq * t_vec)
+
+    # Make 2-channel MIMO signal
+    samples_mimo = xp.stack([samples, samples * 2])
+
+    # Default is two-sided for complex
+    f, t, Sxx = spectral.spectrogram(samples_mimo, sampling_rate=fs, nperseg=256, noverlap=128)
+
+    assert isinstance(f, xp.ndarray)
+    assert isinstance(t, xp.ndarray)
+    assert isinstance(Sxx, xp.ndarray)
+
+    # Shapes: (num_channels, len(f), len(t))
+    # 256 nperseg -> 256 frequency bins (two-sided)
+    assert len(f) == 256
+    assert Sxx.shape == (2, 256, len(t))
+
+    # Frequency range should be two-sided (centered around 0 due to fftshift)
+    assert xp.min(f) < 0
+    assert xp.max(f) > 0
+
+    # Test that error is raised when requesting return_onesided=True for complex data
+    with pytest.raises(ValueError, match="Cannot compute one-sided spectrogram"):
+        spectral.spectrogram(samples_mimo, sampling_rate=fs, return_onesided=True)
+

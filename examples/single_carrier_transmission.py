@@ -5,7 +5,7 @@ Demonstrates the core physical layer digital transceiver chain using CommsTools:
 1. Signal Generation: Pulse-shaped 16-QAM
 2. Channel impairments: Fractional timing delay, static frequency offset, and AWGN noise
 3. Receiver Synchronization:
-   - Data-aided timing estimation & alignment (coarse + fractional interpolation)
+   - Data-aided timing estimation & alignment (integer + fractional interpolation)
    - Fine frequency offset estimation (Mengali-Morelli) & correction
    - Matched filtering
    - Carrier phase recovery (Viterbi-Viterbi)
@@ -56,7 +56,7 @@ def main():
     ROLLOFF = 0.25  # RRC rolloff
 
     # Channel Impairments
-    TIMING_DELAY = 12.35  # samples (coarse 12, fractional 0.35)
+    TIMING_DELAY = 12.35  # samples (integer 12, fractional 0.35)
     FREQ_OFFSET = 200.0e3  # 200 kHz carrier frequency offset (CFO)
     ESN0_DB = 18.0  # 18 dB Es/N0
 
@@ -92,11 +92,11 @@ def main():
     print("\n[2] Channel: Injecting impairments...")
 
     # A. Timing Delay (Integer circular shift + fractional FFT-based delay)
-    coarse_delay = int(np.round(TIMING_DELAY))
-    frac_delay = TIMING_DELAY - coarse_delay
+    integer_delay = int(np.round(TIMING_DELAY))
+    frac_delay = TIMING_DELAY - integer_delay
 
     sig_rx = sig_tx.copy()
-    sig_rx.samples = xp.roll(tx_samples, coarse_delay)
+    sig_rx.samples = xp.roll(tx_samples, integer_delay)
     sig_rx.samples = fft_fractional_delay(sig_rx.samples, frac_delay)
 
     # B. Frequency Offset (using Signal method)
@@ -108,7 +108,7 @@ def main():
     samples_noisy = sig_noisy.samples
 
     print(
-        f"    Injected Delay : {TIMING_DELAY:.2f} samples (coarse={coarse_delay}, fractional={frac_delay:.2f})"
+        f"    Injected Delay : {TIMING_DELAY:.2f} samples (integer={integer_delay}, fractional={frac_delay:.2f})"
     )
     print(f"    Injected CFO   : {FREQ_OFFSET / 1e6:.2f} MHz")
     print(f"    Channel Es/N0  : {ESN0_DB:.1f} dB")
@@ -121,23 +121,23 @@ def main():
     # A. Timing Estimation & Correction
     # We correlate against the original known reference sequence (Tx samples)
     print("    - Performing Timing Synchronization...")
-    coarse_est, frac_est = estimate_timing(
+    integer_est, frac_est = estimate_timing(
         sig_rx.samples, reference=tx_samples, sps=SPS
     )
 
     # Apply inverse timing correction
     sig_rx.samples = correct_timing(
         sig_rx.samples,
-        coarse_offset=coarse_est,
+        integer_offset=integer_est,
         fractional_offset=frac_est,
         mode="circular",
     )
 
     print(
-        f"      Estimated Timing Delay : Coarse={coarse_est[0]}, Fractional={frac_est[0]:.3f} samples"
+        f"      Estimated Timing Delay : Integer={integer_est[0]}, Fractional={frac_est[0]:.3f} samples"
     )
     print(
-        f"      Timing Error           : {float(coarse_est[0] + frac_est[0] - TIMING_DELAY):.4f} samples"
+        f"      Timing Error           : {float(integer_est[0] + frac_est[0] - TIMING_DELAY):.4f} samples"
     )
 
     # B. Frequency Offset Estimation & Correction

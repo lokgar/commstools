@@ -2761,3 +2761,281 @@ def carrier_phase_characterization(
         plt.show()
         return None
     return fig, axes
+
+
+def spectrogram(
+    samples: Any,
+    sampling_rate: float = 1.0,
+    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    nperseg: int = 256,
+    noverlap: Optional[int] = None,
+    nfft: Optional[int] = None,
+    detrend: Optional[Union[str, bool]] = False,
+    return_onesided: Optional[bool] = None,
+    scaling: str = "density",
+    axis: int = -1,
+    mode: str = "psd",
+    center_frequency: float = 0.0,
+    domain: str = "RF",
+    ax: Optional[Any] = None,
+    xlim: Optional[Tuple[float, float]] = None,
+    ylim: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = "Spectrogram",
+    cmap: str = "viridis",
+    show: bool = False,
+    **kwargs: Any,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Plots the spectrogram of a signal.
+
+    Plots with Frequency on the horizontal axis (x-axis) and Time on the
+    vertical axis (y-axis). Supports dynamic subplots for multichannel/MIMO
+    signals.
+
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    sampling_rate : float, default 1.0
+        Sampling rate in Hz.
+    window : str or tuple or array_like, default "hann"
+        Desired window to use.
+    nperseg : int, default 256
+        Length of each segment.
+    noverlap : int, optional
+        Number of points to overlap between segments.
+    nfft : int, optional
+        Length of the FFT used.
+    detrend : str or bool, default False
+        Specifies how to detrend each segment.
+    return_onesided : bool, optional
+        If True, returns a one-sided spectrum for real-valued data.
+    scaling : {"density", "spectrum"}, default "density"
+        Selects between computing power spectral density or power spectrum.
+    axis : int, default -1
+        The axis along which to compute the spectrogram.
+    mode : {"psd", "complex", "magnitude", "angle", "phase"}, default "psd"
+        Type of spectrogram to return.
+    center_frequency : float, default 0.0
+        Frequency offset to apply to the frequency axis in Hz.
+    domain : {"RF", "OPT"}, default "RF"
+        Signal domain.
+    ax : matplotlib.axes.Axes, optional
+        Existing axis to plot on.
+    xlim : tuple of float, optional
+        Frequency limits for the plot (in Hz, after center_frequency offset).
+        Used to crop data before plotting for performance.
+    ylim : tuple of float, optional
+        Time limits for the plot (in seconds).
+        Used to crop data before plotting for performance.
+    title : str, optional
+        Plot title.
+    cmap : str, default "viridis"
+        Colormap for the spectrogram plot.
+    show : bool, default False
+        If True, calls `plt.show()` immediately.
+    **kwargs : Any
+        Additional keyword arguments passed to `ax.pcolormesh`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object.
+    ax : matplotlib.axes.Axes or ndarray
+        The axis or array of axes used for the plot.
+    """
+    logger.debug(f"Generating spectrogram plot (sampling_rate={sampling_rate} Hz).")
+
+    samples, xp, _ = dispatch(samples)
+
+    # Handle Multichannel (MIMO)
+    # Convention: (Channels, Time)
+    if samples.ndim > 1:
+        num_channels = samples.shape[0]
+
+        if ax is None:
+            nrows, ncols = _create_subplot_grid(num_channels)
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False
+            )
+        else:
+            if not isinstance(ax, (list, tuple, np.ndarray)):
+                logger.warning(
+                    "Multiple channels detected but single axis provided. Overlaying plots."
+                )
+                axes = np.array([[ax] * num_channels])
+                fig = ax.figure
+            else:
+                axes = np.atleast_2d(ax)
+                fig = axes.flat[0].figure
+
+        for i in range(num_channels):
+            channel_samples = samples[i]
+            row, col = divmod(i, axes.shape[1])
+            target_ax = axes[row, col] if row < axes.shape[0] else axes.flat[-1]
+            ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
+
+            spectrogram(
+                channel_samples,
+                sampling_rate=sampling_rate,
+                window=window,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                nfft=nfft,
+                detrend=detrend,
+                return_onesided=return_onesided,
+                scaling=scaling,
+                axis=axis,
+                mode=mode,
+                center_frequency=center_frequency,
+                domain=domain,
+                ax=target_ax,
+                xlim=xlim,
+                ylim=ylim,
+                title=ch_title,
+                cmap=cmap,
+                show=False,
+                **kwargs,
+            )
+
+        if show:
+            plt.show()
+            return None
+        return fig, axes
+
+    # --- 1D Logic ---
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    from . import spectral
+
+    # Calculate spectrogram
+    f, t, Sxx = spectral.spectrogram(
+        samples,
+        sampling_rate=sampling_rate,
+        window=window,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
+        detrend=detrend,
+        return_onesided=return_onesided,
+        scaling=scaling,
+        axis=axis,
+        mode=mode,
+    )
+
+    # Move to CPU for plotting
+    f = to_device(f, "cpu")
+    t = to_device(t, "cpu")
+    Sxx = to_device(Sxx, "cpu")
+
+    # Shift frequency axis first
+    f_shifted = f + center_frequency
+
+    # Masking frequency axis (xlim corresponds to frequency axis)
+    f_start, f_end = 0, len(f_shifted)
+    if xlim is not None:
+        f_mask = (f_shifted >= xlim[0]) & (f_shifted <= xlim[1])
+        f_indices = np.where(f_mask)[0]
+        if len(f_indices) > 0:
+            f_start, f_end = f_indices[0], f_indices[-1] + 1
+        else:
+            logger.warning(
+                f"xlim (frequency) {xlim} does not overlap with frequency range "
+                f"[{f_shifted[0]:.3f}, {f_shifted[-1]:.3f}]. Plotting whole frequency range."
+            )
+
+    # Masking time axis (ylim corresponds to time axis)
+    t_start, t_end = 0, len(t)
+    if ylim is not None:
+        t_mask = (t >= ylim[0]) & (t <= ylim[1])
+        t_indices = np.where(t_mask)[0]
+        if len(t_indices) > 0:
+            t_start, t_end = t_indices[0], t_indices[-1] + 1
+        else:
+            logger.warning(
+                f"ylim (time) {ylim} does not overlap with time range "
+                f"[{t[0]:.3f}, {t[-1]:.3f}]. Plotting whole time axis."
+            )
+
+    # Slice arrays for plotting performance
+    f_plot = f_shifted[f_start:f_end]
+    t_plot = t[t_start:t_end]
+    Sxx_slice = Sxx[f_start:f_end, t_start:t_end]
+
+    # Convert values based on mode (e.g. dB scale for PSD/magnitude)
+    if mode == "psd":
+        Sxx_plot = 10 * np.log10(Sxx_slice + 1e-20)
+    elif mode in ("complex", "magnitude"):
+        Sxx_plot = 10 * np.log10(np.abs(Sxx_slice) ** 2 + 1e-20)
+    else:
+        # Angle, phase, etc., plot linearly
+        Sxx_plot = Sxx_slice
+
+    # Auto-scale frequency axis (x-axis)
+    max_f = np.max(np.abs(f_plot)) if len(f_plot) > 0 else 0
+    if max_f >= 1e12:
+        f_scale = 1e12
+        f_unit = "THz"
+    elif max_f >= 1e9:
+        f_scale = 1e9
+        f_unit = "GHz"
+    elif max_f >= 1e6:
+        f_scale = 1e6
+        f_unit = "MHz"
+    elif max_f >= 1e3:
+        f_scale = 1e3
+        f_unit = "kHz"
+    else:
+        f_scale = 1.0
+        f_unit = "Hz"
+
+    x_values = f_plot / f_scale
+    xlabel = f"Frequency [{f_unit}]"
+
+    # Auto-scale time axis (y-axis)
+    max_t = t_plot[-1] if len(t_plot) > 0 else 0
+    if max_t < 1e-9:
+        t_scale = 1e12
+        t_unit = "ps"
+    elif max_t < 1e-6:
+        t_scale = 1e9
+        t_unit = "ns"
+    elif max_t < 1e-3:
+        t_scale = 1e6
+        t_unit = "µs"
+    elif max_t < 1:
+        t_scale = 1e3
+        t_unit = "ms"
+    else:
+        t_scale = 1.0
+        t_unit = "s"
+
+    y_values = t_plot * t_scale
+    ylabel = f"Time [{t_unit}]"
+
+    # Plot spectrogram with frequency on x-axis and time on y-axis
+    # Sxx_plot has shape (len(f_plot), len(t_plot)).
+    # Transposing Sxx_plot to (len(t_plot), len(f_plot)) matches y-axis (time) and x-axis (frequency).
+    mesh = ax.pcolormesh(x_values, y_values, Sxx_plot.T, cmap=cmap, shading="auto", **kwargs)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if title is not None:
+        ax.set_title(title)
+
+    # Add colorbar
+    cbar = fig.colorbar(mesh, ax=ax)
+    if mode == "psd":
+        cbar.set_label("PSD [dB/Hz]")
+    elif mode in ("complex", "magnitude"):
+        cbar.set_label("Magnitude [dB]")
+    elif mode in ("angle", "phase"):
+        cbar.set_label("Phase [rad]")
+
+    if show:
+        plt.show()
+        return None
+    return fig, ax
+

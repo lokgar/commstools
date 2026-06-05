@@ -24,6 +24,8 @@ correct_carrier_phase :
     Applies per-symbol phase correction by complex rotation.
 correct_cycle_slips :
     Detects and corrects cycle slips in a block-phase trajectory.
+resolve_channel_permutation :
+    Resolves polarization (channel) permutation ambiguity after MIMO equalization.
 resolve_phase_ambiguity :
     Resolves rotational phase ambiguity after blind carrier phase recovery.
 """
@@ -1963,6 +1965,97 @@ def correct_cycle_slips(
     return kernel(phi_u, int(symmetry), int(history_length), float(threshold))
 
 
+def resolve_channel_permutation(
+    symbols: ArrayType,
+    ref_symbols: ArrayType,
+    *,
+    num_skip_symbols: int = 0,
+) -> ArrayType:
+    """Resolve a polarization (channel) permutation after MIMO equalization.
+
+    A MIMO (butterfly) equalizer has a **polarization-permutation ambiguity**:
+    it may emit the streams in swapped output order (output 0 carries pol 1,
+    etc.) — a perfectly valid demux that per-channel metrics would otherwise
+    score as random, since they compare ``output[i]`` with ``ref[i]``.  This
+    matches each output stream to the reference stream it actually carries (the
+    bijective assignment maximizing the **rotation-invariant** cross-correlation
+    magnitude ``|Σ yᵢ · conj(sⱼ)|``) and reorders ``symbols`` to ``ref_symbols``
+    order.
+
+    Run this **before** :func:`resolve_phase_ambiguity` (it is rotation
+    invariant, so the two compose) and before SER/BER.  For a converged
+    *data-aided* equalizer the outputs are already pinned to the training order,
+    so this is a no-op; it is the robust fix for **blind** equalizers, whose
+    output order is arbitrary.  Only a *constant* permutation is resolved — a
+    mid-stream swap is an equalizer-tracking issue, not a labeling one.
+
+    Parameters
+    ----------
+    symbols : array_like
+        Recovered symbols, ``(N,)`` or ``(C, N)``.  Returned unchanged for SISO.
+    ref_symbols : array_like
+        Known transmitted symbols, same layout as ``symbols`` (the full
+        sequence, a pilot subset, or any known reference).
+    num_skip_symbols : int, default 0
+        Leading symbols excluded from the correlation scoring (e.g. an
+        unconverged transient).  The reorder still covers the full input.
+
+    Returns
+    -------
+    array_like
+        ``symbols`` with channels reordered to match ``ref_symbols``; same
+        shape, dtype, and backend.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    symbols, xp, _ = dispatch(symbols)
+    was_1d = symbols.ndim == 1
+    if was_1d:
+        return symbols
+    C, N = symbols.shape
+    if C == 1:
+        return symbols
+
+    ref = xp.asarray(ref_symbols)
+    if ref.ndim == 1:
+        ref = ref[None, :]
+    n = min(N, ref.shape[-1])
+    y = symbols[:, num_skip_symbols:n]
+    s = ref[:, num_skip_symbols:n]
+
+    # Rotation-invariant coherence matrix M[i, j] = |<y_i, s_j>| / (||y_i|| ||s_j||).
+    yn = y / xp.maximum(xp.linalg.norm(y, axis=-1, keepdims=True), 1e-12)
+    sn = s / xp.maximum(xp.linalg.norm(s, axis=-1, keepdims=True), 1e-12)
+    M = to_device(xp.abs(yn @ xp.conj(sn).T), "cpu")  # (C_out, C_ref)
+
+    _, perm = linear_sum_assignment(-M)  # perm[i] = ref stream matched by output i
+    perm = np.asarray(perm)
+    inv = np.argsort(perm)  # reorder: out'[j] is the output carrying ref j
+
+    assigned = M[np.arange(C), perm]
+    is_identity = bool(np.array_equal(perm, np.arange(C)))
+    matrix_str = np.array2string(M, precision=2, suppress_small=True)
+    if float(assigned.min()) < 0.3:
+        # An output did not lock to any distinct reference stream — the demux
+        # likely collapsed (both outputs on one pol) rather than swapped.
+        logger.warning(
+            f"resolve_channel_permutation: weak match (min coherence "
+            f"{float(assigned.min()):.2f}) — streams may not be cleanly "
+            f"separated (EQ collapse?). Applying best assignment {perm.tolist()} "
+            f"anyway. Coherence matrix (rows=out, cols=ref):\n{matrix_str}"
+        )
+    elif is_identity:
+        logger.info(f"resolve_channel_permutation: identity {perm.tolist()} (no swap).")
+    else:
+        logger.info(
+            f"resolve_channel_permutation: POLARIZATION SWAP {perm.tolist()} — "
+            f"reordering outputs to reference order. Coherence matrix "
+            f"(rows=out, cols=ref):\n{matrix_str}"
+        )
+
+    return symbols[xp.asarray(inv)]
+
+
 def resolve_phase_ambiguity(
     symbols: ArrayType,
     ref_symbols: ArrayType,
@@ -2041,7 +2134,7 @@ def resolve_phase_ambiguity(
     if symmetry_order is None:
         symmetry_order = 4 if "qam" in modulation.lower() else order
 
-    step = 2.0 * np.pi / symmetry_order
+    step = 2.0 * xp.pi / symmetry_order
     candidates = [
         xp.exp(1j * k * step).astype(symbols.dtype) for k in range(symmetry_order)
     ]
@@ -2073,7 +2166,7 @@ def resolve_phase_ambiguity(
         )
         logger.info(
             f"Phase ambiguity resolution: ch={ch}, best_k={best_k}, "
-            f"rotation={best_k * step * 180.0 / np.pi:.1f}°, SER={best_ser:.4f}"
+            f"rotation={best_k * step * 180.0 / xp.pi:.1f}°, SER={best_ser:.4f}"
         )
 
     if was_1d:

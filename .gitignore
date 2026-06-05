@@ -16,6 +16,8 @@ wheels/
 
 .vscode/
 
+tmp/
+
 # DSP captures / large binaries
 *.npy
 *.npz

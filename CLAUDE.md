@@ -116,7 +116,7 @@ Since `bump-my-version` is defined in the project's development dependencies, al
 For complete end-to-end digital transceiver pipelines and visualization setups, refer to the high-quality Python simulation scripts under the `examples/` directory:
 
 * **Single-Carrier Transmission & Recovery**:
-  * [single_carrier_transmission.py](file:///home/lokgar/commstools/examples/single_carrier_transmission.py): End-to-end timing synchronization (coarse/fractional), frequency offset recovery (Mengali-Morelli), matched filtering, carrier phase recovery (Viterbi-Viterbi), phase ambiguity resolution, and performance analysis (EVM, BER) on a 16-QAM baseband signal.
+  * [single_carrier_transmission.py](file:///home/lokgar/commstools/examples/single_carrier_transmission.py): End-to-end timing synchronization (integer/fractional), frequency offset recovery (Mengali-Morelli), matched filtering, carrier phase recovery (Viterbi-Viterbi), phase ambiguity resolution, and performance analysis (EVM, BER) on a 16-QAM baseband signal.
 * **Multi-Stage & Cascaded Equalization**:
   * [multi_stage_equalization.py](file:///home/lokgar/commstools/examples/multi_stage_equalization.py): Detailed coherent receiver DSP chain illustrating cascaded fractionally-spaced blind CMA, pilot-aided LMS, frequency/phase synchronization, and residual symbol-spaced LMS equalization.
 * **End-to-End Coherent Optical Pipeline**:

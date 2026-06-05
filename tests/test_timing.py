@@ -178,24 +178,24 @@ def test_estimate_timing_advanced_scenarios(backend_device, xp):
     data = xp.zeros(100, dtype="complex64")
     data[20 : 20 + 7] = preamble.symbols
 
-    coarse, _frac = timing.estimate_timing(data, preamble, threshold=2.0, sps=1)
-    assert 18 <= coarse[0] <= 22
+    integer, _frac = timing.estimate_timing(data, preamble, threshold=2.0, sps=1)
+    assert 18 <= integer[0] <= 22
 
     # 2. MIMO Signal (2 channels)
     mimo_data = xp.zeros((2, 100), dtype="complex64")
     mimo_data[0, 30:37] = preamble.symbols
     mimo_data[1, 30:37] = preamble.symbols
-    coarse_mimo, _frac = timing.estimate_timing(
+    integer_mimo, _frac = timing.estimate_timing(
         mimo_data, preamble.symbols, threshold=2.0
     )
-    assert 28 <= coarse_mimo[0] <= 32
-    assert len(coarse_mimo) == 2
+    assert 28 <= integer_mimo[0] <= 32
+    assert len(integer_mimo) == 2
 
     # 3. Search range
-    coarse_range, _frac = timing.estimate_timing(
+    integer_range, _frac = timing.estimate_timing(
         data, preamble.symbols, threshold=2.0, search_range=(10, 50)
     )
-    assert 18 <= coarse_range[0] <= 22
+    assert 18 <= integer_range[0] <= 22
 
     # 4. High threshold (above max)
     with pytest.raises(ValueError, match="No correlation peak above threshold"):
@@ -218,10 +218,10 @@ def test_estimate_timing_known_position(backend_device, xp):
     signal[start_pos : start_pos + 13] = preamble_symbols
 
     # Detect
-    coarse, _frac = timing.estimate_timing(signal, preamble_symbols, threshold=2.0)
+    integer, _frac = timing.estimate_timing(signal, preamble_symbols, threshold=2.0)
 
     # Should be within 1 sample of true position
-    assert abs(coarse[0] - start_pos) <= 1
+    assert abs(integer[0] - start_pos) <= 1
 
 
 def test_estimate_timing_with_preamble_object(backend_device, xp):
@@ -241,23 +241,23 @@ def test_estimate_timing_with_preamble_object(backend_device, xp):
     signal[start_pos : start_pos + 13] = preamble_syms
 
     # Detect using Preamble object as reference (key: Preamble as second arg)
-    coarse, _frac = timing.estimate_timing(
+    integer, _frac = timing.estimate_timing(
         signal, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
-    assert abs(coarse[0] - start_pos) <= 1
+    assert abs(integer[0] - start_pos) <= 1
 
 
 def test_estimate_timing_returns_tuple(backend_device, xp):
-    """Verify that estimate_timing returns (coarse_offsets, fractional_offsets)."""
+    """Verify that estimate_timing returns (integer_offsets, fractional_offsets)."""
     preamble = timing.barker_sequence(7)
 
     signal = xp.zeros(100, dtype="complex64")
     signal[30:37] = preamble
 
-    coarse, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
+    integer, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
 
-    assert len(coarse) == 1
+    assert len(integer) == 1
     assert len(frac) == 1
     assert abs(float(frac[0])) < 0.5
 
@@ -294,7 +294,7 @@ def test_estimate_timing_return_tuple(backend_device, xp):
     res = timing.estimate_timing(sig, preamble, threshold=2.0)
     assert isinstance(res, tuple)
     assert len(res) == 2
-    assert len(res[0]) == 1  # coarse_offsets
+    assert len(res[0]) == 1  # integer_offsets
     assert len(res[1]) == 1  # fractional_offsets
 
 
@@ -304,10 +304,10 @@ def test_estimate_timing_search_range(backend_device, xp):
     sig = xp.concatenate([xp.zeros(50), preamble, xp.zeros(50)])
 
     # Search only in 40-70 range
-    coarse, _frac = timing.estimate_timing(
+    integer, _frac = timing.estimate_timing(
         sig, preamble, search_range=(40, 70), threshold=2.0
     )
-    assert coarse[0] == 50
+    assert integer[0] == 50
 
 
 def test_estimate_timing_infer_error(backend_device, xp):
@@ -473,18 +473,18 @@ def test_fft_fractional_delay_roundtrip(backend_device, xp, xpt):
 # -----------------------------------------------------------------------------
 
 
-def test_correct_timing_coarse_only(backend_device, xp):
+def test_correct_timing_integer_only(backend_device, xp):
     """Verify integer-only timing correction via roll."""
     signal = xp.zeros(50, dtype="float32")
     signal[10] = 1.0
 
-    corrected = timing.correct_timing(signal, coarse_offset=10)
+    corrected = timing.correct_timing(signal, integer_offset=10)
     # Peak should now be at index 0
     assert int(xp.argmax(xp.abs(corrected))) == 0
 
 
 def test_correct_timing_combined(backend_device, xp, xpt):
-    """Verify coarse + fractional timing correction."""
+    """Verify integer + fractional timing correction."""
 
     f = 0.02
     N = 200
@@ -495,7 +495,7 @@ def test_correct_timing_combined(backend_device, xp, xpt):
     delayed = np.sin(2 * np.pi * f * (n - delay)).astype("float32")
 
     corrected = timing.correct_timing(
-        xp.asarray(delayed), coarse_offset=20, fractional_offset=0.3
+        xp.asarray(delayed), integer_offset=20, fractional_offset=0.3
     )
 
     xpt.assert_allclose(corrected[25:-25], original[25:-25], atol=0.02)
@@ -512,8 +512,8 @@ def test_estimate_timing_fractional(backend_device, xp):
     signal = xp.zeros(200, dtype="complex64")
     signal[50:63] = preamble
 
-    coarse, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
-    assert len(coarse) == 1
+    integer, frac = timing.estimate_timing(signal, preamble, threshold=2.0)
+    assert len(integer) == 1
     assert len(frac) == 1
     # The fractional offset should be near 0 for an integer-aligned preamble
     assert abs(float(frac[0])) < 0.5
@@ -602,10 +602,10 @@ def test_estimate_timing_with_preamble_object_explicit(backend_device, xp):
     samples[40:47] = barker
 
     preamble = Preamble(sequence_type="barker", length=7)
-    coarse, frac = timing.estimate_timing(
+    integer, frac = timing.estimate_timing(
         samples, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
-    assert abs(int(coarse[0]) - 40) <= 1
+    assert abs(int(integer[0]) - 40) <= 1
 
 
 def test_estimate_timing_skew_detection(backend_device, xp):
@@ -619,21 +619,21 @@ def test_estimate_timing_skew_detection(backend_device, xp):
 
     # Capture log output to verify skew warning is emitted
     with patch("commstools.timing.logger") as mock_logger:
-        coarse, frac = timing.estimate_timing(sig, barker, threshold=2.0)
+        integer, frac = timing.estimate_timing(sig, barker, threshold=2.0)
         # Check that warning was called with skew message
         mock_logger.warning.assert_called()
         call_args = mock_logger.warning.call_args[0][0]
         assert "Skew detected" in call_args
 
     # Both channels should be detected
-    assert len(coarse) == 2
+    assert len(integer) == 2
     # Positions differ
-    assert abs(int(coarse[0]) - 40) <= 1
-    assert abs(int(coarse[1]) - 42) <= 1
+    assert abs(int(integer[0]) - 40) <= 1
+    assert abs(int(integer[1]) - 42) <= 1
 
 
 def test_correct_timing_per_channel(backend_device, xp):
-    """Verify per-channel coarse timing correction using an array of offsets."""
+    """Verify per-channel integer timing correction using an array of offsets."""
 
     # 2-channel signal with peaks at different positions
     sig = xp.zeros((2, 50), dtype="complex64")
@@ -642,7 +642,7 @@ def test_correct_timing_per_channel(backend_device, xp):
 
     # Per-channel shifts
     offsets = xp.array([10, 20])
-    corrected = timing.correct_timing(sig, coarse_offset=offsets)
+    corrected = timing.correct_timing(sig, integer_offset=offsets)
 
     # Both peaks should be at index 0 after correction
     assert corrected.shape == (2, 50)
@@ -665,7 +665,7 @@ def test_correct_timing_fractional_array(backend_device, xp, xpt):
     # Correct with array of fractional offsets
     fractional = xp.array([0.3, -0.2])
     corrected = timing.correct_timing(
-        sig, coarse_offset=0, fractional_offset=fractional
+        sig, integer_offset=0, fractional_offset=fractional
     )
 
     # Should return 2D (not squeezed)
@@ -756,13 +756,13 @@ def test_estimate_timing_mimo_identity(backend_device, xp):
     preamble_pos = 200
     rx, preamble, L = _make_mimo_signal(xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos)
 
-    coarse, frac = timing.estimate_timing(
+    integer, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
-        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
-            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        assert abs(int(integer[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected integer≈{preamble_pos}, got {int(integer[ch])}"
         )
 
 
@@ -774,39 +774,39 @@ def test_estimate_timing_mimo_mixed_channel(backend_device, xp):
     H = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = timing.estimate_timing(
+    integer, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
-        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
-            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        assert abs(int(integer[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected integer≈{preamble_pos}, got {int(integer[ch])}"
         )
 
 
 def test_estimate_timing_mimo_channel_skew(backend_device, xp):
-    """MIMO: hardware skew of 5 samples on channel 1 is reflected in per-channel coarse offsets."""
+    """MIMO: hardware skew of 5 samples on channel 1 is reflected in per-channel integer offsets."""
     preamble_pos = 200
     skew = 5
     rx, preamble, L = _make_mimo_signal(
         xp, [[1.0, 0.0], [0.0, 1.0]], preamble_pos, skew=skew
     )
 
-    coarse, frac = timing.estimate_timing(
+    integer, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     # Channel 0 should find preamble_pos; channel 1 is shifted by skew
-    assert abs(int(coarse[0]) - preamble_pos) <= 1, (
-        f"Ch0: expected {preamble_pos}, got {int(coarse[0])}"
+    assert abs(int(integer[0]) - preamble_pos) <= 1, (
+        f"Ch0: expected {preamble_pos}, got {int(integer[0])}"
     )
     expected_ch1 = preamble_pos + skew
-    assert abs(int(coarse[1]) - expected_ch1) <= 1, (
-        f"Ch1: expected {expected_ch1} (pos+skew), got {int(coarse[1])}"
+    assert abs(int(integer[1]) - expected_ch1) <= 1, (
+        f"Ch1: expected {expected_ch1} (pos+skew), got {int(integer[1])}"
     )
     # Offsets must differ by ~skew (not forced equal)
-    assert int(coarse[0]) != int(coarse[1]), (
-        "Skew channels must have different coarse offsets"
+    assert int(integer[0]) != int(integer[1]), (
+        "Skew channels must have different integer offsets"
     )
 
 
@@ -817,13 +817,13 @@ def test_estimate_timing_mimo_permuted_channel(backend_device, xp):
     H = [[0.0, 1.0], [1.0, 0.0]]
     rx, preamble, L = _make_mimo_signal(xp, H, preamble_pos)
 
-    coarse, frac = timing.estimate_timing(
+    integer, frac = timing.estimate_timing(
         rx, preamble, sps=1, pulse_shape="none", threshold=2.0
     )
 
     for ch in range(2):
-        assert abs(int(coarse[ch]) - preamble_pos) <= 1, (
-            f"Channel {ch}: expected coarse≈{preamble_pos}, got {int(coarse[ch])}"
+        assert abs(int(integer[ch]) - preamble_pos) <= 1, (
+            f"Channel {ch}: expected integer≈{preamble_pos}, got {int(integer[ch])}"
         )
 
 
@@ -859,7 +859,7 @@ class TestCorrectTiming:
     """Tests for correct_timing scalar zero/slice modes and per-channel vectorized paths."""
 
     def test_scalar_zero_mode_positive_shift(self, backend_device, xp):
-        """Scalar coarse offset with mode='zero': signal shifts left, tail zero-padded."""
+        """Scalar integer offset with mode='zero': signal shifts left, tail zero-padded."""
 
         N, shift = 100, 10
         sig = xp.asarray(np.arange(N, dtype=np.complex64))
@@ -870,7 +870,7 @@ class TestCorrectTiming:
         assert float(out[-1].real) == pytest.approx(0.0)
 
     def test_scalar_zero_mode_negative_shift(self, backend_device, xp):
-        """Scalar negative coarse offset with mode='zero': signal shifts right, head zero-padded."""
+        """Scalar negative integer offset with mode='zero': signal shifts right, head zero-padded."""
 
         N, shift = 100, -5
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
@@ -880,7 +880,7 @@ class TestCorrectTiming:
         assert float(out[0].real) == pytest.approx(0.0)
 
     def test_scalar_slice_mode(self, backend_device, xp):
-        """Scalar coarse offset with mode='slice': output is shorter by offset."""
+        """Scalar integer offset with mode='slice': output is shorter by offset."""
 
         N, shift = 100, 15
         sig = xp.asarray(np.ones(N, dtype=np.complex64))
@@ -925,16 +925,16 @@ class TestCorrectTiming:
         wrap-around from the buffer's trailing edge.
         """
 
-        N, coarse, fract = 1024, 200, 0.3
+        N, integer, fract = 1024, 200, 0.3
         f0 = 51.0 / N
         n = np.arange(N, dtype=np.float64)
         sig = np.exp(1j * 2 * np.pi * f0 * n).astype(np.complex64)
         sig_xp = xp.asarray(sig)
 
-        out = timing.correct_timing(sig_xp, coarse, fract, mode="slice")
+        out = timing.correct_timing(sig_xp, integer, fract, mode="slice")
 
-        # Expected: same tone evaluated at n = coarse + fract, coarse + fract + 1, ...
-        n_out = np.arange(out.shape[-1], dtype=np.float64) + coarse + fract
+        # Expected: same tone evaluated at n = integer + fract, integer + fract + 1, ...
+        n_out = np.arange(out.shape[-1], dtype=np.float64) + integer + fract
         expected = np.exp(1j * 2 * np.pi * f0 * n_out).astype(np.complex64)
 
         xpt.assert_allclose(xp.asarray(out)[:20], xp.asarray(expected)[:20], atol=1e-4)
@@ -947,15 +947,15 @@ class TestCorrectTiming:
         """
 
         rng = np.random.default_rng(7)
-        N, coarse, fract = 512, 50, -0.27
+        N, integer, fract = 512, 50, -0.27
         sig = (rng.standard_normal(N) + 1j * rng.standard_normal(N)).astype(
             np.complex64
         )
         sig[-10:] += 5.0 + 5.0j
         sig_xp = xp.asarray(sig)
 
-        ref = timing.fft_fractional_delay(sig_xp, -fract)[..., coarse:]
-        out = timing.correct_timing(sig_xp, coarse, fract, mode="slice")
+        ref = timing.fft_fractional_delay(sig_xp, -fract)[..., integer:]
+        out = timing.correct_timing(sig_xp, integer, fract, mode="slice")
 
         xpt.assert_allclose(out, ref, atol=1e-5)
 

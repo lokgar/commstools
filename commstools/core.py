@@ -611,6 +611,65 @@ class Signal(BaseModel):
             axis=-1,  # Explicitly specify time axis
         )
 
+    def spectrogram(
+        self,
+        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        nperseg: int = 256,
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        detrend: Optional[Union[str, bool]] = False,
+        return_onesided: Optional[bool] = None,
+        scaling: str = "density",
+        mode: str = "psd",
+    ) -> Tuple[ArrayType, ArrayType, ArrayType]:
+        """
+        Compute the spectrogram using consecutive Fourier transforms.
+
+        Parameters
+        ----------
+        window : str or tuple or array_like, default "hann"
+            Desired window to use.
+        nperseg : int, default 256
+            Length of each segment for FFT.
+        noverlap : int, optional
+            Number of points to overlap between segments.
+        nfft : int, optional
+            Length of the FFT used.
+        detrend : str or bool, default False
+            Specifies how to detrend each segment.
+        return_onesided : bool, optional
+            If True, returns a one-sided spectrum for real-valued data.
+        scaling : {"density", "spectrum"}, default "density"
+            Selects between computing power spectral density or power spectrum.
+        mode : {"psd", "complex", "magnitude", "angle", "phase"}, default "psd"
+            Type of spectrogram to return.
+
+        Returns
+        -------
+        f : array_like
+            Array of sample frequencies. Shape: (N_freqs,).
+        t : array_like
+            Array of segment times. Shape: (N_times,).
+        Sxx : array_like
+            Spectrogram of the signal.
+            Shape: (N_channels, N_freqs, N_times) or (N_freqs, N_times).
+        """
+        from . import spectral
+
+        return spectral.spectrogram(
+            self.samples,
+            sampling_rate=self.sampling_rate,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=-1,  # Explicitly specify time axis
+            mode=mode,
+        )
+
     # -------------------------------------------------------------------------
     # Properties
     # -------------------------------------------------------------------------
@@ -779,6 +838,90 @@ class Signal(BaseModel):
             x_axis=x_axis or "frequency",
             ax=ax,
             title=title,
+            show=show,
+            **kwargs,
+        )
+
+    def plot_spectrogram(
+        self,
+        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        nperseg: int = 256,
+        noverlap: Optional[int] = None,
+        nfft: Optional[int] = None,
+        detrend: Optional[Union[str, bool]] = False,
+        return_onesided: Optional[bool] = None,
+        scaling: str = "density",
+        mode: str = "psd",
+        ax: Optional[Any] = None,
+        xlim: Optional[Tuple[float, float]] = None,
+        ylim: Optional[Tuple[float, float]] = None,
+        title: Optional[str] = "Spectrogram",
+        cmap: str = "viridis",
+        show: bool = False,
+        **kwargs: Any,
+    ) -> Optional[Tuple[Any, Any]]:
+        """
+        Plots the spectrogram of the signal.
+
+        Parameters
+        ----------
+        window : str or tuple or array_like, default "hann"
+            Desired window to use.
+        nperseg : int, default 256
+            Length of each segment for Welch/spectrogram.
+        noverlap : int, optional
+            Number of points to overlap between segments.
+        nfft : int, optional
+            Length of the FFT used.
+        detrend : str or bool, default False
+            Specifies how to detrend each segment.
+        return_onesided : bool, optional
+            If True, returns a one-sided spectrum for real-valued data.
+        scaling : {"density", "spectrum"}, default "density"
+            Selects between computing power spectral density or power spectrum.
+        mode : {"psd", "complex", "magnitude", "angle", "phase"}, default "psd"
+            Type of spectrogram to return.
+        ax : matplotlib.axes.Axes, optional
+            Pre-existing axis for plotting.
+        xlim : tuple of float, optional
+            Frequency limits for the plot (in Hz, after center_frequency offset).
+        ylim : tuple of float, optional
+            Time limits for the plot (in seconds).
+        title : str, default "Spectrogram"
+            Plot title.
+        cmap : str, default "viridis"
+            Colormap for the spectrogram plot.
+        show : bool, default False
+            If True, calls `plt.show()` immediately.
+        **kwargs : Any
+            Additional arguments passed to `plotting.spectrogram`.
+
+        Returns
+        -------
+        figure, axis : tuple or None
+            The matplotlib figure and axis objects, or None if `show=True`.
+        """
+        from . import plotting
+
+        return plotting.spectrogram(
+            self.samples,
+            sampling_rate=self.sampling_rate,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=-1,  # Explicitly specify time axis
+            mode=mode,
+            center_frequency=self.center_frequency,
+            domain=self.physical_domain if self.physical_domain else "RF",
+            ax=ax,
+            xlim=xlim,
+            ylim=ylim,
+            title=title,
+            cmap=cmap,
             show=show,
             **kwargs,
         )
@@ -2121,6 +2264,49 @@ class Signal(BaseModel):
             modulation=self.mod_scheme,
             order=self.mod_order,
             pmf=self.ps_pmf,
+        )
+
+    def resolve_channel_permutation(self, num_skip_symbols: int = 0) -> None:
+        """Resolve a polarization (channel) permutation in ``resolved_symbols``.
+
+        A MIMO equalizer may emit the polarizations in swapped output order; per
+        channel metrics would then score a valid demux as random.  This matches
+        each output stream to the ``source_symbols`` stream it carries and
+        reorders ``resolved_symbols`` in place to reference order.
+
+        Run **before** :meth:`resolve_phase_ambiguity` (it is rotation
+        invariant) and before SER/BER.  No-op for SISO or a converged
+        data-aided equalizer; the fix for blind MIMO whose output order is
+        arbitrary.
+
+        Parameters
+        ----------
+        num_skip_symbols : int, default 0
+            Leading symbols excluded from the correlation scoring.
+
+        Raises
+        ------
+        ValueError
+            If ``resolved_symbols`` or ``source_symbols`` are not populated.
+        """
+        from .recovery import resolve_channel_permutation as _resolve_perm
+
+        if self.resolved_symbols is None:
+            raise ValueError(
+                "resolved_symbols is not set. Call resolve_symbols() or assign "
+                "resolved_symbols directly before calling "
+                "resolve_channel_permutation()."
+            )
+        if self.source_symbols is None:
+            raise ValueError(
+                "source_symbols is not set. Populate source_symbols (the known TX "
+                "symbol sequence) before calling resolve_channel_permutation()."
+            )
+
+        self.resolved_symbols = _resolve_perm(
+            self.resolved_symbols,
+            self.source_symbols,
+            num_skip_symbols=num_skip_symbols,
         )
 
     # -------------------------------------------------------------------------

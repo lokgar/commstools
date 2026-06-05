@@ -271,29 +271,29 @@ phase_vv = recovery.recover_carrier_phase_viterbi_viterbi(
 y_cpr = recovery.correct_carrier_phase(y_foe, phase_vv)
 _, xp, _ = dispatch(y_cpr)
 
-# Coarse & fractional symbol timing alignment using library-standard timing functions.
+# Integer & fractional symbol timing alignment using library-standard timing functions.
 # We pre-pend a small zero-padding block of 20 symbols so that any negative delay offsets
 # (common in dynamic FSE tap adaptation) are shifted into the positive lag search window.
 PAD = 20
 y_cpr_padded = xp.concatenate([xp.zeros(PAD, dtype=xp.complex64), y_cpr])
 
-coarse_est, frac_est = estimate_timing(
+integer_est, frac_est = estimate_timing(
     y_cpr_padded,
     reference=training_syms[:N_TRAIN],
     threshold=1.0,
 )
-coarse_offset = int(coarse_est[0] - PAD)
+integer_offset = int(integer_est[0] - PAD)
 
 # Correct timing on the original y_cpr signal (without the temporary padding)
 y_cpr_sync = correct_timing(
     y_cpr,
-    coarse_offset=xp.array([coarse_offset]),
+    integer_offset=xp.array([integer_offset]),
     fractional_offset=frac_est,
     mode="circular",
 )
 
 print(
-    f"  Timing Sync: Coarse={coarse_offset:d} symbols, Fractional={frac_est[0]:.3f} symbols"
+    f"  Timing Sync: Integer={integer_offset:d} symbols, Fractional={frac_est[0]:.3f} symbols"
 )
 
 # Resolve remaining 4-fold rotational phase ambiguity before Stage 2 LMS refinement

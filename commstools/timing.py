@@ -3,8 +3,8 @@ Timing synchronization utilities.
 
 This module provides routines for time synchronization, including the
 generation of optimal synchronization sequences (Barker, Zadoff-Chu),
-robust timing estimation via cross-correlation, and fine timing
-estimation and correction.
+robust integer timing offset estimation via cross-correlation, and
+fractional timing offset estimation and correction.
 
 Functions
 ---------
@@ -18,10 +18,10 @@ fft_fractional_delay :
     Applies fractional sample delay using FFT-based frequency-domain method
     (ideal for bandlimited signals, perfect power preservation).
 estimate_timing :
-    Estimates coarse (integer) and fractional timing offsets via
+    Estimates integer and fractional timing offsets via
     cross-correlation with a known reference sequence.
 correct_timing :
-    Combined coarse (integer) and fine (fractional) timing correction.
+    Combined integer and fractional timing correction.
 """
 
 from typing import Optional, Tuple, Union
@@ -423,10 +423,10 @@ def estimate_timing(
     debug_plot: bool = False,
 ) -> Tuple[ArrayType, ArrayType]:
     """
-    Estimates coarse and fractional timing offsets via cross-correlation.
+    Estimates integer and fractional timing offsets via cross-correlation.
 
     Performs a sliding cross-correlation between the received signal and
-    a known reference sequence to determine the coarse (integer sample)
+    a known reference sequence to determine the integer-sample
     timing offset per channel.  Additionally estimates the fractional
     (sub-sample) timing offset using parabolic interpolation on the
     correlation peak.
@@ -441,13 +441,16 @@ def estimate_timing(
       or any sub-sequence of the signal.  The array must be at the same
       sampling rate as ``samples``.
 
-    For MIMO ZC preambles each TX stream uses a unique root (assigned by
-    :func:`~commstools.helpers.zc_mimo_root`).  All templates are correlated
-    against all RX channels; the Hungarian assignment algorithm maps each TX
-    root to the RX channel it matches best, and only that template's
-    correlation is used to find each channel's peak independently, so
-    **hardware skew between RX channels is preserved in the returned
-    per-channel offsets**.
+    For multi-template MIMO references (shape ``(C_tx, L)`` — e.g. unique-root
+    preambles *or* independent per-polarization data streams) every template is
+    correlated against every RX channel, and each channel takes its **strongest
+    peak across all (template, lag) pairs**.  Because all streams share the same
+    symbol clock, any template present in a channel peaks at that channel's true
+    delay, so this is robust to a polarization swap or mixing and **preserves
+    per-channel hardware skew** (each offset is found independently).  Timing
+    does **not** resolve *which* polarization is which — that is a separate
+    concern; use :func:`commstools.recovery.resolve_channel_permutation` on the
+    recovered symbols before metrics.
 
     Parameters
     ----------
@@ -490,7 +493,7 @@ def estimate_timing(
 
     Returns
     -------
-    coarse_offsets : ArrayType
+    integer_offsets : ArrayType
         Integer sample offsets where the reference sequence begins,
         per RX channel.  Shape: ``(N_channels,)``.  Each channel's
         offset is estimated independently so hardware skew between
@@ -507,7 +510,7 @@ def estimate_timing(
 
     Notes
     -----
-    - The returned coarse offset corresponds to the very first sample of
+    - The returned integer offset corresponds to the very first sample of
       the detected reference sequence.
     - **Synchronization Strategy**: For signals with oversampling (SPS > 1),
       correlating with a shaped/oversampled reference (e.g., generated via
@@ -550,7 +553,8 @@ def estimate_timing(
             ref_waveform = ref_waveform[None, :]
 
     elif reference is not None:
-        # Raw array: use directly as the correlation template.
+        # Raw array: use directly as the correlation template (e.g. the known
+        # TX waveform or a slice of the payload itself).
         ref_waveform = xp.asarray(reference)
     else:
         raise ValueError(
@@ -587,9 +591,7 @@ def estimate_timing(
     C_tx = ref_waveform.shape[0]
 
     if C_tx > 1:
-        from scipy.optimize import linear_sum_assignment
-
-        # MIMO unique-root: correlate every TX template against every RX channel.
+        # Correlate every TX template against every RX channel.
         # corr_all[rx, tx, lag] — shape (C_rx, C_tx, N_lag)
         corr_all = xp.stack(
             [
@@ -601,20 +603,20 @@ def estimate_timing(
             axis=1,
         )
 
-        # === Best-assignment peak finding ===
+        # === Greedy per-channel peak finding ===
+        # Each RX channel takes its strongest peak across all (template, lag).
+        # The lag is an independent per-channel argmax, so hardware skew is
+        # preserved; the template choice only selects which peak height is read,
+        # not its position (all streams share the symbol clock).  Robust to a
+        # polarization swap, mixing, or a missing/weak stream.  Polarization
+        # identity is not resolved here (see recovery.resolve_channel_permutation).
         corr_all_mag = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
-        S_np = to_device(xp.max(corr_all_mag, axis=-1), "cpu")  # (C_rx, C_tx)
-        _, assignment = linear_sum_assignment(-S_np)  # assignment[rx] = best tx
-
-        # Per-channel correlation magnitude using only the assigned template.
-        corr_incoherent = xp.stack(
-            [corr_all_mag[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
-        )  # (C_rx, N_lag)
-        peak_indices = xp.argmax(corr_incoherent, axis=-1)  # (C_rx,)
-        # Assigned-template complex correlation for fractional delay interpolation.
+        best_tx = xp.argmax(xp.max(corr_all_mag, axis=-1), axis=-1)  # (C_rx,)
         corr = xp.stack(
-            [corr_all[rx, assignment[rx]] for rx in range(num_sig_ch)], axis=0
+            [corr_all[rx, int(best_tx[rx])] for rx in range(num_sig_ch)], axis=0
         )  # (C_rx, N_lag) complex
+        corr_incoherent = xp.abs(corr)  # (C_rx, N_lag)
+        peak_indices = xp.argmax(corr_incoherent, axis=-1)  # (C_rx,)
     else:
         corr = cross_correlate_fft(sig_processing, ref_waveform, mode="positive_lags")
 
@@ -683,46 +685,6 @@ def estimate_timing(
                 f"Channel {ch}: Peak prominence = {p_val:.1f}, coherence = {c_val:.2f}"
             )
 
-    # === MIMO fallback: X-Y power imbalance with polarization mixing ===
-    if C_tx > 1 and float(xp.max(metrics)) >= threshold:
-        fallback_applied = False
-        for rx in range(num_sig_ch):
-            if float(metrics[rx]) >= threshold:
-                continue
-            best_alt_tx, best_alt_metric = None, float(metrics[rx])
-            for tx in range(C_tx):
-                if tx == int(assignment[rx]):
-                    continue
-                alt_peak = float(xp.max(corr_all_mag[rx, tx]))
-                alt_mean = float(xp.mean(corr_all_mag[rx, tx]))
-                alt_metric = alt_peak / max(alt_mean, 1e-12)
-                if alt_metric > best_alt_metric:
-                    best_alt_metric, best_alt_tx = alt_metric, tx
-            if best_alt_tx is not None:
-                logger.warning(
-                    f"Channel {rx}: assigned ZC root {int(assignment[rx])} metric "
-                    f"{float(metrics[rx]):.3f} < threshold {threshold}. "
-                    f"Possible X-Y power imbalance. "
-                    f"Falling back to ZC root {best_alt_tx} "
-                    f"(metric {best_alt_metric:.3f})."
-                )
-                assignment[rx] = best_alt_tx
-                corr_incoherent[rx] = corr_all_mag[rx, best_alt_tx]
-                corr[rx] = corr_all[rx, best_alt_tx]
-                peak_indices[rx] = xp.argmax(corr_incoherent[rx])
-                fallback_applied = True
-        if fallback_applied:
-            # Recompute local energy and metrics for updated peaks
-            for ch in range(num_sig_ch):
-                pk = int(peak_indices[ch])
-                end_idx = min(pk + L, N_sig)
-                e_s[ch] = xp.sum(xp.abs(sig_processing[ch, pk:end_idx]) ** 2)
-            norm_factors = xp.sqrt(e_ref * e_s)
-            norm_factors = xp.maximum(norm_factors, 1e-12)
-            peak_vals = xp.max(corr_incoherent, axis=-1)
-            metrics = xp.clip(peak_vals / norm_factors, 0.0, 1.0)
-            corr_mag = xp.abs(corr)
-
     # === Threshold Check ===
     max_metric = float(xp.max(metrics))
     if max_metric < threshold:
@@ -734,7 +696,7 @@ def estimate_timing(
         if _m < threshold:
             logger.warning(
                 f"Channel {_ch}: correlation metric {_m:.3f} is below threshold "
-                f"{threshold}. Coarse offset for this channel may be unreliable."
+                f"{threshold}. Integer offset for this channel may be unreliable."
             )
 
     # === Skew Check (Robust) ===
@@ -754,7 +716,7 @@ def estimate_timing(
                 logger.info(f"Channels aligned (spread {spread}).")
 
     # Each channel's peak is found independently so hardware skew is preserved.
-    coarse_offsets = xp.maximum(0, peak_indices + offset)
+    integer_offsets = xp.maximum(0, peak_indices + offset)
 
     if debug_plot:
         from . import plotting as _plotting
@@ -768,28 +730,29 @@ def estimate_timing(
             show=True,
         )
 
-    # === Fine Timing (Parabolic Interpolation) ===
+    # === Fractional Timing (Parabolic Interpolation) ===
     fractional_offsets = estimate_fractional_delay(
         corr, peak_indices, dft_upsample=dft_upsample, method=fractional_method
     )
 
     logger.info(
-        f"Timing estimated. Coarse: {coarse_offsets.tolist()}, "
+        "Timing estimated."
+        f"Integer: {integer_offsets.tolist()}, "
         f"Fractional: {fractional_offsets.tolist()}, "
         f"Metrics: {metrics.tolist()}"
     )
 
-    return coarse_offsets, fractional_offsets
+    return integer_offsets, fractional_offsets
 
 
 def correct_timing(
     samples: ArrayType,
-    coarse_offset: Union[int, ArrayType],
+    integer_offset: Union[int, ArrayType],
     fractional_offset: Union[float, ArrayType] = 0.0,
     mode: str = "circular",
 ) -> ArrayType:
     """
-    Combined coarse and fine timing correction.
+    Combined integer and fractional timing correction.
 
     Applies an integer sample shift followed by fractional sample
     interpolation using FFT-based frequency-domain delay.
@@ -798,7 +761,7 @@ def correct_timing(
     ----------
     samples : array_like
         Input signal. Shape: (N,) or (C, N).
-    coarse_offset : int or array_like
+    integer_offset : int or array_like
         Integer sample offset(s) to correct. Positive values shift
         the signal left (i.e., remove leading samples).
         Scalar or shape (C,) for per-channel offsets.
@@ -806,7 +769,7 @@ def correct_timing(
         Fractional sample delay(s) in [-0.5, 0.5) to correct via
         FFT-based interpolation. Scalar or shape (C,).
     mode : {'circular', 'zero', 'slice'}, default 'circular'
-        How to handle boundary samples after the coarse shift:
+        How to handle boundary samples after the integer shift:
 
         - ``'circular'``: Wrap-around (``xp.roll``). Output has the
           same length as input.  Correct for periodic signals or
@@ -860,7 +823,7 @@ def correct_timing(
 
     # Pre-evaluate the fractional-correction flag so mode='slice' can apply the
     # delay before the slice. Same logic that used to live just before the
-    # post-coarse fractional call below — relocated, not changed.
+    # post-integer fractional call below — relocated, not changed.
     if isinstance(fractional_offset, (int, float)):
         apply_frac = abs(fractional_offset) > 1e-9
     else:
@@ -877,12 +840,12 @@ def correct_timing(
     if mode == "slice" and apply_frac:
         samples = fft_fractional_delay(samples, -fractional_offset)
 
-    # === Coarse correction (integer shift) ===
-    coarse_offset = xp.asarray(coarse_offset)
+    # === Integer correction (integer shift) ===
+    integer_offset = xp.asarray(integer_offset)
 
-    if coarse_offset.ndim == 0:
+    if integer_offset.ndim == 0:
         # --- Scalar: same shift for all channels ---
-        shift = int(coarse_offset)
+        shift = int(integer_offset)
         if mode == "circular":
             samples = xp.roll(samples, -shift, axis=-1)
         elif mode == "zero":
@@ -901,25 +864,25 @@ def correct_timing(
 
     else:
         # --- Per-channel: vectorized gather (avoids one GPU→CPU sync per channel) ---
-        coarse_int = coarse_offset.astype(xp.int64)  # (C,) on device
+        integer_shift = integer_offset.astype(xp.int64)  # (C,) on device
         col_base = xp.arange(N, dtype=xp.int64)[None, :]  # (1, N)
         row_idx = xp.arange(num_ch)[:, None]  # (C, 1)
 
         if mode == "circular":
-            col_idx = (col_base + coarse_int[:, None]) % N  # (C, N)
+            col_idx = (col_base + integer_shift[:, None]) % N  # (C, N)
             samples = samples[row_idx, col_idx]
 
         elif mode == "zero":
-            col_raw = col_base + coarse_int[:, None]  # (C, N)
+            col_raw = col_base + integer_shift[:, None]  # (C, N)
             gathered = samples[row_idx, xp.clip(col_raw, 0, N - 1)]
             samples = xp.where(col_raw < N, gathered, xp.zeros_like(gathered))
 
         elif mode == "slice":
             # Align all channels to common overlap: N - max(offset) samples
-            max_shift = int(xp.max(coarse_int))  # one GPU sync
+            max_shift = int(xp.max(integer_shift))  # one GPU sync
             common_len = N - max_shift
             col_idx_s = (
-                xp.arange(common_len, dtype=xp.int64)[None, :] + coarse_int[:, None]
+                xp.arange(common_len, dtype=xp.int64)[None, :] + integer_shift[:, None]
             )  # (C, common_len)
             samples = samples[row_idx, col_idx_s]
 
@@ -928,7 +891,7 @@ def correct_timing(
                 f"Unknown mode {mode!r}. Choose 'circular', 'zero', or 'slice'."
             )
 
-    # === Fine correction (fractional via FFT) ===
+    # === Fractional correction (via FFT) ===
     # For mode='slice' this was already applied above on the full pre-slice
     # buffer; here we only handle 'circular' / 'zero', whose output length
     # equals the input length so the wrap location is unchanged either way.
@@ -938,11 +901,11 @@ def correct_timing(
     if mode == "slice":
         logger.warning(
             f"correct_timing(mode='slice'): output is shorter than input "
-            f"(trimmed by up to {int(xp.max(xp.asarray(coarse_offset)))} samples). "
+            f"(trimmed by up to {int(xp.max(xp.asarray(integer_offset)))} samples). "
             "Signal length metadata (e.g. duration) will no longer match the original."
         )
     logger.info(
-        f"Timing corrected: coarse={coarse_offset.tolist() if hasattr(coarse_offset, 'tolist') else coarse_offset}, "
+        f"Timing corrected: integer={integer_offset.tolist() if hasattr(integer_offset, 'tolist') else integer_offset}, "
         f"fractional={'applied' if apply_frac else 'skipped'}, mode={mode!r}."
     )
 

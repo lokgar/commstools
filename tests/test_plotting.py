@@ -17,6 +17,7 @@ from commstools.plotting import (
     filter_response,
     ideal_constellation,
     psd,
+    spectrogram,
     time_domain,
 )
 
@@ -820,3 +821,79 @@ def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
     fig, axes = equalizer_result(result, smoothing=1000)
     assert fig is not None
     plt.close("all")
+
+
+def test_spectrogram_plot_siso(backend_device, xp):
+    """Verify spectrogram plotting for SISO (1D) signals."""
+    from unittest.mock import patch
+    fs = 100.0
+    t = xp.arange(1000) / fs
+    samples = xp.sin(2 * xp.pi * 20.0 * t)
+
+    # 1. Basic plot
+    fig, ax = spectrogram(samples, sampling_rate=fs, show=False)
+    assert fig is not None
+    assert ax is not None
+    plt.close("all")
+
+    # 2. Plot with xlim (frequency limit) and ylim (time limit)
+    fig, ax = spectrogram(
+        samples,
+        sampling_rate=fs,
+        xlim=(-10.0, 30.0),
+        ylim=(1.0, 5.0),
+        show=False,
+    )
+    assert fig is not None
+    assert ax is not None
+    plt.close("all")
+
+    # 3. Test show=True path (returns None)
+    with patch("matplotlib.pyplot.show"):
+        res = spectrogram(samples, sampling_rate=fs, show=True)
+    assert res is None
+    plt.close("all")
+
+
+def test_spectrogram_plot_mimo(backend_device, xp):
+    """Verify spectrogram plotting for MIMO (2D) signals generates subplots."""
+    fs = 100.0
+    t = xp.arange(1000) / fs
+    samples = xp.stack([xp.sin(2 * xp.pi * 20.0 * t), xp.cos(2 * xp.pi * 10.0 * t)])
+
+    fig, axes = spectrogram(samples, sampling_rate=fs, show=False)
+    assert fig is not None
+    # For 2-channel MIMO signal, it should create a grid of 1x2 or 2x1 subplots
+    assert isinstance(axes, np.ndarray)
+    assert axes.size == 2
+    plt.close("all")
+
+
+def test_signal_spectrogram_convenience(backend_device, xp):
+    """Verify core.Signal.spectrogram and plot_spectrogram convenience methods."""
+    from commstools import Signal
+    fs = 100.0
+    sig = Signal.psk(
+        symbol_rate=10.0,
+        num_symbols=100,
+        order=4,
+        sps=int(fs / 10.0),
+        seed=42,
+    )
+    # Ensure samples match the backend device
+    sig.samples = xp.asarray(sig.samples)
+
+    # 1. Calculation convenience method
+    f, t, Sxx = sig.spectrogram(nperseg=64, noverlap=32)
+    assert isinstance(f, xp.ndarray)
+    assert isinstance(t, xp.ndarray)
+    assert isinstance(Sxx, xp.ndarray)
+    assert len(f) == 64
+    assert Sxx.shape[-1] == len(t)
+
+    # 2. Plotting convenience method
+    fig, ax = sig.plot_spectrogram(nperseg=64, show=False)
+    assert fig is not None
+    assert ax is not None
+    plt.close("all")
+

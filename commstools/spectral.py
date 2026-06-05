@@ -201,3 +201,102 @@ def welch_psd(
         Pxx = xp.fft.fftshift(Pxx, axes=axis)
 
     return f, Pxx
+
+
+def spectrogram(
+    samples: ArrayType,
+    sampling_rate: float,
+    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    nperseg: int = 256,
+    noverlap: Optional[int] = None,
+    nfft: Optional[int] = None,
+    detrend: Optional[Union[str, bool]] = False,
+    return_onesided: Optional[bool] = None,
+    scaling: str = "density",
+    axis: int = -1,
+    mode: str = "psd",
+) -> Tuple[ArrayType, ArrayType, ArrayType]:
+    """
+    Computes a spectrogram with consecutive Fourier transforms.
+
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).
+    sampling_rate : float
+        Sampling rate in Hz.
+    window : str or tuple or array_like, default "hann"
+        Desired window to use. If `window` is a string or tuple, it is
+        passed to `scipy.signal.get_window` to generate the window values.
+    nperseg : int, default 256
+        Length of each segment. A longer segment increases frequency
+        resolution but also increases the variance of the estimate.
+    noverlap : int, optional
+        Number of points to overlap between segments. If None,
+        `noverlap = nperseg // 2`.
+    nfft : int, optional
+        Length of the FFT used, if a zero padded FFT is desired. If None,
+        the FFT length is `nperseg`.
+    detrend : str or bool, default False
+        Specifies how to detrend each segment (e.g., 'constant', 'linear').
+    return_onesided : bool, optional
+        If True, returns a one-sided spectrum (frequencies 0 to $f_s/2$)
+        for real-valued data. For complex data, only two-sided spectra
+        are supported.
+    scaling : {"density", "spectrum"}, default "density"
+        Selects between computing the power spectral density ('density')
+        where Sxx has units of V**2/Hz and computing the power spectrum
+        ('spectrum') where Sxx has units of V**2.
+    axis : int, default -1
+        The axis along which to compute the spectrogram.
+    mode : {"psd", "complex", "magnitude", "angle", "phase"}, default "psd"
+        Type of spectrogram to return. Options are 'psd', 'complex',
+        'magnitude', 'angle', 'phase'.
+
+    Returns
+    -------
+    f : array_like
+        Array of sample frequencies.
+    t : array_like
+        Array of segment times.
+    Sxx : array_like
+        Spectrogram of the signal.
+
+    Raises
+    ------
+    ValueError
+        If `return_onesided` set to True for complex-valued inputs.
+    """
+    samples, xp, sp = dispatch(samples)
+    is_complex = xp.iscomplexobj(samples)
+
+    if return_onesided is None:
+        return_onesided = not is_complex
+
+    if is_complex and return_onesided:
+        raise ValueError("Cannot compute one-sided spectrogram for complex data.")
+
+    f, t, Sxx = sp.signal.spectrogram(
+        samples,
+        fs=sampling_rate,
+        window=window,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
+        detrend=detrend,
+        return_onesided=return_onesided,
+        scaling=scaling,
+        axis=axis,
+        mode=mode,
+    )
+
+    if not return_onesided:
+        # Shift zero frequency to center
+        f = xp.fft.fftshift(f)
+        # Sxx frequency axis is at position axis_pos in output
+        ndim = samples.ndim
+        axis_pos = axis % ndim
+        Sxx = xp.fft.fftshift(Sxx, axes=axis_pos)
+
+    return f, t, Sxx
+
