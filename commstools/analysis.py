@@ -742,7 +742,7 @@ def characterize_carrier_phase(
     amp_ref_hz : float, optional
         Wander-amplitude reference for the drift panel when ``debug_plot=True``.
     debug_plot : bool, default False
-        If True, render the full 2×2 dashboard
+        If True, render the full 2x2 dashboard
         (:func:`commstools.plotting.carrier_phase_characterization`).
 
     Returns

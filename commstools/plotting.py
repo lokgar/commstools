@@ -45,7 +45,7 @@ frequency_noise_psd :
 allan_deviation :
     Allan deviation vs averaging time for frequency-stability classification.
 carrier_phase_characterization :
-    2×2 dashboard combining the four carrier-phase diagnostics above.
+    2x2 dashboard combining the four carrier-phase diagnostics above.
 """
 
 from typing import Any, Optional, Tuple, Union, Sequence
@@ -943,14 +943,14 @@ def filter_response(
 
     if ax is None:
         logger.debug("Generating filter response plot.")
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 7))
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 10.5))
         fig.subplots_adjust(hspace=0.4)
     elif isinstance(ax, (list, tuple, np.ndarray)) and len(ax) == 3:
         fig = ax[0].figure
         ax1, ax2, ax3 = ax
     else:
         logger.warning("filter_response requires 3 axes. Creating new figure.")
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 4))
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(13, 3.5))
 
     # 1. Impulse Response
     num_taps = len(taps)
@@ -1458,7 +1458,8 @@ def equalizer_result(
     n_panels = 3 if phase_traj is not None else 2
 
     if ax is None:
-        fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 3.5))
+        figsize = (13, 3.5) if n_panels == 3 else (5 * n_panels, 3.5)
+        fig, axes = plt.subplots(1, n_panels, figsize=figsize)
     else:
         axes = np.asarray(ax).flatten()[:n_panels]
         fig = axes[0].figure
@@ -1730,7 +1731,7 @@ def mm_autocorrelation(
 
     if ax is None:
         if C == 1:
-            fig, raw_axes = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True)
+            fig, raw_axes = plt.subplots(1, 2, figsize=(10, 3.5))
             axes_per_ch = [raw_axes]  # list of (ax_amp, ax_phase)
         else:
             fig, raw_axes = plt.subplots(C, 2, figsize=(10, 3.5 * C), squeeze=False)
@@ -1752,6 +1753,7 @@ def mm_autocorrelation(
         expected_phase = 2.0 * np.pi * f_c * M * lags / sampling_rate
 
         ax_amp.plot(lags, amp, linewidth=1.0, color=f"C{c}")
+        ax_amp.set_xlabel("Lag m")
         ax_amp.set_ylabel("|R[m]|")
         ax_amp.set_title(f"{title}{ch_suffix}  (Δf={f_c:.2f} Hz, M={M})")
         ax_amp.grid(True, alpha=0.3)
@@ -1925,7 +1927,7 @@ def carrier_phase_trajectory(
     C, N = phi_full.shape
 
     if ax is None:
-        fig, axi = plt.subplots(1, 1, figsize=(9, 3.5))
+        fig, axi = plt.subplots(1, 1, figsize=(5, 3.5))
     else:
         axi = ax
         fig = axi.figure
@@ -2014,7 +2016,7 @@ def frequency_drift_blockwise_result(
     phase_trajectory = np.asarray(phase_trajectory, dtype=np.float64)
 
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(11, 3.5))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3.5))
     else:
         axes = np.asarray(ax).flatten()[:2]
         fig = axes[0].figure
@@ -2377,7 +2379,7 @@ def carrier_phase_decomposition(
     drift_c = _as_channels(drift) if drift is not None else None
 
     if ax is None:
-        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+        fig, axi = plt.subplots(1, 1, figsize=(5, 3.5))
     else:
         axi = ax
         fig = axi.figure
@@ -2463,7 +2465,7 @@ def frequency_drift(
     C, M = df_c.shape
 
     if ax is None:
-        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+        fig, axi = plt.subplots(1, 1, figsize=(5, 3.5))
     else:
         axi = ax
         fig = axi.figure
@@ -2538,7 +2540,7 @@ def frequency_noise_psd(
     pos = f_c > 0
 
     if ax is None:
-        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+        fig, axi = plt.subplots(1, 1, figsize=(5, 3.5))
     else:
         axi = ax
         fig = axi.figure
@@ -2635,7 +2637,7 @@ def allan_deviation(
     C = adv.shape[0]
 
     if ax is None:
-        fig, axi = plt.subplots(1, 1, figsize=(7, 3.5))
+        fig, axi = plt.subplots(1, 1, figsize=(5, 3.5))
     else:
         axi = ax
         fig = axi.figure
@@ -2692,7 +2694,7 @@ def carrier_phase_characterization(
     title: Optional[str] = None,
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Full 2×2 carrier-phase characterization dashboard.
+    Full 2x2 carrier-phase characterization dashboard.
 
     Combines :func:`carrier_phase_decomposition`, :func:`frequency_drift`,
     :func:`frequency_noise_psd`, and :func:`allan_deviation` into one figure
@@ -2720,7 +2722,7 @@ def carrier_phase_characterization(
     -------
     (fig, axes) or None
     """
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig, axes = plt.subplots(2, 2, figsize=(10, 7))
 
     lp = f"  (LP {drift_cutoff_hz / 1e6:.1f} MHz)" if drift_cutoff_hz else ""
     carrier_phase_decomposition(
@@ -2856,7 +2858,7 @@ def spectrogram(
         if ax is None:
             nrows, ncols = _create_subplot_grid(num_channels)
             fig, axes = plt.subplots(
-                nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False
+                nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False
             )
         else:
             if not isinstance(ax, (list, tuple, np.ndarray)):
@@ -3019,7 +3021,9 @@ def spectrogram(
     # Plot spectrogram with frequency on x-axis and time on y-axis
     # Sxx_plot has shape (len(f_plot), len(t_plot)).
     # Transposing Sxx_plot to (len(t_plot), len(f_plot)) matches y-axis (time) and x-axis (frequency).
-    mesh = ax.pcolormesh(x_values, y_values, Sxx_plot.T, cmap=cmap, shading="auto", **kwargs)
+    mesh = ax.pcolormesh(
+        x_values, y_values, Sxx_plot.T, cmap=cmap, shading="auto", **kwargs
+    )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if title is not None:
@@ -3038,4 +3042,3 @@ def spectrogram(
         plt.show()
         return None
     return fig, ax
-

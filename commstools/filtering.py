@@ -626,7 +626,10 @@ def _ols_backward(X_hat_f: ArrayType, meta: dict) -> ArrayType:
 
 
 def ols_fir_filter(
-    samples: ArrayType, taps: ArrayType, N_fft: Optional[int] = None, center: bool = True
+    samples: ArrayType,
+    taps: ArrayType,
+    N_fft: Optional[int] = None,
+    center: bool = True,
 ) -> ArrayType:
     """
     Overlap-and-save FIR filter for long-tap or large-signal convolution.

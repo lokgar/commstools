@@ -5649,7 +5649,7 @@ def block_lms(
        would accumulate over the same B symbols, so ``step_size`` is on the
        **same scale as** :func:`lms`: the same :math:`\\mu` yields the same
        convergence and steady-state MSE (see ``step_size`` below).  Only the
-       *stability ceiling* is B× lower — the operating step that matches
+       *stability ceiling* is Bx lower — the operating step that matches
        :func:`lms` is unchanged.
 
     Parameters
@@ -5787,14 +5787,14 @@ def block_lms(
     **GPU throughput — use large block_size:** On GPU (CuPy) each Python
     loop iteration launches ~10–20 CUDA kernels (FFT, einsum, IFFT, BPS
     rotations, …).  At ``block_size=64`` and 100k symbols that is ~1 500
-    blocks × kernel-launch overhead; at ``block_size=2048`` it drops to
+    blocks x kernel-launch overhead; at ``block_size=2048`` it drops to
     ~49 blocks.  Throughput improves markedly once the cuFFT/cuBLAS work
     per block dominates the Python overhead.  On GPU prefer
     ``block_size`` ≥ 512, ideally 1024–4096.
 
     **BPS cycle-slip correction (``cpr_cycle_slip_correction=True``):**
     Every block transfers the full ``(C, block_size)`` float64 phase
-    tensor device→host, runs a Python loop over ``C × block_size``
+    tensor device→host, runs a Python loop over ``C x block_size``
     symbols, then writes it back host→device.  This synchronous round-trip
     serialises the GPU pipeline.  Keep this disabled if slips are rare or
     absent, and enable only when necessary.

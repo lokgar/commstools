@@ -128,9 +128,7 @@ def save_npz(
     # -------------------------------------------------------------------------
     # Collect arrays
     # -------------------------------------------------------------------------
-    arrays: dict[str, Any] = {
-        "samples": _backend.to_device(signal.samples, "CPU")
-    }
+    arrays: dict[str, Any] = {"samples": _backend.to_device(signal.samples, "CPU")}
 
     for field in _OPTIONAL_ARRAY_FIELDS:
         arr = getattr(signal, field, None)

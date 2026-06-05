@@ -826,6 +826,7 @@ def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
 def test_spectrogram_plot_siso(backend_device, xp):
     """Verify spectrogram plotting for SISO (1D) signals."""
     from unittest.mock import patch
+
     fs = 100.0
     t = xp.arange(1000) / fs
     samples = xp.sin(2 * xp.pi * 20.0 * t)
@@ -872,6 +873,7 @@ def test_spectrogram_plot_mimo(backend_device, xp):
 def test_signal_spectrogram_convenience(backend_device, xp):
     """Verify core.Signal.spectrogram and plot_spectrogram convenience methods."""
     from commstools import Signal
+
     fs = 100.0
     sig = Signal.psk(
         symbol_rate=10.0,
@@ -896,4 +898,3 @@ def test_signal_spectrogram_convenience(backend_device, xp):
     assert fig is not None
     assert ax is not None
     plt.close("all")
-

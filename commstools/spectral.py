@@ -299,4 +299,3 @@ def spectrogram(
         Sxx = xp.fft.fftshift(Sxx, axes=axis_pos)
 
     return f, t, Sxx
-

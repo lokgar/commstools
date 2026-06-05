@@ -905,7 +905,7 @@ def correct_timing(
             "Signal length metadata (e.g. duration) will no longer match the original."
         )
     logger.info(
-        f"Timing corrected: integer={integer_offset.tolist() if hasattr(integer_offset, 'tolist') else integer_offset}, "
+        f"Timing corrected: integer=applied, "
         f"fractional={'applied' if apply_frac else 'skipped'}, mode={mode!r}."
     )
 

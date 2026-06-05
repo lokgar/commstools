@@ -536,7 +536,7 @@ class TestFindBiasTone:
         assert abs(est_interp - tone_hz) < abs(est_argmax - tone_hz)
 
     def test_search_window_rejects_stronger_interferer(self, backend_device, xp):
-        """target_hz + search_band_hz rejects a 10× stronger out-of-band tone."""
+        """target_hz + search_band_hz rejects a 10x stronger out-of-band tone."""
         fs = 1e9
         N = 4096
         n = xp.arange(N, dtype=xp.float64)

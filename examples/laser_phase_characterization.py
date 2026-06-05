@@ -230,7 +230,7 @@ print(f"  Fitted AWGN intercept (2σ_φ²)      : {_fmt(lw_inc['awgn_var'])}")
 # ──────────────────────────────────────────────────────────────────────────────
 _sep("5. Diagnostic plots")
 
-# The library's plotting helpers build the full 2×2 dashboard from the report
+# The library's plotting helpers build the full 2x2 dashboard from the report
 # dict (same panels as analysis.characterize_carrier_phase(debug_plot=True),
 # but here we keep the figure to save it headlessly).
 fig, _ = plotting.carrier_phase_characterization(

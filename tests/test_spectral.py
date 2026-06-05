@@ -151,7 +151,9 @@ def test_spectrogram_real(backend_device, xp):
     samples = xp.sin(2 * xp.pi * freq * t_vec)
 
     # 1. Default (one-sided for real)
-    f, t, Sxx = spectral.spectrogram(samples, sampling_rate=fs, nperseg=256, noverlap=128)
+    f, t, Sxx = spectral.spectrogram(
+        samples, sampling_rate=fs, nperseg=256, noverlap=128
+    )
 
     assert isinstance(f, xp.ndarray)
     assert isinstance(t, xp.ndarray)
@@ -185,7 +187,9 @@ def test_spectrogram_complex_mimo(backend_device, xp):
     samples_mimo = xp.stack([samples, samples * 2])
 
     # Default is two-sided for complex
-    f, t, Sxx = spectral.spectrogram(samples_mimo, sampling_rate=fs, nperseg=256, noverlap=128)
+    f, t, Sxx = spectral.spectrogram(
+        samples_mimo, sampling_rate=fs, nperseg=256, noverlap=128
+    )
 
     assert isinstance(f, xp.ndarray)
     assert isinstance(t, xp.ndarray)
@@ -203,4 +207,3 @@ def test_spectrogram_complex_mimo(backend_device, xp):
     # Test that error is raised when requesting return_onesided=True for complex data
     with pytest.raises(ValueError, match="Cannot compute one-sided spectrogram"):
         spectral.spectrogram(samples_mimo, sampling_rate=fs, return_onesided=True)
-

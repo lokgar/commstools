@@ -1136,8 +1136,12 @@ class TestDDPLL:
         # The steady-state error is a constant lag (its std ≈ 0), so measure the mean.
         lag1 = abs(float(np.mean(np.unwrap(phi1_np[tail]) - true_phase[tail])))
         lag2 = abs(float(np.mean(np.unwrap(phi2_np[tail]) - true_phase[tail])))
-        assert lag1 > 1e-3, "1st-order loop should exhibit a finite lag under freq offset"
-        assert lag2 < lag1 / 100.0, "2nd-order loop should null the frequency-induced lag"
+        assert lag1 > 1e-3, (
+            "1st-order loop should exhibit a finite lag under freq offset"
+        )
+        assert lag2 < lag1 / 100.0, (
+            "2nd-order loop should null the frequency-induced lag"
+        )
 
     def test_bandwidth_shortcut_invalid_bandwidth_raises(self, backend_device, xp):
         """On the bandwidth path (mu=None), bandwidth outside (0, 0.5) raises ValueError."""
