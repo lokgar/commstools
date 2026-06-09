@@ -2,6 +2,8 @@
 
 This report evaluates the computational bottlenecks in the [CommsTools](file:///home/lokgar/commstools) library, analyzes the current acceleration strategies (CPU Numba, CuPy, JAX), and provides a technical feasibility study on implementing custom CUDA kernels (via CuPy `RawKernel` or Numba-CUDA) and algorithmic reformulations to optimize high-performance digital communications receiver DSP.
 
+*Additionally check GPU->CPU passes in RDE/CMA/LMS equalizers running on CPU - any way to optimize or not a big speed bottleneck?*
+
 ---
 
 ## 1. Executive Summary
@@ -97,7 +99,7 @@ While sequential algorithms are traditionally bound to serial processors like CP
 ### 3.1. Register-Resident Weight Filtering (LMS, CMA, RDE)
 For single-stream LMS or CMA, we cannot parallelize across the symbol index $n$. However, we can eliminate global memory latency by keeping the filter weights in GPU **registers** or **shared memory** during the sequential execution.
 
-*   **Problem**: In standard array operations, reading and writing the weight vector $\mathbf{w}_n$ at each step requires round-trips to GPU global memory (200–400 cycles of latency per access).
+*   **Problem**: In standard array operations, reading and writing the weight vector $\mathbf{w}_n$ at each step requires round-trips to GPU global memory (200-400 cycles of latency per access).
 *   **Custom Kernel Workaround**: Implement a CuPy `RawKernel` where a single thread (or a warp using shuffle instructions) executes the sequential symbol loop.
     1.  **Load to Registers**: Load the initial weights $\mathbf{w}_0$ (size $C \times C \times N_{\mathrm{taps}}$) directly into the GPU thread's **register file** (1-cycle latency). For a $2 \times 2$ MIMO equalizer with 21 taps, this requires $2 \times 2 \times 21 = 84$ complex values, which easily fits in the thread's register allocation (up to 255 32-bit registers per thread on modern architectures).
     2.  **Sequential Symbol Loop**: Loop sequentially over the $N$ symbols. In each step $n$:
@@ -117,7 +119,7 @@ $$P_n = \frac{1}{\lambda} \left( P_{n-1} - \mathbf{k}_n \mathbf{x}_n^H P_{n-1} \
 For $M = 42$ (e.g. $2 \times 2$ MIMO with 21 taps), $P$ has $1764$ complex values. This quadratic complexity ($O(M^2)$ operations per symbol) is a major bottleneck on CPU, but fits GPU architectures when parallelized internally.
 
 *   **Custom Kernel Workaround**: Launch a thread block of size 32 or 64 to process the single stream.
-    1.  **Shared Memory Matrix**: Allocate the matrix $P$ in **GPU Shared Memory** (requiring $\approx 14$ KB, well within the 48–96 KB limit of a streaming multiprocessor).
+    1.  **Shared Memory Matrix**: Allocate the matrix $P$ in **GPU Shared Memory** (requiring $\approx 14$ KB, well within the 48-96 KB limit of a streaming multiprocessor).
     2.  **Internal Step Parallelization**: In each symbol step $n$:
         *   The threads load the input vector $\mathbf{x}_n$ and compute the matrix-vector product $\mathbf{u} = P \mathbf{x}_n$ in parallel.
         *   Compute the denominator $\lambda + \mathbf{x}_n^H \mathbf{u}$ using a parallel warp reduction.

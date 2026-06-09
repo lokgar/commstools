@@ -4660,7 +4660,7 @@ def rls(
 
     Algorithm (per symbol n)
     ------------------------
-    Steps 1–5 and 7 are identical to :func:`lms` (input windowing, butterfly
+    Steps 1-5 and 7 are identical to :func:`lms` (input windowing, butterfly
     filter output, carrier phase recovery, decision, error + tap-plane
     back-rotation, and cycle-slip correction).  Step 6 replaces the plain LMS
     gradient with a rank-1 Riccati update:
@@ -4785,7 +4785,7 @@ def rls(
 
         * ``'pll'`` — 2nd-order decision-directed PLL.  The cross-product
           detector ``Im(y · conj(d))`` drives a PI loop with gains from
-          ``cpr_pll_bandwidth``.  Low noise floor; suited to QPSK–64-QAM.
+          ``cpr_pll_bandwidth``.  Low noise floor; suited to QPSK-64-QAM.
         * ``'bps'`` — Blind Phase Search over ``cpr_bps_test_phases``
           candidate angles in ``[0, π/2)``, averaged over a causal window
           of ``cpr_bps_block_size`` samples.  Uses a **dual-path** design:
@@ -5785,12 +5785,12 @@ def block_lms(
     Warnings
     --------
     **GPU throughput — use large block_size:** On GPU (CuPy) each Python
-    loop iteration launches ~10–20 CUDA kernels (FFT, einsum, IFFT, BPS
+    loop iteration launches ~10-20 CUDA kernels (FFT, einsum, IFFT, BPS
     rotations, …).  At ``block_size=64`` and 100k symbols that is ~1 500
     blocks x kernel-launch overhead; at ``block_size=2048`` it drops to
     ~49 blocks.  Throughput improves markedly once the cuFFT/cuBLAS work
     per block dominates the Python overhead.  On GPU prefer
-    ``block_size`` ≥ 512, ideally 1024–4096.
+    ``block_size`` ≥ 512, ideally 1024-4096.
 
     **BPS cycle-slip correction (``cpr_cycle_slip_correction=True``):**
     Every block transfers the full ``(C, block_size)`` float64 phase

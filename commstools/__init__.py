@@ -52,6 +52,7 @@ from . import (
     impairments,
     metrics,
     recovery,
+    spectral,
     timing,
 )
 from .core import Preamble, Signal, SingleCarrierFrame
@@ -76,6 +77,7 @@ __all__ = [
     "recovery",
     "save_npz",
     "set_log_level",
+    "spectral",
     "timing",
 ]
 

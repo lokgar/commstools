@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from commstools import recovery, spectral
+from commstools.backend import to_device
 from commstools.core import Signal
 from commstools.impairments import apply_awgn
 from commstools.mapping import gray_constellation
@@ -253,6 +254,177 @@ class TestCprPilots:
                 pilot_indices=pilot_indices,
                 pilot_values=pilot_values,
                 interpolation="spline_42",
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CPR — Pilot Tone
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCprPilotTone:
+    """Pilot-tone CPR on an oversampled RRC waveform with a guard-band tone."""
+
+    SPS = 8
+    BETA = 0.1  # RRC roll-off → data edge at (1+β)/2 · Rs
+    F_TONE = 2.0e6  # guard band: > (1.1/2)·Rs (=0.55 MHz) + B, and < fs/2 (=4 MHz)
+    BW = 0.3e6  # extraction half-width B
+    EDGE = 600  # trim FFT-window edge ringing before comparing
+
+    def _setup(
+        self,
+        xp,
+        n_symbols=2000,
+        df_hz=0.0,
+        linewidth_hz=0.0,
+        psr_db=-12.0,
+        num_streams=1,
+        seed=7,
+    ):
+        """Return (samples, fs, true_common_phase) for a tone-bearing waveform.
+
+        The common phase = frequency-offset ramp + Wiener phase noise is applied
+        *after* the tone, so the tone carries exactly the phase to be recovered.
+        """
+        fs = self.SPS * FS  # symbol rate = FS
+        sig = Signal.qam(
+            order=16,
+            num_symbols=n_symbols,
+            sps=self.SPS,
+            symbol_rate=FS,
+            rrc_rolloff=self.BETA,
+            num_streams=num_streams,
+            seed=seed,
+        )
+        samples = xp.asarray(sig.samples)
+        samples = spectral.add_pilot_tone(
+            samples, fs, self.F_TONE, power_ratio_db=psr_db
+        )
+
+        N = samples.shape[-1]
+        n = xp.arange(N, dtype=xp.float64)
+        if linewidth_hz > 0.0:
+            rng = xp.random.RandomState(seed)
+            incr = rng.normal(0.0, float(np.sqrt(2 * np.pi * linewidth_hz / fs)), N)
+            pn = xp.cumsum(incr)
+        else:
+            pn = xp.zeros(N, dtype=xp.float64)
+        common = 2 * np.pi * df_hz * n / fs + pn  # (N,) float64
+        samples = samples * xp.exp(1j * common).astype(samples.dtype)
+        return samples, fs, common
+
+    def _interior_rms(self, xp, phase_est, common):
+        g = slice(self.EDGE, -self.EDGE)
+        return _rms_phase_error(xp, phase_est[..., g], common[..., g])
+
+    @pytest.mark.parametrize("df_hz", [0.0, 0.05e6, 0.1e6])
+    def test_phase_residual_foe(self, backend_device, xp, df_hz):
+        """Recovers a frequency-offset ramp (< B) to < 0.1 rad RMS."""
+        samples, fs, common = self._setup(xp, df_hz=df_hz)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+        )
+        assert self._interior_rms(xp, theta, common) < 0.1
+
+    def test_phase_residual_foe_and_phase_noise(self, backend_device, xp):
+        """Recovers joint frequency offset + Wiener phase noise."""
+        samples, fs, common = self._setup(xp, df_hz=0.05e6, linewidth_hz=5e3)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+        )
+        assert self._interior_rms(xp, theta, common) < 0.15
+
+    @pytest.mark.parametrize("window", ["tukey", "rect", "gaussian"])
+    def test_window_options(self, backend_device, xp, window):
+        """All window shapes track the common phase to < 0.12 rad RMS."""
+        samples, fs, common = self._setup(xp, df_hz=0.05e6)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW, window=window
+        )
+        assert self._interior_rms(xp, theta, common) < 0.12
+
+    def test_output_shape_siso(self, backend_device, xp):
+        """1D input → 1D phase output of matching length."""
+        samples, fs, _ = self._setup(xp)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+        )
+        assert theta.shape == samples.shape
+
+    def test_output_shape_mimo(self, backend_device, xp):
+        """2D input (C, N) → 2D phase output (C, N)."""
+        samples, fs, _ = self._setup(xp, num_streams=2)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+        )
+        assert theta.shape == samples.shape
+
+    def test_joint_rows_identical(self, backend_device, xp):
+        """joint_channels broadcasts a single trajectory to all rows."""
+        samples, fs, _ = self._setup(xp, num_streams=2, df_hz=0.05e6)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW, joint_channels=True
+        )
+        assert bool(xp.allclose(theta[0], theta[1]))
+
+    def test_remove_frequency_offset_false_leaves_pure_pn(self, backend_device, xp):
+        """With FOE removal off, the estimate matches the detrended common phase."""
+        samples, fs, common = self._setup(xp, df_hz=0.08e6, linewidth_hz=5e3)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples,
+            fs,
+            self.F_TONE,
+            bandwidth_hz=self.BW,
+            remove_frequency_offset=False,
+        )
+        N = samples.shape[-1]
+        n = np.arange(N, dtype=np.float64)
+        common_np = np.asarray(to_device(common, "cpu"))
+        common_detrended = common_np - np.polyval(np.polyfit(n, common_np, 1), n)
+        theta_np = np.asarray(to_device(theta, "cpu"))
+        g = slice(self.EDGE, -self.EDGE)
+        err = theta_np[g] - common_detrended[g]
+        err -= err.mean()
+        assert float(np.sqrt(np.mean(err**2))) < 0.15
+
+    def test_refine_relocates_large_offset(self, backend_device, xp):
+        """An offset > B is tracked when the search band covers the shifted tone."""
+        # df = 0.6 MHz exceeds B = 0.3 MHz: a window centred at nominal would miss
+        # the tone, but refine + a wide search band relocates it.
+        samples, fs, common = self._setup(xp, df_hz=0.6e6)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW, search_band_hz=1.0e6
+        )
+        assert self._interior_rms(xp, theta, common) < 0.1
+
+    def test_refine_off_fails_when_tone_leaves_window(self, backend_device, xp):
+        """Without refinement, an offset > B drags the tone out of the window."""
+        samples, fs, common = self._setup(xp, df_hz=0.6e6)
+        theta = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F_TONE, bandwidth_hz=self.BW, refine_tone=False
+        )
+        # The tone is outside the nominal window → estimate is garbage, not tracking.
+        assert self._interior_rms(xp, theta, common) > 1.0
+
+    def test_invalid_window_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match="Unknown window"):
+            recovery.recover_carrier_phase_pilot_tone(
+                samples, fs, self.F_TONE, bandwidth_hz=self.BW, window="brick"
+            )
+
+    def test_invalid_bandwidth_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match="bandwidth_hz must be > 0"):
+            recovery.recover_carrier_phase_pilot_tone(
+                samples, fs, self.F_TONE, bandwidth_hz=0.0
+            )
+
+    def test_tone_frequency_out_of_range_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
+            recovery.recover_carrier_phase_pilot_tone(
+                samples, fs, fs, bandwidth_hz=self.BW
             )
 
 

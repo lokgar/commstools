@@ -1,5 +1,6 @@
 """Tests for spectral analysis routines (Welch PSD, Frequency shifting)."""
 
+import numpy as np
 import pytest
 
 from commstools import spectral
@@ -207,3 +208,71 @@ def test_spectrogram_complex_mimo(backend_device, xp):
     # Test that error is raised when requesting return_onesided=True for complex data
     with pytest.raises(ValueError, match="Cannot compute one-sided spectrogram"):
         spectral.spectrogram(samples_mimo, sampling_rate=fs, return_onesided=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pilot tone injection
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAddPilotTone:
+    """Tests for spectral.add_pilot_tone (CW pilot-tone injection)."""
+
+    @staticmethod
+    def _signal(xp, N=4096, seed=0):
+        rng = xp.random.RandomState(seed)
+        x = (rng.randn(N) + 1j * rng.randn(N)).astype(xp.complex128)
+        return x / xp.sqrt(xp.mean(xp.abs(x) ** 2))  # unit average power
+
+    @pytest.mark.parametrize("psr_db", [-20.0, -10.0, 0.0])
+    def test_power_ratio(self, backend_device, xp, psr_db):
+        """Added tone power matches the requested pilot-to-signal ratio."""
+        fs = 100.0
+        x = self._signal(xp)
+        p_sig = float(xp.mean(xp.abs(x) ** 2))
+        y = spectral.add_pilot_tone(x, fs, 30.0, power_ratio_db=psr_db)
+        # The added tone is exactly y - x; measure its power directly (the
+        # signal/tone cross-correlation makes total-minus-signal unreliable at low PSR).
+        p_tone = float(xp.mean(xp.abs(y - x) ** 2))
+        assert abs(10 * np.log10(p_tone / p_sig) - psr_db) < 0.05
+
+    def test_peak_location(self, backend_device, xp):
+        """The injected tone shows up as the dominant spectral peak at f_p."""
+        fs = 100.0
+        N = 4096
+        f_p = 30.0
+        x = self._signal(xp, N=N)
+        y = spectral.add_pilot_tone(x, fs, f_p, power_ratio_db=10.0)
+        freqs = xp.fft.fftfreq(N, d=1.0 / fs)
+        k = int(xp.argmax(xp.abs(xp.fft.fft(y))))
+        assert abs(float(freqs[k]) - f_p) < fs / N * 2
+
+    def test_dtype_and_shape_preserved(self, backend_device, xp):
+        """complex64 stays complex64; SISO/MIMO shapes are preserved."""
+        fs = 100.0
+        x64 = self._signal(xp).astype(xp.complex64)
+        y = spectral.add_pilot_tone(x64, fs, 30.0)
+        assert y.dtype == xp.complex64
+        assert y.shape == x64.shape
+
+        mimo = xp.stack([self._signal(xp), 2 * self._signal(xp, seed=1)])
+        ym = spectral.add_pilot_tone(mimo, fs, 30.0)
+        assert ym.shape == mimo.shape
+
+    def test_renormalize_preserves_power(self, backend_device, xp):
+        """renormalize=True restores each channel's original mean power."""
+        fs = 100.0
+        mimo = xp.stack([self._signal(xp), 2 * self._signal(xp, seed=1)])
+        p_in = xp.mean(xp.abs(mimo) ** 2, axis=-1)
+        y = spectral.add_pilot_tone(
+            mimo, fs, 30.0, power_ratio_db=-6.0, renormalize=True
+        )
+        p_out = xp.mean(xp.abs(y) ** 2, axis=-1)
+        assert bool(xp.allclose(p_in, p_out, rtol=1e-4))
+
+    def test_invalid_frequency_raises(self, backend_device, xp):
+        """Tone frequency outside (-fs/2, fs/2) raises ValueError."""
+        fs = 100.0
+        x = self._signal(xp)
+        with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
+            spectral.add_pilot_tone(x, fs, fs)

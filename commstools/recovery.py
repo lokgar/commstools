@@ -20,6 +20,10 @@ recover_carrier_phase_tikhonov :
 recover_carrier_phase_pilots :
     Pilot-aided CPR with phase unwrapping and interpolation across the symbol grid.
     Single-carrier only; for OFDM CPE tracking see 5G NR PTRS / DVB-T2.
+recover_carrier_phase_pilot_tone :
+    Pilot-tone-aided CPR: extracts a CW tone from a guard band of the
+    oversampled waveform and reads its phase to recover the common
+    frequency offset + phase noise. Operates before matched filtering.
 correct_carrier_phase :
     Applies per-symbol phase correction by complex rotation.
 correct_cycle_slips :
@@ -35,7 +39,7 @@ from typing import Optional
 import numpy as np
 
 from .backend import ArrayType, dispatch, to_device
-from .frequency import _modulation_power_m
+from .frequency import _modulation_power_m, find_bias_tone
 from .logger import logger
 
 # Lazy-compiled Numba kernels for sequential CPR algorithms.
@@ -1723,6 +1727,284 @@ def recover_carrier_phase_pilots(
     if was_1d:
         return phi_full[0]
     return phi_full
+
+
+def recover_carrier_phase_pilot_tone(
+    samples: ArrayType,
+    sampling_rate: float,
+    tone_frequency_hz: float,
+    bandwidth_hz: float,
+    search_band_hz: Optional[float] = None,
+    refine_tone: bool = True,
+    window: str = "tukey",
+    window_param: Optional[float] = None,
+    remove_frequency_offset: bool = True,
+    joint_channels: bool = False,
+    debug_plot: bool = False,
+) -> ArrayType:
+    r"""
+    Carrier phase recovery from a continuous-wave (CW) pilot tone.
+
+    Reads the common carrier phase straight off a pilot tone added at the
+    transmitter (see :func:`~commstools.spectral.add_pilot_tone`).  Because
+    the tone shares the data's local oscillator and channel, its phase equals
+    the common phase :math:`\theta[n] = 2\pi\Delta f\,n/f_s + \phi_\text{PN}[n]
+    + \phi_0` — the carrier **frequency offset and phase noise jointly**.  No
+    symbol decisions are required, so there is no M-th-power noise enhancement
+    and the estimate tracks fast phase noise sample-by-sample.
+
+    The tone is isolated with a **zero-phase** spectral window (FFT → window →
+    IFFT), so there is no group-delay misalignment between the recovered phase
+    and the samples.
+
+    .. note::
+        **Operates on the oversampled waveform, before matched filtering and
+        decimation.**  The tone lives in a guard band that the matched filter
+        would otherwise remove.  Apply the returned phase to the same
+        oversampled ``samples`` with :func:`correct_carrier_phase`, *then* run
+        matched filtering / decimation and any residual 1-sps CPR.
+
+    Parameters
+    ----------
+    samples : array_like
+        Oversampled complex samples (``sps > 1``). Shape: ``(N,)`` or
+        ``(C, N)``.  Same rate as used for :func:`add_pilot_tone`.
+    sampling_rate : float
+        Sampling rate :math:`f_s` in Hz.
+    tone_frequency_hz : float
+        Nominal pilot-tone frequency :math:`f_p` in Hz (as added at the TX).
+        The recovered phase is referenced to **this** carrier, so any carrier
+        frequency offset remains in the phase ramp when
+        ``remove_frequency_offset=False`` is *not* set (see below).
+    bandwidth_hz : float
+        Half-width :math:`B` of the spectral extraction window in Hz — the
+        **tracking bandwidth**.  Must be wide enough to pass the phase-noise
+        sidebands (``B ≳ a few x linewidth``) yet narrow enough to reject the
+        data band (``B`` smaller than the tone-to-signal-edge guard).  See the
+        guide at the end of this docstring.
+    search_band_hz : float, optional
+        Half-width in Hz of the peak-search window handed to
+        :func:`~commstools.frequency.find_bias_tone` when ``refine_tone=True``.
+        The actual tone peak is sought within
+        ``[f_p - search_band_hz, f_p + search_band_hz]``; this bounds how far
+        a frequency offset may have dragged the tone from nominal.  Defaults
+        to ``bandwidth_hz``.  Enlarge it (independently of ``bandwidth_hz``)
+        when the offset can exceed ``B`` but keep it inside the guard so the
+        data band never wins the argmax.
+    refine_tone : bool, default True
+        If ``True``, locate the actual per-channel tone frequency with
+        :func:`~commstools.frequency.find_bias_tone` and centre the extraction
+        window there.  Essential when a frequency offset may shift the tone by
+        more than ``B`` (otherwise the tone falls outside a window centred at
+        nominal).  If ``False``, the window is centred at ``tone_frequency_hz``.
+    window : {'tukey', 'rect', 'gaussian'}, default 'tukey'
+        Spectral window shape over the passband ``|f - f_centre| <= B``:
+
+        * ``'tukey'`` — flat top with cosine-tapered edges (recommended).
+          ``window_param`` is the taper fraction :math:`\alpha \in (0, 1]`
+          (default ``0.5``).  Suppresses the Gibbs ringing a brickwall would
+          imprint on the recovered phase.
+        * ``'rect'`` — brickwall (sharpest selectivity, most time-domain
+          ringing).  ``window_param`` ignored.
+        * ``'gaussian'`` — Gaussian taper truncated at ``B``.  ``window_param``
+          is :math:`\sigma` as a fraction of ``B`` (default ``0.4``).
+    window_param : float, optional
+        Shape parameter for the chosen window (see ``window``).  ``None`` uses
+        the per-window default.
+    remove_frequency_offset : bool, default True
+        If ``True`` (default), the recovered phase **retains** the linear ramp
+        from any residual carrier frequency offset, so applying it corrects
+        frequency offset and phase noise together.  If ``False``, the
+        least-squares linear trend is subtracted per channel, leaving only the
+        phase-noise fluctuation (use when the frequency offset is handled by a
+        separate stage).
+    joint_channels : bool, default False
+        For MIMO inputs (C > 1): if ``True``, coherently sum the extracted
+        tone phasors across channels before taking the angle (shared-LO,
+        ~√C variance reduction).  The single trajectory is broadcast to all
+        rows.  No effect for SISO.
+    debug_plot : bool, default False
+        If ``True``, open the dedicated diagnostic figure
+        (:func:`~commstools.plotting.pilot_tone_phase_estimate`): the tone
+        spectrum with the extraction window overlaid, and the recovered phase.
+
+    Returns
+    -------
+    array_like
+        Per-sample phase estimate :math:`\hat\theta[n]` in radians.  Shape
+        matches ``samples``; same backend.  Apply with
+        :func:`correct_carrier_phase`.
+
+    Notes
+    -----
+    **Algorithm** (per channel, fully vectorised):
+
+    1. ``X = FFT(samples)``.
+    2. (optional) refine the tone centre :math:`f_c` with
+       :func:`~commstools.frequency.find_bias_tone`.
+    3. Zero-phase extraction: ``t[n] = IFFT(X · W)`` where ``W`` is the
+       window centred at :math:`f_c` with half-width ``B``.
+    4. Strip the nominal carrier: ``z[n] = t[n] · e^{-j 2\pi f_p n / f_s}``.
+    5. ``\hat\theta[n] = unwrap(\angle z[n])`` in ``float64``; optionally
+       detrend.
+
+    The FFT uses ``nfft = N`` (no zero-padding) so the IFFT output stays
+    sample-aligned with the input, and the phase is computed in ``complex128``
+    / ``float64`` to keep ``unwrap`` away from the ``±\pi`` wrap boundary.
+
+    **Choosing the extraction bandwidth** ``bandwidth_hz`` (``B``):
+    ``B`` trades phase-noise tracking against tone SNR.  Lower bound — the
+    window must pass the phase-noise sidebands, whose one-sided span is on the
+    order of the combined laser linewidth :math:`\Delta\nu`; take
+    ``B ≳ 3-5 · \Delta\nu`` (and ``B`` above any residual frequency-offset
+    rate you keep in the phase).  Upper bound — the post-filter tone SNR
+    improves as ``f_s / (2B)``, and ``B`` must stay below the gap between the
+    tone and the signal-band edge so no data energy leaks in.  Start near the
+    geometric mean of the two bounds and widen if the phase looks
+    over-smoothed, narrow if it looks noisy.
+
+    **How close can the tone sit to the signal band?**  The data occupies
+    roughly :math:`\pm (1+\beta) R_s / 2` (roll-off :math:`\beta`).  Place the
+    tone at :math:`|f_p| > (1+\beta) R_s / 2 + B` so the whole extraction
+    window clears the band, and keep :math:`|f_p| + B < f_s/2` so it stays
+    below Nyquist.  That requires oversampling headroom: ``sps`` must exceed
+    ``(1+\beta) + 2B/R_s``.  The tighter the guard you want, the smaller ``B``
+    must be — which is the same knob as the tracking-bandwidth trade-off above.
+
+    References
+    ----------
+    M. Morsy-Osman et al., "Joint mitigation of laser phase noise and
+    fiber nonlinearity using pilot-tones," *Opt. Express*, 2013.
+
+    S. Randel et al., "Pilot-tone-based phase noise compensation for coherent
+    optical OFDM and single-carrier systems," *ECOC*, 2010.
+    """
+    if bandwidth_hz <= 0.0:
+        raise ValueError(f"bandwidth_hz must be > 0, got {bandwidth_hz}.")
+    if not (-sampling_rate / 2.0 < tone_frequency_hz < sampling_rate / 2.0):
+        raise ValueError(
+            f"tone_frequency_hz={tone_frequency_hz} must lie in (-fs/2, fs/2)."
+        )
+
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[None, :]  # (1, N)
+    C, N = samples.shape
+
+    df = sampling_rate / N
+    if bandwidth_hz < df:
+        logger.warning(
+            f"CPR (pilot-tone): bandwidth_hz={bandwidth_hz:.3g} Hz is below the FFT "
+            f"resolution df=fs/N={df:.3g} Hz; the extraction window may capture too few "
+            f"bins. Increase bandwidth_hz or the record length N."
+        )
+
+    if search_band_hz is None:
+        search_band_hz = bandwidth_hz
+
+    # 1) Per-channel tone centre.  Refinement absorbs a frequency offset that
+    #    has dragged the tone away from nominal, so the window stays centred on it.
+    if refine_tone:
+        f_centers = np.array(
+            [
+                find_bias_tone(
+                    samples[c],
+                    sampling_rate,
+                    target_hz=tone_frequency_hz,
+                    search_band_hz=search_band_hz,
+                )
+                for c in range(C)
+            ],
+            dtype=np.float64,
+        )
+    else:
+        f_centers = np.full(C, float(tone_frequency_hz), dtype=np.float64)
+
+    # 2) FFT (nfft = N keeps the IFFT sample-aligned).  Promote to complex128 so
+    #    the angle/unwrap downstream stays clear of the ±π wrap boundary.
+    samples_c = samples.astype(
+        xp.complex128 if samples.dtype == xp.complex64 else samples.dtype
+    )
+    X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
+    freqs = xp.asarray(np.fft.fftfreq(N, d=1.0 / sampling_rate))  # (N,) float64
+
+    # 3) Zero-phase extraction window W (C, N), centred per channel at f_centers.
+    f_centers_xp = xp.asarray(f_centers)[:, None]  # (C, 1)
+    u = xp.abs(freqs[None, :] - f_centers_xp) / bandwidth_hz  # (C, N), 0 at centre
+    in_band = u <= 1.0
+
+    if window == "rect":
+        W = in_band.astype(xp.float64)
+    elif window == "tukey":
+        alpha = 0.5 if window_param is None else float(window_param)
+        alpha = min(max(alpha, 1e-3), 1.0)  # clamp; α→0 degenerates to rect
+        flat = u <= (1.0 - alpha)
+        taper = 0.5 * (1.0 + xp.cos(np.pi * (u - (1.0 - alpha)) / alpha))
+        W = xp.where(flat, 1.0, xp.where(in_band, taper, 0.0)).astype(xp.float64)
+    elif window == "gaussian":
+        sigma = 0.4 if window_param is None else float(window_param)
+        W = xp.where(in_band, xp.exp(-0.5 * (u / sigma) ** 2), 0.0).astype(xp.float64)
+    else:
+        raise ValueError(
+            f"Unknown window {window!r}. Choose 'tukey', 'rect', or 'gaussian'."
+        )
+
+    tone_t = xp.fft.ifft(X * W, axis=-1)  # (C, N) complex128
+
+    # 4) Strip the nominal carrier so a residual frequency offset survives as a
+    #    phase ramp.  Wrap the ramp before exp (precision; matches FOE correctors).
+    two_pi = 2.0 * np.pi
+    n = xp.arange(N, dtype=xp.float64)
+    carrier_phase = two_pi * float(tone_frequency_hz) * n / sampling_rate
+    carrier_phase = carrier_phase - xp.round(carrier_phase / two_pi) * two_pi
+    carrier_conj = xp.exp(-1j * carrier_phase)  # (N,) complex128
+    phasor = tone_t * carrier_conj[None, :]  # (C, N)
+
+    # 5) Phase extraction + unwrap in float64.
+    if joint_channels and C > 1:
+        z_joint = xp.sum(phasor, axis=0)  # (N,) coherent sum
+        theta_joint = xp.unwrap(xp.angle(z_joint).astype(xp.float64))  # (N,)
+        theta = xp.broadcast_to(theta_joint[None, :], (C, N)).copy()
+    else:
+        theta = xp.unwrap(xp.angle(phasor).astype(xp.float64), axis=-1)  # (C, N)
+
+    if not remove_frequency_offset:
+        # Subtract the per-channel least-squares linear trend (residual FOE),
+        # preserving the mean phase; leaves only the phase-noise fluctuation.
+        nc = n - xp.mean(n)
+        denom = xp.sum(nc * nc)
+        theta_c = theta - xp.mean(theta, axis=-1, keepdims=True)
+        slope = xp.sum(theta_c * nc[None, :], axis=-1, keepdims=True) / denom  # (C, 1)
+        theta = theta - slope * nc[None, :]
+
+    theta_np = to_device(theta, "cpu")
+    phi_mean_deg = float(np.mean(theta_np)) * 180.0 / np.pi
+    phi_std_deg = float(np.std(theta_np)) * 180.0 / np.pi
+    mode_str = "joint" if (joint_channels and C > 1) else "independent"
+    logger.info(
+        f"CPR (pilot-tone, {window}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
+        f"std={phi_std_deg:.2f}° [f_p={tone_frequency_hz:.3g} Hz, B={bandwidth_hz:.3g} Hz, "
+        f"refine={refine_tone}, remove_foe={remove_frequency_offset}, C={C}]"
+    )
+
+    if debug_plot:
+        from . import plotting as _plotting
+
+        _plotting.pilot_tone_phase_estimate(
+            freqs=to_device(freqs, "cpu"),
+            mag_spectrum=to_device(xp.abs(X), "cpu"),
+            window=to_device(W, "cpu"),
+            f_tones=f_centers,
+            theta=theta_np,
+            tone_frequency_hz=float(tone_frequency_hz),
+            bandwidth_hz=float(bandwidth_hz),
+            show=True,
+        )
+
+    if was_1d:
+        return theta[0]
+    return theta
 
 
 def correct_carrier_phase(

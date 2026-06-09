@@ -2197,6 +2197,136 @@ def pilot_phase_estimate(
     return fig, axes
 
 
+def pilot_tone_phase_estimate(
+    freqs,
+    mag_spectrum,
+    window,
+    f_tones,
+    theta,
+    tone_frequency_hz: float,
+    bandwidth_hz: float,
+    ax=None,
+    show: bool = False,
+    title: str = "CPR — Pilot Tone",
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Diagnostic for :func:`~commstools.recovery.recover_carrier_phase_pilot_tone`.
+
+    Two panels:
+
+    1. **Tone spectrum** — magnitude spectrum ``|X(f)|`` (dB) with the
+       zero-phase extraction window overlaid on a twin axis, the per-channel
+       refined tone peak marked, and the nominal tone frequency annotated.
+    2. **Recovered phase** — the per-sample phase estimate ``θ̂[n]`` (deg).
+
+    All channels are overlaid on each panel.
+
+    Parameters
+    ----------
+    freqs : array_like
+        FFT frequency axis in Hz (``np.fft.fftfreq(N) * fs``). Shape: ``(N,)``.
+    mag_spectrum : array_like
+        Magnitude spectrum ``|X(f)|``. Shape: ``(C, N)`` or ``(N,)``.
+    window : array_like
+        Extraction window ``W(f)`` in ``[0, 1]``. Shape: ``(C, N)`` or ``(N,)``.
+    f_tones : array_like
+        Per-channel refined tone frequency in Hz. Shape: ``(C,)``.
+    theta : array_like
+        Recovered per-sample phase in radians. Shape: ``(C, N)`` or ``(N,)``.
+    tone_frequency_hz : float
+        Nominal pilot-tone frequency in Hz.
+    bandwidth_hz : float
+        Extraction window half-width in Hz (shaded around the nominal tone).
+    ax : array_like of Axes, optional
+        Two Axes ``[spectrum, phase]``. If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "CPR — Pilot Tone"
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    freqs = np.asarray(to_device(freqs, "cpu"), dtype=float)
+    mag_spectrum = to_device(mag_spectrum, "cpu")
+    window = to_device(window, "cpu")
+    theta = to_device(theta, "cpu")
+    if mag_spectrum.ndim == 1:
+        mag_spectrum = mag_spectrum[None, :]
+    if window.ndim == 1:
+        window = window[None, :]
+    if theta.ndim == 1:
+        theta = theta[None, :]
+    f_tones = np.atleast_1d(np.asarray(to_device(f_tones, "cpu"), dtype=float))
+    C, N = mag_spectrum.shape
+
+    if ax is None:
+        fig, raw_axes = plt.subplots(1, 2, figsize=(11, 3.8), squeeze=False)
+        ax_spec, ax_phase = raw_axes[0]
+    else:
+        ax_spec, ax_phase = ax[0], ax[1]
+        fig = ax_spec.figure
+
+    order = np.argsort(freqs)
+    f_sorted = freqs[order]
+    eps = 1e-300
+
+    # Panel 1 — spectrum (dB) with extraction window on a twin axis.
+    ax_win = ax_spec.twinx()
+    for i in range(C):
+        mag_db = 20.0 * np.log10(np.maximum(mag_spectrum[i][order], eps))
+        label = f"Ch {i}" if C > 1 else "|X(f)|"
+        ax_spec.plot(f_sorted, mag_db, alpha=0.8, label=label)
+        ax_win.plot(f_sorted, window[i][order], color="C3", alpha=0.5, linewidth=1.2)
+        ax_spec.axvline(
+            float(f_tones[i]),
+            color="C2",
+            linestyle=":",
+            linewidth=1.0,
+            label=("tone peak" if i == 0 else None),
+        )
+    ax_spec.axvspan(
+        tone_frequency_hz - bandwidth_hz,
+        tone_frequency_hz + bandwidth_hz,
+        color="C3",
+        alpha=0.08,
+        label=f"window ±B ({bandwidth_hz:.3g} Hz)",
+    )
+    ax_spec.axvline(
+        tone_frequency_hz,
+        color="k",
+        linestyle="--",
+        linewidth=1.0,
+        label=f"nominal f_p ({tone_frequency_hz:.3g} Hz)",
+    )
+    ax_win.set_ylim(-0.05, 1.35)
+    ax_win.set_ylabel("Window W(f)", color="C3")
+    ax_spec.set_title(f"{title} — Tone Spectrum")
+    ax_spec.set_xlabel("Frequency [Hz]")
+    ax_spec.set_ylabel("|X(f)| [dB]")
+    ax_spec.legend(fontsize="small", loc="upper left")
+    ax_spec.grid(True, alpha=0.3)
+
+    # Panel 2 — recovered phase trajectory.
+    sample_idx = np.arange(N)
+    for i in range(C):
+        ph_label = f"Ch {i}" if C > 1 else None
+        ax_phase.plot(sample_idx, np.degrees(theta[i]), alpha=0.85, label=ph_label)
+    th_mean = float(np.mean(np.degrees(theta)))
+    th_std = float(np.std(np.degrees(theta)))
+    ax_phase.set_title(f"{title} — Recovered θ̂  [μ={th_mean:.1f}°, σ={th_std:.2f}°]")
+    ax_phase.set_xlabel("Sample Index")
+    ax_phase.set_ylabel("Phase [deg]")
+    if C > 1:
+        ax_phase.legend(fontsize="small", loc="upper right")
+    ax_phase.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, (ax_spec, ax_phase)
+
+
 def zf_equalizer_response(
     channel_estimate,
     noise_variance: float = 0.0,
