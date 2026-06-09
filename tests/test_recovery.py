@@ -334,9 +334,11 @@ class TestCprPilotTone:
         )
         assert self._interior_rms(xp, theta, common) < 0.15
 
-    @pytest.mark.parametrize("window", ["tukey", "rect", "gaussian"])
+    @pytest.mark.parametrize(
+        "window", ["tukey", ("tukey", 0.3), "boxcar", ("gaussian", 250), "hann"]
+    )
     def test_window_options(self, backend_device, xp, window):
-        """All window shapes track the common phase to < 0.12 rad RMS."""
+        """Any scipy.get_window spec tracks the common phase to < 0.12 rad RMS."""
         samples, fs, common = self._setup(xp, df_hz=0.05e6)
         theta = recovery.recover_carrier_phase_pilot_tone(
             samples, fs, self.F_TONE, bandwidth_hz=self.BW, window=window
@@ -408,7 +410,7 @@ class TestCprPilotTone:
 
     def test_invalid_window_raises(self, backend_device, xp):
         samples, fs, _ = self._setup(xp, n_symbols=256)
-        with pytest.raises(ValueError, match="Unknown window"):
+        with pytest.raises(ValueError, match="Invalid window"):
             recovery.recover_carrier_phase_pilot_tone(
                 samples, fs, self.F_TONE, bandwidth_hz=self.BW, window="brick"
             )

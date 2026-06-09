@@ -34,7 +34,7 @@ resolve_phase_ambiguity :
     Resolves rotational phase ambiguity after blind carrier phase recovery.
 """
 
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -1736,8 +1736,7 @@ def recover_carrier_phase_pilot_tone(
     bandwidth_hz: float,
     search_band_hz: Optional[float] = None,
     refine_tone: bool = True,
-    window: str = "tukey",
-    window_param: Optional[float] = None,
+    window: Union[str, Tuple] = "tukey",
     remove_frequency_offset: bool = True,
     joint_channels: bool = False,
     debug_plot: bool = False,
@@ -1797,20 +1796,18 @@ def recover_carrier_phase_pilot_tone(
         window there.  Essential when a frequency offset may shift the tone by
         more than ``B`` (otherwise the tone falls outside a window centred at
         nominal).  If ``False``, the window is centred at ``tone_frequency_hz``.
-    window : {'tukey', 'rect', 'gaussian'}, default 'tukey'
-        Spectral window shape over the passband ``|f - f_centre| <= B``:
+    window : str or tuple, default 'tukey'
+        Spectral window applied over the passband ``|f - f_centre| <= B`` —
+        any spec accepted by :func:`scipy.signal.get_window`.  The window
+        (length ``2·⌊B/Δf⌋ + 1`` bins, where ``Δf = f_s/N``) tapers the band
+        edges to suppress the Gibbs ringing a brickwall would imprint on the
+        recovered phase.  Examples:
 
-        * ``'tukey'`` — flat top with cosine-tapered edges (recommended).
-          ``window_param`` is the taper fraction :math:`\alpha \in (0, 1]`
-          (default ``0.5``).  Suppresses the Gibbs ringing a brickwall would
-          imprint on the recovered phase.
-        * ``'rect'`` — brickwall (sharpest selectivity, most time-domain
-          ringing).  ``window_param`` ignored.
-        * ``'gaussian'`` — Gaussian taper truncated at ``B``.  ``window_param``
-          is :math:`\sigma` as a fraction of ``B`` (default ``0.4``).
-    window_param : float, optional
-        Shape parameter for the chosen window (see ``window``).  ``None`` uses
-        the per-window default.
+        * ``'tukey'`` — flat top, cosine-tapered edges (recommended; α=0.5).
+        * ``('tukey', 0.3)`` — narrower taper for sharper selectivity.
+        * ``'boxcar'`` — brickwall (sharpest band, most time-domain ringing).
+        * ``('gaussian', std)`` — Gaussian taper; ``std`` in **bins**.
+        * ``('kaiser', beta)``, ``'hann'``, ``'blackman'`` — also accepted.
     remove_frequency_offset : bool, default True
         If ``True`` (default), the recovered phase **retains** the linear ramp
         from any residual carrier frequency offset, so applying it corrects
@@ -1929,26 +1926,32 @@ def recover_carrier_phase_pilot_tone(
     X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
     freqs = xp.asarray(np.fft.fftfreq(N, d=1.0 / sampling_rate))  # (N,) float64
 
-    # 3) Zero-phase extraction window W (C, N), centred per channel at f_centers.
-    f_centers_xp = xp.asarray(f_centers)[:, None]  # (C, 1)
-    u = xp.abs(freqs[None, :] - f_centers_xp) / bandwidth_hz  # (C, N), 0 at centre
-    in_band = u <= 1.0
+    # 3) Zero-phase extraction window W (C, N): a window spanning the in-band
+    #    width (±B), placed circularly at each channel's tone bin.  The window is
+    #    built once with scipy.signal.get_window and moved to the device.  It is
+    #    deliberately *not* built via the dispatched ``sp``: cupyx.scipy's
+    #    get_window is not API-compatible with scipy (bare specs like 'tukey'
+    #    fail on GPU), so the reference scipy build guarantees identical windows
+    #    on both backends.  The window is tiny, so the host→device copy is free.
+    from scipy.signal import get_window  # noqa: PLC0415
 
-    if window == "rect":
-        W = in_band.astype(xp.float64)
-    elif window == "tukey":
-        alpha = 0.5 if window_param is None else float(window_param)
-        alpha = min(max(alpha, 1e-3), 1.0)  # clamp; α→0 degenerates to rect
-        flat = u <= (1.0 - alpha)
-        taper = 0.5 * (1.0 + xp.cos(np.pi * (u - (1.0 - alpha)) / alpha))
-        W = xp.where(flat, 1.0, xp.where(in_band, taper, 0.0)).astype(xp.float64)
-    elif window == "gaussian":
-        sigma = 0.4 if window_param is None else float(window_param)
-        W = xp.where(in_band, xp.exp(-0.5 * (u / sigma) ** 2), 0.0).astype(xp.float64)
-    else:
+    half = int(np.floor(bandwidth_hz / df))  # bins from centre to band edge
+    n_win = 2 * half + 1
+    try:
+        win_cpu = np.asarray(get_window(window, n_win, fftbins=False), dtype=np.float64)
+    except (ValueError, TypeError) as exc:
         raise ValueError(
-            f"Unknown window {window!r}. Choose 'tukey', 'rect', or 'gaussian'."
-        )
+            f"Invalid window {window!r}: {exc}. Pass any scipy.signal.get_window "
+            "spec, e.g. 'tukey', ('tukey', 0.3), 'boxcar', ('gaussian', 50)."
+        ) from exc
+    win_xp = xp.asarray(win_cpu)  # (n_win,) on device
+    offsets = xp.arange(-half, half + 1)  # (n_win,)
+    k_centers = np.round(f_centers / df).astype(np.int64) % N  # (C,) centre bins
+
+    W = xp.zeros((C, N), dtype=xp.float64)
+    for c in range(C):
+        idx = (int(k_centers[c]) + offsets) % N  # circular placement
+        W[c, idx] = win_xp
 
     tone_t = xp.fft.ifft(X * W, axis=-1)  # (C, N) complex128
 

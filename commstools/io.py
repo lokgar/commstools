@@ -64,6 +64,7 @@ _META_FIELDS: tuple[str, ...] = (
     "physical_domain",
     "center_frequency",
     "digital_frequency_offset",
+    "pilot_tone_hz",
 )
 
 # Optional array fields (not always present)

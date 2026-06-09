@@ -187,6 +187,11 @@ class Signal(BaseModel):
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: float = Field(default=0)
 
+    # Frequency (Hz) of a CW pilot tone added to the waveform (see
+    # spectral.add_pilot_tone), used by recovery.recover_carrier_phase_pilot_tone.
+    # None means no pilot tone is present.
+    pilot_tone_hz: Optional[float] = None
+
     # Human-readable label for the signal structure
     signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
         None
@@ -376,6 +381,12 @@ class Signal(BaseModel):
             ("Duration", helpers.format_si(self.duration, "s")),
             ("Center frequency", helpers.format_si(self.center_frequency, "Hz")),
             ("Freq. offset", helpers.format_si(self.digital_frequency_offset, "Hz")),
+        ]
+
+        if self.pilot_tone_hz is not None:
+            rows.append(("Pilot tone", helpers.format_si(self.pilot_tone_hz, "Hz")))
+
+        rows += [
             ("Backend", self.backend.upper()),
             (
                 "Configuration",

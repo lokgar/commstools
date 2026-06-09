@@ -88,6 +88,19 @@ def test_roundtrip_scalar_metadata(tmp_path):
     assert sig2.physical_domain == sig.physical_domain
     assert sig2.center_frequency == sig.center_frequency
     assert sig2.digital_frequency_offset == sig.digital_frequency_offset
+    assert sig2.pilot_tone_hz == sig.pilot_tone_hz  # None by default
+
+
+def test_roundtrip_pilot_tone_hz(tmp_path):
+    """pilot_tone_hz round-trips: None when absent, the float value when set."""
+    sig = _siso_signal()
+    assert sig.pilot_tone_hz is None  # default: no tone
+
+    sig.pilot_tone_hz = 2.5e9
+    p = tmp_path / "tone.npz"
+    save_npz(sig, p)
+    sig2 = load_npz(p)
+    assert sig2.pilot_tone_hz == 2.5e9
 
 
 def test_roundtrip_source_bits(tmp_path):
