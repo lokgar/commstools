@@ -146,6 +146,60 @@ def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> Tuple[int, int]:
     return nrows, ncols
 
 
+def _decimate_minmax(
+    x: np.ndarray, y: np.ndarray, max_points: int = 4000
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Down-sample a line for fast plotting while preserving its envelope.
+
+    Buckets the data and keeps the per-bucket min **and** max (emitted in
+    x-order), so sharp features — spectral peaks, window edges, glitches —
+    survive, unlike plain striding.  Matplotlib renders every vertex, so for
+    long oversampled records (N ≳ 10⁵) plotting the raw trace is the dominant
+    cost; reducing to a few thousand points is visually identical but orders of
+    magnitude faster.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        1-D arrays of equal length.
+    max_points : int, default 4000
+        Approximate cap on the number of plotted points.  Returned length is
+        ``≈ max_points`` (``2`` per bucket).  Pass ``<= 0`` to disable.
+
+    Returns
+    -------
+    (x_dec, y_dec) : tuple of np.ndarray
+        Decimated arrays, or the inputs unchanged when already short enough.
+    """
+    n = len(y)
+    if max_points <= 0 or n <= max_points:
+        return x, y
+
+    n_buckets = max(1, max_points // 2)
+    bucket = n // n_buckets
+    trimmed = n_buckets * bucket
+    yr = y[:trimmed].reshape(n_buckets, bucket)
+    xr = x[:trimmed].reshape(n_buckets, bucket)
+
+    rows = np.arange(n_buckets)
+    i_min = yr.argmin(axis=1)
+    i_max = yr.argmax(axis=1)
+    # Emit the two extrema per bucket in their original x-order so the line
+    # does not zig-zag backwards.
+    first_is_min = i_min <= i_max
+    x_out = np.empty(n_buckets * 2, dtype=x.dtype)
+    y_out = np.empty(n_buckets * 2, dtype=y.dtype)
+    x_out[0::2] = np.where(first_is_min, xr[rows, i_min], xr[rows, i_max])
+    y_out[0::2] = np.where(first_is_min, yr[rows, i_min], yr[rows, i_max])
+    x_out[1::2] = np.where(first_is_min, xr[rows, i_max], xr[rows, i_min])
+    y_out[1::2] = np.where(first_is_min, yr[rows, i_max], yr[rows, i_min])
+
+    if trimmed < n:  # keep the tail the reshape dropped
+        x_out = np.concatenate([x_out, x[trimmed:]])
+        y_out = np.concatenate([y_out, y[trimmed:]])
+    return x_out, y_out
+
+
 def psd(
     samples: Any,
     sampling_rate: float = 1.0,
@@ -1978,6 +2032,7 @@ def frequency_drift_blockwise_result(
     ax=None,
     show: bool = False,
     title: str = "Block-wise FOE",
+    max_points: int = 4000,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Diagnostic plot for :func:`~commstools.frequency.correct_frequency_drift`.
@@ -2004,6 +2059,10 @@ def frequency_drift_blockwise_result(
         with 2 panels is created.
     show : bool, default False
     title : str
+    max_points : int, default 4000
+        Approximate per-trace point budget; the dense per-sample Δf and phase
+        traces are envelope-decimated (min/max) before plotting so long records
+        render quickly.  Pass ``<= 0`` to plot every point.
 
     Returns
     -------
@@ -2021,9 +2080,13 @@ def frequency_drift_blockwise_result(
         axes = np.asarray(ax).flatten()[:2]
         fig = axes[0].figure
 
+    # Decimate the dense per-sample traces for fast rendering (envelope-preserving).
+    nf, df_k = _decimate_minmax(n_grid, df_dense * 1e-3, max_points)
+    np_, ph_deg = _decimate_minmax(n_grid, np.degrees(phase_trajectory), max_points)
+
     # Panel 1: frequency trajectory
     ax_f = axes[0]
-    ax_f.plot(n_grid, df_dense * 1e-3, label="Interpolated Δf")
+    ax_f.plot(nf, df_k, label="Interpolated Δf")
     ax_f.scatter(
         t_centers,
         df_estimates * 1e-3,
@@ -2040,7 +2103,7 @@ def frequency_drift_blockwise_result(
 
     # Panel 2: phase trajectory
     ax_p = axes[1]
-    ax_p.plot(n_grid, np.degrees(phase_trajectory))
+    ax_p.plot(np_, ph_deg)
     ax_p.set_xlabel("Sample Index")
     ax_p.set_ylabel("Phase [deg]")
     ax_p.set_title(f"{title} — Integrated Phase")
@@ -2208,6 +2271,7 @@ def pilot_tone_phase_estimate(
     ax=None,
     show: bool = False,
     title: str = "CPR — Pilot Tone",
+    max_points: int = 4000,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Diagnostic for :func:`~commstools.recovery.recover_carrier_phase_pilot_tone`.
@@ -2241,6 +2305,10 @@ def pilot_tone_phase_estimate(
         Two Axes ``[spectrum, phase]``. If ``None``, a new figure is created.
     show : bool, default False
     title : str, default "CPR — Pilot Tone"
+    max_points : int, default 4000
+        Approximate per-trace point budget; longer traces are envelope-decimated
+        (min/max) before plotting so oversampled records render quickly without
+        losing the tone peak or window edges.  Pass ``<= 0`` to plot every point.
 
     Returns
     -------
@@ -2260,7 +2328,7 @@ def pilot_tone_phase_estimate(
     C, N = mag_spectrum.shape
 
     if ax is None:
-        fig, raw_axes = plt.subplots(1, 2, figsize=(11, 3.8), squeeze=False)
+        fig, raw_axes = plt.subplots(1, 2, figsize=(10, 3.5), squeeze=False)
         ax_spec, ax_phase = raw_axes[0]
     else:
         ax_spec, ax_phase = ax[0], ax[1]
@@ -2271,12 +2339,16 @@ def pilot_tone_phase_estimate(
     eps = 1e-300
 
     # Panel 1 — spectrum (dB) with extraction window on a twin axis.
+    # Envelope-decimate the full-resolution traces: min/max preserves the tone
+    # peak and the window edges that plain striding would skip over.
     ax_win = ax_spec.twinx()
     for i in range(C):
         mag_db = 20.0 * np.log10(np.maximum(mag_spectrum[i][order], eps))
         label = f"Ch {i}" if C > 1 else "|X(f)|"
-        ax_spec.plot(f_sorted, mag_db, alpha=0.8, label=label)
-        ax_win.plot(f_sorted, window[i][order], color="C3", alpha=0.5, linewidth=1.2)
+        f_d, mag_d = _decimate_minmax(f_sorted, mag_db, max_points)
+        f_w, win_d = _decimate_minmax(f_sorted, window[i][order], max_points)
+        ax_spec.plot(f_d, mag_d, alpha=0.8, label=label)
+        ax_win.plot(f_w, win_d, color="C3", alpha=0.5, linewidth=1.2)
         ax_spec.axvline(
             float(f_tones[i]),
             color="C2",
@@ -2310,7 +2382,8 @@ def pilot_tone_phase_estimate(
     sample_idx = np.arange(N)
     for i in range(C):
         ph_label = f"Ch {i}" if C > 1 else None
-        ax_phase.plot(sample_idx, np.degrees(theta[i]), alpha=0.85, label=ph_label)
+        n_d, th_d = _decimate_minmax(sample_idx, np.degrees(theta[i]), max_points)
+        ax_phase.plot(n_d, th_d, alpha=0.85, label=ph_label)
     th_mean = float(np.mean(np.degrees(theta)))
     th_std = float(np.std(np.degrees(theta)))
     ax_phase.set_title(f"{title} — Recovered θ̂  [μ={th_mean:.1f}°, σ={th_std:.2f}°]")
