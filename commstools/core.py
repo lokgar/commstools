@@ -1258,6 +1258,57 @@ class Signal(BaseModel):
             self.samples = self.samples * (factor**0.5)
         return self
 
+    def add_pilot_tone(
+        self,
+        frequency_hz: float,
+        power_ratio_db: float = -15.0,
+        phase_init: float = 0.0,
+        renormalize: bool = False,
+    ) -> "Signal":
+        """
+        Add a CW pilot tone to the waveform for pilot-tone phase recovery.
+
+        Thin wrapper over :func:`commstools.spectral.add_pilot_tone` that adds
+        the tone to ``self.samples`` and records the **actual** (grid-quantized)
+        tone frequency in :attr:`pilot_tone_hz`, so it travels with the signal
+        through save/load and can be fed to
+        :func:`commstools.recovery.recover_carrier_phase_pilot_tone`.
+
+        The frequency is snapped to the buffer's FFT grid (``f_s/N``) so the
+        tone is seamless across the loop boundary on an AWG/DAC; see the
+        underlying function for the full rationale.
+
+        Parameters
+        ----------
+        frequency_hz : float
+            Requested tone frequency :math:`f_p` in Hz, in ``(-f_s/2, f_s/2)``.
+            Quantized to the nearest ``f_s/N`` bin.
+        power_ratio_db : float, default -15.0
+            Pilot-to-signal power ratio in dB.
+        phase_init : float, default 0.0
+            Initial tone phase in radians.
+        renormalize : bool, default False
+            If ``True``, restore each channel's original mean power after
+            adding the tone (preserves the ``E[|x|²] = 1/sps`` invariant).
+
+        Returns
+        -------
+        Signal
+            self (modified in-place); ``self.pilot_tone_hz`` is set to the
+            applied frequency.
+        """
+        from . import spectral
+
+        self.samples, self.pilot_tone_hz = spectral.add_pilot_tone(
+            self.samples,
+            self.sampling_rate,
+            frequency_hz,
+            power_ratio_db=power_ratio_db,
+            phase_init=phase_init,
+            renormalize=renormalize,
+        )
+        return self
+
     def decimate_to_symbol_rate(
         self, offset: int = 0, normalize: bool = True
     ) -> "Signal":

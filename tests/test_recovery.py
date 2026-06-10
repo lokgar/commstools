@@ -297,7 +297,7 @@ class TestCprPilotTone:
             seed=seed,
         )
         samples = xp.asarray(sig.samples)
-        samples = spectral.add_pilot_tone(
+        samples, _ = spectral.add_pilot_tone(
             samples, fs, self.F_TONE, power_ratio_db=psr_db
         )
 

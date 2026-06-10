@@ -818,7 +818,7 @@ wheels = [
 
 [[package]]
 name = "ipykernel"
-version = "7.2.0"
+version = "7.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "appnope", marker = "sys_platform == 'darwin'" },
@@ -828,16 +828,16 @@ dependencies = [
     { name = "jupyter-client" },
     { name = "jupyter-core" },
     { name = "matplotlib-inline" },
-    { name = "nest-asyncio" },
+    { name = "nest-asyncio2" },
     { name = "packaging" },
     { name = "psutil" },
     { name = "pyzmq" },
     { name = "tornado" },
     { name = "traitlets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/8d/b68b728e2d06b9e0051019640a40a9eb7a88fcd82c2e1b5ce70bef5ff044/ipykernel-7.2.0.tar.gz", hash = "sha256:18ed160b6dee2cbb16e5f3575858bc19d8f1fe6046a9a680c708494ce31d909e", size = 176046, upload-time = "2026-02-06T16:43:27.403Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/c4/e4a38f579de4225a561305666f7541cdabb30075def2aa1ac17bd73c1fb5/ipykernel-7.3.0.tar.gz", hash = "sha256:9acaaaf97d16355166e4085afe9d225bfbdf2b7ef520f9df3be8f2b248275e09", size = 184899, upload-time = "2026-06-10T08:41:25.481Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/b9/e73d5d9f405cba7706c539aa8b311b49d4c2f3d698d9c12f815231169c71/ipykernel-7.2.0-py3-none-any.whl", hash = "sha256:3bbd4420d2b3cc105cbdf3756bfc04500b1e52f090a90716851f3916c62e1661", size = 118788, upload-time = "2026-02-06T16:43:25.149Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/02/77b271f5dc58bfbc0b577c877b2365d1ffea2afe66a80c13f2312820348c/ipykernel-7.3.0-py3-none-any.whl", hash = "sha256:897eb64da762549ef610698fca5e9675195ec6ac8ec7f19d81ce1ca20c876057", size = 120583, upload-time = "2026-06-10T08:41:23.648Z" },
 ]
 
 [[package]]
@@ -1776,12 +1776,12 @@ wheels = [
 ]
 
 [[package]]
-name = "nest-asyncio"
-version = "1.6.0"
+name = "nest-asyncio2"
+version = "1.7.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418, upload-time = "2024-01-21T14:25:19.227Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/73/731debf26e27e0a0323d7bda270dc2f634b398e38f040a09da1f4351d0aa/nest_asyncio2-1.7.2.tar.gz", hash = "sha256:1921d70b92cc4612c374928d081552efb59b83d91b2b789d935c665fa01729a8", size = 14743, upload-time = "2026-02-13T00:34:04.386Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195, upload-time = "2024-01-21T14:25:17.223Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/3c/3179b85b0e1c3659f0369940200cd6d0fa900e6cefcc7ea0bc6dd0e29ffb/nest_asyncio2-1.7.2-py3-none-any.whl", hash = "sha256:f5dfa702f3f81f6a03857e9a19e2ba578c0946a4ad417b4c50a24d7ba641fe01", size = 7843, upload-time = "2026-02-13T00:34:02.691Z" },
 ]
 
 [[package]]
@@ -1974,14 +1974,14 @@ wheels = [
 
 [[package]]
 name = "nvidia-cudnn-cu13"
-version = "9.23.0.39"
+version = "9.23.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cublas", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/97/28e700a5516223685d8759d9d7491078cc66b5a138c1b475a90287db0da9/nvidia_cudnn_cu13-9.23.0.39-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:e13f527eb070e2b6c32edaff625d92b29c9959e9076ab024e650090047e531a2", size = 616822001, upload-time = "2026-05-30T03:30:10.466Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/2d/768c92e1e6b165c2bc4b96e27653c1315790620731631c10359f270fd51b/nvidia_cudnn_cu13-9.23.0.39-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:877173104cb1bb5ed96b4f2faaecc29f91ae82c88c073a7991064557c0573475", size = 518482397, upload-time = "2026-05-30T03:32:06.758Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/d0/42f53b5293649a5e03f433d1ff9dedd611c868aacbcb424ea3bb3804fe32/nvidia_cudnn_cu13-9.23.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:55e98d0e423849622fdf3f2f50d8b19d7ad84e8cd77c92cdd8bd2ebad1e54aa1", size = 616921399, upload-time = "2026-06-09T19:39:40.981Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/06/efb57adc1ba8a4ae87cb16dee02359806c162b34b68283c83756863b2459/nvidia_cudnn_cu13-9.23.1.3-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:5f81cb3b05dbee0082e29aa33bcb82fd789b678fcf2cc5118bcfcd7cb74be142", size = 518552029, upload-time = "2026-06-09T19:42:05.4Z" },
 ]
 
 [[package]]
@@ -2528,20 +2528,19 @@ wheels = [
 
 [[package]]
 name = "pywinpty"
-version = "3.0.3"
+version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f7/54/37c7370ba91f579235049dc26cd2c5e657d2a943e01820844ffc81f32176/pywinpty-3.0.3.tar.gz", hash = "sha256:523441dc34d231fb361b4b00f8c99d3f16de02f5005fd544a0183112bcc22412", size = 31309, upload-time = "2026-02-04T21:51:09.524Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/d4/aeb5e1784d2c5bff6e189138a9ca91a090117459cea0c30378e1f2db3d54/pywinpty-3.0.3-cp312-cp312-win_amd64.whl", hash = "sha256:c9081df0e49ffa86d15db4a6ba61530630e48707f987df42c9d3313537e81fc0", size = 2113098, upload-time = "2026-02-04T21:54:37.711Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/53/7278223c493ccfe4883239cf06c823c56460a8010e0fc778eef67858dc14/pywinpty-3.0.3-cp312-cp312-win_arm64.whl", hash = "sha256:15e79d870e18b678fb8a5a6105fd38496b55697c66e6fc0378236026bc4d59e9", size = 234901, upload-time = "2026-02-04T21:53:31.35Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/cb/58d6ed3fd429c96a90ef01ac9a617af10a6d41469219c25e7dc162abbb71/pywinpty-3.0.3-cp313-cp313-win_amd64.whl", hash = "sha256:9c91dbb026050c77bdcef964e63a4f10f01a639113c4d3658332614544c467ab", size = 2112686, upload-time = "2026-02-04T21:52:03.035Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/50/724ed5c38c504d4e58a88a072776a1e880d970789deaeb2b9f7bd9a5141a/pywinpty-3.0.3-cp313-cp313-win_arm64.whl", hash = "sha256:fe1f7911805127c94cf51f89ab14096c6f91ffdcacf993d2da6082b2142a2523", size = 234591, upload-time = "2026-02-04T21:52:29.821Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/ad/90a110538696b12b39fd8758a06d70ded899308198ad2305ac68e361126e/pywinpty-3.0.3-cp313-cp313t-win_amd64.whl", hash = "sha256:3f07a6cf1c1d470d284e614733c3d0f726d2c85e78508ea10a403140c3c0c18a", size = 2112360, upload-time = "2026-02-04T21:55:33.397Z" },
-    { url = "https://files.pythonhosted.org/packages/44/0f/7ffa221757a220402bc79fda44044c3f2cc57338d878ab7d622add6f4581/pywinpty-3.0.3-cp313-cp313t-win_arm64.whl", hash = "sha256:15c7c0b6f8e9d87aabbaff76468dabf6e6121332c40fc1d83548d02a9d6a3759", size = 233107, upload-time = "2026-02-04T21:51:45.455Z" },
-    { url = "https://files.pythonhosted.org/packages/28/88/2ff917caff61e55f38bcdb27de06ee30597881b2cae44fbba7627be015c4/pywinpty-3.0.3-cp314-cp314-win_amd64.whl", hash = "sha256:d4b6b7b0fe0cdcd02e956bd57cfe9f4e5a06514eecf3b5ae174da4f951b58be9", size = 2113282, upload-time = "2026-02-04T21:52:08.188Z" },
-    { url = "https://files.pythonhosted.org/packages/63/32/40a775343ace542cc43ece3f1d1fce454021521ecac41c4c4573081c2336/pywinpty-3.0.3-cp314-cp314-win_arm64.whl", hash = "sha256:34789d685fc0d547ce0c8a65e5a70e56f77d732fa6e03c8f74fefb8cbb252019", size = 234207, upload-time = "2026-02-04T21:51:58.687Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/54/5d5e52f4cb75028104ca6faf36c10f9692389b1986d34471663b4ebebd6d/pywinpty-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:0c37e224a47a971d1a6e08649a1714dac4f63c11920780977829ed5c8cadead1", size = 2112910, upload-time = "2026-02-04T21:52:30.976Z" },
-    { url = "https://files.pythonhosted.org/packages/0a/44/dcd184824e21d4620b06c7db9fbb15c3ad0a0f1fa2e6de79969fb82647ec/pywinpty-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:c4e9c3dff7d86ba81937438d5819f19f385a39d8f592d4e8af67148ceb4f6ab5", size = 233425, upload-time = "2026-02-04T21:51:56.754Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/55/e5a95c61e693941458dbf6ed8164c766e6166802364efabe1d610533e6b7/pywinpty-3.0.4-cp312-cp312-win_amd64.whl", hash = "sha256:3c8af7d7f37e7d2a2bcfd5625fbd6158b49fef620b6d10682d081f63b47c6aab", size = 1501465, upload-time = "2026-06-10T06:04:01.202Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/e8/672de7fafae62dfbc0b57bb5d825bfcca97cc3050fe090d222edc2b7f756/pywinpty-3.0.4-cp312-cp312-win_arm64.whl", hash = "sha256:8b26b58eff31fea6018afe6e1eba47382ccee1e879376b09a591ff3259d5a4e3", size = 238463, upload-time = "2026-06-10T06:01:45.42Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/77/f5db2802d2583af7b52eec513cbcabc521daa5fe2cb57380b2e1245cac64/pywinpty-3.0.4-cp313-cp313-win_amd64.whl", hash = "sha256:b63b22ab53fea5ae3f10a55180efb8d089be82632256d9a783c1f6dbfc3faf29", size = 1501059, upload-time = "2026-06-10T06:03:34.551Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/ca/4b554caf70f2821b3dd5f58208b584a821eeabff56643049d1938dca9306/pywinpty-3.0.4-cp313-cp313-win_arm64.whl", hash = "sha256:f8fae0cdbf3d7c9a3e72490d2460dedc4c050fd1eff5d3b715097bea89cb9239", size = 237983, upload-time = "2026-06-10T06:02:24.811Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/dc/a087e1d8ad4bc5c8ae61fb23cb104fadc55e9242c22dd81620483b648b1e/pywinpty-3.0.4-cp313-cp313t-win_amd64.whl", hash = "sha256:397e12405c5c8749bac56bb447453d6200a515cf8ef3802e1a83dd3fb2e7384a", size = 1500389, upload-time = "2026-06-10T06:03:39.879Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/0d/e10f2516703e3141d84948a46ec253d47c8ad04e78ec37e508f7c7a8a9a2/pywinpty-3.0.4-cp313-cp313t-win_arm64.whl", hash = "sha256:1ab08db89053c0f31405c842c129c8f1a2610b463861ac22202c763cdbb16d75", size = 237037, upload-time = "2026-06-10T06:03:10.917Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/77/39af026e681e350073495155d885b82947a88b29ae7a61f016e1ac8c744e/pywinpty-3.0.4-cp314-cp314-win_amd64.whl", hash = "sha256:b028b4d8ece77a4b35282461234d2e38c472c6dc4be6e5cccdeffcd2776ebf7f", size = 1501228, upload-time = "2026-06-10T06:06:18.748Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/ae/76cc0e1e9fa92ce1dddb3d90d082c5eb0facb1665446019916156e244ba6/pywinpty-3.0.4-cp314-cp314-win_arm64.whl", hash = "sha256:171b60831057b519bc3673970eb970352b99e6efdfd22cad169b7a815699d862", size = 238201, upload-time = "2026-06-10T06:02:33.894Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/86/48fb10e2c7db43461dcc69179e81a648ebf8f350271c8cc079aed65b354b/pywinpty-3.0.4-cp314-cp314t-win_amd64.whl", hash = "sha256:3771c364b38a5e4956582ee68d912e35763d78310e362ddce6d390cf5ff94f58", size = 1500583, upload-time = "2026-06-10T06:02:53.12Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/40/a94cf31db8a759ed871c0e9f10f8aa0a042ddc6592f233a26a4c0d757047/pywinpty-3.0.4-cp314-cp314t-win_arm64.whl", hash = "sha256:819eb417254eac67553c93d2f38b12617bb0ebb65e6b840d51fe7e5a4a824646", size = 237067, upload-time = "2026-06-10T06:02:35.677Z" },
 ]
 
 [[package]]

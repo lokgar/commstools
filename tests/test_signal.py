@@ -78,6 +78,24 @@ def test_signal_properties(backend_device, xp):
     assert len(s.time_axis()) == 100
 
 
+def test_signal_add_pilot_tone(backend_device, xp):
+    """Signal.add_pilot_tone adds the tone, records the snapped freq, chains."""
+    sig = Signal.qam(num_symbols=256, sps=8, symbol_rate=1e6, order=16, seed=3)
+    fs = sig.sampling_rate
+    df = fs / sig.samples.shape[-1]
+    before = sig.samples.copy()
+
+    ret = sig.add_pilot_tone(2.0e6, power_ratio_db=-12.0)
+
+    assert ret is sig  # chainable, in-place
+    assert sig.pilot_tone_hz is not None
+    # Recorded frequency is on the FFT grid and near the request.
+    assert abs(round(sig.pilot_tone_hz / df) - sig.pilot_tone_hz / df) < 1e-9
+    assert abs(sig.pilot_tone_hz - 2.0e6) <= df / 2 + 1.0
+    # Samples actually changed.
+    assert float(xp.max(xp.abs(sig.samples - before))) > 0.0
+
+
 def test_signal_methods(backend_device, xp):
     """Verify common Signal methods like upsampling and FIR filtering."""
     # Test upsample

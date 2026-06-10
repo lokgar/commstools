@@ -230,33 +230,45 @@ class TestAddPilotTone:
         fs = 100.0
         x = self._signal(xp)
         p_sig = float(xp.mean(xp.abs(x) ** 2))
-        y = spectral.add_pilot_tone(x, fs, 30.0, power_ratio_db=psr_db)
+        y, _ = spectral.add_pilot_tone(x, fs, 30.0, power_ratio_db=psr_db)
         # The added tone is exactly y - x; measure its power directly (the
         # signal/tone cross-correlation makes total-minus-signal unreliable at low PSR).
         p_tone = float(xp.mean(xp.abs(y - x) ** 2))
         assert abs(10 * np.log10(p_tone / p_sig) - psr_db) < 0.05
 
     def test_peak_location(self, backend_device, xp):
-        """The injected tone shows up as the dominant spectral peak at f_p."""
+        """The injected tone shows up as the dominant spectral peak at the snapped f_p."""
         fs = 100.0
         N = 4096
         f_p = 30.0
         x = self._signal(xp, N=N)
-        y = spectral.add_pilot_tone(x, fs, f_p, power_ratio_db=10.0)
+        y, f_actual = spectral.add_pilot_tone(x, fs, f_p, power_ratio_db=10.0)
         freqs = xp.fft.fftfreq(N, d=1.0 / fs)
         k = int(xp.argmax(xp.abs(xp.fft.fft(y))))
-        assert abs(float(freqs[k]) - f_p) < fs / N * 2
+        assert abs(float(freqs[k]) - f_actual) < fs / N
+
+    def test_snaps_to_grid(self, backend_device, xp):
+        """Returned frequency lies exactly on the f_s/N grid, near the request."""
+        fs = 100.0
+        N = 4096
+        df = fs / N
+        x = self._signal(xp, N=N)
+        f_req = 30.0 + 0.4 * df  # deliberately off-grid
+        _, f_actual = spectral.add_pilot_tone(x, fs, f_req)
+        # On-grid: an integer number of bins from DC.
+        assert abs(round(f_actual / df) - f_actual / df) < 1e-9
+        assert abs(f_actual - f_req) <= df / 2 + 1e-9
 
     def test_dtype_and_shape_preserved(self, backend_device, xp):
         """complex64 stays complex64; SISO/MIMO shapes are preserved."""
         fs = 100.0
         x64 = self._signal(xp).astype(xp.complex64)
-        y = spectral.add_pilot_tone(x64, fs, 30.0)
+        y, _ = spectral.add_pilot_tone(x64, fs, 30.0)
         assert y.dtype == xp.complex64
         assert y.shape == x64.shape
 
         mimo = xp.stack([self._signal(xp), 2 * self._signal(xp, seed=1)])
-        ym = spectral.add_pilot_tone(mimo, fs, 30.0)
+        ym, _ = spectral.add_pilot_tone(mimo, fs, 30.0)
         assert ym.shape == mimo.shape
 
     def test_renormalize_preserves_power(self, backend_device, xp):
@@ -264,7 +276,7 @@ class TestAddPilotTone:
         fs = 100.0
         mimo = xp.stack([self._signal(xp), 2 * self._signal(xp, seed=1)])
         p_in = xp.mean(xp.abs(mimo) ** 2, axis=-1)
-        y = spectral.add_pilot_tone(
+        y, _ = spectral.add_pilot_tone(
             mimo, fs, 30.0, power_ratio_db=-6.0, renormalize=True
         )
         p_out = xp.mean(xp.abs(y) ** 2, axis=-1)

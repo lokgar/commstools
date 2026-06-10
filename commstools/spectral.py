@@ -108,7 +108,7 @@ def add_pilot_tone(
     power_ratio_db: float = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
-) -> ArrayType:
+) -> Tuple[ArrayType, float]:
     r"""
     Add a continuous-wave (CW) pilot tone to a baseband waveform.
 
@@ -144,7 +144,9 @@ def add_pilot_tone(
     sampling_rate : float
         Sampling rate :math:`f_s` in Hz.
     frequency_hz : float
-        Tone frequency :math:`f_p` in Hz, in ``(-f_s/2, f_s/2)``.
+        Requested tone frequency :math:`f_p` in Hz, in ``(-f_s/2, f_s/2)``.
+        Quantized to the nearest FFT bin ``f_s/N`` (see Notes) — the **actual**
+        applied frequency is returned.
     power_ratio_db : float, default -15.0
         Pilot-to-signal power ratio (PSR) in dB:
         ``10·log10(P_tone / P_signal)``, where ``P_signal`` is the mean
@@ -165,12 +167,25 @@ def add_pilot_tone(
 
     Returns
     -------
-    array_like
+    samples : array_like
         Samples with the pilot tone added, same shape, dtype, and backend as
         the input.
+    actual_frequency : float
+        The grid-quantized tone frequency in Hz actually applied (see Notes).
+        Store this (e.g. in :attr:`Signal.pilot_tone_hz`) and pass it to the
+        receiver, since it — not the requested value — is where the tone sits.
 
     Notes
     -----
+    **Grid quantization (buffer-periodic playback).**  The requested frequency
+    is snapped to the nearest FFT bin, :math:`f_s/N`, exactly as
+    :func:`shift_frequency` snaps a mixing offset.  This makes the tone complete
+    an integer number of cycles over the ``N``-sample buffer, so it is
+    *seamless across the loop boundary* when an AWG/DAC plays the buffer
+    repeatedly — an off-grid tone would jump in phase at each wrap and radiate
+    spurs spaced at :math:`f_s/N`.  The quantization error is at most
+    :math:`f_s/2N`.
+
     The per-channel tone amplitude is
 
     .. math::
@@ -188,7 +203,7 @@ def add_pilot_tone(
     --------
     >>> # Tone in the guard band of a 16-QAM RRC waveform at sps=4
     >>> f_p = 0.62 * sig.symbol_rate            # just outside (1+β)/2 · Rs
-    >>> sig.samples = add_pilot_tone(
+    >>> sig.samples, sig.pilot_tone_hz = add_pilot_tone(
     ...     sig.samples, sig.sampling_rate, f_p, power_ratio_db=-15.0
     ... )
     """
@@ -204,6 +219,17 @@ def add_pilot_tone(
         samples = samples[None, :]  # (1, N)
     C, N = samples.shape
 
+    # Snap to the FFT bin grid so the tone is buffer-periodic (loop-seamless on
+    # an AWG/DAC), mirroring shift_frequency's quantization.
+    df = sampling_rate / N
+    actual_frequency = float(round(frequency_hz / df) * df)
+    if abs(actual_frequency - frequency_hz) > 1e-12 * max(1.0, abs(frequency_hz)):
+        logger.warning(
+            f"add_pilot_tone: requested {frequency_hz:.3f} Hz quantized to "
+            f"{actual_frequency:.3f} Hz (grid step fs/N={df:.3f} Hz) for "
+            f"buffer-periodic (loop-seamless) playback."
+        )
+
     # Per-channel signal power and the tone amplitude that realises the PSR.
     p_signal = xp.mean(xp.abs(samples) ** 2, axis=-1, keepdims=True)  # (C, 1) float
     psr_lin = 10.0 ** (power_ratio_db / 10.0)
@@ -213,7 +239,7 @@ def add_pilot_tone(
     # avoid argument-reduction error on long ramps (cf. correct_static_frequency_offset).
     two_pi = 2.0 * xp.pi
     n = xp.arange(N, dtype=xp.float64)  # (N,)
-    phase = two_pi * frequency_hz * n / sampling_rate + phase_init  # (N,) float64
+    phase = two_pi * actual_frequency * n / sampling_rate + phase_init  # (N,) float64
     phase = phase - xp.round(phase / two_pi) * two_pi
 
     dtype_real = xp.float32 if samples.dtype == xp.complex64 else xp.float64
@@ -226,14 +252,14 @@ def add_pilot_tone(
         out = out * xp.sqrt(p_signal / p_out).astype(samples.dtype)
 
     logger.info(
-        f"add_pilot_tone: f_p={frequency_hz:.3g} Hz, PSR={power_ratio_db:.1f} dB "
+        f"add_pilot_tone: f_p={actual_frequency:.3g} Hz, PSR={power_ratio_db:.1f} dB "
         f"(amp/√P_sig={math.sqrt(psr_lin):.3g}), phase_init={phase_init:.3g} rad, "
         f"renormalize={renormalize} [C={C}, N={N}]"
     )
 
     if was_1d:
-        return out[0]
-    return out
+        return out[0], actual_frequency
+    return out, actual_frequency
 
 
 def welch_psd(
