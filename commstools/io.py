@@ -65,6 +65,7 @@ _META_FIELDS: tuple[str, ...] = (
     "center_frequency",
     "digital_frequency_offset",
     "pilot_tone_frequency",
+    "ps_nu",
 )
 
 # Optional array fields (not always present)
@@ -294,6 +295,13 @@ def load_npz(
             frame._payload_bits = data["frame_payload_bits"]
 
         sig.frame = frame
+
+        # _payload_ps_pmf is a PrivateAttr set during _ensure_payload_generated().
+        # When _payload_bits is restored above, that method returns early and never
+        # sets _payload_ps_pmf.  sig.ps_pmf was saved via _OPTIONAL_ARRAY_FIELDS and
+        # is already loaded, so restore from it directly.
+        if sig.ps_pmf is not None:
+            frame._payload_ps_pmf = sig.ps_pmf
 
     # -------------------------------------------------------------------------
     # Move to target device

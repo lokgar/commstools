@@ -102,6 +102,13 @@ class Signal(BaseModel):
         intentionally lower average energy than uniform QAM), and
         ``mi``, ``gmi``, and ``plot_constellation`` use the
         non-uniform prior automatically.  ``None`` for all other modulations.
+    ps_nu : float, optional
+        Maxwell-Boltzmann shaping parameter ν ≥ 0.  Set automatically
+        alongside ``ps_pmf`` by ``Signal.psqam`` and
+        ``SingleCarrierFrame.to_signal``.  ν = 0 is uniform QAM (never
+        stored; ``ps_nu`` is ``None`` for non-PS signals).  When the
+        signal was specified via ``entropy``, ν is the numerically solved
+        value returned by ``mapping.optimal_nu``.
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
         ``'gaussian'``).
@@ -175,6 +182,7 @@ class Signal(BaseModel):
     source_bits: Optional[Any] = None
     source_symbols: Optional[Any] = None
     ps_pmf: Optional[Any] = None  # (M,) PMF over constellation; set only for PS-QAM
+    ps_nu: Optional[float] = None  # MB shaping parameter ν; set only for PS-QAM
 
     pulse_shape: Optional[str] = None
     filter_span: int = Field(default=10, ge=1)
@@ -367,12 +375,12 @@ class Signal(BaseModel):
             ("Pulse shape", self.pulse_shape.upper() if self.pulse_shape else "None"),
         ]
 
-        if self.ps_pmf is not None and self.mod_order:
-            _pmf = np.asarray(self.ps_pmf)
-            _nz = _pmf > 0
-            _h = float(-np.sum(_pmf[_nz] * np.log2(_pmf[_nz])))
+        if self.ps_pmf is not None and mod_order:
             rows.append(
-                ("PS entropy", f"{_h:.4f} b/sym  (max {np.log2(self.mod_order):.2f})")
+                (
+                    "PS shaping (ν)",
+                    f"{self.ps_nu:.4f}" if self.ps_nu is not None else "unknown",
+                )
             )
 
         rows += [
@@ -467,6 +475,7 @@ class Signal(BaseModel):
         rows.append(("─── Reference data", ""))
         rows.append(("source_symbols", _yn(self.source_symbols)))
         rows.append(("source_bits", _yn(self.source_bits)))
+        rows.append(("ps_pmf", _yn(self.ps_pmf)))
         rows.append(("frame attached", _yn(self.frame)))
 
         # ── Section 4: Resolved data ──────────────────────────────────────
@@ -2132,6 +2141,7 @@ class Signal(BaseModel):
             source_symbols=symbols,
             pulse_shape=pulse_shape,
             ps_pmf=pmf,
+            ps_nu=nu_val,
             filter_span=filter_span,
             rrc_rolloff=rrc_rolloff,
             rc_rolloff=rc_rolloff,
@@ -3698,6 +3708,7 @@ class SingleCarrierFrame(BaseModel):
         Pilot/payload power ratios set by `pilot_gain_db` are preserved throughout.
         """
         xp = cp if is_cupy_available() else np
+        from . import mapping
         from .filtering import shape_pulse
 
         if sps != int(sps) or sps < 1:
@@ -3793,6 +3804,17 @@ class SingleCarrierFrame(BaseModel):
         # same factor.  Guard zeros remain zero after scaling.
         samples = helpers.normalize(samples, "symbol_power", sps=sps, axis=-1)
 
+        # Resolve ν: payload_nu is set directly; for entropy-specified frames call optimal_nu.
+        # payload_ps_pmf is already computed above (body_symbols triggers _ensure_payload_generated).
+        if self.payload_nu is not None:
+            ps_nu_val: Optional[float] = self.payload_nu
+        elif self.payload_entropy is not None:
+            ps_nu_val, _ = mapping.optimal_nu(
+                self.payload_mod_order, self.payload_entropy
+            )
+        else:
+            ps_nu_val = None
+
         return Signal(
             samples=samples,
             sampling_rate=symbol_rate * sps,
@@ -3804,6 +3826,8 @@ class SingleCarrierFrame(BaseModel):
             source_bits=None,  # extract via frame.get_structure_map() after equalization
             source_symbols=None,  # samples include full frame (preamble + body);
             # extract payload segment via frame.get_structure_map() explicitly.
+            ps_pmf=self.payload_ps_pmf,
+            ps_nu=ps_nu_val,
             pulse_shape=pulse_shape,
             duty_cycle=duty_cycle,
             filter_span=filter_span,
