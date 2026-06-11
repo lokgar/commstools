@@ -409,7 +409,7 @@ wheels = [
 
 [[package]]
 name = "commstools"
-version = "3.7.4"
+version = "3.7.5"
 source = { editable = "." }
 dependencies = [
     { name = "jupyter" },
@@ -441,7 +441,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cupy-cuda13x", marker = "extra == 'gpu'", specifier = ">=13.7.4" },
+    { name = "cupy-cuda13x", marker = "extra == 'gpu'", specifier = ">=13.7.5" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'gpu'", specifier = ">=0.8.1" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.10.1" },
