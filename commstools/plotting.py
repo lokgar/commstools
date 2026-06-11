@@ -1103,13 +1103,12 @@ def ideal_constellation(
     order : int
         Modulation order (e.g., 4, 16, 64).
     pmf : array-like of float, optional
-        Symbol PMF of shape ``(M,)`` for PS-QAM.  Typically from
-        :func:`~commstools.mapping.maxwell_boltzmann`.
+        Symbol PMF of shape ``(M,)`` for PS-QAM (from ``maxwell_boltzmann``).
         Mutually exclusive with ``nu``.
     nu : float, optional
-        Maxwell-Boltzmann shaping parameter ``ν ≥ 0`` for QAM.  The PMF is
-        computed automatically via :func:`~commstools.mapping.maxwell_boltzmann`.
-        ``ν = 0`` gives a uniform distribution (equal-sized markers).
+        Maxwell-Boltzmann shaping parameter nu >= 0 for QAM.  The PMF is
+        computed automatically via ``maxwell_boltzmann``.
+        nu = 0 gives a uniform distribution (equal-sized markers).
         Mutually exclusive with ``pmf``.
     ax : matplotlib.axes.Axes, optional
         Target axis.
@@ -2035,7 +2034,7 @@ def frequency_drift_blockwise_result(
     max_points: int = 4000,
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Diagnostic plot for :func:`~commstools.frequency.correct_frequency_drift`.
+    Diagnostic plot for ``frequency.correct_frequency_drift``.
 
     Shows three panels:
 
@@ -2130,9 +2129,8 @@ def pilot_phase_estimate(
     Plots pilot phase scatter, linear fit, and the full interpolated trajectory.
 
     Used as a diagnostic for both pilot-based frequency offset estimation
-    (:func:`~commstools.frequency.estimate_frequency_offset_pilots`) and
-    pilot-aided carrier phase recovery
-    (:func:`~commstools.recovery.recover_carrier_phase_pilots`).
+    (``estimate_frequency_offset_pilots``) and pilot-aided carrier phase
+    recovery (``recover_carrier_phase_pilots``).
 
     Parameters
     ----------
@@ -2266,15 +2264,15 @@ def pilot_tone_phase_estimate(
     window,
     f_tones,
     theta,
-    tone_frequency_hz: float,
-    bandwidth_hz: float,
+    tone_frequency: float,
+    bandwidth: float,
     ax=None,
     show: bool = False,
     title: str = "CPR — Pilot Tone",
     max_points: int = 4000,
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Diagnostic for :func:`~commstools.recovery.recover_carrier_phase_pilot_tone`.
+    Diagnostic for ``recover_carrier_phase_pilot_tone``.
 
     Two panels:
 
@@ -2297,9 +2295,9 @@ def pilot_tone_phase_estimate(
         Per-channel refined tone frequency in Hz. Shape: ``(C,)``.
     theta : array_like
         Recovered per-sample phase in radians. Shape: ``(C, N)`` or ``(N,)``.
-    tone_frequency_hz : float
+    tone_frequency : float
         Nominal pilot-tone frequency in Hz.
-    bandwidth_hz : float
+    bandwidth : float
         Extraction window half-width in Hz (shaded around the nominal tone).
     ax : array_like of Axes, optional
         Two Axes ``[spectrum, phase]``. If ``None``, a new figure is created.
@@ -2357,18 +2355,18 @@ def pilot_tone_phase_estimate(
             label=("tone peak" if i == 0 else None),
         )
     ax_spec.axvspan(
-        tone_frequency_hz - bandwidth_hz,
-        tone_frequency_hz + bandwidth_hz,
+        tone_frequency - bandwidth,
+        tone_frequency + bandwidth,
         color="C3",
         alpha=0.08,
-        label=f"window ±B ({bandwidth_hz:.3g} Hz)",
+        label=f"window ±B ({bandwidth:.3g} Hz)",
     )
     ax_spec.axvline(
-        tone_frequency_hz,
+        tone_frequency,
         color="k",
         linestyle="--",
         linewidth=1.0,
-        label=f"nominal f_p ({tone_frequency_hz:.3g} Hz)",
+        label=f"nominal f_p ({tone_frequency:.3g} Hz)",
     )
     ax_win.set_ylim(-0.05, 1.35)
     ax_win.set_ylabel("Window W(f)", color="C3")
@@ -2552,10 +2550,10 @@ def carrier_phase_decomposition(
     """
     Plots the recovered carrier-phase trajectory and its slow drift component.
 
-    The total unwrapped phase :math:`\\phi(t)` is drawn faintly with the
+    The total unwrapped phase phi(t) is drawn faintly with the
     low-pass drift overlaid in bold, visualising the
-    :func:`commstools.analysis.separate_drift_phase_noise` split.  MIMO inputs
-    overlay all channels.
+    ``analysis.separate_drift_phase_noise`` split.  MIMO inputs overlay all
+    channels.
 
     Parameters
     ----------
@@ -2631,10 +2629,10 @@ def carrier_phase_decomposition(
 
 
 def frequency_drift(
-    df_hz,
+    df,
     *,
     symbol_rate: float,
-    amp_ref_hz: Optional[float] = None,
+    amp_ref: Optional[float] = None,
     ax=None,
     show: bool = False,
     title: str = "Residual frequency drift",
@@ -2642,19 +2640,18 @@ def frequency_drift(
     """
     Plots the instantaneous residual frequency offset vs time.
 
-    ``df_hz`` is the per-symbol frequency wander from
-    :func:`commstools.analysis.frequency_drift_metrics` — the slope of the
-    smoothed (drift) phase.  This is the spin the carrier-phase recovery must
-    track.
+    ``df`` is the per-symbol frequency wander from
+    ``analysis.frequency_drift_metrics`` — the slope of the smoothed (drift)
+    phase.  This is the spin the carrier-phase recovery must track.
 
     Parameters
     ----------
-    df_hz : array_like
+    df : array_like
         Residual frequency in Hz. Shape ``(M,)`` or ``(C, M)``.
     symbol_rate : float
         Symbol rate in Baud (time axis).
-    amp_ref_hz : float, optional
-        If given, draws dashed ``±amp_ref_hz`` reference lines (e.g. the
+    amp_ref : float, optional
+        If given, draws dashed ``±amp_ref`` reference lines (e.g. the
         injected wander amplitude in a simulation).
     ax : Axes, optional
     show : bool, default False
@@ -2664,7 +2661,7 @@ def frequency_drift(
     -------
     (fig, ax) or None
     """
-    df_c = _as_channels(df_hz)
+    df_c = _as_channels(df)
     C, M = df_c.shape
 
     if ax is None:
@@ -2677,16 +2674,16 @@ def frequency_drift(
     for i in range(C):
         axi.plot(t, df_c[i], color=f"C{i}", lw=0.8, label=f"pol {i}" if C > 1 else None)
 
-    if amp_ref_hz is not None:
-        axi.axhline(amp_ref_hz, color="white", ls="--", lw=0.8, label="±amplitude")
-        axi.axhline(-amp_ref_hz, color="white", ls="--", lw=0.8)
+    if amp_ref is not None:
+        axi.axhline(amp_ref, color="white", ls="--", lw=0.8, label="±amplitude")
+        axi.axhline(-amp_ref, color="white", ls="--", lw=0.8)
 
     _set_eng_formatter(axi, "x", "s")
     _set_eng_formatter(axi, "y", "Hz")
     axi.set_xlabel("time")
     axi.set_ylabel("Δf")
     axi.set_title(title)
-    if C > 1 or amp_ref_hz is not None:
+    if C > 1 or amp_ref is not None:
         axi.legend(fontsize=8, loc="best")
     axi.grid(True, alpha=0.3)
 
@@ -2702,19 +2699,18 @@ def frequency_noise_psd(
     S_f,
     *,
     beta_line=None,
-    floor_hz=None,
+    floor=None,
     band: Optional[Tuple[float, float]] = None,
     ax=None,
     show: bool = False,
     title: str = "Frequency-noise PSD",
 ) -> Optional[Tuple[Any, Any]]:
     """
-    Plots the frequency-noise PSD :math:`S_f(f)` on log-log axes.
+    Plots the frequency-noise PSD S_f(f) on log-log axes.
 
     Overlays the optional Di Domenico β-separation line and the white-FM-noise
-    floor, and shades the integration band.  See
-    :func:`commstools.analysis.fm_noise_psd` /
-    :func:`commstools.analysis.linewidth_beta_separation`.
+    floor, and shades the integration band.  See ``analysis.fm_noise_psd`` and
+    ``analysis.linewidth_beta_separation``.
 
     Parameters
     ----------
@@ -2724,8 +2720,8 @@ def frequency_noise_psd(
         Frequency-noise PSD in Hz²/Hz, shape ``(nfreq,)`` or ``(C, nfreq)``.
     beta_line : array_like, optional
         β-separation line ``(8 ln2/π²)·f``, shape ``(nfreq,)``.  Drawn dashed.
-    floor_hz : float or array_like, optional
-        White-FM linewidth estimate(s); a horizontal guide is drawn at the
+    floor : float or array_like, optional
+        White-FM linewidth estimate(s) in Hz; a horizontal guide is drawn at the
         corresponding PSD level ``S_f = Δν/π``.
     band : (float, float), optional
         ``(f_min, f_max)`` integration band, shaded.
@@ -2768,8 +2764,8 @@ def frequency_noise_psd(
             label="β-separation line",
         )
 
-    if floor_hz is not None:
-        floors = np.atleast_1d(np.asarray(floor_hz, dtype=np.float64))
+    if floor is not None:
+        floors = np.atleast_1d(np.asarray(floor, dtype=np.float64))
         floor_mean = float(np.mean(floors))
         axi.axhline(
             floor_mean / np.pi,
@@ -2815,9 +2811,8 @@ def allan_deviation(
     Plots the (overlapping) Allan deviation vs averaging time on log-log axes.
 
     The local slope classifies the dominant frequency-noise process:
-    white-FM ``∝ τ^{-1/2}``, flicker-FM ``∝ τ^0`` (flat), random-walk-FM
-    ``∝ τ^{+1/2}``, linear drift ``∝ τ^{+1}``.  See
-    :func:`commstools.analysis.allan_deviation`.
+    white-FM ~ tau^(-1/2), flicker-FM ~ tau^0 (flat), random-walk-FM ~ tau^(+1/2),
+    linear drift ~ tau^(+1).  See ``analysis.allan_deviation``.
 
     Parameters
     ----------
@@ -2889,34 +2884,34 @@ def carrier_phase_characterization(
     report: dict,
     *,
     symbol_rate: float,
-    drift_cutoff_hz: Optional[float] = None,
+    drift_cutoff: Optional[float] = None,
     band: Optional[Tuple[float, float]] = None,
-    floor_hz=None,
-    amp_ref_hz: Optional[float] = None,
+    floor=None,
+    amp_ref: Optional[float] = None,
     show: bool = False,
     title: Optional[str] = None,
 ) -> Optional[Tuple[Any, Any]]:
     """
     Full 2x2 carrier-phase characterization dashboard.
 
-    Combines :func:`carrier_phase_decomposition`, :func:`frequency_drift`,
-    :func:`frequency_noise_psd`, and :func:`allan_deviation` into one figure
+    Combines ``carrier_phase_decomposition``, ``frequency_drift``,
+    ``frequency_noise_psd``, and ``allan_deviation`` into one figure
     from the report dict returned by
-    :func:`commstools.analysis.characterize_carrier_phase`.
+    ``analysis.characterize_carrier_phase``.
 
     Parameters
     ----------
     report : dict
-        Output of :func:`commstools.analysis.characterize_carrier_phase`.
+        Output of ``analysis.characterize_carrier_phase``.
     symbol_rate : float
         Symbol rate in Baud.
-    drift_cutoff_hz : float, optional
+    drift_cutoff : float, optional
         Annotated in the phase-decomposition panel title.
     band : (float, float), optional
         ``(f_min, f_max)`` integration band, shaded on the PSD panel.
-    floor_hz : float or array_like, optional
+    floor : float or array_like, optional
         White-FM floor guide; defaults to the report's estimated floor.
-    amp_ref_hz : float, optional
+    amp_ref : float, optional
         Injected wander amplitude reference for the drift panel.
     show : bool, default False
     title : str, optional
@@ -2927,7 +2922,7 @@ def carrier_phase_characterization(
     """
     fig, axes = plt.subplots(2, 2, figsize=(10, 7))
 
-    lp = f"  (LP {drift_cutoff_hz / 1e6:.1f} MHz)" if drift_cutoff_hz else ""
+    lp = f"  (LP {drift_cutoff / 1e6:.1f} MHz)" if drift_cutoff else ""
     carrier_phase_decomposition(
         report["phi"],
         report.get("drift"),
@@ -2936,20 +2931,20 @@ def carrier_phase_characterization(
         title=f"Recovered carrier phase{lp}",
     )
     frequency_drift(
-        report["drift_metrics"]["df_hz"],
+        report["drift_metrics"]["df"],
         symbol_rate=symbol_rate,
-        amp_ref_hz=amp_ref_hz,
+        amp_ref=amp_ref,
         ax=axes[0, 1],
     )
 
     lw_beta = report["linewidth_beta"]
-    if floor_hz is None:
-        floor_hz = lw_beta.get("linewidth_floor_hz")
+    if floor is None:
+        floor = lw_beta.get("linewidth_floor")
     frequency_noise_psd(
         lw_beta["f"],
         lw_beta["S_f"],
         beta_line=lw_beta.get("beta_line"),
-        floor_hz=floor_hz,
+        floor=floor,
         band=band,
         ax=axes[1, 0],
     )

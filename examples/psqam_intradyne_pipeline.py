@@ -86,7 +86,7 @@ IQ_AMP_DB = 0.4
 IQ_PHASE_DEG = 3.0
 PMD_DGD_S = 2e-12
 PMD_THETA = np.pi / 5
-LASER_LINEWIDTH_HZ = 50e3  # combined Tx+Rx phase noise
+LASER_linewidth = 50e3  # combined Tx+Rx phase noise
 
 # Equalizer
 NUM_TAPS = 31
@@ -167,7 +167,7 @@ rx.samples = apply_pmd(rx.samples, rx.sampling_rate, dgd=PMD_DGD_S, theta=PMD_TH
 rx.samples = apply_phase_noise(
     rx.samples,
     sampling_rate=rx.sampling_rate,
-    linewidth_hz=LASER_LINEWIDTH_HZ,
+    linewidth=LASER_linewidth,
     shared_lo=True,
     seed=SEED,
 )
@@ -180,7 +180,7 @@ rx.samples = apply_awgn(rx.samples, sps=SPS, esn0_db=ESN0_DB, seed=SEED)
 
 print(f"  Multipath FIR: |h| = {np.abs(h_ch).tolist()}")
 print(f"  PMD          : DGD={PMD_DGD_S * 1e12:.1f} ps, θ={PMD_THETA:.3f} rad")
-print(f"  Phase noise  : {LASER_LINEWIDTH_HZ / 1e3:.0f} kHz combined linewidth")
+print(f"  Phase noise  : {LASER_linewidth / 1e3:.0f} kHz combined linewidth")
 print(f"  IQ imbalance : {IQ_AMP_DB:.2f} dB amp, {IQ_PHASE_DEG:.1f}° phase")
 print(f"  Es/N0        : {ESN0_DB:.1f} dB")
 
@@ -331,6 +331,6 @@ print(f"  GMI              : {gmi_val:.4f} b/cu")
 assert mi_val <= ENTROPY + 1e-3, f"MI {mi_val:.3f} > H(X) {ENTROPY:.3f}"
 
 _sep("Done")
-print("  Tweak ESN0_DB / ENTROPY / PMD_DGD_S / LASER_LINEWIDTH_HZ to explore the")
+print("  Tweak ESN0_DB / ENTROPY / PMD_DGD_S / LASER_linewidth to explore the")
 print("  PS-QAM operating envelope.  GMI saturates at H(X) — the right rate")
 print("  metric for coded-system comparisons.")

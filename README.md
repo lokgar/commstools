@@ -227,7 +227,7 @@ report = analysis.characterize_carrier_phase(
     y_eq=equalized_symbols,         # Equalized symbols (sps=1, CPR disabled)
     ref_symbols=source_symbols,      # Reference symbols
     symbol_rate=32e9,                # 32 GBaud
-    drift_cutoff_hz=3.0e6,           # Low-pass cutoff separating drift
+    drift_cutoff=3.0e6,           # Low-pass cutoff separating drift
     noise_var=1.5e-3,                # Additive noise variance estimate
     nperseg=8192,
 )
@@ -238,9 +238,9 @@ lw_inc = report["linewidth_increment"]
 lw_beta = report["linewidth_beta"]
 allan = report["allan"]
 
-print(f"Residual Freq Wander Std: {dm['std_hz'] / 1e3:.1f} kHz")
-print(f"Lag-Slope Wiener Linewidth: {lw_inc['linewidth_hz'] / 1e6:.2f} MHz")
-print(f"FM-PSD White-FM Linewidth: {lw_beta['linewidth_floor_hz'] / 1e6:.2f} MHz")
+print(f"Residual Freq Wander Std: {dm['std'] / 1e3:.1f} kHz")
+print(f"Lag-Slope Wiener Linewidth: {lw_inc['linewidth'] / 1e6:.2f} MHz")
+print(f"FM-PSD White-FM Linewidth: {lw_beta['linewidth_floor'] / 1e6:.2f} MHz")
 ```
 
 ![Laser Phase Characterization](examples/images/laser_phase_characterization.png)

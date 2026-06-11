@@ -88,10 +88,12 @@ def test_signal_add_pilot_tone(backend_device, xp):
     ret = sig.add_pilot_tone(2.0e6, power_ratio_db=-12.0)
 
     assert ret is sig  # chainable, in-place
-    assert sig.pilot_tone_hz is not None
+    assert sig.pilot_tone_frequency is not None
     # Recorded frequency is on the FFT grid and near the request.
-    assert abs(round(sig.pilot_tone_hz / df) - sig.pilot_tone_hz / df) < 1e-9
-    assert abs(sig.pilot_tone_hz - 2.0e6) <= df / 2 + 1.0
+    assert (
+        abs(round(sig.pilot_tone_frequency / df) - sig.pilot_tone_frequency / df) < 1e-9
+    )
+    assert abs(sig.pilot_tone_frequency - 2.0e6) <= df / 2 + 1.0
     # Samples actually changed.
     assert float(xp.max(xp.abs(sig.samples - before))) > 0.0
 

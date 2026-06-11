@@ -247,19 +247,19 @@ class TestApplyPhaseNoise:
     def test_siso_output_shape(self, backend_device, xp):
         """SISO: output shape matches input."""
         samples = xp.ones(1024, dtype=xp.complex64)
-        out = apply_phase_noise(samples, linewidth_hz=100e3, sampling_rate=64e9, seed=1)
+        out = apply_phase_noise(samples, linewidth=100e3, sampling_rate=64e9, seed=1)
         assert out.shape == (1024,)
 
     def test_mimo_output_shape(self, backend_device, xp):
         """MIMO (C, N): output shape matches input."""
         samples = xp.ones((4, 512), dtype=xp.complex64)
-        out = apply_phase_noise(samples, linewidth_hz=100e3, sampling_rate=64e9, seed=2)
+        out = apply_phase_noise(samples, linewidth=100e3, sampling_rate=64e9, seed=2)
         assert out.shape == (4, 512)
 
     def test_modifies_signal(self, backend_device, xp):
         """Phase noise should change the signal."""
         samples = xp.ones(1024, dtype=xp.complex64)
-        out = apply_phase_noise(samples, linewidth_hz=1e6, sampling_rate=64e9, seed=3)
+        out = apply_phase_noise(samples, linewidth=1e6, sampling_rate=64e9, seed=3)
         diff = float(xp.max(xp.abs(out - samples)))
         assert diff > 1e-4
 
@@ -267,7 +267,7 @@ class TestApplyPhaseNoise:
         """Phase rotation must not change sample amplitude."""
         rng = xp.random.RandomState(42)
         samples = (rng.randn(2048) + 1j * rng.randn(2048)).astype(xp.complex64)
-        out = apply_phase_noise(samples, linewidth_hz=100e3, sampling_rate=64e9, seed=4)
+        out = apply_phase_noise(samples, linewidth=100e3, sampling_rate=64e9, seed=4)
         amp_in = xp.abs(samples)
         amp_out = xp.abs(out)
         assert float(xp.max(xp.abs(amp_out - amp_in))) < 1e-4
@@ -288,9 +288,7 @@ class TestApplyPhaseNoise:
 
         # Unit-amplitude input so abs(out)=1 and angle(out) = cumulative phase
         samples = xp.ones(N, dtype=xp.complex128)
-        out = apply_phase_noise(
-            samples, linewidth_hz=linewidth, sampling_rate=fs, seed=42
-        )
+        out = apply_phase_noise(samples, linewidth=linewidth, sampling_rate=fs, seed=42)
 
         cumphase = xp.angle(out)  # (N,) wrapped, but increments are tiny
         increments = xp.diff(cumphase)  # (N-1,)
@@ -304,7 +302,7 @@ class TestApplyPhaseNoise:
         C, N = 4, 512
         samples = xp.ones((C, N), dtype=xp.complex128)
         out = apply_phase_noise(
-            samples, linewidth_hz=1e6, sampling_rate=64e9, seed=7, shared_lo=True
+            samples, linewidth=1e6, sampling_rate=64e9, seed=7, shared_lo=True
         )
         # All channels should have identical output since same phase is applied
         for c in range(1, C):
@@ -315,7 +313,7 @@ class TestApplyPhaseNoise:
         C, N = 2, 512
         samples = xp.ones((C, N), dtype=xp.complex128)
         out = apply_phase_noise(
-            samples, linewidth_hz=10e6, sampling_rate=64e9, seed=5, shared_lo=False
+            samples, linewidth=10e6, sampling_rate=64e9, seed=5, shared_lo=False
         )
         # Independent trajectories should differ
         diff = float(xp.max(xp.abs(out[0] - out[1])))

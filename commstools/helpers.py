@@ -86,7 +86,7 @@ def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> Arr
     """
     Computes the Root-Mean-Square (RMS) value of an array.
 
-    RMS is defined as: $\\sqrt{E[|x|^2]}$.
+    RMS is defined as: sqrt(E[|x|^2]).
 
     Parameters
     ----------
@@ -127,15 +127,15 @@ def normalize(
         Normalization strategy:
         - "unity_gain": Sum of elements is 1.0 (DC gain normalization).
           Preserves signal levels (e.g., 5V -> 5V). Used for general filters.
-        - "unit_energy": L2-norm is 1.0 ($\\sum |x|^2 = 1$).
+        - "unit_energy": L2-norm is 1.0 (sum(|x|^2) = 1).
           Preserves total energy/noise power. Used for pulse shaping and matched filters.
-        - "peak": Peak complex envelope is 1.0 ($\\max_n |x[n]| = 1$).
+        - "peak": Peak complex envelope is 1.0 (max_n |x[n]| = 1).
           For complex signals this normalizes by the maximum instantaneous magnitude,
-          so $|x[n]| \\le 1$ for all $n$. This bound is invariant under any
+          so |x[n]| <= 1 for all n. This bound is invariant under any
           unit-magnitude operation (frequency shifts, phase rotations, equalization),
           making it the correct choice for DSP chains. For real signals the behavior
-          is identical: $\\max_n |x[n]| = 1$.
-        - "average_power": Mean sample power is 1.0 ($E[|x|^2] = 1$ per sample).
+          is identical: max_n |x[n]| = 1.
+        - "average_power": Mean sample power is 1.0 (E[|x|^2] = 1 per sample).
           Normalizes the composite complex signal power at the sample level.
           Used for symbol constellations at 1 sps and for display/plotting.
           **Not suitable for oversampled waveforms**: for a Nyquist pulse with
@@ -222,7 +222,7 @@ def format_si(value: Optional[float], unit: str = "Hz") -> str:
 
     Automatically selects the appropriate SI prefix (e.g., k, M, G, m, u, n)
     based on the magnitude of the value. Supports a wide range from
-    femto ($10^{-15}$) to Peta ($10^{15}$).
+    femto (10^-15) to Peta (10^15).
 
     Parameters
     ----------
@@ -465,14 +465,14 @@ def resolve_pll_gains(bandwidth: float, mu: Optional[float], beta: Optional[floa
     """Resolve decision-directed PLL PI gains from a raw/bandwidth parameterization.
 
     Shared by the inline equalizer PLL (``lms``/``rls`` with ``cpr_type='pll'``)
-    and the standalone :func:`commstools.recovery.recover_carrier_phase_pll`, so
+    and the standalone ``recover_carrier_phase_pll``, so
     the bandwidth→gain mapping is defined in exactly one place.
 
     Precedence
     ----------
     * ``mu`` given → raw PI gains; ``beta`` defaults to ``0.0`` (1st-order loop).
     * ``mu`` is ``None`` → derive critically-damped (ζ=1) gains ``μ=4B, β=4B²``
-      from ``bandwidth`` via :func:`cpr_pll_gains`.
+      from ``bandwidth`` via ``cpr_pll_gains``.
 
     ``beta`` without ``mu`` is ambiguous and raises ``ValueError``.
 

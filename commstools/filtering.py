@@ -246,7 +246,7 @@ def rrc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> np.ndarray:
     sps : float
         Samples per symbol.
     rolloff : float, default 0.35
-        Roll-off factor ($\alpha$), range [0, 1].
+        Roll-off factor (alpha), range [0, 1].
     span : int, default 8
         Filter span in symbols.
 
@@ -314,7 +314,7 @@ def rc_taps(sps: float, rolloff: float = 0.35, span: int = 8) -> ArrayType:
     sps : float
         Samples per symbol.
     rolloff : float, default 0.35
-        Roll-off factor ($\alpha$), range [0, 1].
+        Roll-off factor (alpha), range [0, 1].
     span : int, default 8
         Filter span in symbols.
 
@@ -854,19 +854,9 @@ def shape_pulse(
 
     Notes
     -----
-    Pulse shaping is implemented via polyphase resampling, which is more
-    computationally efficient than zero-stuffing followed by convolution.
-
-    **Normalization convention.** All pulse types — zero-stuffed (``"none"``),
-    rect, and unit-energy Nyquist filters (RRC, RC, Gaussian, SmoothRect) —
-    produce an output where ``E[|x|²] · sps = 1``, i.e. average sample power
-    equals 1/sps. This is the **symbol-power** convention and is what
-    ``apply_awgn`` expects: it computes ``Es = mean_sample_power x sps``, so
-    Es = 1 is preserved and Es/N0 calibration is correct for all pulse shapes
-    without any per-pulse offset.
-
-    Callers that need peak-normalized samples for display (e.g., eye diagrams)
-    should apply ``normalize(..., "peak")`` after the fact.
+    All pulse types produce output satisfying E[|x|²] * sps = 1 (symbol-power
+    convention). For peak-normalized samples (e.g. eye diagrams), apply
+    ``normalize(..., "peak")`` after.
     """
     logger.debug(f"Applying pulse shaping: {pulse_shape}")
 
@@ -982,25 +972,20 @@ def compensate_chromatic_dispersion(
     fiber_length_km: float,
     center_wavelength_nm: float,
 ) -> ArrayType:
-    r"""
+    """
     Electronic dispersion compensation (EDC) for chromatic dispersion.
 
     Applies the inverse of the CD frequency-domain transfer function to remove
     chromatic dispersion accumulated over a fiber link:
 
-    .. math::
-
-        H_{\text{EDC}}(f) = \exp\!\left[+\tfrac{j}{2}\beta_2 (2\pi f)^2 L\right]
+        H_EDC(f) = exp(j/2 * beta_2 * (2*pi*f)^2 * L)
 
     where
 
-    .. math::
+        beta_2 = -D * lambda^2 / (2*pi*c)
 
-        \beta_2 = -\frac{D \lambda^2}{2\pi c}
-
-    and :math:`D` is the dispersion parameter, :math:`\lambda` is the centre
-    wavelength, :math:`c` is the speed of light, and :math:`L` is the fibre
-    length.
+    and D is the dispersion parameter, lambda is the center wavelength,
+    c is the speed of light, and L is the fiber length.
 
     Parameters
     ----------
@@ -1009,12 +994,12 @@ def compensate_chromatic_dispersion(
     sampling_rate : float
         Sampling rate in Hz.
     dispersion_ps_nm_km : float
-        Fibre dispersion parameter :math:`D` in ps / (nm · km).
-        Standard SMF-28: 17 ps/(nm·km) at 1550 nm.
+        Fiber dispersion parameter D in ps / (nm * km).
+        Standard SMF-28: 17 ps/(nm*km) at 1550 nm.
     fiber_length_km : float
-        Fibre span length in km.
+        Fiber span length in km.
     center_wavelength_nm : float
-        Centre wavelength in nm (e.g. 1550 for C-band).
+        Center wavelength in nm (e.g. 1550 for C-band).
 
     Returns
     -------

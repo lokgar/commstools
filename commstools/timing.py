@@ -102,10 +102,10 @@ def zadoff_chu_sequence(length: int, root: int = 1) -> ArrayType:
     Parameters
     ----------
     length : int
-        The sequence length ($N_{ZC}$). For optimal cross-correlation
+        The sequence length (N_ZC). For optimal cross-correlation
         properties, this should be a prime number.
     root : int, default 1
-        The root index ($u$). Must be relatively prime to `length`.
+        The root index (u). Must be relatively prime to `length`.
 
     Returns
     -------
@@ -115,8 +115,8 @@ def zadoff_chu_sequence(length: int, root: int = 1) -> ArrayType:
 
     Notes
     -----
-    - For odd lengths: $x[n] = \exp(-j \frac{\pi u n (n+1)}{N_{ZC}})$
-    - For even lengths: $x[n] = \exp(-j \frac{\pi u n^2}{N_{ZC}})$
+    - For odd lengths: x[n] = exp(-j * pi * u * n * (n + 1) / N_ZC)
+    - For even lengths: x[n] = exp(-j * pi * u * n^2 / N_ZC)
     - ZC sequences have exceptionally low Peak-to-Average Power Ratio (PAPR).
     """
     if length < 1:
@@ -344,24 +344,8 @@ def fft_fractional_delay(
 
     Notes
     -----
-    The delay is applied in the frequency domain as:
-
-    .. math::
-        Y(f) = X(f) \\cdot e^{-j 2\\pi f \\cdot \\text{delay} / N}
-
-    This is equivalent to ideal sinc interpolation and is the optimal
-    fractional delay method for bandlimited signals.
-
-    Advantages over polynomial interpolators (Farrow):
-    - Perfect power preservation (0 dB loss)
-    - No bandwidth limitations
-    - Numerically stable
-    - Ideal for communications signals
-
-    References
-    ----------
-    T. I. Laakso et al., "Splitting the unit delay," IEEE Signal
-    Processing Magazine, 1996.
+    Applies Y(f) = X(f) * exp(-j * 2*pi * f * delay / N) — equivalent to
+    ideal sinc interpolation with perfect power preservation.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -425,67 +409,36 @@ def estimate_timing(
     """
     Estimates integer and fractional timing offsets via cross-correlation.
 
-    Performs a sliding cross-correlation between the received signal and
-    a known reference sequence to determine the integer-sample
-    timing offset per channel.  Additionally estimates the fractional
-    (sub-sample) timing offset using parabolic interpolation on the
-    correlation peak.
+    Slides a cross-correlation between the received signal and a known reference
+    to find the integer-sample timing offset per channel, then estimates the
+    fractional offset via parabolic interpolation on the correlation peak.
 
-    The reference can be:
-
-    * A :class:`~commstools.core.Preamble` object — the waveform is
-      reconstructed internally using ``sps``, ``pulse_shape``, and
-      ``filter_params``.
-    * A raw array — used directly as the correlation template.  This
-      can be the original transmitted signal, a known training sequence,
-      or any sub-sequence of the signal.  The array must be at the same
-      sampling rate as ``samples``.
-
-    For multi-template MIMO references (shape ``(C_tx, L)`` — e.g. unique-root
-    preambles *or* independent per-polarization data streams) every template is
-    correlated against every RX channel, and each channel takes its **strongest
-    peak across all (template, lag) pairs**.  Because all streams share the same
-    symbol clock, any template present in a channel peaks at that channel's true
-    delay, so this is robust to a polarization swap or mixing and **preserves
-    per-channel hardware skew** (each offset is found independently).  Timing
-    does **not** resolve *which* polarization is which — that is a separate
-    concern; use :func:`commstools.recovery.resolve_channel_permutation` on the
-    recovered symbols before metrics.
+    For MIMO references with shape ``(C_tx, L)``, every template is correlated
+    against every RX channel; each channel takes the strongest peak across all
+    (template, lag) pairs.  This preserves per-channel hardware skew and is
+    robust to polarization swap or mixing.
 
     Parameters
     ----------
     samples : array_like
         Received signal samples. Shape: ``(N,)`` or ``(C, N)``.
     reference : array_like or Preamble
-        Known reference sequence for correlation.
-
-        * **Preamble object:** the waveform is reconstructed via
-          ``Preamble.to_signal()`` using the provided ``sps``,
-          ``pulse_shape``, and ``filter_params``.  ``sps`` is required
-          in this mode.
-        * **Raw array:** used directly as the correlation template at the
-          current sampling rate.  Shape: ``(L,)`` for a single template
-          or ``(C_tx, L)`` for per-channel templates (MIMO).
+        Reference for correlation.  A Preamble object is reconstructed via
+        ``Preamble.to_signal()`` using ``sps`` and ``pulse_shape``; a raw
+        array (shape ``(L,)`` or ``(C_tx, L)``) is used directly.
     threshold : float, default 3.0
-        Detection threshold for the correlation metric, defined as the Peak-to-Average
-        Power Ratio (PAPR) of the cross-correlation magnitude. A value >= 3.0 ensures
-        reliable peak prominence above the noise floor.
+        Peak-to-average power ratio threshold for peak detection.
     sps : int, optional
-        Samples per symbol.  Required when ``reference`` is a
-        :class:`~commstools.core.Preamble` object; ignored for raw arrays.
+        Samples per symbol.  Required when ``reference`` is a Preamble.
     pulse_shape : str, optional
-        Pulse shaping filter type (e.g. ``'rrc'``).  Used only when
-        ``reference`` is a Preamble object.  Defaults to ``'rrc'``.
+        Pulse shaping filter type used when ``reference`` is a Preamble.
+        Defaults to ``'rrc'``.
     filter_params : dict, optional
-        Additional filter parameters (``beta``, ``span``, etc.) passed
-        to the pulse shaper.  Used only when ``reference`` is a Preamble
-        object.  Defaults to ``{}``.
+        Extra pulse shaper parameters when ``reference`` is a Preamble.
     search_range : tuple of int, optional
-        A ``(start, end)`` sample range to restrict detection.
-        Defaults to the full signal length.
+        ``(start, end)`` sample range to restrict the search.
     dft_upsample : int, default 1
-        Factor for DFT-based upsampling of correlation peak.
-        Use > 1 for high-precision fractional delay estimation.
+        DFT-based upsampling factor for high-precision fractional estimation.
     fractional_method : {'parabolic', 'log-parabolic'}, default 'log-parabolic'
         Fitting method for fractional delay estimation.
     debug_plot : bool, default False
@@ -510,14 +463,9 @@ def estimate_timing(
 
     Notes
     -----
-    - The returned integer offset corresponds to the very first sample of
-      the detected reference sequence.
-    - **Synchronization Strategy**: For signals with oversampling (SPS > 1),
-      correlating with a shaped/oversampled reference (e.g., generated via
-      ``Preamble.to_signal(...)``) typically yields superior timing precision
-      and SNR compared to correlating with 1 SPS symbols.  Ensure the
-      ``reference`` argument matches the sampling rate of the input
-      ``samples``.
+    The returned integer offset is the sample index of the first reference
+    sample.  For oversampled signals, pass a shaped reference at the same sps
+    for best timing SNR.
     """
     from .helpers import cross_correlate_fft
 
@@ -792,26 +740,11 @@ def correct_timing(
 
     Notes
     -----
-    **Reference sequence is not removed.**  After correction,
-    ``signal[..., 0]`` corresponds to the first sample of the detected
-    reference (e.g. preamble, training sequence).  All three modes align
-    the reference start to index 0 — they do not strip it from the output.
-    Use :meth:`~commstools.core.SingleCarrierFrame.get_structure_map`
-    to locate preamble and payload regions, or manually slice using the
-    structure map if you need to process the body in isolation.
-
-    The fractional correction uses FFT-based frequency-domain delay, which
-    is mathematically ideal for bandlimited signals and perfectly preserves
-    signal power (unlike polynomial interpolators).
-
-    For ``mode='slice'`` the fractional delay is applied to the *full
-    pre-slice* input rather than to the slice itself.  The FFT method
-    treats its input as circular; applying it after the slice would wrap
-    the trailing edge back into the new sample 0 — exactly the frame
-    boundary we just aligned to.  Applying first puts the wrap-around at
-    the physical buffer ends, the leading one of which is then discarded
-    by the slice; only the slice's tail carries any residual sinc-tail
-    artefact, well away from typical equalizer training starts.
+    The reference sequence is not stripped from the output; sample 0 is the
+    first reference sample.  Fractional delay uses FFT-based phase shift
+    (ideal for bandlimited signals; no power loss).  For ``mode='slice'``,
+    fractional delay is applied to the full buffer before slicing so the
+    wrap-around stays at the buffer ends.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1

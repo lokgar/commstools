@@ -53,7 +53,7 @@ NUM_STREAMS = 2  # dual-pol, shared LO
 
 # Channel ground truth
 ESN0_DB = 28.0
-LASER_LINEWIDTH_HZ = 1.5e6  # combined Tx+Rx (shared LO trajectory)
+LASER_linewidth = 1.5e6  # combined Tx+Rx (shared LO trajectory)
 DRIFT_AMP_HZ = 6.0e6  # peak of the sinusoidal frequency wander (dominates RW-FM)
 DRIFT_PERIODS = 6.0  # wander cycles over the capture (≫1 ⇒ std → A/√2)
 
@@ -63,7 +63,7 @@ STEP_SIZE = 1e-3
 CPR_PLL_BW = 5e-3  # inline PLL bandwidth to converge taps under phase noise
 
 # Analysis
-DRIFT_CUTOFF_HZ = 3.0e6  # drift / phase-noise split (> wander rate, < Nyquist)
+DRIFT_cutoff = 3.0e6  # drift / phase-noise split (> wander rate, < Nyquist)
 PSD_NPERSEG = 1 << 13  # Welch segment for the FM-noise PSD
 FLOOR_F_MIN = 5.0e6  # white-FM floor band: above drift / β-crossing …
 FLOOR_F_MAX = 2.0e8  # … and below the AWGN f² knee
@@ -128,7 +128,7 @@ rx.samples = rx.samples * np.exp(1j * phase_wander).astype(np.complex64)[None, :
 rx.samples = apply_phase_noise(
     rx.samples,
     sampling_rate=fs,
-    linewidth_hz=LASER_LINEWIDTH_HZ,
+    linewidth=LASER_linewidth,
     shared_lo=True,
     seed=SEED,
 )
@@ -144,7 +144,7 @@ print(
     f"  Freq wander  : ±{DRIFT_AMP_HZ / 1e6:.1f} MHz, {DRIFT_PERIODS:.0f} cycles "
     f"→ std ≈ {drift_std_truth / 1e3:.0f} kHz"
 )
-print(f"  Linewidth    : {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz combined (shared LO)")
+print(f"  Linewidth    : {LASER_linewidth / 1e6:.2f} MHz combined (shared LO)")
 print(f"  Es/N0        : {ESN0_DB:.1f} dB  →  σ_n² = {noise_var_truth:.2e}")
 
 
@@ -188,7 +188,7 @@ report = analysis.characterize_carrier_phase(
     y_eq,
     source_symbols,
     SYMBOL_RATE,
-    drift_cutoff_hz=DRIFT_CUTOFF_HZ,
+    drift_cutoff=DRIFT_cutoff,
     noise_var=noise_var_truth,  # additive-noise variance only (see docs)
     nperseg=PSD_NPERSEG,
     f_min=FLOOR_F_MIN,
@@ -207,19 +207,19 @@ def _avg(x):  # average the two pols (shared LO ⇒ identical statistics)
 
 print("  Frequency drift (residual after the equalizer):")
 print(
-    f"    std        : {_avg(dm['std_hz']) / 1e3:8.1f} kHz   (injected wander std ≈ {drift_std_truth / 1e3:.0f} kHz"
+    f"    std        : {_avg(dm['std']) / 1e3:8.1f} kHz   (injected wander std ≈ {drift_std_truth / 1e3:.0f} kHz"
 )
 print("                 + in-band random-walk FM ⇒ measured is slightly higher)")
-print(f"    peak-peak  : {_avg(dm['pp_hz']) / 1e6:8.2f} MHz")
+print(f"    peak-peak  : {_avg(dm['pp']) / 1e6:8.2f} MHz")
 print("  Linewidth (combined Δν_sig + Δν_LO):")
 print(
-    f"    increment (lag-slope, AWGN-free) : {_avg(lw_inc['linewidth_hz']) / 1e6:6.3f} MHz   (truth = {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz)"
+    f"    increment (lag-slope, AWGN-free) : {_avg(lw_inc['linewidth']) / 1e6:6.3f} MHz   (truth = {LASER_linewidth / 1e6:.2f} MHz)"
 )
 print(
-    f"    FM-PSD white-FM floor            : {_avg(lw_beta['linewidth_floor_hz']) / 1e6:6.3f} MHz   (truth = {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz)"
+    f"    FM-PSD white-FM floor            : {_avg(lw_beta['linewidth_floor']) / 1e6:6.3f} MHz   (truth = {LASER_linewidth / 1e6:.2f} MHz)"
 )
 print(
-    f"    β-separation area                : {_avg(lw_beta['linewidth_hz']) / 1e6:6.3f} MHz   "
+    f"    β-separation area                : {_avg(lw_beta['linewidth']) / 1e6:6.3f} MHz   "
     f"(needs fine PSD resolution at high baud — see note)"
 )
 print(f"  Fitted AWGN intercept (2σ_φ²)      : {_fmt(lw_inc['awgn_var'])}")
@@ -236,13 +236,13 @@ _sep("5. Diagnostic plots")
 fig, _ = plotting.carrier_phase_characterization(
     report,
     symbol_rate=SYMBOL_RATE,
-    drift_cutoff_hz=DRIFT_CUTOFF_HZ,
+    drift_cutoff=DRIFT_cutoff,
     band=(FLOOR_F_MIN, FLOOR_F_MAX),
-    floor_hz=LASER_LINEWIDTH_HZ,  # draw the *injected* white-FM floor as reference
-    amp_ref_hz=DRIFT_AMP_HZ,
+    floor=LASER_linewidth,  # draw the *injected* white-FM floor as reference
+    amp_ref=DRIFT_AMP_HZ,
     show=False,
     title=(
-        f"Laser carrier-phase characterization — {LASER_LINEWIDTH_HZ / 1e6:.2f} MHz Δν, "
+        f"Laser carrier-phase characterization — {LASER_linewidth / 1e6:.2f} MHz Δν, "
         f"±{DRIFT_AMP_HZ / 1e6:.1f} MHz wander, {ESN0_DB:.0f} dB Es/N0"
     ),
 )
@@ -259,15 +259,15 @@ print(f"  Saved {out}")
 # ──────────────────────────────────────────────────────────────────────────────
 _sep("6. Validation against ground truth")
 
-lw_floor = _avg(lw_beta["linewidth_floor_hz"])
-lw_increment = _avg(lw_inc["linewidth_hz"])
-drift_std = _avg(dm["std_hz"])
+lw_floor = _avg(lw_beta["linewidth_floor"])
+lw_increment = _avg(lw_inc["linewidth"])
+drift_std = _avg(dm["std"])
 
 ok = True
 for name, est, truth, tol in [
     ("drift std", drift_std, drift_std_truth, 0.15),
-    ("linewidth (increment)", lw_increment, LASER_LINEWIDTH_HZ, 0.20),
-    ("linewidth (FM-PSD floor)", lw_floor, LASER_LINEWIDTH_HZ, 0.20),
+    ("linewidth (increment)", lw_increment, LASER_linewidth, 0.20),
+    ("linewidth (FM-PSD floor)", lw_floor, LASER_linewidth, 0.20),
 ]:
     rel = abs(est - truth) / truth
     status = "OK " if rel <= tol else "OFF"

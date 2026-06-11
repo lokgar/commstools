@@ -145,7 +145,7 @@ class EqualizerResult:
         passing a different capture (e.g. vacuum noise) through the same
         frozen taps without disturbing the per-channel ratio:
 
-        .. code-block:: python
+        Example::
 
             α = signal_result.input_norm_factor  # float or (C,) array
             β = noise_result.input_norm_factor
@@ -3806,71 +3806,60 @@ def lms(
     Algorithm (per symbol n)
     ------------------------
     1. **Sliding input window** — the length-T tap vector for output channel c
-       is drawn from the padded input at the strided sample position:
+       is drawn from the padded input at the strided sample position::
 
-       .. math::
+           x_{c',n} = [x_{c'}[n*sps - T_c], ..., x_{c'}[n*sps - T_c + T - 1]]
 
-           \\mathbf{x}_{c',n} = \\bigl[x_{c'}[n{\\cdot}\\mathrm{sps} - T_c],\\;
-           \\ldots,\\; x_{c'}[n{\\cdot}\\mathrm{sps} - T_c + T - 1]\\bigr]
-
-       where :math:`T_c` = ``center_tap`` (default :math:`T // 2`).  The
-       causal delay :math:`T_c` is absorbed into the tap vector so the filter
-       can model both pre- and post-cursor ISI.
+       where ``T_c`` = ``center_tap`` (default ``T // 2``).  The causal delay
+       ``T_c`` is absorbed into the tap vector so the filter can model both
+       pre- and post-cursor ISI.
 
     2. **Butterfly filter** — cross-correlate conjugate weights with the input
-       across all C input channels:
+       across all C input channels::
 
-       .. math::
-
-           y_c^{\\mathrm{raw}}[n] = \\sum_{c'} \\mathbf{w}_{c,c'}^H \\mathbf{x}_{c',n}
+           y_c_raw[n] = sum_{c'} w_{c,c'}^H * x_{c',n}
 
     3. **Carrier phase recovery** (if ``cpr_type`` is set):
 
        * **PLL** — cross-product phase detector
-         :math:`\\varphi_{\\mathrm{err}} = \\mathrm{Im}(y^{\\mathrm{raw}} \\cdot \\bar{d}_{\\mathrm{prev}})`
+         ``phi_err = Im(y_raw * conj(d_prev))``
          drives a PI integrator with gains ``K_p``, ``K_i``; accumulated
-         phase :math:`\\varphi_n` is applied as
-         :math:`y[n] = y^{\\mathrm{raw}} \\cdot e^{-j\\varphi_n}`.
-       * **BPS** — :math:`B` candidate rotations :math:`e^{-jk\\pi/(2B)}` are
+         phase ``phi_n`` is applied as ``y[n] = y_raw * exp(-j*phi_n)``.
+       * **BPS** — ``B`` candidate rotations ``exp(-j*k*pi/(2*B))`` are
          tested; the one minimising the summed nearest-constellation distance
-         over the trailing :math:`K` = ``cpr_bps_block_size`` symbols is chosen.
-         A causal 4-fold unwrap converts the ``[0, π/2)`` argmin to full-range
-         :math:`\\varphi_n` stored in a float64 accumulator.
+         over the trailing ``K`` = ``cpr_bps_block_size`` symbols is chosen.
+         A causal 4-fold unwrap converts the ``[0, pi/2)`` argmin to full-range
+         ``phi_n`` stored in a float64 accumulator.
 
     4. **Decision** — training symbol ``d[n]`` (DA phase, while
        ``n < len(training_symbols)``) or nearest-constellation hard decision on
        ``y[n]`` (DD phase thereafter).
 
-    5. **Error and tap-plane back-rotation**:
+    5. **Error and tap-plane back-rotation**::
 
-       .. math::
-
-           e_{\\mathrm{clean}}[n] = d[n] - y[n], \\qquad
-           e_{\\mathrm{taps}}[n] = e_{\\mathrm{clean}}[n] \\cdot e^{+j\\varphi_n}
+           e_clean[n] = d[n] - y[n]
+           e_taps[n]  = e_clean[n] * exp(+j*phi_n)
 
        The back-rotation undoes the CPR correction so the gradient operates in
        the original tap space.
 
-    6. **LMS weight update** (plain, no input-power normalisation):
+    6. **LMS weight update** (plain, no input-power normalisation)::
 
-       .. math::
+           w_{c,c'} += mu * conj(e_taps_c[n]) * x_{c',n}
 
-           \\mathbf{w}_{c,c'} \\mathrel{+}= \\mu \\cdot
-           \\overline{e_{\\mathrm{taps},c}[n]} \\cdot \\mathbf{x}_{c',n}
-
-       Stability bound: :math:`0 < \\mu < 2 / (C \\cdot T \\cdot P_x)` where
-       :math:`P_x` is the mean per-tap input power.  The equalizer normalises
-       inputs to unit symbol-rate power before adaptation, so :math:`P_x \\approx 1`.
+       Stability bound: ``0 < mu < 2 / (C * T * P_x)`` where ``P_x`` is the
+       mean per-tap input power.  The equalizer normalises inputs to unit
+       symbol-rate power before adaptation, so ``P_x ≈ 1``.
 
     7. **Cycle-slip correction** (if ``cpr_cycle_slip_correction=True``) — a
        circular buffer of ``cpr_cycle_slip_history`` past phase values is
        maintained per channel.  An online least-squares linear fit over the
-       buffer predicts :math:`\\hat{\\varphi}_n`.  If
-       :math:`|\\varphi_n - \\hat{\\varphi}_n| > ` ``cpr_cycle_slip_threshold``,
-       :math:`\\varphi_n` is snapped to the nearest :math:`2\\pi/\\mathrm{sym}`
+       buffer predicts ``phi_pred_n``.  If
+       ``|phi_n - phi_pred_n| > cpr_cycle_slip_threshold``,
+       ``phi_n`` is snapped to the nearest ``2*pi/sym``
        multiple (``sym`` = constellation symmetry order, 4 for QAM/QPSK); the
-       corrected value replaces :math:`\\varphi_n` in steps 5 and 6 and is
-       written into the history buffer.
+       corrected value replaces ``phi_n`` in steps 5 and 6 and is written into
+       the history buffer.
 
     Parameters
     ----------
@@ -3972,7 +3961,7 @@ def lms(
         ``cpr_pll_bandwidth`` and uses raw PI gains directly; ``cpr_pll_beta``
         then defaults to ``0.0`` (a 1st-order loop).  Leave ``None`` to derive
         critically-damped gains from ``cpr_pll_bandwidth``.  Interchangeable
-        with the ``mu`` of :func:`~commstools.recovery.recover_carrier_phase_pll`.
+        with the ``mu`` of ``recover_carrier_phase_pll``.
     cpr_pll_beta : float, optional
         Raw integral PLL gain ``β``.  ``β=0`` ⇒ 1st-order loop (no frequency
         integrator); ``β>0`` ⇒ 2nd-order loop.  Requires ``cpr_pll_mu`` to be
@@ -4041,8 +4030,7 @@ def lms(
         ``cpr_type``, channel count, or history depth), in which case the
         equalizer falls back to cold-start silently.
 
-        .. note::
-            JAX backend: ``cpr_state`` warm-start is not yet supported;
+        Note: JAX backend: ``cpr_state`` warm-start is not yet supported;
             passing a non-``None`` value raises ``NotImplementedError``.
     input_norm_factor : float or ndarray, optional
         Pre-computed RMS normalization factor from a previous call (obtained
@@ -4660,32 +4648,24 @@ def rls(
 
     Algorithm (per symbol n)
     ------------------------
-    Steps 1-5 and 7 are identical to :func:`lms` (input windowing, butterfly
+    Steps 1-5 and 7 are identical to ``lms`` (input windowing, butterfly
     filter output, carrier phase recovery, decision, error + tap-plane
     back-rotation, and cycle-slip correction).  Step 6 replaces the plain LMS
     gradient with a rank-1 Riccati update:
 
     6. **RLS weight update** — for each output channel c, maintaining the
-       inverse input auto-correlation matrix
-       :math:`P_c \\in \\mathbb{C}^{T \\times T}`:
+       inverse input auto-correlation matrix ``P_c`` of shape ``(T, T)``::
 
-       .. math::
+           k_c        = (P_c @ x_{c,n}) / (lambda + x_{c,n}^H @ P_c @ x_{c,n})
+           P_c        = (P_c - k_c @ x_{c,n}^H @ P_c) / lambda
+           w_{c,c'}  += k_c * conj(e_taps_c[n])
 
-           \\mathbf{k}_c &= \\frac{P_c\\,\\mathbf{x}_{c,n}}{\\lambda +
-           \\mathbf{x}_{c,n}^H P_c\\,\\mathbf{x}_{c,n}}
-
-           P_c &\\leftarrow \\frac{P_c - \\mathbf{k}_c\\,\\mathbf{x}_{c,n}^H P_c}{\\lambda}
-
-           \\mathbf{w}_{c,c'} &\\mathrel{+}= \\mathbf{k}_c \\cdot
-           \\overline{e_{\\mathrm{taps},c}[n]}
-
-       where :math:`\\lambda` = ``forgetting_factor``.  :math:`P_c` is
-       initialised to :math:`(1/\\delta)\\,\\mathbf{I}` (``delta`` parameter).
-       With ``leakage`` :math:`\\gamma > 0` the weight update becomes
-       :math:`\\mathbf{w} \\leftarrow (1-\\gamma)\\mathbf{w} +
-       \\mathbf{k}\\cdot\\bar{e}_{\\mathrm{taps}}`, which exponentially suppresses
-       tap energy in frequency-null subspaces and prevents the
-       eigenvalue blow-up that afflicts :math:`P` for fractionally-spaced
+       where ``lambda`` = ``forgetting_factor``.  ``P_c`` is initialised to
+       ``(1/delta) * I`` (``delta`` parameter).  With ``leakage`` ``gamma > 0``
+       the weight update becomes
+       ``w = (1 - gamma) * w + k * conj(e_taps)``, which exponentially
+       suppresses tap energy in frequency-null subspaces and prevents the
+       eigenvalue blow-up that afflicts ``P`` for fractionally-spaced
        (sps > 1) inputs.
 
     Parameters
@@ -4803,7 +4783,7 @@ def rls(
         ``cpr_pll_bandwidth``; ``cpr_pll_beta`` then defaults to ``0.0``
         (1st-order).  Leave ``None`` for critically-damped gains from
         ``cpr_pll_bandwidth``.  Interchangeable with the ``mu`` of
-        :func:`~commstools.recovery.recover_carrier_phase_pll`.
+        ``recover_carrier_phase_pll``.
     cpr_pll_beta : float, optional
         Raw integral PLL gain ``β``.  ``β=0`` ⇒ 1st-order, ``β>0`` ⇒ 2nd-order.
         Requires ``cpr_pll_mu`` to be set.  Mapping: ``ωₙT = √β``,
@@ -5596,61 +5576,53 @@ def block_lms(
 
     Algorithm (per block b)
     -----------------------
-    1. **Forward pass** — frequency-domain butterfly filter:
+    1. **Forward pass** — frequency-domain butterfly filter::
 
-       .. math::
+           Y_fd[i] = sum_j conj(H_fd[i,j]) * X_fd[j]
 
-           Y_{\\text{fd}}[i] = \\sum_j \\overline{H_{\\text{fd}}[i,j]} \\cdot X_{\\text{fd}}[j]
-
-       where :math:`H_{\\text{fd}} = \\mathrm{FFT}(h, n=F)` and
-       :math:`X_{\\text{fd}} = \\mathrm{FFT}(x_{\\text{block}}, n=F)`.
-       Output symbols are extracted at decimated positions ``y[n] = y_time[n·sps]``.
+       where ``H_fd = FFT(h, n=F)`` and ``X_fd = FFT(x_block, n=F)``.
+       Output symbols are extracted at decimated positions ``y[n] = y_time[n*sps]``.
 
     2. **BPS phase recovery** (if ``cpr_type='bps'``) — for each symbol in the
        block, averages the min-distance metric over a causal trailing window of
        ``cpr_bps_block_size`` symbols and picks the minimum-metric candidate
-       rotation.  This produces one phase estimate :math:`\\varphi_n` per symbol
+       rotation.  This produces one phase estimate ``phi_n`` per symbol
        (not one per block), so ``cpr_bps_block_size`` and ``block_size`` are
        independent parameters: ``block_size`` controls FFT/gradient efficiency
        while ``cpr_bps_block_size`` controls phase noise suppression.  The raw
-       ``[0, π/2)`` argmin is converted to full-range radians by a causal 4-fold
+       ``[0, pi/2)`` argmin is converted to full-range radians by a causal 4-fold
        unwrap, and stored in a float64 accumulator in ``phase_trajectory``.
 
     3. **Cycle-slip correction** (if ``cpr_cycle_slip_correction=True``) — the
-       full per-symbol BPS phase tensor :math:`\\varphi_n` (shape ``(C, B)``)
+       full per-symbol BPS phase tensor ``phi_n`` (shape ``(C, B)``)
        is transferred device→host; for each symbol the phase is compared to a
        linear-regression prediction built from a circular buffer of
        ``cpr_cycle_slip_history`` past corrected phases (identical algorithm to
-       :func:`lms` with ``cpr_type='bps'``).  If
-       :math:`|\\hat{\\varphi}_n - \\varphi_{\\mathrm{pred}}| >` ``cpr_cycle_slip_threshold``
-       the nearest :math:`2\\pi/\\mathrm{symmetry}` quantum is subtracted, the
+       ``lms`` with ``cpr_type='bps'``).  If
+       ``|phi_n - phi_pred| > cpr_cycle_slip_threshold``
+       the nearest ``2*pi/symmetry`` quantum is subtracted, the
        corrected value is stored in the history buffer, and the corrected block
        is written back to device.  Cost: one ``(C, B)`` float64 D→H + H→D
        round-trip per block; disable on slip-free channels to avoid this
        transfer.
 
     4. **Error** — training or DD slicer on CPR-corrected output; back-rotated
-       to the tap plane using the block-average phase :math:`\\varphi_b`:
+       to the tap plane using the block-average phase ``phi_b``::
 
-       .. math::
+           e_taps[n] = e_clean[n] * exp(+j*phi_b)
 
-           e_{\\text{taps}}[n] = e_{\\text{clean}}[n] \\cdot e^{+j\\varphi_b}
+    5. **Gradient** — scatter ``e_taps`` to sample positions, then::
 
-    5. **Gradient** — scatter ``e_taps`` to sample positions, then:
+           dH_fd[i,j]  = conj(E_fd[i]) * X_fd[j]
+           h          += mu * IFFT(dH_fd)[...:T]
 
-       .. math::
-
-           \\Delta H_{\\text{fd}}[i,j] = \\overline{E_{\\text{fd}}[i]} \\cdot X_{\\text{fd}}[j]
-
-           h \\mathrel{+}= \\mu \\cdot \\mathrm{IFFT}(\\Delta H_{\\text{fd}})[\\ldots:T]
-
-       :math:`\\mu` is applied to the **summed** block gradient (all B per-symbol
+       ``mu`` is applied to the **summed** block gradient (all B per-symbol
        contributions).  This sum is exactly what a frozen-weight per-symbol LMS
        would accumulate over the same B symbols, so ``step_size`` is on the
-       **same scale as** :func:`lms`: the same :math:`\\mu` yields the same
+       **same scale as** ``lms``: the same ``mu`` yields the same
        convergence and steady-state MSE (see ``step_size`` below).  Only the
        *stability ceiling* is Bx lower — the operating step that matches
-       :func:`lms` is unchanged.
+       ``lms`` is unchanged.
 
     Parameters
     ----------
@@ -5666,8 +5638,8 @@ def block_lms(
     sps : int, default 2
         Samples per symbol.  ``sps=2`` (T/2-spaced) is the default.
     step_size : float, default 2e-4
-        LMS step size μ, on the **same scale as** :func:`lms`.  Use the same
-        value you would use for :func:`lms`: because the block update is the
+        LMS step size μ, on the **same scale as** ``lms``.  Use the same
+        value you would use for ``lms``: because the block update is the
         summed gradient over all B symbols — exactly what a frozen-weight
         per-symbol LMS accumulates over those symbols — the same μ produces the
         same convergence speed and steady-state MSE, independent of
@@ -5677,7 +5649,7 @@ def block_lms(
         The only ``block_size`` dependence is the *stability ceiling*: because
         the weights are frozen across the block, the maximum stable μ is
         ``2/(B·C·T·P_x)`` — roughly ``block_size`` times lower than
-        :func:`lms`.  Reduce μ below your :func:`lms` value **only if** it
+        ``lms``.  Reduce μ below your ``lms`` value **only if** it
         exceeds this ceiling (i.e. the run raises the divergence error); the
         default ``2e-4`` is conservative and safe for ``block_size`` up to a
         few thousand.
@@ -5730,7 +5702,7 @@ def block_lms(
         channel estimates its phase independently.  Ignored for SISO inputs.
     cpr_cycle_slip_correction : bool, default False
         Enable per-symbol cycle-slip detection and correction using the same
-        algorithm as :func:`lms`.  After each BPS block the full ``(C, B)``
+        algorithm as ``lms``.  After each BPS block the full ``(C, B)``
         float64 phase tensor is transferred device→host; every symbol is
         compared to a regression prediction, corrected if a slip is detected,
         and added to the circular history buffer before the corrected block is
@@ -5738,7 +5710,7 @@ def block_lms(
         round-trip per block.
     cpr_cycle_slip_history : int, default 100
         Length of the per-symbol phase history buffer used for the linear
-        regression predictor.  Same semantics as in :func:`lms`: one entry
+        regression predictor.  Same semantics as in ``lms``: one entry
         per symbol, so ``100`` means 100 past corrected symbol phases.
         Ignored when ``cpr_cycle_slip_correction=False``.
     cpr_cycle_slip_threshold : float, default π/4
@@ -5773,7 +5745,7 @@ def block_lms(
     Returns
     -------
     EqualizerResult
-        Same fields as :func:`lms`, plus:
+        Same fields as ``lms``, plus:
 
         * ``input_norm_factor`` — RMS factor used to normalize inputs.
         * ``cpr_state`` — ``CPRState`` with BPS accumulators after the last
@@ -5805,11 +5777,11 @@ def block_lms(
 
     **Stability / overflow:** ``step_size`` is applied to the **summed**
     gradient over all ``block_size`` symbols (not averaged).  This keeps μ on
-    the same scale as :func:`lms` (same μ → same convergence and steady-state
+    the same scale as ``lms`` (same μ → same convergence and steady-state
     MSE), but it also means the *stability ceiling* —
     ``0 < μ < 2/(block_size·C·T·P_x)`` — is roughly ``block_size`` times lower
     than per-symbol LMS, because the weights are frozen across the block.  So
-    start from the **same** ``step_size`` you use for :func:`lms`; if a large
+    start from the **same** ``step_size`` you use for ``lms``; if a large
     ``block_size`` pushes that value above the ceiling the run diverges (NaN
     weights, detected at end of run), in which case reduce μ until stable —
     do **not** routinely divide by ``block_size`` (that under-adapts the
@@ -6393,7 +6365,7 @@ def build_pilot_ref(
     """Build dense pilot reference array and uint8 mask for the hybrid PA kernel.
 
     Packs sparse pilot symbols into a dense ``(C, n_sym)`` array suitable for
-    passing to :func:`cma` or :func:`rde` as ``pilot_ref`` / ``pilot_mask``.
+    passing to ``cma`` or ``rde`` as ``pilot_ref`` / ``pilot_mask``.
     Data positions are filled with zeros; the mask marks which positions carry
     known reference symbols.
 
@@ -6419,10 +6391,10 @@ def build_pilot_ref(
 
     Examples
     --------
-    Build the reference from a :class:`~commstools.core.SingleCarrierFrame` and
-    pass it directly to :func:`rde`:
+    Build the reference from a ``SingleCarrierFrame`` and
+    pass it directly to ``rde``:
 
-    .. code-block:: python
+    ::
 
         struct = frame.get_structure_map(unit="symbols", sps=1, include_preamble=False)
         pilot_ref, pilot_mask_u8 = build_pilot_ref(
@@ -6491,56 +6463,51 @@ def cma(
     is used at data positions while an LMS residual error
     (``pilot_ref - y``) is used at every pilot position.  This resolves the
     phase ambiguity at pilot locations while preserving blind adaptation
-    elsewhere.  Build the dense arrays with :func:`build_pilot_ref`.
+    elsewhere.  Build the dense arrays with ``build_pilot_ref``.
 
     Algorithm (per symbol n)
     ------------------------
-    Steps 1 and 2 are identical to :func:`lms` (sliding input window and
-    butterfly filter output :math:`y^{\\mathrm{raw}}[n]`).  There is **no
-    CPR step** — CMA's cost surface is phase-invariant; no radial error
-    can drive a phase rotator (see Notes below).
+    Steps 1 and 2 are identical to ``lms`` (sliding input window and
+    butterfly filter output ``y_raw[n]``).  There is **no CPR step** —
+    CMA's cost surface is phase-invariant; no radial error can drive a
+    phase rotator (see Notes below).
 
     3. **Godard error** — third-order radial gradient of the dispersion
-       cost :math:`J = E[(|y|^2 - R^2)^2]`:
+       cost ``J = E[(|y|^2 - R^2)^2]``::
 
-       .. math::
+           e[n] = (|y[n]|^2 - R^2) * y[n]
 
-           e[n] = \\bigl(|y[n]|^2 - R^2\\bigr) \\cdot y[n]
-
-       The Godard radius :math:`R^2 = E[|s|^4] / E[|s|^2]` is computed
-       once from the normalised constellation (defaults to 1 if
-       ``modulation`` is not given).  The error is purely radial: any
-       constant phase rotation of :math:`y` leaves :math:`|y|^2` and
-       therefore :math:`e` unchanged up to the same rotation, so CMA
-       cannot resolve the phase ambiguity it introduces.
+       The Godard radius ``R^2 = E[|s|^4] / E[|s|^2]`` is computed once
+       from the normalised constellation (defaults to 1 if ``modulation``
+       is not given).  The error is purely radial: any constant phase
+       rotation of ``y`` leaves ``|y|^2`` and therefore ``e`` unchanged
+       up to the same rotation, so CMA cannot resolve the phase ambiguity
+       it introduces.
 
     4. **Weight update** — steepest descent on the Godard criterion (note
-       the minus sign, opposite to LMS):
+       the minus sign, opposite to LMS)::
 
-       .. math::
-
-           \\mathbf{w}_{c,c'} \\mathrel{-}= \\mu \\cdot
-           \\overline{e_c[n]} \\cdot \\mathbf{x}_{c',n}
+           w_{c,c'} -= mu * conj(e_c[n]) * x_{c',n}
 
     **Pilot-aided hybrid** (when ``pilot_ref`` and ``pilot_mask`` are set):
     at pilot positions the Godard error is replaced by the LMS pilot error
-    :math:`e_p[n] = \\mathrm{pilot\\_ref}[n] - y[n]`, and the weight update
-    sign flips to :math:`+\\mu` (standard LMS gradient ascent toward the
-    reference).  This resolves the phase ambiguity at pilot locations while
-    CMA handles data positions blindly.
+    ``e_p[n] = pilot_ref[n] - y[n]``, and the weight update sign flips to
+    ``+mu`` (standard LMS gradient ascent toward the reference).  This
+    resolves the phase ambiguity at pilot locations while CMA handles data
+    positions blindly.
 
     Notes
     -----
     **Why joint CMA + CPR is not supported:**
-    PLL requires a phase-coherent decision :math:`d[n]` (nearest
-    constellation point) to form the cross-product error
-    :math:`\\mathrm{Im}(y \\cdot \\bar{d})`; but CMA output has an unknown
-    phase rotation, so the decision is unreliable.  BPS is blind, but CMA
-    weights converge to one of four equally-valid 90° rotations and slowly
-    drift between them — BPS would track that drift, but the next CMA
-    gradient step would fight the correction.  Use the sequential pipeline
-    instead: CMA → :func:`~commstools.recovery.correct_carrier_phase` (BPS or
-    Viterbi-Viterbi) → optional :func:`lms` fine-tune.
+    PLL requires a phase-coherent decision ``d[n]`` (nearest constellation
+    point) to form the cross-product error ``Im(y * conj(d))``; but CMA
+    output has an unknown phase rotation, so the decision is unreliable.
+    BPS is blind, but CMA weights converge to one of four equally-valid
+    90° rotations and slowly drift between them — BPS would track that
+    drift, but the next CMA gradient step would fight the correction.  Use
+    the sequential pipeline instead: CMA →
+    ``correct_carrier_phase`` (BPS or
+    Viterbi-Viterbi) → optional ``lms`` fine-tune.
 
     Parameters
     ----------
@@ -6585,11 +6552,11 @@ def cma(
         shape mismatch.
     pilot_ref : (C, N_sym) complex64 array, optional
         Dense pilot reference array — zeros at data positions, known symbols
-        at pilot positions.  Build with :func:`build_pilot_ref`.
+        at pilot positions.  Build with ``build_pilot_ref``.
         Must be provided together with ``pilot_mask``.
     pilot_mask : (N_sym,) uint8 array, optional
         Pilot position mask — ``1`` at pilot positions, ``0`` elsewhere.
-        Build with :func:`build_pilot_ref`.
+        Build with ``build_pilot_ref``.
     pilot_gain_db : float, default 0.0
         Pilot boosting in dB relative to payload power, matching
         ``SingleCarrierFrame.pilot_gain_db``.  When non-zero, the received
@@ -6894,47 +6861,38 @@ def rde(
 
     Like CMA, RDE is fully blind (no training symbols) and recovers the channel
     up to a **phase ambiguity**.  A carrier-phase recovery step is needed after
-    convergence; see :func:`cma` Notes for why joint CPR is not supported.
+    convergence; see ``cma`` Notes for why joint CPR is not supported.
 
     Algorithm (per symbol n)
     ------------------------
-    Steps 1 and 2 are identical to :func:`lms` (sliding input window and
-    butterfly filter output :math:`y[n]`).  Like :func:`cma`, there is no
+    Steps 1 and 2 are identical to ``lms`` (sliding input window and
+    butterfly filter output ``y[n]``).  Like ``cma``, there is no
     CPR step.
 
     3. **Ring selection** — choose the constellation ring radius closest to
-       the current output magnitude:
+       the current output magnitude::
 
-       .. math::
+           R_d[n] = argmin_{r in R_set} |r - |y[n]||
+           R_set  = {|c| : c in constellation}
 
-           R_d[n] = \\operatorname*{argmin}_{r\\,\\in\\,\\mathcal{R}}
-           \\bigl|\\,r - |y[n]|\\,\\bigr|, \\qquad
-           \\mathcal{R} = \\bigl\\{|c| : c \\in \\text{constellation}\\bigr\\}
+       ``R_set`` is the set of unique ring radii extracted once from the
+       normalised Gray constellation.  For 16-QAM this yields three radii
+       rather than the single CMA average, eliminating the inward/outward
+       pull that degrades CMA convergence on higher-order QAM.
 
-       :math:`\\mathcal{R}` is the set of unique ring radii extracted once
-       from the normalised Gray constellation.  For 16-QAM this yields
-       three radii rather than the single CMA average, eliminating the
-       inward/outward pull that degrades CMA convergence on higher-order
-       QAM.
+    4. **RDE error** — same third-order form as ``cma`` but using the
+       per-symbol ring radius::
 
-    4. **RDE error** — same third-order form as :func:`cma` but using the
-       per-symbol ring radius:
+           e[n] = (|y[n]|^2 - R_d[n]^2) * y[n]
 
-       .. math::
+    5. **Weight update** — steepest descent (same sign convention as CMA)::
 
-           e[n] = \\bigl(|y[n]|^2 - R_d[n]^2\\bigr) \\cdot y[n]
-
-    5. **Weight update** — steepest descent (same sign convention as CMA):
-
-       .. math::
-
-           \\mathbf{w}_{c,c'} \\mathrel{-}= \\mu \\cdot
-           \\overline{e_c[n]} \\cdot \\mathbf{x}_{c',n}
+           w_{c,c'} -= mu * conj(e_c[n]) * x_{c',n}
 
     **Pilot-aided hybrid** (when ``pilot_ref`` and ``pilot_mask`` are set):
-    identical to :func:`cma` — at pilot positions the RDE error is replaced
-    by :math:`e_p[n] = \\mathrm{pilot\\_ref}[n] - y[n]` and the sign flips
-    to :math:`+\\mu`, resolving the phase ambiguity at those locations.
+    identical to ``cma`` — at pilot positions the RDE error is replaced
+    by ``e_p[n] = pilot_ref[n] - y[n]`` and the sign flips to ``+mu``,
+    resolving the phase ambiguity at those locations.
 
     Parameters
     ----------
@@ -6974,11 +6932,11 @@ def rde(
         mismatch.
     pilot_ref : (C, N_sym) complex64 array, optional
         Dense pilot reference array — zeros at data positions, known symbols
-        at pilot positions.  Build with :func:`build_pilot_ref`.
+        at pilot positions.  Build with ``build_pilot_ref``.
         Must be provided together with ``pilot_mask``.
     pilot_mask : (N_sym,) uint8 array, optional
         Pilot position mask — ``1`` at pilot positions, ``0`` elsewhere.
-        Build with :func:`build_pilot_ref`.
+        Build with ``build_pilot_ref``.
     pilot_gain_db : float, default 0.0
         Pilot boosting in dB relative to payload power, matching
         ``SingleCarrierFrame.pilot_gain_db``.  When non-zero, the received
@@ -7396,11 +7354,9 @@ def apply_taps(
     Suitable for reusing frozen taps from a prior equalizer run on a new signal
     without re-running adaptation.
 
-    The forward pass implements:
+    The forward pass implements::
 
-    .. math::
-
-        y[i, n] = \\sum_j \\sum_t W^*[i,j,t] \\cdot x[j,\\, n \\cdot sps + t]
+        y[i, n] = sum_j sum_t conj(W[i,j,t]) * x[j, n*sps + t]
 
     which is the same inner computation as the Numba/JAX adaptive-equalizer
     kernels, fully vectorized over ``n`` via a single batched ``einsum``.

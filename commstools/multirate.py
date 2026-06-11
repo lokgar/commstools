@@ -31,9 +31,7 @@ For a signal whose bandwidth fits within the new Nyquist band
 effectively transparent — it passes all signal energy and the average
 sample power is preserved:
 
-.. math::
-
-    E[|x_{\\text{out}}[n]|^2] \\approx E[|x_{\\text{in}}[n]|^2]
+    E[|x_out[n]|^2] ≈ E[|x_in[n]|^2]
 
 This holds regardless of the resampling ratio, rolloff factor, or
 signal length (verified for RRC-shaped signals with rolloff 0.01-0.99,
@@ -61,9 +59,7 @@ For a flat-PSD (white-noise) signal, decimation removes the
 out-of-band spectral power together with the aliased bandwidth, so
 sample power scales as ``up / down``:
 
-.. math::
-
-    E[|x_{\\text{out}}[n]|^2] \\approx \\frac{up}{down} \\cdot E[|x_{\\text{in}}[n]|^2]
+    E[|x_out[n]|^2] ≈ (up / down) * E[|x_in[n]|^2]
 
 Upsampling preserves sample power for non-bandlimited signals too
 (the anti-imaging filter passes the baseband content unchanged).
@@ -91,7 +87,7 @@ def decimate_to_symbol_rate(
     Decimates an oversampled signal to symbol-rate by direct slicing.
 
     This function should be used **after** matched filtering to extract
-    pulse-shaped symbols at $1 \text{ sps}$. It does not apply additional
+    pulse-shaped symbols at 1 sps. It does not apply additional
     filtering, which is correct since the matched filter has already
     performed optimal noise suppression.
 

@@ -88,7 +88,7 @@ class Signal(BaseModel):
         If True, uses Return-to-Zero (RZ) signaling.
     source_bits : array_like, optional
         The original binary data that generated the signal (full wire order).
-        Populated by :meth:`Signal.generate` and the factory methods.
+        Populated by ``Signal.generate`` and the factory methods.
         For frame-generated signals this is ``None``; extract the payload
         segment via ``frame.get_structure_map()`` and construct a plain
         ``Signal`` with the relevant ``source_bits`` for per-segment metrics.
@@ -97,10 +97,10 @@ class Signal(BaseModel):
         order). Same scoping note as ``source_bits``.
     ps_pmf : array_like of float, optional
         Maxwell-Boltzmann PMF of shape ``(M,)`` for PS-QAM signals.
-        Set automatically by :meth:`Signal.psqam`.  When present, the
+        Set automatically by ``Signal.psqam``.  When present, the
         normalization of ``source_symbols`` is skipped (PS symbols have
         intentionally lower average energy than uniform QAM), and
-        :meth:`mi`, :meth:`gmi`, and :meth:`plot_constellation` use the
+        ``mi``, ``gmi``, and ``plot_constellation`` use the
         non-uniform prior automatically.  ``None`` for all other modulations.
     pulse_shape : str, optional
         Name of the pulse shaping filter (e.g., ``'rrc'``, ``'rect'``,
@@ -131,22 +131,24 @@ class Signal(BaseModel):
         The carrier or center frequency in Hz.
     digital_frequency_offset : float
         Cumulative digital frequency shift applied to the signal in Hz.
+    pilot_tone_frequency : float
+        Frequency of the pilot tone in Hz.
     signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}, optional
         Human-readable label for the signal structure. Informational only.
     frame : Frame, optional
         The frame that generated the signal.
     resolved_symbols : array_like, optional
         Symbols at 1 SPS, normalised to unit average power.
-        Populated by :meth:`resolve_symbols`.  Call only on plain signals
+        Populated by ``resolve_symbols()``.  Call only on plain signals
         (non-frame); frame signals contain mixed preamble/pilot/payload that
         may have different modulations or gains — resolve after splitting.
     resolved_bits : array_like, optional
         Hard-decision bits demapped from ``resolved_symbols``.
-        Populated by :meth:`demap_symbols_hard`.
+        Populated by ``demap_symbols_hard()``.
 
     Notes
     -----
-    **Frame-generated signals**: :meth:`SingleCarrierFrame.to_signal` sets
+    **Frame-generated signals**: ``SingleCarrierFrame.to_signal`` sets
     ``self.frame`` but leaves ``source_symbols`` and
     ``source_bits`` as ``None``.  The receive workflow is:
 
@@ -185,12 +187,8 @@ class Signal(BaseModel):
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
 
     center_frequency: float = Field(default=0, ge=0)
-    digital_frequency_offset: float = Field(default=0)
-
-    # Frequency (Hz) of a CW pilot tone added to the waveform (see
-    # spectral.add_pilot_tone), used by recovery.recover_carrier_phase_pilot_tone.
-    # None means no pilot tone is present.
-    pilot_tone_hz: Optional[float] = None
+    digital_frequency_offset: Optional[float] = None
+    pilot_tone_frequency: Optional[float] = None
 
     # Human-readable label for the signal structure
     signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
@@ -380,11 +378,23 @@ class Signal(BaseModel):
         rows += [
             ("Duration", helpers.format_si(self.duration, "s")),
             ("Center frequency", helpers.format_si(self.center_frequency, "Hz")),
-            ("Freq. offset", helpers.format_si(self.digital_frequency_offset, "Hz")),
         ]
 
-        if self.pilot_tone_hz is not None:
-            rows.append(("Pilot tone", helpers.format_si(self.pilot_tone_hz, "Hz")))
+        if self.digital_frequency_offset is not None:
+            rows.append(
+                (
+                    "Frequency offset",
+                    helpers.format_si(self.digital_frequency_offset, "Hz"),
+                )
+            )
+
+        if self.pilot_tone_frequency is not None:
+            rows.append(
+                (
+                    "Pilot tone frequency",
+                    helpers.format_si(self.pilot_tone_frequency, "Hz"),
+                )
+            )
 
         rows += [
             ("Backend", self.backend.upper()),
@@ -1258,64 +1268,13 @@ class Signal(BaseModel):
             self.samples = self.samples * (factor**0.5)
         return self
 
-    def add_pilot_tone(
-        self,
-        frequency_hz: float,
-        power_ratio_db: float = -15.0,
-        phase_init: float = 0.0,
-        renormalize: bool = False,
-    ) -> "Signal":
-        """
-        Add a CW pilot tone to the waveform for pilot-tone phase recovery.
-
-        Thin wrapper over :func:`commstools.spectral.add_pilot_tone` that adds
-        the tone to ``self.samples`` and records the **actual** (grid-quantized)
-        tone frequency in :attr:`pilot_tone_hz`, so it travels with the signal
-        through save/load and can be fed to
-        :func:`commstools.recovery.recover_carrier_phase_pilot_tone`.
-
-        The frequency is snapped to the buffer's FFT grid (``f_s/N``) so the
-        tone is seamless across the loop boundary on an AWG/DAC; see the
-        underlying function for the full rationale.
-
-        Parameters
-        ----------
-        frequency_hz : float
-            Requested tone frequency :math:`f_p` in Hz, in ``(-f_s/2, f_s/2)``.
-            Quantized to the nearest ``f_s/N`` bin.
-        power_ratio_db : float, default -15.0
-            Pilot-to-signal power ratio in dB.
-        phase_init : float, default 0.0
-            Initial tone phase in radians.
-        renormalize : bool, default False
-            If ``True``, restore each channel's original mean power after
-            adding the tone (preserves the ``E[|x|²] = 1/sps`` invariant).
-
-        Returns
-        -------
-        Signal
-            self (modified in-place); ``self.pilot_tone_hz`` is set to the
-            applied frequency.
-        """
-        from . import spectral
-
-        self.samples, self.pilot_tone_hz = spectral.add_pilot_tone(
-            self.samples,
-            self.sampling_rate,
-            frequency_hz,
-            power_ratio_db=power_ratio_db,
-            phase_init=phase_init,
-            renormalize=renormalize,
-        )
-        return self
-
     def decimate_to_symbol_rate(
         self, offset: int = 0, normalize: bool = True
     ) -> "Signal":
         """
         Extracts symbols from an oversampled signal via direct slicing.
 
-        This method is the canonical way to recover symbols at $1 \text{ sps}$
+        This method is the canonical way to recover symbols at 1 sps
         after matched filtering. It does not apply any additional filtering,
         ensuring that the matched filter remains the optimal receiver.
 
@@ -1385,13 +1344,13 @@ class Signal(BaseModel):
         correct_power : bool, default True
             If True, applies a deterministic amplitude gain of
             ``sqrt(sps_before / sps_after)`` after resampling to restore the
-            ``"symbol_power"`` invariant (``E[|x|²] = 1 / sps``).
+            ``"symbol_power"`` invariant (E[|x|^2] = 1 / sps).
 
             **Why this is needed**: ``resample_poly`` has unity DC gain, so
             for a bandlimited pulse-shaped signal it preserves average sample
             power.  After any rational rate change, ``sps`` changes but
-            ``E[|x|²]`` stays at ``1 / sps_old``, violating
-            ``E[|x|²] = 1 / sps_new``.  The correction factor is exact
+            ``E[|x|^2]`` stays at ``1 / sps_old``, violating
+            ``E[|x|^2] = 1 / sps_new``.  The correction factor is exact
             (not statistical) because signal power is known at creation.
 
             Set to False when chaining custom gain stages or when the signal
@@ -1404,11 +1363,9 @@ class Signal(BaseModel):
 
         Notes
         -----
-        .. warning::
-            Do NOT use this method on a signal that has already been
-            matched-filtered if the goal is to extract symbols at $1\\text{ sps}$.
-            The polyphase filter's transition band will distort the
-            optimally filtered pulse shape. Use `decimate_to_symbol_rate` instead.
+        Do NOT use on a matched-filtered signal to extract symbols at 1 sps —
+        the polyphase filter distorts the optimal pulse shape. Use
+        ``decimate_to_symbol_rate`` instead.
         """
         from . import multirate
 
@@ -1454,7 +1411,59 @@ class Signal(BaseModel):
         self.samples, actual_offset = spectral.shift_frequency(
             self.samples, offset, self.sampling_rate
         )
+        if self.digital_frequency_offset is None:
+            self.digital_frequency_offset = 0.0
         self.digital_frequency_offset += actual_offset
+        return self
+
+    def add_pilot_tone(
+        self,
+        frequency: float,
+        power_ratio_db: float = -15.0,
+        phase_init: float = 0.0,
+        renormalize: bool = False,
+    ) -> "Signal":
+        """
+        Add a CW pilot tone to the waveform for pilot-tone phase recovery.
+
+        Thin wrapper over ``spectral.add_pilot_tone`` that adds the tone to
+        ``self.samples`` and records the actual (grid-quantized) tone frequency
+        in ``pilot_tone_frequency``, so it travels with the signal through
+        save/load and can be fed to ``recover_carrier_phase_pilot_tone``.
+
+        The frequency is snapped to the buffer's FFT grid (``f_s/N``) so the
+        tone is seamless across the loop boundary on an AWG/DAC; see the
+        underlying function for the full rationale.
+
+        Parameters
+        ----------
+        frequency : float
+            Requested tone frequency f_p in Hz, in ``(-f_s/2, f_s/2)``.
+            Quantized to the nearest ``f_s/N`` bin.
+        power_ratio_db : float, default -15.0
+            Pilot-to-signal power ratio in dB.
+        phase_init : float, default 0.0
+            Initial tone phase in radians.
+        renormalize : bool, default False
+            If ``True``, restore each channel's original mean power after
+            adding the tone (preserves the ``E[|x|²] = 1/sps`` invariant).
+
+        Returns
+        -------
+        Signal
+            self (modified in-place); ``self.pilot_tone_frequency`` is set to the
+            applied frequency.
+        """
+        from . import spectral
+
+        self.samples, self.pilot_tone_frequency = spectral.add_pilot_tone(
+            self.samples,
+            self.sampling_rate,
+            frequency,
+            power_ratio_db=power_ratio_db,
+            phase_init=phase_init,
+            renormalize=renormalize,
+        )
         return self
 
     def fir_filter(self, taps: ArrayType) -> "Signal":
@@ -1648,14 +1657,8 @@ class Signal(BaseModel):
 
         Notes
         -----
-        Symbols are ``complex64`` for PSK/QAM and ``float32`` for ASK/PAM.
-        The generated samples are normalized to **unit symbol power (Es = 1)**
-        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
-        This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
-        all pulse shapes without any per-pulse offset.
-        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
-        average power (Es = 1, 1 SPS) before demapping or computing metrics.
+        Samples are normalized to unit symbol power (Es = 1, average sample power = 1/sps).
+        Call ``resolve_symbols()`` before demapping or computing metrics.
         """
         from . import filtering, mapping
 
@@ -1791,13 +1794,8 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are normalized to **unit symbol power (Es = 1)**
-        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
-        This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
-        all pulse shapes without any per-pulse offset.
-        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
-        average power (Es = 1, 1 SPS) before demapping or computing metrics.
+        Samples are normalized to unit symbol power (Es = 1, average sample power = 1/sps).
+        Call ``resolve_symbols()`` before demapping or computing metrics.
         """
         if rz:
             if sps % 2 != 0:
@@ -1888,13 +1886,8 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are normalized to **unit symbol power (Es = 1)**
-        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
-        This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
-        all pulse shapes without any per-pulse offset.
-        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
-        average power (Es = 1, 1 SPS) before demapping or computing metrics.
+        Samples are normalized to unit symbol power (Es = 1, average sample power = 1/sps).
+        Call ``resolve_symbols()`` before demapping or computing metrics.
         """
         return cls.generate(
             modulation="psk",
@@ -1976,13 +1969,8 @@ class Signal(BaseModel):
 
         Notes
         -----
-        The generated samples are normalized to **unit symbol power (Es = 1)**
-        via ``filtering.shape_pulse``, meaning average sample power = 1/sps.
-        This matches the convention expected by ``apply_awgn``:
-        ``Es = mean_sample_power x sps = 1``, so Es/N0 calibration is exact for
-        all pulse shapes without any per-pulse offset.
-        Call ``resolve_symbols()`` to populate ``resolved_symbols`` at unit
-        average power (Es = 1, 1 SPS) before demapping or computing metrics.
+        Samples are normalized to unit symbol power (Es = 1, average sample power = 1/sps).
+        Call ``resolve_symbols()`` before demapping or computing metrics.
         """
         return cls.generate(
             modulation="qam",
@@ -2040,11 +2028,11 @@ class Signal(BaseModel):
         order : int
             QAM modulation order (e.g. 16, 64, 256).
         nu : float, optional
-            MB shaping parameter ``ν ≥ 0``. ``ν = 0`` is uniform QAM.
+            MB shaping parameter nu >= 0. nu = 0 is uniform QAM.
             Larger values apply stronger shaping (lower entropy, lower power).
         entropy : float, optional
-            Target per-symbol entropy in bits, in the range ``(0, log₂(order)]``.
-            ``optimal_nu`` is called to solve for the corresponding ``ν``.
+            Target per-symbol entropy in bits, in the range (0, log2(order)].
+            optimal_nu is called to solve for the corresponding nu.
         pulse_shape : str, default "rrc"
             Pulse shaping filter type.
         num_streams : int, default 1
@@ -2066,25 +2054,15 @@ class Signal(BaseModel):
 
         Notes
         -----
-        ``source_bits`` are obtained by hard-demapping the clean shaped symbols —
-        they carry the non-uniform statistics of the MB distribution, not uniform
-        bits. This is correct for uncoded physical-layer BER and GMI estimation
-        but does not model a full coded PAS transmitter.
-
-        The average symbol energy is below 1 by design (``E_ps[|s|²] < 1`` for
-        ``ν > 0``). Pass ``pmf=signal.ps_pmf`` to :func:`~commstools.metrics.mi`
-        and :func:`~commstools.mapping.compute_llr` to account for the non-uniform
-        prior in capacity and soft-demapping computations.
+        ``source_bits`` carry the non-uniform MB statistics (correct for BER/GMI
+        estimation, not a full coded PAS transmitter). Average symbol energy is
+        below 1 for nu > 0; pass ``pmf=signal.ps_pmf`` to ``metrics.mi`` and
+        ``compute_llr`` for correct soft-demapping.
 
         Examples
         --------
-        Generate 64-PS-QAM at 6 bits/symbol effective rate::
-
-            sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, entropy=6.0)
-
-        Generate with explicit shaping parameter::
-
-            sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, nu=0.3)
+        >>> sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, entropy=6.0)
+        >>> sig = Signal.psqam(10000, sps=4, symbol_rate=32e9, order=64, nu=0.3)
         """
         from . import filtering, mapping
 
@@ -2168,7 +2146,7 @@ class Signal(BaseModel):
         """Decimate to symbol rate and populate ``resolved_symbols``.
 
         Decimates ``self.samples`` to 1 SPS and normalises to unit average
-        power ($E_s = 1$), writing the result to ``self.resolved_symbols``.
+        power (Es = 1), writing the result to ``self.resolved_symbols``.
 
         Parameters
         ----------
@@ -2238,18 +2216,18 @@ class Signal(BaseModel):
 
         Performs hard-decision demapping via minimum Euclidean distance and
         writes the result to ``self.resolved_bits``.  Call
-        :meth:`resolve_symbols` first.
+        ``resolve_symbols()`` first.
 
         Parameters
         ----------
         **kwargs : Any
-            Additional arguments forwarded to :func:`mapping.demap_symbols_hard`
+            Additional arguments forwarded to ``mapping.demap_symbols_hard``
             (e.g. ``unipolar``).
 
         Raises
         ------
         ValueError
-            If modulation metadata is missing or :meth:`resolve_symbols` has
+            If modulation metadata is missing or ``resolve_symbols()`` has
             not been called yet.
         """
         from .mapping import demap_symbols_hard
@@ -2288,8 +2266,8 @@ class Signal(BaseModel):
         """
         Resolves rotational phase ambiguity in ``resolved_symbols`` in place.
 
-        After blind CPR (VV, BPS, Tikhonov) a global ``π/2`` (QAM) or
-        ``2π/M`` (PSK) phase ambiguity remains per stream.  This method tests
+        After blind CPR (VV, BPS, Tikhonov) a global pi/2 (QAM) or
+        2pi/M (PSK) phase ambiguity remains per stream.  This method tests
         all symmetry rotations, scores each against ``source_symbols`` by SER,
         and overwrites ``resolved_symbols`` with the best rotation.
 
@@ -2336,7 +2314,7 @@ class Signal(BaseModel):
         each output stream to the ``source_symbols`` stream it carries and
         reorders ``resolved_symbols`` in place to reference order.
 
-        Run **before** :meth:`resolve_phase_ambiguity` (it is rotation
+        Run **before** ``resolve_phase_ambiguity()`` (it is rotation
         invariant) and before SER/BER.  No-op for SISO or a converged
         data-aided equalizer; the fix for blind MIMO whose output order is
         arbitrary.
@@ -2727,15 +2705,15 @@ class Signal(BaseModel):
         """
         Computes Mutual Information (MI) under a Gaussian channel assumption.
 
-        Delegates to :func:`commstools.metrics.mi`.  For PS-QAM signals,
-        ``self.ps_pmf`` is passed automatically unless overridden via *pmf*.
+        Delegates to ``metrics.mi``. For PS-QAM signals, ``self.ps_pmf`` is
+        passed automatically unless overridden via *pmf*.
 
         Parameters
         ----------
         noise_var : float
-            Complex noise variance :math:`\\sigma^2` of the AWGN channel.
-            For unit-power symbols at :math:`E_s/N_0` (dB):
-            :math:`\\sigma^2 = 10^{-E_s/N_0 / 10}`.
+            Complex noise variance sigma^2 of the AWGN channel.
+            For unit-power symbols at Es/N0 (dB):
+            sigma^2 = 10^(-Es/N0 / 10).
         pmf : array-like, optional
             Symbol PMF of shape ``(M,)``.  Defaults to ``self.ps_pmf`` when
             set, otherwise uniform (``None``) is assumed.
@@ -2773,11 +2751,11 @@ class Signal(BaseModel):
 
         if effective_pmf is not None:
             # shape_pulse normalises samples to unit symbol power (E_s = 1).
-            # For PS-QAM, source symbols have E_PS = Σ P(sₘ)|sₘ|² < 1 on the
+            # For PS-QAM, source symbols have E_PS = Σ P(s_m)|s_m|^2 < 1 on the
             # normalised QAM grid, so shape_pulse scales them by c = 1/√E_PS.
-            # resolved_symbols therefore lives on {c·sₘ}, not {sₘ}.
-            # Rescale back to {sₘ} so distances against gray_constellation are
-            # correct; noise_var scales by the same factor (c² = 1/E_PS).
+            # resolved_symbols therefore lives on {c·s_m}, not {s_m}.
+            # Rescale back to {s_m} so distances against gray_constellation are
+            # correct; noise_var scales by the same factor (c^2 = 1/E_PS).
             from .mapping import gray_constellation as _gc
 
             const = _gc(mod, ord_)
@@ -2801,19 +2779,18 @@ class Signal(BaseModel):
         """
         Computes Generalised Mutual Information (GMI) from per-bit LLRs.
 
-        LLRs are computed via :func:`commstools.mapping.compute_llr` using
-        ``self.ps_pmf`` automatically for PS-QAM signals.  GMI is then
-        evaluated against ``self.source_bits``.
+        LLRs are computed via ``compute_llr`` using ``self.ps_pmf`` automatically
+        for PS-QAM signals.  GMI is then evaluated against ``self.source_bits``.
 
         Parameters
         ----------
         noise_var : float
-            Complex noise variance :math:`\\sigma^2` of the AWGN channel.
+            Complex noise variance sigma^2 of the AWGN channel.
         pmf : array-like, optional
             Symbol PMF of shape ``(M,)``.  Defaults to ``self.ps_pmf`` when
             set, otherwise uniform is assumed.
         method : {"maxlog", "exact"}, default "maxlog"
-            LLR computation method passed to :func:`~commstools.mapping.compute_llr`.
+            LLR computation method passed to ``compute_llr``.
 
         Returns
         -------
@@ -2855,8 +2832,8 @@ class Signal(BaseModel):
 
         if effective_pmf is not None:
             # Same scale correction as Signal.mi(): shape_pulse normalises to
-            # unit symbol power, placing resolved_symbols on {c·sₘ} with
-            # c = 1/√E_PS.  Rescale to {sₘ} before LLR computation so that
+            # unit symbol power, placing resolved_symbols on {c·s_m} with
+            # c = 1/√E_PS.  Rescale to {s_m} before LLR computation so that
             # distances against gray_constellation are correct.
             from .mapping import gray_constellation as _gc
 
@@ -2911,7 +2888,7 @@ class Preamble(BaseModel):
         For "zc": length must be a prime number.
     root : int, default 1
         ZC root index (only meaningful for ``sequence_type='zc'``).
-        Must satisfy ``1 ≤ root < length``.
+        Must satisfy ``1 <= root < length``.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -2922,14 +2899,14 @@ class Preamble(BaseModel):
         default=1,
         ge=1,
         description="ZC root index.  Only meaningful for ``sequence_type='zc'``; "
-        "ignored for Barker sequences.  Must satisfy ``1 ≤ root < length``; "
+        "ignored for Barker sequences.  Must satisfy ``1 <= root < length``; "
         "for prime ``length`` every root in this range yields a valid CAZAC sequence.",
     )
     num_streams: int = Field(
         default=1,
         ge=1,
         description="Number of TX streams.  For ZC preambles each stream gets a "
-        "unique root derived via :func:`~commstools.helpers.zc_mimo_root`.  "
+        "unique root derived via ``helpers.zc_mimo_root``.  "
         "For Barker the same sequence is broadcast to all streams.",
     )
 
@@ -2949,8 +2926,7 @@ class Preamble(BaseModel):
 
         For ``num_streams == 1`` the internal ``_symbols`` shape is ``(length,)``.
         For ``num_streams > 1`` it becomes ``(num_streams, length)``:
-        - ZC: each row uses the unique root returned by
-          :func:`~commstools.helpers.zc_mimo_root`.
+        - ZC: each row uses the unique root from ``helpers.zc_mimo_root``.
         - Barker: the same sequence is tiled across all streams.
         """
         from . import timing
@@ -3093,7 +3069,7 @@ class SingleCarrierFrame(BaseModel):
     Represents a structured single-carrier frame with Preamble, Pilots, Payload, and Guard Interval.
 
     This class provides a high-level abstraction for constructing frames
-    used in digital communication systems ($1/10/100\text{GbE}$, $5\text{G}$, etc.).
+    used in digital communication systems (1/10/100 GbE, 5G, etc.).
     It supports various pilot patterns for channel estimation and guard
     intervals for multi-path mitigation.
 
@@ -3108,19 +3084,18 @@ class SingleCarrierFrame(BaseModel):
     payload_seed : int, default 42
         Seed for reproducible payload data generation.
     payload_nu : float, optional
-        Maxwell-Boltzmann shaping parameter :math:`\\nu \\geq 0` for a
+        Maxwell-Boltzmann shaping parameter nu >= 0 for a
         probabilistically shaped QAM payload.  Mutually exclusive with
         ``payload_entropy``.  Requires ``payload_mod_scheme`` to contain
-        ``"qam"`` (case-insensitive).  :math:`\\nu = 0` → uniform QAM.
+        ``"qam"`` (case-insensitive).  nu = 0 → uniform QAM.
     payload_entropy : float, optional
         Target entropy in bits per symbol for a PS-QAM payload.  The
-        optimal :math:`\\nu` is solved numerically via
-        :func:`~commstools.mapping.optimal_nu`.  Mutually exclusive with
-        ``payload_nu``.  Same QAM-only constraint as ``payload_nu``.
+        optimal nu is solved numerically via ``mapping.optimal_nu``.
+        Mutually exclusive with ``payload_nu``.  Same QAM-only constraint.
     preamble : Preamble, optional
         Structured preamble for synchronization.  For MIMO with ZC sequences,
         each TX stream automatically receives a unique root via
-        :func:`~commstools.helpers.zc_mimo_root`.
+        ``helpers.zc_mimo_root``.
     pilot_pattern : {"none", "block", "comb"}, default "none"
         "none": No pilots.
         "block": A block of symbols at the start of the frame body.
@@ -3150,7 +3125,7 @@ class SingleCarrierFrame(BaseModel):
     **PS-QAM payload**: set either ``payload_nu`` or ``payload_entropy`` (not
     both) together with a QAM ``payload_mod_scheme``.  The MB distribution is
     solved once and cached; access the resulting PMF via the read-only
-    :attr:`payload_ps_pmf` property after the frame has been generated.
+    ``payload_ps_pmf`` property after the frame has been generated.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -3473,8 +3448,7 @@ class SingleCarrierFrame(BaseModel):
         Returns the Maxwell-Boltzmann PMF used for PS-QAM payload generation.
 
         ``None`` for uniform (non-PS) payloads.  Pass this to
-        :func:`~commstools.metrics.mi` and
-        :func:`~commstools.mapping.compute_llr` after frame equalization
+        ``metrics.mi`` and ``compute_llr`` after frame equalization
         to compute PS-aware capacity and soft-decision metrics.
 
         Returns

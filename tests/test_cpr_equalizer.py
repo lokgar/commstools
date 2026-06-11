@@ -605,12 +605,12 @@ def test_pll_joint_channels(backend_device, xp):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _wiener_phase_signal(n_sym=4000, snr_db=20.0, linewidth_hz=1e4, fs=1.0, seed=42):
+def _wiener_phase_signal(n_sym=4000, snr_db=20.0, linewidth=1e4, fs=1.0, seed=42):
     """Return (samples_1sps, symbols) for QPSK under Wiener phase noise at 1 SPS."""
     rng = np.random.default_rng(seed)
     const = gray_constellation("psk", 4).astype(np.complex64)
     syms = const[rng.integers(0, 4, n_sym)]
-    sigma_phi = float(np.sqrt(2 * np.pi * linewidth_hz / fs))
+    sigma_phi = float(np.sqrt(2 * np.pi * linewidth / fs))
     phase = np.cumsum(rng.normal(0.0, sigma_phi, n_sym)).astype(np.float64)
     samples = (syms * np.exp(1j * phase)).astype(np.complex64)
     noise_std = np.sqrt(10 ** (-snr_db / 10) / 2)

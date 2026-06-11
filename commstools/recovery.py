@@ -351,11 +351,10 @@ def recover_carrier_phase_pll(
     modulation-format agnostic (works for any QAM/PSK order) and converges
     much faster than block-based methods (VV, BPS) after equalizer pull-in.
 
-    .. warning::
-        The DD-PLL requires reliable decisions at the input.  For a cold
-        start the first ``~1/mu`` symbols may show slow convergence.
-        A common strategy is to pre-converge with BPS or a short preamble
-        and feed the resulting phase as ``phase_init``.
+    Note: the DD-PLL requires reliable decisions at the input.  For a cold
+    start the first ~1/mu symbols may show slow convergence; a common strategy
+    is to pre-converge with BPS or a short preamble and pass the phase as
+    ``phase_init``.
 
     Parameters
     ----------
@@ -365,7 +364,7 @@ def recover_carrier_phase_pll(
     modulation : str
         Modulation scheme (case-insensitive): ``'qam'``, ``'psk'``, etc.
         Used to fetch the reference constellation via
-        :func:`~commstools.mapping.gray_constellation`.
+        ``gray_constellation``.
     order : int
         Modulation order (4, 16, 64, …).
     mu : float or None, default 1e-2
@@ -386,12 +385,9 @@ def recover_carrier_phase_pll(
         Initial phase state in radians.  Use the last sample of a
         preceding BPS or pilot-aided estimate to warm-start the loop.
     loop_bandwidth_normalized : float, default 1e-3
-        Critically-damped (ζ=1) loop-bandwidth shortcut, used only when
-        ``mu is None``: the PI gains are derived as ``μ = 4·B_L``,
-        ``β = 4·B_L²``.  Normalised one-sided bandwidth as a fraction of the
-        symbol rate, in ``(0, 0.5)``.  Typical values: ``1e-4`` (narrow, low
-        phase noise) to ``1e-2`` (wide, fast tracking).  Numerically equal to
-        the inline equalizer's ``cpr_pll_bandwidth`` path.
+        Critically-damped (ζ=1) loop bandwidth shortcut, used only when
+        ``mu is None``.  Normalized one-sided bandwidth in ``(0, 0.5)``;
+        gains are derived as mu = 4*B_L, beta = 4*B_L^2.
     joint_channels : bool, default False
         For MIMO inputs (C > 1): if ``True``, average the cross-product
         phase error across all channels at each symbol before updating the
@@ -400,15 +396,15 @@ def recover_carrier_phase_pll(
         The output ``phi_full[ch]`` rows are all identical.
         Has no effect for SISO (C = 1).
     cycle_slip_correction : bool, default False
-        If ``True``, apply :func:`correct_cycle_slips` to the per-symbol
+        If ``True``, apply ``correct_cycle_slips`` to the per-symbol
         phase trajectory after the loop, to detect and fix sudden ``π/2``
         jumps caused by incorrect hard decisions near the branch boundary.
     cycle_slip_history : int, default 100
-        ``history_length`` passed to :func:`correct_cycle_slips`.
+        ``history_length`` passed to ``correct_cycle_slips``.
         Default is higher than for block-phase methods because the trajectory
         is per-symbol (not per-block).
     cycle_slip_threshold : float, default π/4
-        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+        ``threshold`` passed to ``correct_cycle_slips`` (radians).
 
     Returns
     -------
@@ -418,42 +414,12 @@ def recover_carrier_phase_pll(
 
     Notes
     -----
-    **Algorithm** (per sample n):
+    Inner loop: derotate by phi_hat, hard-decide, compute cross-product error
+    e[n] = Im(y[n] * d_hat*[n]), update phi_hat[n+1] = phi_hat[n] + mu*e + nu,
+    nu += beta*e.  Numba-compiled on CPU; GPU inputs are offloaded transparently.
 
-    .. math::
-
-        y[n]       &= s[n] \cdot e^{-j\hat{\phi}[n]} \\
-        \hat{d}[n] &= \operatorname{argmin}_{c \in \mathcal{C}}
-                       \lvert y[n] - c \rvert^2 \\
-        e[n]       &= \operatorname{Im}\!\bigl(y[n]\,\hat{d}^*[n]\bigr) \\
-        \hat{\phi}[n+1] &= \hat{\phi}[n] + \mu e[n] + \nu[n] \\
-        \nu[n]     &= \nu[n-1] + \beta e[n]
-
-    where :math:`\nu` is the integral (frequency) state of the loop.
-
-    **Backend notes:** The inner loop is inherently sequential (each sample
-    depends on the previous phase state) and is compiled with Numba
-    (``@njit``) for CPU performance.  When the input lives on a GPU
-    (CuPy), samples are transparently moved to CPU for processing and
-    the result is moved back — acceptable because the CPR loop is not
-    the throughput bottleneck.
-
-    **M-fold phase ambiguity:** Like VV and BPS, the DD-PLL may converge
-    to any of the M constellation-symmetry-equivalent phases.  Resolve
-    via a pilot symbol or known reference after CPR.
-
-    References
-    ----------
-    I. Fatadin, D. Ives, and S. J. Savory, "Blind equalization and
-    carrier phase recovery in a 16-QAM optical coherent system," *J.
-    Lightw. Technol.*, vol. 27, no. 15, pp. 3042-3049, Aug. 2009.
-
-    Md. S. Faruk and S. J. Savory, "Digital signal processing for coherent
-    transceivers employing multilevel formats," *J. Lightw. Technol.*,
-    vol. 35, no. 5, pp. 1125-1141, Mar. 2017, Sec. VIII.A, refs [65, 108].
-
-    J. G. Proakis, *Digital Communications*, 4th ed., McGraw-Hill, 2001,
-    ch. 6 (carrier phase synchronisation).
+    A global M-fold phase ambiguity always remains — resolve via a pilot or
+    preamble reference after CPR.
     """
     from .helpers import resolve_pll_gains, normalize
     from .mapping import gray_constellation
@@ -641,12 +607,12 @@ def recover_carrier_phase_viterbi_viterbi(
         Reduces variance by ~√C for shared-LO systems.  SISO-safe.
     cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
-        (:func:`correct_cycle_slips`) after M-fold unwrap, before
+        (``correct_cycle_slips``) after M-fold unwrap, before
         interpolation.
     cycle_slip_history : int, default 100
-        ``history_length`` passed to :func:`correct_cycle_slips`.
+        ``history_length`` passed to ``correct_cycle_slips``.
     cycle_slip_threshold : float, default π/4
-        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+        ``threshold`` passed to ``correct_cycle_slips`` (radians).
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the per-symbol phase
         trajectory alongside the block-phase estimates.
@@ -659,61 +625,12 @@ def recover_carrier_phase_viterbi_viterbi(
 
     Notes
     -----
-    Algorithm for each block ``b``:
+    Each block: S_b = sum s[n]^M, phi_hat_b = angle(S_b) / M. Block phases
+    are M-fold unwrapped; a global 2*pi/M ambiguity always remains.
 
-    .. math::
-        S_b = \\sum_{n \\in \\text{block } b} s[n]^M, \\quad
-        \\hat{\\phi}_b = \\angle(S_b) / M
-
-    **M-fold ambiguity resolution:** block phases are scaled by M,
-    unwrapped in the 2π domain, then re-divided by M.  A global ``2π/M``
-    phase ambiguity always remains — resolve it via a known pilot or
-    preamble reference.
-
-    .. warning::
-        **Phase-unwrapping slip risk:** the unwrapper assumes consecutive block
-        phases differ by less than ``π/M``.  Two independent effects can
-        violate this:
-
-        1. **Phase noise (high linewidth):** for a combined linewidth
-           :math:`\\Delta\\nu`, the safety condition is:
-
-           .. math::
-
-               \\Delta\\nu \\cdot T_{\\text{block}} < 0.05 \\cdot f_s
-
-           where :math:`T_{\\text{block}} = \\text{block\\_size} / f_s`.
-           For example, 100 kHz linewidth at 32 Gbaud is safe up to
-           ``block_size ≈ 16 000``, but 1 MHz linewidth requires
-           ``block_size ≤ 1 600``.
-
-        2. **Insufficient averaging for QAM (dominant at small block_size):**
-           For PSK constellations every point maps to the *same* M-th power
-           value, so the data modulation cancels exactly even with a single
-           symbol per block.  For QAM constellations with ``order > 4`` the
-           M-th power of individual symbols is **not** constant — it varies
-           by constellation point.  Averaging over a block suppresses this
-           residual, but a small ``block_size`` leaves significant variance
-           that exceeds the unwrap threshold.  The minimum block size for
-           reliable unwrapping scales roughly as
-           :math:`4\\lceil\\sqrt{\\text{order}}\\rceil`:
-
-           * 16-QAM → ``block_size ≥ 16``
-           * 64-QAM → ``block_size ≥ 32``
-           * 256-QAM → ``block_size ≥ 64``
-
-           Using a ``block_size`` below this threshold will cause persistent
-           ``2π/M`` phase slips regardless of SNR.
-
-        When operating near or above the phase-noise limit, prefer
-        :func:`recover_carrier_phase_bps`, which uses a brute-force phase
-        search and does not require phase unwrapping.
-
-    References
-    ----------
-    A. J. Viterbi and A. M. Viterbi, "Nonlinear estimation of PSK-modulated
-    carrier phase with application to burst digital transmission," IEEE
-    Trans. Inf. Theory, 1983.
+    For QAM with order > 4, block averaging suppresses M-th-power data residuals;
+    minimum reliable block_size scales as ~4*ceil(sqrt(order)).  For high phase
+    noise prefer ``recover_carrier_phase_bps`` (no unwrap required).
     """
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
@@ -883,7 +800,7 @@ def recover_carrier_phase_bps(
     modulation : str
         Modulation scheme (case-insensitive). Used to fetch the reference
         constellation via
-        :func:`~commstools.mapping.gray_constellation`.
+        ``gray_constellation``.
     order : int
         Modulation order.
     num_test_phases : int, default 64
@@ -905,13 +822,13 @@ def recover_carrier_phase_bps(
         Has no effect for SISO (C = 1).
     cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
-        (:func:`correct_cycle_slips`) to the block-phase trajectory
+        (``correct_cycle_slips``) to the block-phase trajectory
         after 4-fold unwrap, before interpolation.
     cycle_slip_history : int, default 100
-        ``history_length`` passed to :func:`correct_cycle_slips`.
+        ``history_length`` passed to ``correct_cycle_slips``.
         Number of past corrected blocks used for linear extrapolation.
     cycle_slip_threshold : float, default π/4
-        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+        ``threshold`` passed to ``correct_cycle_slips`` (radians).
     pmf : np.ndarray, optional
         Symbol PMF of shape ``(order,)`` for PS-QAM.  When provided, the
         reference constellation is scaled by ``1/sqrt(E_PS)`` (where
@@ -932,34 +849,12 @@ def recover_carrier_phase_bps(
 
     Notes
     -----
-    Algorithm:
+    Tests B candidate rotations over [0, pi/2), selects the one minimising
+    block-averaged minimum Euclidean distance, then 4-fold unwraps.  A global
+    pi/2 ambiguity remains — resolve via a pilot or preamble reference.
 
-    1. Candidates: :math:`\\phi_k = k\\,\\pi/(2B)` for :math:`k=0,\\ldots,B-1`.
-    2. Rotate: ``x_rot[n, k] = symbols[n] · exp(-j·φ_k)``. Shape: (N, B).
-    3. Min dist: ``d²[n,k] = min_c |x_rot[n,k]-c|²``. Shape: (N, B).
-    4. Block sum: ``metric[b,k] = Σ d²[n,k]`` over block ``b``.
-    5. Best phase: ``φ_b = candidates[argmin(metric[b,:])]``.
-    6. 4-fold unwrap, optional cycle-slip correction, per-symbol interpolation.
-
-    .. note::
-        The candidate search covers :math:`[0, \\pi/2)` and the unwrap
-        exploits the **4-fold** symmetry of square QAM constellations.
-        For PSK modulations whose symmetry order differs from 4, the
-        candidate range and unwrap fold should be adjusted accordingly.
-
-    **Memory:** The ``(N, B, M_const)`` distance tensor scales as
-    ``N·B·M_const·8`` bytes.  For N=10 000, B=64, M=256 → ~1.3 GB.
-    Reduce ``num_test_phases`` or process shorter segments for high-order
-    constellations.
-
-    **4-fold ambiguity:** A global ``π/2`` phase offset remains after
-    unwrapping.  Resolve via a pilot or preamble phase reference.
-
-    References
-    ----------
-    T. Pfau, S. Hoffmann, and R. Noe, "Hardware-efficient coherent digital
-    receiver concept with feedforward carrier recovery for M-QAM
-    constellations," J. Lightw. Technol., 2009.
+    Memory: the distance tensor scales as N * B * M * 8 bytes; reduce
+    ``num_test_phases`` or segment length for high-order constellations.
     """
     from .mapping import gray_constellation
 
@@ -1163,7 +1058,7 @@ def _rts_smoother_1d(
 ) -> np.ndarray:
     """Rauch-Tung-Striebel (RTS) Kalman smoother for a 1-D random-walk state.
 
-    Uses the Numba-compiled kernel (:func:`_get_numba_rts_smoother`) when
+    Uses the Numba-compiled kernel (``_get_numba_rts_smoother``) when
     available; falls back to a pure-Python loop otherwise.  Always runs on
     CPU — call with a NumPy array; the caller is responsible for
     ``to_device`` conversion.
@@ -1204,11 +1099,11 @@ def _sskf_smoother_1d(
 
     Backend-aware: uses ``sp.signal.filtfilt`` where ``sp`` is
     ``scipy`` (CPU) or ``cupyx.scipy`` (GPU) as returned by
-    :func:`~commstools.backend.dispatch`.
+    ``dispatch``.
 
     The approximation is excellent when ``B >> 1/K_∞``
     (typically ``B > 20``).  For ``B < 7`` (``filtfilt`` minimum), falls
-    back to the exact :func:`_rts_smoother_1d` on CPU.
+    back to the exact ``_rts_smoother_1d`` on CPU.
 
     Parameters
     ----------
@@ -1217,9 +1112,9 @@ def _sskf_smoother_1d(
     sigma_p2, sigma_v2 : float
         Process and observation noise variances per block.
     sp : module
-        ``scipy`` or ``cupyx.scipy``, from :func:`~commstools.backend.dispatch`.
+        ``scipy`` or ``cupyx.scipy``, from ``dispatch``.
     xp : module
-        ``numpy`` or ``cupy``, from :func:`~commstools.backend.dispatch`.
+        ``numpy`` or ``cupy``, from ``dispatch``.
 
     Returns
     -------
@@ -1260,7 +1155,7 @@ def recover_carrier_phase_tikhonov(
 ) -> ArrayType:
     r"""
     Carrier phase recovery via MAP estimation with a Tikhonov/Wiener phase
-    noise prior (Colavolpe et al., 2005).
+    noise prior.
 
     Extends the Viterbi-Viterbi block estimator with a Kalman smoother
     matched to the laser phase noise statistics.  Two smoother backends are
@@ -1282,26 +1177,26 @@ def recover_carrier_phase_tikhonov(
     order : int
         Modulation order.
     linewidth_symbol_periods : float
-        Combined linewidth-symbol-time product :math:`\Delta\nu \cdot T_s`.
+        Combined linewidth-symbol-time product delta_nu * T_s.
         Typical values: ``1e-5`` (narrow laser, 32 GBd), ``5e-4`` (wide
         laser / high baud rate).  Sets the Kalman process noise variance:
-        :math:`\sigma_p^2 = 2\pi \cdot \Delta\nu T_s \cdot N_b`.
+        sigma_p^2 = 2*pi * delta_nu * T_s * N_b.
     block_size : int, default 32
         Symbols per VV estimation block.  Same trade-off as for
-        :func:`recover_carrier_phase_viterbi_viterbi`.
+        ``recover_carrier_phase_viterbi_viterbi``.
     snr_db : float or None, default None
         Per-symbol SNR in dB.  Used to compute the VV observation noise
-        variance :math:`\sigma_v^2 \approx 1/(M^2 \cdot \mathrm{SNR} \cdot N_b)`.
+        variance sigma_v^2 ≈ 1 / (M^2 * SNR * N_b).
         If ``None``, defaults to 20 dB with a warning — provide the actual
         operating SNR for the optimal smoother bandwidth.
     method : {'exact', 'sskf'}, default 'exact'
         Smoother implementation:
 
-        * ``'exact'``: full RTS smoother (:func:`_rts_smoother_1d`); Numba
+        * ``'exact'``: full RTS smoother (``_rts_smoother_1d``); Numba
           kernel when available.  Sequential CPU recurrence; exact for any
           ``N_blocks``.
         * ``'sskf'``: steady-state approximation via ``filtfilt``
-          (:func:`_sskf_smoother_1d`); runs on the input device (GPU-native
+          (``_sskf_smoother_1d``); runs on the input device (GPU-native
           when data is on GPU).  Excellent for ``N_blocks ≥ 20``; for
           ``N_blocks < 7`` silently falls back to ``'exact'``.
     joint_channels : bool, default False
@@ -1311,12 +1206,12 @@ def recover_carrier_phase_tikhonov(
         all C output rows.  Reduces variance by ~√C for shared-LO systems.
     cycle_slip_correction : bool, default False
         If ``True``, apply cycle-slip detection and correction
-        (:func:`correct_cycle_slips`) after the Kalman smoother, before
+        (``correct_cycle_slips``) after the Kalman smoother, before
         interpolation.
     cycle_slip_history : int, default 100
-        ``history_length`` passed to :func:`correct_cycle_slips`.
+        ``history_length`` passed to ``correct_cycle_slips``.
     cycle_slip_threshold : float, default π/4
-        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+        ``threshold`` passed to ``correct_cycle_slips`` (radians).
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the per-symbol phase
         trajectory with the Kalman-smoothed block phases.
@@ -1329,35 +1224,9 @@ def recover_carrier_phase_tikhonov(
 
     Notes
     -----
-    **Algorithm:**
-
-    1. Compute VV block phases using normalized M-th power (unit-circle
-       projection before raising to the M-th power removes QAM amplitude
-       bias; see :func:`recover_carrier_phase_viterbi_viterbi`).
-    2. Apply the Kalman smoother with:
-
-       .. math::
-
-           \sigma_p^2 &= 2\pi \cdot \Delta\nu T_s \cdot N_b \\
-           \sigma_v^2 &\approx \frac{1}{M^2 \cdot \mathrm{SNR} \cdot N_b}
-
-       where :math:`N_b` = ``block_size`` and :math:`M` is the modulation
-       exponent from :func:`_modulation_power_m`.
-    3. Interpolate smoothed block phases to per-symbol resolution (linear,
-       consistent with VV).
-
-    **M-fold ambiguity:** same as VV — a residual ``2π/M`` phase offset
-    always remains.  Resolve via a pilot or preamble reference.
-
-    References
-    ----------
-    G. Colavolpe, A. Barbieri, and G. Caire, "Algorithms for iterative
-    decoding in the presence of strong phase noise," *IEEE J. Sel. Areas
-    Commun.*, vol. 23, no. 9, pp. 1748-1757, Sep. 2005.
-
-    A. J. Viterbi and A. M. Viterbi, "Nonlinear estimation of PSK-modulated
-    carrier phase with application to burst digital transmission," *IEEE
-    Trans. Inf. Theory*, 1983.
+    VV block phases are Kalman-smoothed with sigma_p^2 = 2*pi*linewidth*T_s*N_b
+    and sigma_v^2 ≈ 1/(M^2 * SNR * N_b), then interpolated to per-symbol
+    resolution.  A residual 2*pi/M ambiguity always remains.
     """
     if method not in ("exact", "sskf"):
         raise ValueError(f"Unknown method {method!r}. Choose 'exact' or 'sskf'.")
@@ -1554,8 +1423,8 @@ def recover_carrier_phase_pilots(
         Interpolation method between pilot positions.  Both modes loop over
         MIMO channels (``xp.interp`` and ``CubicSpline`` are 1D-only);
         C is typically 1-4 so the overhead is negligible.  ``'cubic'`` uses
-        :class:`scipy.interpolate.CubicSpline` (CPU) or
-        :class:`cupyx.scipy.interpolate.CubicSpline` (GPU) with natural
+        ``CubicSpline`` (CPU) or
+        ``CubicSpline`` (GPU) with natural
         boundary conditions (zero second derivative at endpoints) and
         constant-hold extrapolation outside the pilot span.
     joint_channels : bool, default False
@@ -1566,14 +1435,14 @@ def recover_carrier_phase_pilots(
         shared-LO systems.  The resulting single phase trajectory is broadcast
         to all C output rows.  Has no effect for SISO (C = 1).
     cycle_slip_correction : bool, default False
-        If ``True``, apply :func:`correct_cycle_slips` to the unwrapped pilot
+        If ``True``, apply ``correct_cycle_slips`` to the unwrapped pilot
         phase sequence before interpolation, with ``symmetry=1`` (correction
         quantum ``2π``) to detect and fix wrap-around errors introduced by
         ``xp.unwrap`` at large inter-pilot gaps.
     cycle_slip_history : int, default 100
-        ``history_length`` passed to :func:`correct_cycle_slips`.
+        ``history_length`` passed to ``correct_cycle_slips``.
     cycle_slip_threshold : float, default π/4
-        ``threshold`` passed to :func:`correct_cycle_slips` (radians).
+        ``threshold`` passed to ``correct_cycle_slips`` (radians).
     debug_plot : bool, default False
         If ``True``, opens a diagnostic figure showing the unwrapped pilot
         phase sequence and the interpolated phase trajectory.
@@ -1586,33 +1455,9 @@ def recover_carrier_phase_pilots(
 
     Notes
     -----
-    Phase at pilot position :math:`k`:
-
-    .. math::
-        \\hat{\\phi}[k] = \\angle\\!\\left(
-            r[\\mathrm{pilot\\_indices}[k]] \\cdot
-            s^*[\\mathrm{pilot\\_values}[k]]
-        \\right)
-
-    For ``'linear'``, boundary extrapolation holds the first/last pilot value
-    (constant hold — identical to ``numpy.interp`` behaviour).  For
-    ``'cubic'``, the spline uses natural boundary conditions (zero second
-    derivative at endpoints), and symbols before the first pilot or after
-    the last pilot are filled with the respective boundary pilot value,
-    preventing edge oscillation.
-
-    .. note::
-        **Single-carrier use only.**  This function tracks carrier phase across
-        a linear symbol stream using scattered pilot positions.  For OFDM
-        systems, phase noise is tracked as *common phase error* (CPE) across
-        pilot *subcarriers* within each OFDM symbol (e.g. 5G NR PTRS,
-        DVB-T2 continual pilots) — a structurally different problem not
-        covered here.
-
-    References
-    ----------
-    S. J. Savory, "Digital filters for coherent optical receivers,"
-    Optics Express, 2008.
+    Phase at each pilot: phi_hat[k] = angle(r[k] * conj(s[k])).  Linear
+    interpolation constant-holds at the boundaries; cubic uses natural spline
+    with constant-hold extrapolation.  Single-carrier only.
     """
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
@@ -1732,9 +1577,9 @@ def recover_carrier_phase_pilots(
 def recover_carrier_phase_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
-    tone_frequency_hz: float,
-    bandwidth_hz: float,
-    search_band_hz: Optional[float] = None,
+    tone_frequency: float,
+    bandwidth: float,
+    search_band: Optional[float] = None,
     refine_tone: bool = True,
     window: Union[str, Tuple] = "tukey",
     remove_frequency_offset: bool = True,
@@ -1745,10 +1590,10 @@ def recover_carrier_phase_pilot_tone(
     Carrier phase recovery from a continuous-wave (CW) pilot tone.
 
     Reads the common carrier phase straight off a pilot tone added at the
-    transmitter (see :func:`~commstools.spectral.add_pilot_tone`).  Because
+    transmitter (see ``add_pilot_tone``).  Because
     the tone shares the data's local oscillator and channel, its phase equals
-    the common phase :math:`\theta[n] = 2\pi\Delta f\,n/f_s + \phi_\text{PN}[n]
-    + \phi_0` — the carrier **frequency offset and phase noise jointly**.  No
+    the common phase theta[n] = 2*pi*delta_f*n/f_s + phi_PN[n]
+    + phi_0 — the carrier **frequency offset and phase noise jointly**.  No
     symbol decisions are required, so there is no M-th-power noise enhancement
     and the estimate tracks fast phase noise sample-by-sample.
 
@@ -1756,58 +1601,50 @@ def recover_carrier_phase_pilot_tone(
     IFFT), so there is no group-delay misalignment between the recovered phase
     and the samples.
 
-    .. note::
-        **Operates on the oversampled waveform, before matched filtering and
-        decimation.**  The tone lives in a guard band that the matched filter
-        would otherwise remove.  Apply the returned phase to the same
-        oversampled ``samples`` with :func:`correct_carrier_phase`, *then* run
-        matched filtering / decimation and any residual 1-sps CPR.
+    Note: operates on the **oversampled waveform, before matched filtering and
+    decimation**.  The tone lives in a guard band that the matched filter would
+    otherwise remove.  Apply the returned phase to the same oversampled
+    ``samples`` with ``correct_carrier_phase``, then run matched filtering /
+    decimation and any residual 1-sps CPR.
 
     Parameters
     ----------
     samples : array_like
         Oversampled complex samples (``sps > 1``). Shape: ``(N,)`` or
-        ``(C, N)``.  Same rate as used for :func:`add_pilot_tone`.
+        ``(C, N)``.  Same rate as used for ``add_pilot_tone``.
     sampling_rate : float
-        Sampling rate :math:`f_s` in Hz.
-    tone_frequency_hz : float
-        Nominal pilot-tone frequency :math:`f_p` in Hz (as added at the TX).
+        Sampling rate f_s in Hz.
+    tone_frequency : float
+        Nominal pilot-tone frequency f_p in Hz (as added at the TX).
         The recovered phase is referenced to **this** carrier, so any carrier
         frequency offset remains in the phase ramp when
         ``remove_frequency_offset=False`` is *not* set (see below).
-    bandwidth_hz : float
-        Half-width :math:`B` of the spectral extraction window in Hz — the
+    bandwidth : float
+        Half-width B of the spectral extraction window in Hz — the
         **tracking bandwidth**.  Must be wide enough to pass the phase-noise
         sidebands (``B ≳ a few x linewidth``) yet narrow enough to reject the
         data band (``B`` smaller than the tone-to-signal-edge guard).  See the
         guide at the end of this docstring.
-    search_band_hz : float, optional
+    search_band : float, optional
         Half-width in Hz of the peak-search window handed to
-        :func:`~commstools.frequency.find_bias_tone` when ``refine_tone=True``.
+        ``find_bias_tone`` when ``refine_tone=True``.
         The actual tone peak is sought within
-        ``[f_p - search_band_hz, f_p + search_band_hz]``; this bounds how far
+        ``[f_p - search_band, f_p + search_band]``; this bounds how far
         a frequency offset may have dragged the tone from nominal.  Defaults
-        to ``bandwidth_hz``.  Enlarge it (independently of ``bandwidth_hz``)
+        to ``bandwidth``.  Enlarge it (independently of ``bandwidth``)
         when the offset can exceed ``B`` but keep it inside the guard so the
         data band never wins the argmax.
     refine_tone : bool, default True
         If ``True``, locate the actual per-channel tone frequency with
-        :func:`~commstools.frequency.find_bias_tone` and centre the extraction
+        ``find_bias_tone`` and centre the extraction
         window there.  Essential when a frequency offset may shift the tone by
         more than ``B`` (otherwise the tone falls outside a window centred at
-        nominal).  If ``False``, the window is centred at ``tone_frequency_hz``.
+        nominal).  If ``False``, the window is centred at ``tone_frequency``.
     window : str or tuple, default 'tukey'
-        Spectral window applied over the passband ``|f - f_centre| <= B`` —
-        any spec accepted by :func:`scipy.signal.get_window`.  The window
-        (length ``2·⌊B/Δf⌋ + 1`` bins, where ``Δf = f_s/N``) tapers the band
-        edges to suppress the Gibbs ringing a brickwall would imprint on the
-        recovered phase.  Examples:
-
-        * ``'tukey'`` — flat top, cosine-tapered edges (recommended; α=0.5).
-        * ``('tukey', 0.3)`` — narrower taper for sharper selectivity.
-        * ``'boxcar'`` — brickwall (sharpest band, most time-domain ringing).
-        * ``('gaussian', std)`` — Gaussian taper; ``std`` in **bins**.
-        * ``('kaiser', beta)``, ``'hann'``, ``'blackman'`` — also accepted.
+        Spectral window applied over the passband |f - f_centre| <= B.
+        Any spec accepted by ``get_window`` (e.g. ``'tukey'``,
+        ``'boxcar'``, ``('gaussian', std)``).  Tukey (default) gives a flat top
+        with tapered edges for suppressed ringing.
     remove_frequency_offset : bool, default True
         If ``True`` (default), the recovered phase **retains** the linear ramp
         from any residual carrier frequency offset, so applying it corrects
@@ -1822,66 +1659,30 @@ def recover_carrier_phase_pilot_tone(
         rows.  No effect for SISO.
     debug_plot : bool, default False
         If ``True``, open the dedicated diagnostic figure
-        (:func:`~commstools.plotting.pilot_tone_phase_estimate`): the tone
+        (``pilot_tone_phase_estimate``): the tone
         spectrum with the extraction window overlaid, and the recovered phase.
 
     Returns
     -------
     array_like
-        Per-sample phase estimate :math:`\hat\theta[n]` in radians.  Shape
+        Per-sample phase estimate theta_hat[n] in radians.  Shape
         matches ``samples``; same backend.  Apply with
-        :func:`correct_carrier_phase`.
+        ``correct_carrier_phase``.
 
     Notes
     -----
-    **Algorithm** (per channel, fully vectorised):
+    Pipeline: FFT → (optional) refine tone centre → zero-phase window extraction
+    → strip nominal carrier → unwrap(angle) in float64.
 
-    1. ``X = FFT(samples)``.
-    2. (optional) refine the tone centre :math:`f_c` with
-       :func:`~commstools.frequency.find_bias_tone`.
-    3. Zero-phase extraction: ``t[n] = IFFT(X · W)`` where ``W`` is the
-       window centred at :math:`f_c` with half-width ``B``.
-    4. Strip the nominal carrier: ``z[n] = t[n] · e^{-j 2\pi f_p n / f_s}``.
-    5. ``\hat\theta[n] = unwrap(\angle z[n])`` in ``float64``; optionally
-       detrend.
-
-    The FFT uses ``nfft = N`` (no zero-padding) so the IFFT output stays
-    sample-aligned with the input, and the phase is computed in ``complex128``
-    / ``float64`` to keep ``unwrap`` away from the ``±\pi`` wrap boundary.
-
-    **Choosing the extraction bandwidth** ``bandwidth_hz`` (``B``):
-    ``B`` trades phase-noise tracking against tone SNR.  Lower bound — the
-    window must pass the phase-noise sidebands, whose one-sided span is on the
-    order of the combined laser linewidth :math:`\Delta\nu`; take
-    ``B ≳ 3-5 · \Delta\nu`` (and ``B`` above any residual frequency-offset
-    rate you keep in the phase).  Upper bound — the post-filter tone SNR
-    improves as ``f_s / (2B)``, and ``B`` must stay below the gap between the
-    tone and the signal-band edge so no data energy leaks in.  Start near the
-    geometric mean of the two bounds and widen if the phase looks
-    over-smoothed, narrow if it looks noisy.
-
-    **How close can the tone sit to the signal band?**  The data occupies
-    roughly :math:`\pm (1+\beta) R_s / 2` (roll-off :math:`\beta`).  Place the
-    tone at :math:`|f_p| > (1+\beta) R_s / 2 + B` so the whole extraction
-    window clears the band, and keep :math:`|f_p| + B < f_s/2` so it stays
-    below Nyquist.  That requires oversampling headroom: ``sps`` must exceed
-    ``(1+\beta) + 2B/R_s``.  The tighter the guard you want, the smaller ``B``
-    must be — which is the same knob as the tracking-bandwidth trade-off above.
-
-    References
-    ----------
-    M. Morsy-Osman et al., "Joint mitigation of laser phase noise and
-    fiber nonlinearity using pilot-tones," *Opt. Express*, 2013.
-
-    S. Randel et al., "Pilot-tone-based phase noise compensation for coherent
-    optical OFDM and single-carrier systems," *ECOC*, 2010.
+    ``bandwidth`` B trades phase-noise tracking bandwidth against tone SNR.
+    Lower bound: B ≳ 3-5 * linewidth (pass all phase-noise sidebands).
+    Upper bound: B below the guard between the tone and the signal band edge.
+    Place the tone at |f_p| > (1+beta)*R_s/2 + B and keep |f_p| + B < f_s/2.
     """
-    if bandwidth_hz <= 0.0:
-        raise ValueError(f"bandwidth_hz must be > 0, got {bandwidth_hz}.")
-    if not (-sampling_rate / 2.0 < tone_frequency_hz < sampling_rate / 2.0):
-        raise ValueError(
-            f"tone_frequency_hz={tone_frequency_hz} must lie in (-fs/2, fs/2)."
-        )
+    if bandwidth <= 0.0:
+        raise ValueError(f"bandwidth must be > 0, got {bandwidth}.")
+    if not (-sampling_rate / 2.0 < tone_frequency < sampling_rate / 2.0):
+        raise ValueError(f"tone_frequency={tone_frequency} must lie in (-fs/2, fs/2).")
 
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -1890,15 +1691,15 @@ def recover_carrier_phase_pilot_tone(
     C, N = samples.shape
 
     df = sampling_rate / N
-    if bandwidth_hz < df:
+    if bandwidth < df:
         logger.warning(
-            f"CPR (pilot-tone): bandwidth_hz={bandwidth_hz:.3g} Hz is below the FFT "
+            f"CPR (pilot-tone): bandwidth={bandwidth:.3g} Hz is below the FFT "
             f"resolution df=fs/N={df:.3g} Hz; the extraction window may capture too few "
-            f"bins. Increase bandwidth_hz or the record length N."
+            f"bins. Increase bandwidth or the record length N."
         )
 
-    if search_band_hz is None:
-        search_band_hz = bandwidth_hz
+    if search_band is None:
+        search_band = bandwidth
 
     # 1) Per-channel tone centre.  Refinement absorbs a frequency offset that
     #    has dragged the tone away from nominal, so the window stays centred on it.
@@ -1908,15 +1709,15 @@ def recover_carrier_phase_pilot_tone(
                 find_bias_tone(
                     samples[c],
                     sampling_rate,
-                    target_hz=tone_frequency_hz,
-                    search_band_hz=search_band_hz,
+                    target_frequency=tone_frequency,
+                    search_band=search_band,
                 )
                 for c in range(C)
             ],
             dtype=np.float64,
         )
     else:
-        f_centers = np.full(C, float(tone_frequency_hz), dtype=np.float64)
+        f_centers = np.full(C, float(tone_frequency), dtype=np.float64)
 
     # 2) FFT (nfft = N keeps the IFFT sample-aligned).  Promote to complex128 so
     #    the angle/unwrap downstream stays clear of the ±π wrap boundary.
@@ -1935,7 +1736,7 @@ def recover_carrier_phase_pilot_tone(
     #    on both backends.  The window is tiny, so the host→device copy is free.
     from scipy.signal import get_window  # noqa: PLC0415
 
-    half = int(np.floor(bandwidth_hz / df))  # bins from centre to band edge
+    half = int(np.floor(bandwidth / df))  # bins from centre to band edge
     n_win = 2 * half + 1
     try:
         win_cpu = np.asarray(get_window(window, n_win, fftbins=False), dtype=np.float64)
@@ -1959,7 +1760,7 @@ def recover_carrier_phase_pilot_tone(
     #    phase ramp.  Wrap the ramp before exp (precision; matches FOE correctors).
     two_pi = 2.0 * np.pi
     n = xp.arange(N, dtype=xp.float64)
-    carrier_phase = two_pi * float(tone_frequency_hz) * n / sampling_rate
+    carrier_phase = two_pi * float(tone_frequency) * n / sampling_rate
     carrier_phase = carrier_phase - xp.round(carrier_phase / two_pi) * two_pi
     carrier_conj = xp.exp(-1j * carrier_phase)  # (N,) complex128
     phasor = tone_t * carrier_conj[None, :]  # (C, N)
@@ -1987,7 +1788,7 @@ def recover_carrier_phase_pilot_tone(
     mode_str = "joint" if (joint_channels and C > 1) else "independent"
     logger.info(
         f"CPR (pilot-tone, {window}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [f_p={tone_frequency_hz:.3g} Hz, B={bandwidth_hz:.3g} Hz, "
+        f"std={phi_std_deg:.2f}° [f_p={tone_frequency:.3g} Hz, B={bandwidth:.3g} Hz, "
         f"refine={refine_tone}, remove_foe={remove_frequency_offset}, C={C}]"
     )
 
@@ -2000,8 +1801,8 @@ def recover_carrier_phase_pilot_tone(
             window=to_device(W, "cpu"),
             f_tones=f_centers,
             theta=theta_np,
-            tone_frequency_hz=float(tone_frequency_hz),
-            bandwidth_hz=float(bandwidth_hz),
+            tone_frequency=float(tone_frequency),
+            bandwidth=float(bandwidth),
             show=True,
         )
 
@@ -2018,10 +1819,7 @@ def correct_carrier_phase(
     Applies carrier phase correction to a symbol sequence.
 
     Rotates each symbol by the negative of the estimated phase to cancel
-    the carrier phase offset:
-
-    .. math::
-        y[n] = s[n] \\cdot e^{-j\\,\\hat{\\phi}[n]}
+    the carrier phase offset: y[n] = s[n] * exp(-j * phi_hat[n]).
 
     Parameters
     ----------
@@ -2267,7 +2065,7 @@ def resolve_channel_permutation(
     magnitude ``|Σ yᵢ · conj(sⱼ)|``) and reorders ``symbols`` to ``ref_symbols``
     order.
 
-    Run this **before** :func:`resolve_phase_ambiguity` (it is rotation
+    Run this **before** ``resolve_phase_ambiguity`` (it is rotation
     invariant, so the two compose) and before SER/BER.  For a converged
     *data-aided* equalizer the outputs are already pinned to the training order,
     so this is a no-op; it is the robust fix for **blind** equalizers, whose
@@ -2386,7 +2184,7 @@ def resolve_phase_ambiguity(
         less than the total symbol count.
     pmf : np.ndarray, optional
         Symbol PMF of shape ``(order,)`` for PS-QAM.  Forwarded to
-        :func:`commstools.metrics.ser` so the diagnostic SER reported in
+        ``ser`` so the diagnostic SER reported in
         the log is unbiased for shaped constellations.  The phase-rotation
         choice itself uses a scale-invariant inner product and does not
         depend on ``pmf``.

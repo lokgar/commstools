@@ -536,7 +536,7 @@ class TestFindBiasTone:
         assert abs(est_interp - tone_hz) < abs(est_argmax - tone_hz)
 
     def test_search_window_rejects_stronger_interferer(self, backend_device, xp):
-        """target_hz + search_band_hz rejects a 10x stronger out-of-band tone."""
+        """target_frequency + search_band rejects a 10x stronger out-of-band tone."""
         fs = 1e9
         N = 4096
         n = xp.arange(N, dtype=xp.float64)
@@ -546,7 +546,7 @@ class TestFindBiasTone:
         )
         seg = (target + interferer).astype(xp.complex64)
         est = frequency.find_bias_tone(
-            seg, sampling_rate=fs, target_hz=100e6, search_band_hz=50e6
+            seg, sampling_rate=fs, target_frequency=100e6, search_band=50e6
         )
         assert abs(est - 100e6) < 10e6
 
@@ -559,14 +559,14 @@ class TestFindBiasTone:
         assert isinstance(result, float)
 
     def test_partial_search_params_raises(self, backend_device, xp):
-        """Providing only one of target_hz / search_band_hz raises ValueError."""
+        """Providing only one of target_frequency / search_band raises ValueError."""
         N = 256
         n = xp.arange(N, dtype=xp.float64)
         seg = xp.exp(1j * 2 * np.pi * 1e5 / 1e6 * n).astype(xp.complex64)
         with pytest.raises(ValueError, match="both be provided or both omitted"):
-            frequency.find_bias_tone(seg, sampling_rate=1e6, target_hz=1e5)
+            frequency.find_bias_tone(seg, sampling_rate=1e6, target_frequency=1e5)
         with pytest.raises(ValueError, match="both be provided or both omitted"):
-            frequency.find_bias_tone(seg, sampling_rate=1e6, search_band_hz=10e3)
+            frequency.find_bias_tone(seg, sampling_rate=1e6, search_band=10e3)
 
     def test_empty_search_window_raises(self, backend_device, xp):
         """Search window outside the FFT grid raises ValueError."""
@@ -577,8 +577,8 @@ class TestFindBiasTone:
             frequency.find_bias_tone(
                 seg,
                 sampling_rate=1e6,
-                target_hz=2e6,  # beyond Nyquist for fs=1 MHz
-                search_band_hz=100.0,
+                target_frequency=2e6,  # beyond Nyquist for fs=1 MHz
+                search_band=100.0,
             )
 
     @pytest.mark.parametrize("tone_hz", [50e3, 200e3])
@@ -772,8 +772,8 @@ class TestCorrectFrequencyDrift:
 
         track = partial(
             frequency.find_bias_tone,
-            target_hz=tone_hz,
-            search_band_hz=20e6,
+            target_frequency=tone_hz,
+            search_band=20e6,
         )
         out = frequency.correct_frequency_drift(
             sig, fs, block_size=1024, overlap=0.5, estimator=track

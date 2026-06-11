@@ -41,11 +41,11 @@ def apply_awgn(
     seed: Optional[int] = None,
 ) -> ArrayType:
     """
-    Adds Additive White Gaussian Noise (AWGN) to a signal based on $E_s/N_0$.
+    Adds Additive White Gaussian Noise (AWGN) to a signal based on Es/N0.
 
-    Uses the standard communications definition where $E_s/N_0$ is the ratio of
+    Uses the standard communications definition where Es/N0 is the ratio of
     symbol energy to noise spectral density. This accounts for oversampling
-    so the specified $E_s/N_0$ matches what you'd measure in the signal bandwidth.
+    so the specified Es/N0 matches what you'd measure in the signal bandwidth.
 
     Parameters
     ----------
@@ -54,7 +54,7 @@ def apply_awgn(
     sps : float
         Samples per symbol.
     esn0_db : float
-        Symbol energy to noise spectral density ratio ($E_s/N_0$) in dB.
+        Symbol energy to noise spectral density ratio (Es/N0) in dB.
     seed : int, optional
         Random seed for reproducible noise generation. When ``None`` (default),
         the global RNG state is used.
@@ -66,9 +66,9 @@ def apply_awgn(
 
     Notes
     -----
-    - For symbol-rate signals (sps=1), $E_s/N_0$ equals the sample-level SNR.
+    - For symbol-rate signals (sps=1), Es/N0 equals the sample-level SNR.
     - For oversampled signals, noise power is scaled by `sps` to maintain
-      the correct $E_s/N_0$ in the signal bandwidth.
+      the correct Es/N0 in the signal bandwidth.
     - For complex signals, noise power is split equally between I and Q.
 
     Examples
@@ -136,19 +136,14 @@ def apply_iq_imbalance(
     Models the widely linear mixing that occurs when the I and Q branches of a
     receiver have mismatched gain and/or non-orthogonal phase:
 
-    .. math::
-
-        r[n] = K_1 \\, s[n] + K_2 \\, s^*[n]
+        r[n] = K1 * s[n] + K2 * s*[n]
 
     where
 
-    .. math::
+        K1 = (1 + g * e^(j*phi)) / 2,
+        K2 = (1 - g * e^(-j*phi)) / 2
 
-        K_1 = \\frac{1 + g \\, e^{j\\phi}}{2}, \\quad
-        K_2 = \\frac{1 - g \\, e^{-j\\phi}}{2}
-
-    and :math:`g = 10^{A / 20}` is the I/Q amplitude ratio and :math:`\\phi`
-    is the phase error in radians.
+    and g = 10^(A / 20) is the I/Q amplitude ratio and phi is the phase error in radians.
 
     Parameters
     ----------
@@ -203,27 +198,20 @@ def apply_pmd(
 
     Models an uncompensated channel segment as a frequency-dependent Jones matrix:
 
-    .. math::
+        H(f) = R(+theta) * diag(e^(-j*pi*f*tau), e^(+j*pi*f*tau)) * R(-theta)
 
-        H(f) = R(+\\theta) \\cdot
-        \\text{diag}(e^{-j\\pi f \\tau},\\; e^{+j\\pi f \\tau})
-        \\cdot R(-\\theta)
-
-    where :math:`\\tau` is the differential group delay (DGD),
-    :math:`\\theta` is the PSP orientation angle, and :math:`R(\\theta)` is
-    the 2x2 Jones rotation matrix.
+    where tau is the differential group delay (DGD), theta is the PSP orientation
+    angle, and R(theta) is the 2x2 Jones rotation matrix.
 
     The DGD is applied in the *principal states of polarisation* (PSP) frame:
-    :math:`R(-\\theta)` projects the signal onto the PSPs, the differential
-    delay :math:`\\pm\\pi f\\tau` is applied to each PSP, then
-    :math:`R(+\\theta)` rotates back to the lab frame.  The two PSPs
-    experience equal and opposite group delays, giving a total differential
-    delay of :math:`\\tau` seconds.
+    R(-theta) projects the signal onto the PSPs, the differential delay +/- pi*f*tau
+    is applied to each PSP, then R(+theta) rotates back to the lab frame. The two PSPs
+    experience equal and opposite group delays, giving a total differential delay of
+    tau seconds.
 
-    :math:`\\theta` is **not** a separate bulk rotation — it is the PSP
-    orientation angle that is intrinsic to the PMD model.  For a
-    frequency-independent polarization rotation with no DGD use
-    :func:`apply_polarization_mixing` instead.
+    theta is **not** a separate bulk rotation — it is the PSP orientation angle that
+    is intrinsic to the PMD model. For a frequency-independent polarization rotation
+    with no DGD use ``apply_polarization_mixing`` instead.
 
     The operation is fully vectorised in the frequency domain and
     backend-agnostic (NumPy / CuPy).
@@ -235,14 +223,14 @@ def apply_pmd(
     sampling_rate : float
         Sampling rate in Hz.
     dgd : float
-        Differential group delay :math:`\\tau` in seconds.
+        Differential group delay tau in seconds.
         Set to ``0`` to apply pure SOP rotation with no delay (equivalent
-        to :func:`apply_polarization_mixing`).
+        to ``apply_polarization_mixing``).
     theta : float, default 0.0
-        PSP orientation angle :math:`\\theta` in radians.  Determines how
+        PSP orientation angle theta in radians.  Determines how
         much energy couples between X and Y polarisations.
-        :math:`\\theta = 0` → PSPs aligned with lab axes (no cross-coupling);
-        :math:`\\theta = \\pi/4` → maximum coupling.
+        theta = 0 → PSPs aligned with lab axes (no cross-coupling);
+        theta = pi/4 → maximum coupling.
 
     Returns
     -------
@@ -300,24 +288,19 @@ def apply_pmd(
 def apply_phase_noise(
     samples: ArrayType,
     sampling_rate: float,
-    linewidth_hz: float,
+    linewidth: float,
     seed: Optional[int] = None,
     shared_lo: bool = False,
 ) -> ArrayType:
-    r"""
+    """
     Adds laser / oscillator phase noise modelled as a Wiener (random-walk) process.
 
     Each sample is rotated by an accumulated phase drawn from a discrete Wiener
     process whose per-sample variance is set by the laser linewidth:
 
-    .. math::
+        phi[n] = sum_{k=0}^{n} delta_k,  delta_k ~ N(0, 2*pi*delta_nu / f_s)
 
-        \phi[n] = \sum_{k=0}^{n} \delta_k, \quad
-        \delta_k \sim \mathcal{N}\!\left(0,\, 2\pi \Delta\nu / f_s\right)
-
-    .. math::
-
-        r[n] = s[n] \cdot e^{\,j\phi[n]}
+        r[n] = s[n] * exp(j * phi[n])
 
     Parameters
     ----------
@@ -325,8 +308,8 @@ def apply_phase_noise(
         Complex baseband signal. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
     sampling_rate : float
         Sampling rate in Hz.
-    linewidth_hz : float
-        Combined transmitter + receiver laser linewidth :math:`\Delta\nu` in Hz.
+    linewidth : float
+        Combined transmitter + receiver laser linewidth delta_nu in Hz.
         Typical values: 100 kHz (narrow-linewidth laser) to 10 MHz (DFB).
     seed : int, optional
         Random seed for reproducible noise.
@@ -343,12 +326,11 @@ def apply_phase_noise(
 
     Examples
     --------
-    >>> noisy = apply_phase_noise(sig.samples, linewidth_hz=100e3,
+    >>> noisy = apply_phase_noise(sig.samples, linewidth=100e3,
     ...                           sampling_rate=sig.sampling_rate)
     """
     logger.info(
-        f"Applying phase noise (linewidth={linewidth_hz:.3g} Hz, "
-        f"shared_lo={shared_lo})."
+        f"Applying phase noise (linewidth={linewidth:.3g} Hz, shared_lo={shared_lo})."
     )
 
     samples, xp, _ = dispatch(samples)
@@ -357,7 +339,7 @@ def apply_phase_noise(
         samples = samples[None, :]  # (1, N)
     C, N = samples.shape
 
-    variance_per_sample = 2.0 * math.pi * linewidth_hz / sampling_rate
+    variance_per_sample = 2.0 * math.pi * linewidth / sampling_rate
     std_per_sample = math.sqrt(variance_per_sample)
 
     rng = xp.random.RandomState(seed) if seed is not None else xp.random
@@ -386,22 +368,16 @@ def apply_polarization_mixing(
     theta: Union[float, ArrayType],
     drift_rate_rad_per_sym: float = 0.0,
 ) -> ArrayType:
-    r"""
+    """
     Applies a static or time-varying polarization rotation (pure SOP mixing).
 
     Models a frequency-independent 2x2 Jones rotation matrix:
 
-    .. math::
+        [Ex'[n]; Ey'[n]] = R(theta[n]) * [Ex[n]; Ey[n]]
 
-        \begin{bmatrix} E_x'[n] \\ E_y'[n] \end{bmatrix}
-        =
-        R(\theta[n])
-        \begin{bmatrix} E_x[n] \\ E_y[n] \end{bmatrix},
-        \quad
-        R(\theta) = \begin{bmatrix} \cos\theta & -\sin\theta \\
-                                     \sin\theta &  \cos\theta \end{bmatrix}
+        where R(theta) = [[cos(theta), -sin(theta)]; [sin(theta), cos(theta)]]
 
-    Unlike :func:`apply_pmd`, there is no differential group delay — this is a
+    Unlike ``apply_pmd``, there is no differential group delay — this is a
     pure bulk polarization rotation.  Useful for testing polarization-diverse
     receivers and modelling slow SOP drift.
 
@@ -412,14 +388,13 @@ def apply_polarization_mixing(
     theta : float or array_like of shape ``(N_samples,)``
         Rotation angle(s) in radians.
 
-        * **Scalar** — static rotation: the same :math:`R(\theta)` is applied
-          to every sample.
+        * **Scalar** — static rotation: the same R(theta) is applied to every sample.
         * **Array of shape** ``(N,)`` — time-varying SOP: one angle per sample,
           applied sample-by-sample via vectorised broadcasting.
 
         When ``theta`` is a scalar and ``drift_rate_rad_per_sym != 0``, the
         trajectory is extended as a linear ramp:
-        ``θ[n] = theta + drift_rate_rad_per_sym * n``.
+        ``theta[n] = theta + drift_rate_rad_per_sym * n``.
     drift_rate_rad_per_sym : float, default 0.0
         Linear SOP drift rate in radians per sample.  Only used when ``theta``
         is a scalar.  Ignored when ``theta`` is an array.
@@ -506,24 +481,19 @@ def apply_chromatic_dispersion(
     fiber_length_km: float,
     center_wavelength_nm: float,
 ) -> ArrayType:
-    r"""
+    """
     Applies chromatic dispersion (CD) to a signal in the frequency domain.
 
     Multiplies the signal spectrum by the CD transfer function:
 
-    .. math::
-
-        H_{\text{CD}}(f) = \exp\!\left[-\tfrac{j}{2}\beta_2 (2\pi f)^2 L\right]
+        H_CD(f) = exp(-j/2 * beta_2 * (2*pi*f)^2 * L)
 
     where
 
-    .. math::
+        beta_2 = -D * lambda^2 / (2*pi*c)
 
-        \beta_2 = -\frac{D \lambda^2}{2\pi c}
-
-    and :math:`D` is the dispersion parameter, :math:`\lambda` is the centre
-    wavelength, :math:`c` is the speed of light, and :math:`L` is the fibre
-    length.
+    and D is the dispersion parameter, lambda is the center wavelength,
+    c is the speed of light, and L is the fiber length.
 
     Parameters
     ----------
@@ -532,12 +502,12 @@ def apply_chromatic_dispersion(
     sampling_rate : float
         Sampling rate in Hz.
     dispersion_ps_nm_km : float
-        Fibre dispersion parameter :math:`D` in ps / (nm · km).
-        Standard SMF-28: 17 ps/(nm·km) at 1550 nm.
+        Fiber dispersion parameter D in ps / (nm * km).
+        Standard SMF-28: 17 ps/(nm*km) at 1550 nm.
     fiber_length_km : float
-        Fibre span length in km.
+        Fiber span length in km.
     center_wavelength_nm : float
-        Centre wavelength in nm (e.g. 1550 for C-band).
+        Center wavelength in nm (e.g. 1550 for C-band).
 
     Returns
     -------
@@ -593,10 +563,9 @@ def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
     Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
 
     Treats the I and Q components as a 2-D real vector and applies the
-    symmetric whitening transform :math:`W = M^{-1/2}` (where *M* is the
-    :math:`2 \\times 2` second-moment matrix) so that the corrected I and Q
-    channels have equal power and zero cross-correlation.  Unlike
-    Gram-Schmidt, the transform is symmetric: both branches are adjusted
+    symmetric whitening transform W = M^(-1/2) (where M is the 2x2 second-moment matrix)
+    so that the corrected I and Q channels have equal power and zero cross-correlation.
+    Unlike Gram-Schmidt, the transform is symmetric: both branches are adjusted
     equally, minimising the total distortion introduced.
 
     The output power equals the input power.
@@ -613,14 +582,8 @@ def compensate_iq_imbalance_lowdin(samples: ArrayType) -> ArrayType:
 
     Notes
     -----
-    *Algorithm* (per channel):
-
-    1. Form the :math:`2 \\times N` real data matrix :math:`X = [I;\\ Q]`.
-    2. Compute the :math:`2 \\times 2` second-moment matrix
-       :math:`M = X X^\\top / N`.
-    3. Factorise :math:`M = V \\Lambda V^\\top` (symmetric eigendecomposition).
-    4. Apply the whitening matrix :math:`W = V \\operatorname{diag}(\\lambda^{-1/2}) V^\\top`.
-    5. Rescale the output to restore the original signal power.
+    Per channel: forms the 2x2 second-moment matrix M = X*X.T/N from X = [I; Q],
+    then applies whitening W = M^(-1/2) via symmetric eigendecomposition.
 
     Examples
     --------
@@ -692,9 +655,9 @@ def compensate_iq_imbalance_gram_schmidt(samples: ArrayType) -> ArrayType:
     -----
     *Algorithm* (per channel):
 
-    1. Normalise I to unit RMS: :math:`\\hat{I} = I / \\sigma_I`.
-    2. Remove I-projection from Q: :math:`Q_\\perp = Q - \\langle \\hat{I}, Q \\rangle \\hat{I}`.
-    3. Normalise :math:`Q_\\perp` to unit RMS: :math:`\\hat{Q} = Q_\\perp / \\sigma_{Q_\\perp}`.
+    1. Normalize I to unit RMS: I_hat = I / sigma_I.
+    2. Remove I-projection from Q: Q_perp = Q - <I_hat, Q> * I_hat.
+    3. Normalize Q_perp to unit RMS: Q_hat = Q_perp / sigma_Q_perp.
     4. Recombine and rescale to preserve input power.
 
     Examples

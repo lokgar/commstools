@@ -224,34 +224,22 @@ def estimate_frequency_offset_mth_power(
     M is determined by the modulation type:
 
     - PSK / BPSK: M = ``order`` (e.g. 4 for QPSK, 8 for 8-PSK).
+    - PSK / BPSK: M = order (e.g. 4 for QPSK, 8 for 8-PSK).
     - QAM: M = 4 (the 4th power removes quadrature phase; residual
       amplitude modulation is suppressed by subtracting the per-channel
-      mean of ``signal^M`` before the FFT).
+      mean of signal^M before the FFT).
 
-    **Lock range:** ``[-fs/(2M), fs/(2M)]``. For QPSK at 1 GHz → ±125 MHz.
-    Use ``search_range`` to reduce false-peak probability.
+    Lock range: [-fs/(2M), fs/(2M)]. For QPSK at 1 GHz -> +/- 125 MHz.
+    Use search_range to reduce false-peak probability.
 
-    **Jacobsen interpolation** (Jacobsen & Kootsookos, IEEE Signal Process.
-    Mag., 2007):
+    Jacobsen interpolation:
 
-    .. math::
+    delta = Re[ (X[k-1] - X[k+1]) / (2*X[k] - X[k-1] - X[k+1]) ]
 
-        \\delta = \\operatorname{Re}\\!\\left[
-            \\frac{X[k-1] - X[k+1]}{2X[k] - X[k-1] - X[k+1]}
-        \\right]
-
-    where *X* are complex FFT values at the peak bin *k* and its
-    neighbours.  Unlike the parabolic fit (which operates on magnitudes
+    where X are complex FFT values at the peak bin k and its
+    neighbours. Unlike the parabolic fit (which operates on magnitudes
     and has a sinc-function bias for small NFFT), the Jacobsen estimator
     is unbiased for a rectangular window.
-
-    References
-    ----------
-    M. Luise and R. Reggiannini, "Carrier frequency recovery in all-digital
-    modems for burst-mode transmissions," IEEE Trans. Commun., 1995.
-
-    E. Jacobsen and P. Kootsookos, "Fast, accurate frequency estimators,"
-    IEEE Signal Process. Mag., vol. 24, no. 3, pp. 123-125, May 2007.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -403,10 +391,10 @@ def estimate_frequency_offset_mengali_morelli(
     Estimates frequency offset via the Mengali-Morelli multi-lag autocorrelation.
 
     Uses multiple autocorrelation lags m = 1 … L combined with MVUE weights
-    to extend the lock range to the full Nyquist interval ``[-fs/2, fs/2]``
+    to extend the lock range to the full Nyquist interval [-fs/2, fs/2]
     while remaining Cramér-Rao-efficient.  This is the recommended estimator
     when the frequency offset may be large (exceeding the Kay / differential
-    lock range of ``fs/(2M)``) and a pilot or data-aided reference is
+    lock range of fs/(2M)) and a pilot or data-aided reference is
     available for pre-processing.
 
     Three input modes:
@@ -414,7 +402,7 @@ def estimate_frequency_offset_mengali_morelli(
     1. **Data-aided** (``ref_signal`` provided): derotates samples by the
        known reference before estimating.
     2. **Blind M-PSK/QAM** (``modulation`` + ``order``): applies M-th power
-       pre-processing.  Lock range remains ``[-fs/2, fs/2]`` for all lags
+       pre-processing.  Lock range remains [-fs/2, fs/2] for all lags
        after bootstrap unwrapping from lag 1.
     3. **Generic blind** (no arguments): assumes a constant-envelope signal.
 
@@ -431,41 +419,10 @@ def estimate_frequency_offset_mengali_morelli(
         Modulation order. Required with ``modulation`` for blind mode.
     ref_signal : array_like, optional
         Ideal transmitted waveform used to derotate ``samples`` before
-        autocorrelation.  The function computes ``y[n] = samples[n] *
-        conj(ref[n])``, which cancels the data modulation and leaves a
-        complex tone at Δf.
-
-        **What to pass:** the noiseless baseband waveform as it would
-        appear at the receiver input *without* any frequency offset or
-        carrier phase — i.e. the output of your pulse shaper / DAC model,
-        at the same sampling rate and the same number of samples-per-symbol
-        as ``samples``.  Concretely:
-
-        * If ``samples`` is pulse-shaped at ``sps`` samples/symbol, pass
-          the corresponding pulse-shaped reference (e.g. ``Signal.samples``
-          from a freshly generated :class:`~commstools.core.Signal` with no
-          impairments).
-        * If ``samples`` has already been matched-filtered and decimated to
-          1 SPS, pass the 1-SPS symbol sequence (``Signal.source_symbols``).
-        * Do **not** pass raw bits or a preamble sequence of different
-          length — ``ref_signal`` must be sample-aligned and have the same
-          length ``N`` as ``samples``.
-
-        Amplitude normalisation does not affect the estimate (only the
-        phase of each lag is used), so there is no need to normalise
-        ``ref_signal`` to unit power.
-
-        Shape: ``(N,)``, ``(1, N)`` (broadcast to all MIMO channels), or
-        ``(C, N)`` for independent per-channel references.
-
-        .. warning::
-            **Sample-exact timing alignment is required.**  The product
-            ``samples[n] * conj(ref[n])`` must refer to the *same* symbol
-            period at every index ``n``.  A single-sample misalignment
-            causes the autocorrelation to average over mismatched symbol
-            pairs, collapsing the phase ramp to ≈ 0 Hz for i.i.d. data.
-            Call :func:`estimate_timing` and trim / interpolate ``samples``
-            to integer-sample alignment before passing to this function.
+        autocorrelation.  Computes ``y[n] = samples[n] * conj(ref[n])``,
+        cancelling the data modulation and leaving a tone at delta_f.
+        Must be sample-aligned with ``samples`` (call ``estimate_timing``
+        first).  Shape: ``(N,)``, ``(1, N)``, or ``(C, N)``.
     max_lag : int, optional
         Maximum autocorrelation lag L.  Default: ``N // 4``, clamped to
         ``[1, N // 2]``.  Increasing L improves noise averaging at the cost
@@ -491,59 +448,13 @@ def estimate_frequency_offset_mengali_morelli(
 
     Notes
     -----
-    **Algorithm** (Mengali & Morelli, 1997):
+    Computes the unbiased autocorrelation R[m] at lags 1 … L via the
+    Wiener-Khinchin theorem (2 FFTs), bootstraps the phase from lag 1 to
+    resolve 2*pi ambiguities at higher lags, then combines per-lag estimates
+    with m^2 * |R[m]|^2 MVUE weights.
 
-    1. Pre-process signal ``y`` (data-aided, blind M-th power, or generic blind).
-
-    2. Compute normalised autocorrelation at lags m = 1 … L:
-
-       .. math::
-
-           R[m] = \\frac{1}{N-m} \\sum_{n=0}^{N-1-m} y^*[n]\\, y[n+m]
-
-    3. Bootstrap phase from lag 1:
-       :math:`\\theta_1 = \\angle R[1]` gives a coarse estimate that is
-       unambiguous within ``[-fs/(2M), fs/(2M)]`` (or ``[-fs/2, fs/2]``
-       for data-aided / generic mode).
-
-    4. Unwrap higher lags using the lag-1 prediction:
-
-       .. math::
-
-           \\Theta[m] = \\angle R[m]
-               + 2\\pi \\cdot \\operatorname{round}\\!
-                 \\left(\\frac{m\\,\\theta_1 - \\angle R[m]}{2\\pi}\\right)
-
-       This extends the effective lock range of every lag to
-       ``[-fs/(2M), fs/(2M)]`` regardless of lag number.
-
-    5. Per-lag frequency estimate:
-       :math:`f[m] = \\Theta[m] \\cdot f_s / (2\\pi m)`
-
-    6. Combine with SNR-magnitude weights
-       :math:`w[m] \\propto m^2 |R[m]|^2` — upweights high lags for variance
-       reduction while discarding lags where amplitude-modulation residuals
-       (e.g. QAM) or noise degrade the autocorrelation:
-
-       .. math::
-
-           \\hat{f} = \\frac{\\sum_{m=1}^{L} m^2 |R[m]|^2\\, f[m]}
-                            {\\sum_{m=1}^{L} m^2 |R[m]|^2}
-
-    For MIMO, the bootstrap is run independently per channel; the result
-    is a per-channel array by default.
-
-    **Lock range:** ``[-fs/(2M), fs/(2M)]`` for blind M-th power mode;
-    ``[-fs/2, fs/2]`` (full Nyquist) for data-aided or generic blind mode.
-
-    References
-    ----------
-    U. Mengali and M. Morelli, "Data-aided frequency estimation for burst
-    digital transmission," *IEEE Trans. Commun.*, vol. 45, no. 1,
-    pp. 23-25, Jan. 1997.
-
-    S. M. Kay, "A fast and accurate single-frequency estimator," *IEEE
-    Trans. Acoust. Speech Signal Process.*, vol. 37, no. 12, Dec. 1989.
+    Lock range: [-fs/(2M), fs/(2M)] for blind M-th power mode;
+    [-fs/2, fs/2] for data-aided or generic blind mode.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -645,7 +556,7 @@ def estimate_frequency_offset_pilots(
     the known pilot values to obtain the residual phase, unwraps the pilot
     phase sequence, then fits a (optionally SNR-weighted) least-squares line
     to the unwrapped phase as a function of pilot sample time.  The slope
-    gives the frequency offset: ``Δf = slope / (2π)``.
+    gives the frequency offset: Δf = slope / (2π).
 
     Parameters
     ----------
@@ -695,54 +606,30 @@ def estimate_frequency_offset_pilots(
     -----
     The demodulated pilot phase follows:
 
-    .. math::
+    phi_hat[k] = 2*pi * delta_f * t_k + phi_0 + noise
 
-        \\hat{\\phi}[k] = 2\\pi \\Delta f \\cdot t_k + \\phi_0 + \\text{noise}
-
-    where :math:`t_k = \\text{pilot\\_indices}[k] / f_s`.
+    where t_k = pilot_indices[k] / f_s.
 
     **Unweighted (OLS):** the minimum-variance unbiased estimator for
-    equal-noise pilots (Tretter, 1985):
+    equal-noise pilots:
 
-    .. math::
-
-        \\hat{\\Delta f} = \\frac{1}{2\\pi}
-            \\frac{\\sum_k (t_k - \\bar{t})(\\hat{\\phi}[k] - \\bar{\\phi})}
-                  {\\sum_k (t_k - \\bar{t})^2}
+    delta_f_hat = (1 / (2*pi)) * sum_k ((t_k - t_bar) * (phi_hat[k] - phi_bar)) / sum_k ((t_k - t_bar)^2)
 
     **SNR-weighted (WLSQ):** pilots are weighted by received power
-    :math:`v_k = |r_k|^2` (normalised to unit mean), giving:
+    v_k = |r_k|^2 (normalised to unit mean), giving:
 
-    .. math::
+    delta_f_hat = (1 / (2*pi)) * sum_k (v_k * (t_k - t_bar_v) * (phi_hat[k] - phi_bar_v)) / sum_k (v_k * (t_k - t_bar_v)^2)
 
-        \\hat{\\Delta f} = \\frac{1}{2\\pi}
-            \\frac{\\sum_k v_k(t_k - \\bar{t}_v)(\\hat{\\phi}[k] - \\bar{\\phi}_v)}
-                  {\\sum_k v_k(t_k - \\bar{t}_v)^2}
-
-    where :math:`\\bar{t}_v` and :math:`\\bar{\\phi}_v` are the
-    weighted means.  This reduces variance by 30-50 % when pilot SNR
+    where t_bar_v and phi_bar_v are the weighted means.  This reduces variance by 30-50 % when pilot SNR
     varies significantly across the burst.
 
-    **Lock range:** ``xp.unwrap`` bridges each gap between consecutive
+    **Lock range:** xp.unwrap bridges each gap between consecutive
     pilot indices.  The gap that limits the lock range is the largest one:
 
-    .. math::
-
-        |\\Delta f| < \\frac{f_s}{2 \\cdot \\text{max\\_gap}}
+    |delta_f| < f_s / (2 * max_gap)
 
     where ``max_gap`` is the maximum spacing (in samples) between any two
     consecutive entries of ``pilot_indices``.
-
-    * Comb with period *d*: ``max_gap = d``, lock range ``= fs/(2d)``.
-    * Two-block pilots with front block ``[0..L-1]`` and back block
-      ``[N-L..N-1]``: ``max_gap = N-2L``.  For large *N*, this can be very
-      small — use :func:`estimate_frequency_offset_mth_power` as coarse stage.
-
-    References
-    ----------
-    S. A. Tretter, "Estimating the frequency of a noisy sinusoid by linear
-    regression," *IEEE Trans. Inf. Theory*, vol. 31, no. 6, pp. 832-835,
-    Nov. 1985.
     """
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
@@ -834,8 +721,8 @@ def estimate_frequency_offset_pilots(
 def find_bias_tone(
     seg: ArrayType,
     sampling_rate: float,
-    target_hz: Optional[float] = None,
-    search_band_hz: Optional[float] = None,
+    target_frequency: Optional[float] = None,
+    search_band: Optional[float] = None,
 ) -> float:
     """
     Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment.
@@ -853,16 +740,16 @@ def find_bias_tone(
         1-D complex IQ samples.  Must reside on a single backend (CPU or GPU).
     sampling_rate : float
         Sampling rate in Hz.
-    target_hz : float, optional
+    target_frequency : float, optional
         Centre of the frequency search window in Hz.  Must be paired with
-        ``search_band_hz``.  If both are given the argmax is restricted to
-        ``[target_hz - search_band_hz, target_hz + search_band_hz]``.
+        ``search_band``.  If both are given the argmax is restricted to
+        ``[target_frequency - search_band, target_frequency + search_band]``.
         Use this after a coarse correction has placed the tone near a known
         position; without it the wideband data signal typically wins the
         argmax.
-    search_band_hz : float, optional
+    search_band : float, optional
         Half-width of the search window in Hz.  Must be paired with
-        ``target_hz``.
+        ``target_frequency``.
 
     Returns
     -------
@@ -873,36 +760,28 @@ def find_bias_tone(
     ------
     ValueError
         If ``seg`` is not 1-D, is shorter than 4 samples, only one of
-        ``target_hz`` / ``search_band_hz`` is given, or the search window
+        ``target_frequency`` / ``search_band`` is given, or the search window
         maps to an empty set of FFT bins.
 
     Notes
     -----
-    **Log-parabolic sub-bin interpolation** fits the log-magnitude of the
-    three bins around the argmax peak *k*:
+    Log-parabolic sub-bin interpolation fits the log-magnitude of the
+    three bins around the argmax peak k:
 
-    .. math::
-
-        y_-  &= \\log\\max(|X[k-1]|, \\varepsilon) \\\\
-        y_0  &= \\log\\max(|X[k]|,   \\varepsilon) \\\\
-        y_+  &= \\log\\max(|X[k+1]|, \\varepsilon) \\\\
-        d    &= y_- - 2y_0 + y_+ \\\\
-        \\delta &= \\tfrac{1}{2}(y_- - y_+)\\,/\\,d
-                  \\quad\\text{if } |d| > \\varepsilon \\\\
-        f_\\text{refined} &= f[k] + \\delta \\cdot f_s / N
+    y_-  = log(max(|X[k-1]|, epsilon))
+    y_0  = log(max(|X[k]|,   epsilon))
+    y_+  = log(max(|X[k+1]|, epsilon))
+    d    = y_- - 2y_0 + y_+
+    delta = 0.5 * (y_- - y_+) / d    if |d| > epsilon
+    f_refined = f[k] + delta * f_s / N
 
     Log-parabolic interpolation better matches the Gaussian shape of a
     windowed spectral peak than standard parabolic (magnitude-domain) fits,
     reducing estimation bias for non-integer tone frequencies.
-
-    References
-    ----------
-    M. Abe and S. Kobayashi, "Precise frequency estimation by log-parabolic
-    interpolation," *Proc. ICASSP*, 2000.
     """
-    if (target_hz is None) != (search_band_hz is None):
+    if (target_frequency is None) != (search_band is None):
         raise ValueError(
-            "target_hz and search_band_hz must both be provided or both omitted."
+            "target_frequency and search_band must both be provided or both omitted."
         )
 
     seg, xp, _ = dispatch(seg)
@@ -922,15 +801,15 @@ def find_bias_tone(
 
     freqs_np = np.fft.fftfreq(nfft, d=1.0 / sampling_rate)  # (nfft,) always on CPU
 
-    if target_hz is not None:
-        assert search_band_hz is not None
-        lo = target_hz - abs(search_band_hz)
-        hi = target_hz + abs(search_band_hz)
+    if target_frequency is not None:
+        assert search_band is not None
+        lo = target_frequency - abs(search_band)
+        hi = target_frequency + abs(search_band)
         freqs_xp = xp.asarray(freqs_np)
         mask = (freqs_xp >= lo) & (freqs_xp <= hi)
         if not bool(xp.any(mask)):
             raise ValueError(
-                f"target_hz={target_hz} ± search_band_hz={search_band_hz} produces an "
+                f"target_frequency={target_frequency} ± search_band={search_band} produces an "
                 f"empty search window for fs={sampling_rate} Hz, nfft={nfft}."
             )
         mag_search = xp.where(mask, mag, xp.zeros_like(mag))
@@ -957,7 +836,7 @@ def find_bias_tone(
         f"find_bias_tone: peak bin {k} ({freqs_np[k]:.2f} Hz), "
         f"delta={delta:.4f} → {f_refined:.2f} Hz "
         f"[nfft={nfft}, window="
-        f"{'full' if target_hz is None else f'{target_hz}±{search_band_hz} Hz'}]"
+        f"{'full' if target_frequency is None else f'{target_frequency}±{search_band} Hz'}]"
     )
 
     return float(f_refined)
@@ -972,7 +851,7 @@ def correct_frequency_drift(
     combine_channels: bool = False,
     debug_plot: bool = False,
 ) -> ArrayType:
-    r"""
+    """
     Estimate and correct a time-varying frequency drift in one call.
 
     Divides the signal into overlapping blocks, calls an arbitrary
@@ -998,17 +877,7 @@ def correct_frequency_drift(
         Signature ``(block: np.ndarray, fs: float) -> float``.  Receives a
         1-D NumPy complex array on CPU and returns the estimated instantaneous
         frequency offset in Hz.  Additional arguments can be bound with
-        :func:`functools.partial`:
-
-        .. code-block:: python
-
-            from functools import partial
-            from commstools.frequency import find_bias_tone, correct_frequency_drift
-
-            track = partial(find_bias_tone, target_hz=352.6e6, search_band_hz=20e6)
-            corrected = correct_frequency_drift(
-                samples, fs, block_size=2048, overlap=0.5, estimator=track
-            )
+        ``partial``.
 
     combine_channels : bool, default False
         For MIMO inputs (C > 1):
@@ -1034,24 +903,14 @@ def correct_frequency_drift(
 
     Notes
     -----
-    **Pipeline (per channel):**
+    Pipeline (per channel):
 
-    1. Slice into overlapping blocks centred at
-       :math:`t_k = s_k + \text{block\_size}/2`.
-    2. Call ``estimator(block_np, fs)`` on each CPU block.
-    3. Interpolate estimates with :class:`scipy.interpolate.PchipInterpolator`;
-       clamp to ``[t_0, t_{B-1}]`` (no extrapolation).
-    4. Integrate: :math:`\theta(n) = (2\pi / f_s)\,\text{cumsum}(\Delta f)`.
-    5. Apply: :math:`y[n] = x[n]\,e^{-j\theta[n]}`.
-
-    The estimator always receives **NumPy arrays on CPU** regardless of the
-    input device.  Per-block CPU FFTs are faster than GPU for small block
-    sizes (512-4096 samples).  The correction is applied on the original
-    device.
-
-    **Single-block fallback:** if the signal is shorter than ``block_size``,
-    the entire signal forms one block and the result is a constant-rate phase
-    correction.
+    1. Slice into overlapping blocks centred at t_k = s_k + block_size / 2.
+    2. Call estimator(block_np, fs) on each CPU block.
+    3. Interpolate estimates with scipy.interpolate.PchipInterpolator;
+       clamp to [t_0, t_{B-1}] (no extrapolation).
+    4. Integrate: theta(n) = (2 * pi / fs) * cumsum(delta_f).
+    5. Apply: y[n] = x[n] * exp(-j * theta[n]).
     """
     if not (0.0 <= overlap < 1.0):
         raise ValueError(f"overlap must be in [0, 1), got {overlap}.")
@@ -1168,20 +1027,17 @@ def correct_static_frequency_offset(
     """
     Applies a **constant** frequency offset correction via exact complex mixing.
 
-    Multiplies ``samples`` by :math:`e^{-j 2\\pi \\Delta f \\cdot n / f_s}` where
+    Multiplies ``samples`` by exp(-j * 2 * pi * delta_f * n / fs) where
     *n* starts at 0 at the first sample of the passed array.
 
-    .. warning::
-        This function is designed for **full-signal correction** of a single
-        static offset.  Calling it on sub-blocks of a longer signal breaks phase
-        continuity because the phasor restarts at :math:`n=0` for each call.
-        For time-varying or block-streamed frequency correction use
-        :func:`correct_frequency_drift` instead.
+    Warning: designed for full-signal correction of a single static offset.
+    Calling it on sub-blocks breaks phase continuity (phasor restarts at n = 0).
+    For time-varying or block-streamed correction use ``correct_frequency_drift``.
 
-    Unlike :func:`spectral.shift_frequency`, this function applies the
+    Unlike ``shift_frequency``, this function applies the
     correction **without bin quantization**, preserving the full precision of
     a sub-bin estimate (e.g. from Jacobsen interpolation in
-    :func:`estimate_frequency_offset_mth_power`).
+    ``estimate_frequency_offset_mth_power``).
 
     Parameters
     ----------

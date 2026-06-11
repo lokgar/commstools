@@ -558,13 +558,13 @@ def test_isi_channel_convergence(backend_device, xp):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _wiener_qam16_block(n_sym=4096, snr_db=25.0, linewidth_hz=5e3, seed=11):
+def _wiener_qam16_block(n_sym=4096, snr_db=25.0, linewidth=5e3, seed=11):
     """Return (samples, symbols) for 16-QAM under Wiener phase noise."""
     rng = np.random.default_rng(seed)
     const = gray_constellation("qam", 16).astype(np.complex64)
     const = normalize(const, "average_power").astype(np.complex64)
     syms = const[rng.integers(0, 16, n_sym)]
-    sigma_phi = float(np.sqrt(2 * np.pi * linewidth_hz))
+    sigma_phi = float(np.sqrt(2 * np.pi * linewidth))
     phase = np.cumsum(rng.normal(0.0, sigma_phi, n_sym)).astype(np.float64)
     samples = (syms * np.exp(1j * phase)).astype(np.complex64)
     noise_std = np.sqrt(10 ** (-snr_db / 10) / 2)

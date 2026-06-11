@@ -73,9 +73,6 @@ def _scalar_or_array(values):
 # Typical flow: carrier_phase_trajectory → separate_drift_phase_noise →
 # frequency_drift_metrics + {linewidth_increment, linewidth_beta_separation} →
 # allan_deviation, wrapped by characterize_carrier_phase.
-#
-# Ref: G. Di Domenico, S. Schilt, P. Thomann, "Simple approach to the relation
-# between laser frequency noise and laser line shape," Appl. Opt. 49, 4801 (2010).
 # =============================================================================
 def carrier_phase_trajectory(
     y_eq: ArrayType,
@@ -91,12 +88,12 @@ def carrier_phase_trajectory(
     carrier phase + AWGN angle noise and **never cycle-slips** — unlike a
     blind/feed-forward estimate which would add its own estimator noise and
     slips that corrupt a linewidth estimate.  A constant offset or
-    :math:`\pm\pi/2` ambiguity is irrelevant; only the time variation is used.
+    +/- pi/2 ambiguity is irrelevant; only the time variation is used.
 
     Parameters
     ----------
     y_eq : array_like
-        Equalized symbols at 1 sps (e.g. :func:`commstools.equalization.apply_taps`
+        Equalized symbols at 1 sps (e.g. ``apply_taps``
         output with the CPR **disabled** so the carrier phase is left intact).
         Shape ``(N,)`` (SISO) or ``(C, N)`` (MIMO, time on last axis).
     ref_symbols : array_like
@@ -147,7 +144,7 @@ def separate_drift_phase_noise(
     phi: ArrayType,
     symbol_rate: float,
     *,
-    cutoff_hz: float,
+    cutoff: float,
     method: str = "butterworth",
     order: int = 4,
     debug_plot: bool = False,
@@ -156,7 +153,7 @@ def separate_drift_phase_noise(
 
     Applies a **zero-phase** low-pass (default 4th-order Butterworth in
     second-order-sections form via ``sosfiltfilt``, numerically stable at the
-    very low normalized cutoffs typical here) at ``cutoff_hz`` to obtain the
+    very low normalized cutoffs typical here) at ``cutoff`` to obtain the
     drift; the residual
     ``pn = phi - drift`` carries the phase noise + AWGN.  Zero-phase filtering
     avoids the group-delay bias of a causal filter and the spectral leakage of
@@ -176,9 +173,9 @@ def separate_drift_phase_noise(
         the symbol rate (one value per symbol).
     symbol_rate : float
         Symbol rate in Baud; the effective sampling rate of ``phi``.
-    cutoff_hz : float
+    cutoff : float
         Low-pass cutoff in Hz separating drift (below) from phase noise
-        (above).  Must satisfy ``0 < cutoff_hz < symbol_rate / 2``.
+        (above).  Must satisfy ``0 < cutoff < symbol_rate / 2``.
     method : {"butterworth", "savgol", "boxcar"}, default "butterworth"
         Low-pass implementation.  ``"savgol"`` is a polynomial (Savitzky-Golay)
         detrend; ``"boxcar"`` is the crude moving average (provided for
@@ -188,7 +185,7 @@ def separate_drift_phase_noise(
         — ignored for the boxcar.
     debug_plot : bool, default False
         If True, plot the phase trajectory with the drift overlaid
-        (:func:`commstools.plotting.carrier_phase_decomposition`).
+        (``carrier_phase_decomposition``).
 
     Returns
     -------
@@ -200,9 +197,9 @@ def separate_drift_phase_noise(
     phi_arr, xp, sp = dispatch(phi)
     fs = float(symbol_rate)
     nyq = 0.5 * fs
-    if not (0.0 < cutoff_hz < nyq):
+    if not (0.0 < cutoff < nyq):
         raise ValueError(
-            f"cutoff_hz={cutoff_hz} must lie in (0, symbol_rate/2={nyq}). "
+            f"cutoff={cutoff} must lie in (0, symbol_rate/2={nyq}). "
             "phi is sampled at the symbol rate."
         )
 
@@ -212,18 +209,18 @@ def separate_drift_phase_noise(
     if method == "butterworth":
         # SOS form is numerically stable at the very low normalized cutoffs
         # typical here (cutoff ≪ symbol_rate ⇒ poles bunch near z=1).
-        sos = sp.signal.butter(order, cutoff_hz / nyq, btype="low", output="sos")
+        sos = sp.signal.butter(order, cutoff / nyq, btype="low", output="sos")
         if xp.__name__ == "cupy":
             sos = xp.asarray(sos)
         drift = sp.signal.sosfiltfilt(sos, phi2.astype(xp.float64), axis=-1)
     elif method == "savgol":
         # Window ≈ one cutoff period (odd, > polyorder).
-        win = int(round(fs / cutoff_hz)) | 1
+        win = int(round(fs / cutoff)) | 1
         win = max(win, order + 2 + (order % 2 == 0))
         win = min(win, phi2.shape[-1] - (1 - phi2.shape[-1] % 2))
         drift = sp.signal.savgol_filter(phi2.astype(xp.float64), win, order, axis=-1)
     elif method == "boxcar":
-        w = max(1, int(round(fs / cutoff_hz)))
+        w = max(1, int(round(fs / cutoff)))
         kern = xp.ones(w, dtype=xp.float64) / w
         drift = xp.stack(
             [xp.convolve(row, kern, mode="same") for row in phi2.astype(xp.float64)],
@@ -254,7 +251,7 @@ def frequency_drift_metrics(
     symbol_rate: float,
     *,
     edge_trim: int = 0,
-    amp_ref_hz: Optional[float] = None,
+    amp_ref: Optional[float] = None,
     debug_plot: bool = False,
 ) -> Dict[str, Union[float, np.ndarray]]:
     r"""Residual frequency-wander statistics from a smoothed phase ramp.
@@ -277,17 +274,17 @@ def frequency_drift_metrics(
     edge_trim : int, default 0
         Number of samples to discard from each end before differencing
         (removes low-pass filter transients).
-    amp_ref_hz : float, optional
-        Reference wander amplitude (Hz) drawn as ``±amp_ref_hz`` guides when
+    amp_ref : float, optional
+        Reference wander amplitude (Hz) drawn as ``±amp_ref`` guides when
         ``debug_plot=True`` (e.g. an injected amplitude in a simulation).
     debug_plot : bool, default False
         If True, plot the residual frequency vs time
-        (:func:`commstools.plotting.frequency_drift`).
+        (``frequency_drift``).
 
     Returns
     -------
     dict
-        ``{'df_hz', 'std_hz', 'pp_hz', 'max_abs_hz'}``.  ``df_hz`` is the
+        ``{'df', 'std', 'pp', 'max_abs'}``.  ``df`` is the
         per-symbol residual frequency array; the rest are floats (SISO) or
         per-channel arrays (MIMO).
     """
@@ -309,14 +306,14 @@ def frequency_drift_metrics(
         from . import plotting as _plotting
 
         _plotting.frequency_drift(
-            df_out, symbol_rate=symbol_rate, amp_ref_hz=amp_ref_hz, show=True
+            df_out, symbol_rate=symbol_rate, amp_ref=amp_ref, show=True
         )
 
     return {
-        "df_hz": df_out,
-        "std_hz": _scalar_or_array(std),
-        "pp_hz": _scalar_or_array(pp),
-        "max_abs_hz": _scalar_or_array(max_abs),
+        "df": df_out,
+        "std": _scalar_or_array(std),
+        "pp": _scalar_or_array(pp),
+        "max_abs": _scalar_or_array(max_abs),
     }
 
 
@@ -336,10 +333,8 @@ def linewidth_increment(
     For a Wiener phase + AWGN angle noise, the variance of the lag-``k``
     increment ``Δφ_k = φ(n) - φ(n-k)`` is **linear in ``k``**:
 
-    .. math::
-
-        \mathrm{Var}(\Delta\phi_k) = \underbrace{2\pi\,\Delta\nu\,T_{\rm sym}}_{\text{slope}}\,k
-                                     \;+\; \underbrace{2\sigma_\phi^2}_{\text{intercept}}
+    Var(delta_phi_k) = slope * k + intercept
+    where slope = 2 * pi * linewidth * T_sym and intercept = 2 * noise_var_phi
 
     because the random-walk variance accumulates with ``k`` while the
     *uncorrelated* AWGN angle noise contributes a fixed ``2σ_φ²`` regardless of
@@ -356,11 +351,9 @@ def linewidth_increment(
       ``ref_symbols`` applies the amplitude-aware ``σ_n²·E[1/|d|²]`` (rigorous
       for QAM, since inner-ring symbols carry larger angle noise).
 
-    .. warning::
-       ``method="subtract"`` needs the *additive-noise variance only*.
-       ``metrics.snr`` reports the total residual (noise + residual phase noise
-       + ISI) and over-subtracts; and the effective noise at the equalizer
-       output usually exceeds the channel ``Es/N0``.  Prefer ``method="slope"``.
+    Note: ``method="subtract"`` needs the additive-noise variance only.
+    ``metrics.snr`` reports total residual (noise + phase noise + ISI) and
+    over-subtracts.  Prefer ``method="slope"``.
 
     Parameters
     ----------
@@ -382,7 +375,7 @@ def linewidth_increment(
     Returns
     -------
     dict
-        ``{'linewidth_hz', 'dphi_var', 'awgn_var', 'method'}`` — linewidth /
+        ``{'linewidth', 'dphi_var', 'awgn_var', 'method'}`` — linewidth /
         variances are floats (SISO) or per-channel arrays.  ``dphi_var`` is the
         lag-1 increment variance; ``awgn_var`` is the fitted intercept
         (``slope``) or the subtracted AWGN term (``subtract``).
@@ -445,7 +438,7 @@ def linewidth_increment(
     var1_cpu = to_device(var1, "cpu")
 
     return {
-        "linewidth_hz": _scalar_or_array(linewidth_cpu),
+        "linewidth": _scalar_or_array(linewidth_cpu),
         "dphi_var": _scalar_or_array(var1_cpu),
         "awgn_var": _scalar_or_array(awgn_var_cpu),
         "method": method,
@@ -460,12 +453,12 @@ def fm_noise_psd(
     detrend: Union[str, bool] = "constant",
     debug_plot: bool = False,
 ) -> Tuple[ArrayType, ArrayType]:
-    r"""One-sided frequency-noise PSD :math:`S_f(f)` [Hz²/Hz] from the phase.
+    r"""One-sided frequency-noise PSD S_f(f) [Hz²/Hz] from the phase.
 
     Differentiates the phase to the instantaneous frequency
     ``f_inst = diff(phi)/(2π·T_sym)`` (Hz) and estimates its one-sided PSD via
-    Welch's method (:func:`commstools.spectral.welch_psd`).  Distinct
-    impairments occupy distinct regions of :math:`S_f(f)`:
+    Welch's method (``welch_psd``).  Distinct
+    impairments occupy distinct regions of S_f(f):
 
     * **white-FM** (linewidth): flat plateau at ``S_f = Δν/π``,
     * **drift / flicker**: steep ``1/f`` (and steeper) rise at low ``f``,
@@ -483,7 +476,7 @@ def fm_noise_psd(
         Per-segment detrend passed to Welch; ``"constant"`` removes the mean
         residual frequency offset.
     debug_plot : bool, default False
-        If True, plot the PSD (:func:`commstools.plotting.frequency_noise_psd`).
+        If True, plot the PSD (``frequency_noise_psd``).
 
     Returns
     -------
@@ -531,13 +524,13 @@ def linewidth_beta_separation(
 ) -> Dict[str, Union[float, np.ndarray]]:
     r"""Linewidth via the Di Domenico β-separation line (canonical method).
 
-    Integrates the frequency-noise PSD :math:`S_f(f)` only over the band where
-    it lies **above** the β-separation line ``S_f = (8 ln2/π²)·f``; the FWHM
-    linewidth is ``Δν = sqrt(8 ln2 · A)`` with ``A`` the integrated area
-    (Hz²).  This excludes the low-frequency drift (below the line) and — with
-    an appropriate ``f_max`` — the high-frequency AWGN ``f²`` tail (which
+    Integrates the frequency-noise PSD S_f(f) only over the band where
+    it lies **above** the beta-separation line S_f = (8 * ln(2) / pi^2) * f;
+    the FWHM linewidth is linewidth = sqrt(8 * ln(2) * A) with A the integrated
+    area (Hz²).  This excludes the low-frequency drift (below the line) and —
+    with an appropriate f_max — the high-frequency AWGN f^2 tail (which
     eventually climbs back above the line).  A white-FM-floor cross-check
-    ``Δν = π·median(S_f)`` over the integration band is also returned.
+    linewidth = pi * median(S_f) over the integration band is also returned.
 
     Parameters
     ----------
@@ -546,7 +539,7 @@ def linewidth_beta_separation(
     symbol_rate : float
         Symbol rate in Baud.
     nperseg : int, optional
-        Welch segment length (see :func:`fm_noise_psd`).
+        Welch segment length (see ``fm_noise_psd``).
     f_min : float, optional
         Lower integration bound in Hz (drops the residual-FOE DC region).
         Defaults to the first non-zero Welch bin.
@@ -555,12 +548,12 @@ def linewidth_beta_separation(
         to avoid biasing ``Δν`` high; defaults to the Nyquist bin.
     debug_plot : bool, default False
         If True, plot the PSD with the β-line, white-FM floor, and integration
-        band (:func:`commstools.plotting.frequency_noise_psd`).
+        band (``frequency_noise_psd``).
 
     Returns
     -------
     dict
-        ``{'linewidth_hz', 'linewidth_floor_hz', 'area_hz2', 'f', 'S_f',
+        ``{'linewidth', 'linewidth_floor', 'area_hz2', 'f', 'S_f',
         'beta_line'}`` — linewidths are floats (SISO) / arrays (MIMO);
         ``f``/``S_f``/``beta_line`` are NumPy arrays for plotting.
     """
@@ -594,8 +587,8 @@ def linewidth_beta_separation(
     beta_cpu = np.asarray(to_device(beta, "cpu"), dtype=np.float64)
 
     result = {
-        "linewidth_hz": _scalar_or_array(lw_cpu),
-        "linewidth_floor_hz": _scalar_or_array(lw_floor_cpu),
+        "linewidth": _scalar_or_array(lw_cpu),
+        "linewidth_floor": _scalar_or_array(lw_floor_cpu),
         "area_hz2": _scalar_or_array(area_cpu),
         "f": f_cpu,
         "S_f": S_cpu,
@@ -609,7 +602,7 @@ def linewidth_beta_separation(
             f_cpu,
             S_cpu,
             beta_line=beta_cpu,
-            floor_hz=result["linewidth_floor_hz"],
+            floor=result["linewidth_floor"],
             band=(fmin, fmax),
             show=True,
         )
@@ -618,7 +611,7 @@ def linewidth_beta_separation(
 
 
 def allan_deviation(
-    df_hz: ArrayType,
+    df: ArrayType,
     symbol_rate: float,
     *,
     taus: Optional[np.ndarray] = None,
@@ -627,17 +620,18 @@ def allan_deviation(
 ) -> Dict[str, np.ndarray]:
     r"""Overlapping Allan deviation of an instantaneous-frequency series.
 
-    The log-log slope of :math:`\sigma_y(\tau)` classifies the dominant noise
-    process by averaging time: white-FM ``∝ τ^{-1/2}``, flicker-FM ``∝ τ^0``,
-    random-walk-FM ``∝ τ^{+1/2}``, linear drift ``∝ τ^{+1}``.
+    The log-log slope of sigma_y(tau) classifies the dominant noise
+    process by averaging time: white-FM proportional to tau^(-1/2),
+    flicker-FM proportional to tau^0, random-walk-FM proportional to tau^(+1/2),
+    linear drift proportional to tau^(+1).
 
     Parameters
     ----------
-    df_hz : array_like
+    df : array_like
         Instantaneous frequency samples in Hz (e.g. ``frequency_drift_metrics``
-        ``df_hz``), ``(N,)`` or ``(C, N)``, sampled at ``symbol_rate``.
+        ``df``), ``(N,)`` or ``(C, N)``, sampled at ``symbol_rate``.
     symbol_rate : float
-        Sample rate of ``df_hz`` in Hz (``τ_0 = 1/symbol_rate``).
+        Sample rate of ``df`` in Hz (``τ_0 = 1/symbol_rate``).
     taus : array_like, optional
         Explicit averaging times in seconds.  Default: ``n_taus`` values
         geometrically spaced from ``τ_0`` to ``N//4·τ_0``.
@@ -645,7 +639,7 @@ def allan_deviation(
         Number of log-spaced averaging times when ``taus`` is None.
     debug_plot : bool, default False
         If True, plot the Allan deviation
-        (:func:`commstools.plotting.allan_deviation`).
+        (``allan_deviation``).
 
     Returns
     -------
@@ -653,7 +647,7 @@ def allan_deviation(
         ``{'tau_s', 'adev'}`` where ``adev`` is ``(n_tau,)`` (SISO) or
         ``(C, n_tau)`` (MIMO).  NumPy arrays.
     """
-    df_arr, xp, _ = dispatch(df_hz)
+    df_arr, xp, _ = dispatch(df)
     y2, was_1d = _as_2d(df_arr)
     c, n = y2.shape
     tau0 = 1.0 / float(symbol_rate)
@@ -701,7 +695,7 @@ def characterize_carrier_phase(
     ref_symbols: ArrayType,
     symbol_rate: float,
     *,
-    drift_cutoff_hz: float,
+    drift_cutoff: float,
     noise_var: Optional[float] = None,
     snr_db: Optional[Union[float, np.ndarray]] = None,
     nperseg: Optional[int] = None,
@@ -710,14 +704,14 @@ def characterize_carrier_phase(
     channel_pairing: str = "auto",
     detrend_method: str = "butterworth",
     increment_method: str = "slope",
-    amp_ref_hz: Optional[float] = None,
+    amp_ref: Optional[float] = None,
     debug_plot: bool = False,
 ) -> Dict[str, object]:
     r"""End-to-end carrier-phase characterization report.
 
-    Runs the full chain — :func:`carrier_phase_trajectory` →
-    :func:`separate_drift_phase_noise` → drift metrics →
-    increment-variance **and** β-separation linewidth → :func:`allan_deviation`
+    Runs the full chain — ``carrier_phase_trajectory`` →
+    ``separate_drift_phase_noise`` → drift metrics →
+    increment-variance **and** β-separation linewidth → ``allan_deviation``
     — and returns a nested report dict.
 
     Parameters
@@ -726,24 +720,24 @@ def characterize_carrier_phase(
         Frozen-tap equalizer output (CPR off) and the known symbols.
     symbol_rate : float
         Symbol rate in Baud.
-    drift_cutoff_hz : float
+    drift_cutoff : float
         Drift / phase-noise separation cutoff in Hz.
     noise_var, snr_db : optional
-        AWGN-correction inputs for :func:`linewidth_increment` (``noise_var``
+        AWGN-correction inputs for ``linewidth_increment`` (``noise_var``
         preferred; see that function's note).
     nperseg, f_min, f_max : optional
         Passed to the FM-noise-PSD / β-separation estimator.
     channel_pairing : str, default "auto"
-        Forwarded to :func:`carrier_phase_trajectory`.
+        Forwarded to ``carrier_phase_trajectory``.
     detrend_method : str, default "butterworth"
-        Forwarded to :func:`separate_drift_phase_noise`.
+        Forwarded to ``separate_drift_phase_noise``.
     increment_method : {"slope", "subtract"}, default "slope"
-        Forwarded to :func:`linewidth_increment`.
-    amp_ref_hz : float, optional
+        Forwarded to ``linewidth_increment``.
+    amp_ref : float, optional
         Wander-amplitude reference for the drift panel when ``debug_plot=True``.
     debug_plot : bool, default False
         If True, render the full 2x2 dashboard
-        (:func:`commstools.plotting.carrier_phase_characterization`).
+        (``carrier_phase_characterization``).
 
     Returns
     -------
@@ -753,10 +747,10 @@ def characterize_carrier_phase(
     """
     phi = carrier_phase_trajectory(y_eq, ref_symbols, channel_pairing=channel_pairing)
     drift, pn = separate_drift_phase_noise(
-        phi, symbol_rate, cutoff_hz=drift_cutoff_hz, method=detrend_method
+        phi, symbol_rate, cutoff=drift_cutoff, method=detrend_method
     )
     # Discard ~one cutoff period of filter transient at each end.
-    edge = int(round(0.5 * symbol_rate / drift_cutoff_hz))
+    edge = int(round(0.5 * symbol_rate / drift_cutoff))
     edge = min(edge, max(0, (phi.shape[-1] // 4) - 1))
 
     drift_metrics = frequency_drift_metrics(drift, symbol_rate, edge_trim=edge)
@@ -772,7 +766,7 @@ def characterize_carrier_phase(
     lw_beta = linewidth_beta_separation(
         phi, symbol_rate, nperseg=nperseg, f_min=f_min, f_max=f_max
     )
-    allan = allan_deviation(drift_metrics["df_hz"], symbol_rate)
+    allan = allan_deviation(drift_metrics["df"], symbol_rate)
 
     report = {
         "phi": phi,
@@ -793,9 +787,9 @@ def characterize_carrier_phase(
         _plotting.carrier_phase_characterization(
             report,
             symbol_rate=symbol_rate,
-            drift_cutoff_hz=drift_cutoff_hz,
+            drift_cutoff=drift_cutoff,
             band=band,
-            amp_ref_hz=amp_ref_hz,
+            amp_ref=amp_ref,
             show=True,
         )
 

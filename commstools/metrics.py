@@ -76,7 +76,7 @@ def evm(
         When provided, ``rx_symbols`` are rescaled by ``sqrt(E_PS)`` before
         the nearest-neighbour search so unit-avg-power resolved symbols
         line up with the ``{s_m}`` grid returned by
-        :func:`gray_constellation`.  Has no effect for uniform modulations
+        ``gray_constellation``.  Has no effect for uniform modulations
         or for ``mode="data_aided"`` (which is scale-invariant by
         per-channel power normalisation).
 
@@ -201,7 +201,7 @@ def snr(
 
     SNR is computed as the ratio of average signal power to noise (error)
     power:
-    $SNR_{linear} \approx \frac{1.0}{E[|rx - tx|^2]}$
+    SNR_linear ≈ 1.0 / E[|rx - tx|^2]
 
     Calculation is performed per-channel (independent gain normalization).
 
@@ -394,7 +394,7 @@ def ser(
     constellation_np = gray_constellation(modulation, order)
     constellation = xp.asarray(constellation_np)  # (M,)
 
-    # PS-QAM: ``rx_symbols`` from :meth:`commstools.core.Signal.resolved_symbols`
+    # PS-QAM: ``rx_symbols`` from ``resolved_symbols``
     # are normalised to unit average power, placing them on the
     # ``{s_m/sqrt(E_PS)}`` grid.  ``tx_symbols`` (``source_symbols``) live on
     # the un-rescaled ``{s_m}`` grid (their average power is ``E_PS < 1``).
@@ -443,25 +443,16 @@ def gmi(
     wireless systems.  It uses pre-computed LLRs so the modulation format
     does not need to be known by this function.
 
-    .. math::
+    GMI = sum_{b=0..k-1} ( 1 - (1/N) * sum_{n=1..N} log2(1 + exp(-LLR_b[n] * (1 - 2 * c_b[n]))) )
 
-        \text{GMI} = \sum_{b=0}^{k-1}
-            \left\{
-                1 - \frac{1}{N} \sum_{n=1}^{N}
-                \log_2\!\left(1 + e^{-\Lambda_b[n]\,(1 - 2\,c_b[n])}\right)
-            \right\}
-
-    where :math:`\Lambda_b[n]` is the LLR for bit :math:`b` of symbol
-    :math:`n`, and :math:`c_b[n] \in \{0, 1\}` is the transmitted bit.
+    where LLR_b[n] is the LLR for bit b of symbol n, and c_b[n] (0 or 1) is
+    the transmitted bit.
 
     The per-term softplus is computed in a numerically stable form:
 
-    .. math::
+    log2(1 + exp(-x)) = (1 / ln 2) * (log(1 + exp(-|x|)) + max(0, -x))
 
-        \log_2(1 + e^{-x}) = \frac{1}{\ln 2}
-            \bigl[\ln(1 + e^{-|x|}) + \max(0, -x)\bigr]
-
-    which avoids overflow for large :math:`|x|`.
+    which avoids overflow for large |x|.
 
     Parameters
     ----------
@@ -473,7 +464,7 @@ def gmi(
 
         where *N* is the number of symbols and *k = log₂(M)* bits per symbol.
         Positive LLR → bit 0 more likely; negative → bit 1 more likely.
-        LLRs from :func:`~commstools.mapping.compute_llr` match this convention.
+        LLRs from ``compute_llr`` match this convention.
     tx_bits : array_like
         Transmitted bits (0/1 integers), same shape as ``llrs``.
 
@@ -482,12 +473,6 @@ def gmi(
     float
         GMI in bits per channel use (b/cu). In the range ``[0, log₂(M)]``;
         equals ``log₂(M)`` at infinite SNR and approaches 0 at very low SNR.
-
-    References
-    ----------
-    A. Alvarado, E. Agrell, D. Lavery, R. Maher, and P. Bayvel,
-    "Replacing the soft-decision FEC limit paradigm in the design of optical
-    communication systems," *J. Lightw. Technol.*, vol. 33, no. 20, 2015.
 
     Examples
     --------
@@ -546,16 +531,9 @@ def mi(
 
     Uses the Monte-Carlo estimator with Gaussian likelihoods:
 
-    .. math::
+    p(s_m | r) is proportional to exp(-|r - s_m|^2 / sigma^2)
 
-        p(s_m \mid r) \propto \exp\!\left(-\frac{|r - s_m|^2}{\sigma^2}\right)
-
-    .. math::
-
-        \text{MI} = \log_2 M +
-            \frac{1}{N} \sum_{n=1}^{N}
-            \sum_{m=1}^{M} p(s_m \mid r_n)
-            \log_2 p(s_m \mid r_n)
+    MI = log2(M) + (1/N) * sum_{n=1..N} sum_{m=1..M} ( p(s_m | r_n) * log2(p(s_m | r_n)) )
 
     Computed via the log-sum-exp trick for numerical stability.
 
@@ -566,14 +544,14 @@ def mi(
     modulation : str
         Modulation type: ``'psk'``, ``'qam'``, or ``'ask'``.
     order : int
-        Modulation order *M*.
+        Modulation order M.
     noise_var : float
-        Complex noise variance :math:`\sigma^2` of the AWGN model
+        Complex noise variance sigma^2 of the AWGN model
         **referenced to the normalised constellation** (unit average power
         under the uniform distribution, i.e. the same scale as
-        :func:`~commstools.mapping.gray_constellation`).
-        For unit-power symbols at :math:`E_s/N_0` (dB):
-        :math:`\sigma^2 = 10^{-E_s/N_0 / 10}`.
+        ``gray_constellation``).
+        For unit-power symbols at Es/N0 (dB):
+        sigma^2 = 10^(-Es/N0 / 10).
     pmf : np.ndarray, optional
         Symbol PMF of shape ``(M,)`` for PS-QAM. When provided, the
         non-uniform prior ``P(sₘ)`` is incorporated into the likelihood
@@ -587,31 +565,13 @@ def mi(
         MI in bits per channel use (b/cu). In the range ``[0, H(X)]``
         where ``H(X) = log₂M`` for uniform and ``H(X) < log₂M`` for PS.
 
-    .. warning:: **PS-QAM scale convention**
-
-        ``symbols_rx`` must be on the **same scale** as the normalised
-        :func:`~commstools.mapping.gray_constellation` (unit average power
-        under the uniform distribution).
-
-        :meth:`~commstools.core.Signal.ps_qam` transmits at unit symbol
-        power (``shape_pulse`` normalises), so samples from
-        :attr:`~commstools.core.Signal.samples` and from
-        :func:`~commstools.impairments.apply_awgn` are already on the
-        correct scale and can be passed directly.
-
-        However, after :meth:`~commstools.core.Signal.resolve_symbols`
-        the receiver re-normalises to unit average power, which shifts the
-        PS symbols from the :math:`\{s_m\}` grid to
-        :math:`\{c \cdot s_m\}` (where :math:`c = 1/\sqrt{E_{PS}}`).
-        Passing ``resolved_symbols`` directly will give slightly incorrect
-        MI values.  Use :meth:`~commstools.core.Signal.mi` instead —
-        it applies the :math:`E_{PS}` scale correction automatically.
-
-    References
-    ----------
-    G. Böcherer, F. Steiner, and P. Schulte, "Bandwidth efficient and
-    rate-matched low-density parity-check coded modulation," *IEEE Trans.
-    Commun.*, vol. 63, no. 12, 2015.
+    Warning — PS-QAM scale convention: ``symbols_rx`` must be on the same
+    scale as ``gray_constellation`` (unit average power under the uniform
+    distribution). Samples from ``apply_awgn`` are already on the correct
+    scale. However, after ``resolve_symbols`` the receiver re-normalises,
+    shifting PS symbols from {s_m} to {c * s_m} (c = 1 / sqrt(E_PS)).
+    Passing ``resolved_symbols`` directly gives incorrect MI; use
+    ``Signal.mi()`` instead — it applies the scale correction automatically.
 
     Examples
     --------

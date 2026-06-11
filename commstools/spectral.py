@@ -30,12 +30,12 @@ def shift_frequency(
 
     This function shifts the signal spectrum by a specified offset in Hz
     by multiplying the samples with a complex phasor:
-    $s_{shifted}(t) = s(t) \\cdot e^{j 2 \\pi f_{offset} t}$
+    s_shifted(t) = s(t) * e^(j * 2 * pi * f_offset * t)
 
     To maintain phase continuity and prevent spectral leakage when the
     signal is treated as periodic (e.g., in circular convolution or
     FFT-based operations), the applied offset is quantized to the
-    fundamental frequency resolution of the signal ($\\Delta f = f_s / N$).
+    fundamental frequency resolution of the signal (df = f_s / N).
 
     Parameters
     ----------
@@ -104,7 +104,7 @@ def shift_frequency(
 def add_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
-    frequency_hz: float,
+    frequency: float,
     power_ratio_db: float = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
@@ -112,29 +112,13 @@ def add_pilot_tone(
     r"""
     Add a continuous-wave (CW) pilot tone to a baseband waveform.
 
-    Superimposes a complex exponential
-    :math:`a\,e^{\,j(2\pi f_p n / f_s + \phi_0)}` on the oversampled samples.
-    The tone propagates through the same channel and local oscillator as the
-    data, so it acquires the **same** carrier frequency offset and phase noise.
-    At the receiver, isolating the tone and reading its phase recovers that
-    common phase directly — see
-    :func:`~commstools.recovery.recover_carrier_phase_pilot_tone` (recovery)
-    and :func:`~commstools.frequency.find_bias_tone` (tone localisation).
+    Superimposes a * exp(j*(2*pi*f_p*n/f_s + phi_0)) on the oversampled samples.
+    The tone acquires the same carrier frequency offset and phase noise as the
+    data; at the receiver its phase directly recovers both — see
+    ``recover_carrier_phase_pilot_tone``.
 
-    This is a **transmit-side** operation, intended to be applied to a
-    pulse-shaped, oversampled waveform (``sps > 1``), *before* any channel
-    impairments.  Place the tone in a guard band just outside the occupied
-    signal bandwidth so it can be cleanly separated by a narrowband filter at
-    the receiver:
-
-    .. math::
-
-        \tfrac{(1+\beta)}{2}\,R_s \;<\; |f_p| \;<\; \tfrac{f_s}{2}
-
-    where :math:`\beta` is the roll-off and :math:`R_s` the symbol rate.  A DC
-    tone (``frequency_hz=0``) is also possible (a "residual carrier") but
-    overlaps the data spectrum and incurs an SNR penalty unless the data has a
-    spectral null at DC.
+    Apply to a pulse-shaped oversampled waveform before channel impairments.
+    Place the tone in a guard band: (1+beta)/2 * R_s < |f_p| < f_s/2.
 
     Parameters
     ----------
@@ -142,28 +126,22 @@ def add_pilot_tone(
         Complex baseband samples. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
         The tone is added to every channel, each scaled to its own power.
     sampling_rate : float
-        Sampling rate :math:`f_s` in Hz.
-    frequency_hz : float
-        Requested tone frequency :math:`f_p` in Hz, in ``(-f_s/2, f_s/2)``.
+        Sampling rate fs in Hz.
+    frequency : float
+        Requested tone frequency fp in Hz, in ``(-f_s/2, f_s/2)``.
         Quantized to the nearest FFT bin ``f_s/N`` (see Notes) — the **actual**
         applied frequency is returned.
     power_ratio_db : float, default -15.0
-        Pilot-to-signal power ratio (PSR) in dB:
-        ``10·log10(P_tone / P_signal)``, where ``P_signal`` is the mean
-        per-channel sample power of the input.  Typical range ``-20`` to
-        ``-10`` dB — enough tone SNR for reliable phase tracking while keeping
-        the data SNR penalty (``10·log10(1 + 10^(PSR/10))``) below a few tenths
-        of a dB.
+        Pilot-to-signal power ratio (PSR) in dB: 10*log10(P_tone / P_signal).
+        Typical range -20 to -10 dB.
     phase_init : float, default 0.0
-        Initial tone phase :math:`\phi_0` in radians.  Acts as a known phase
+        Initial tone phase phi_0 in radians.  Acts as a known phase
         reference; it appears as a constant offset in the recovered phase and
         is absorbed by the usual post-CPR ambiguity resolution.
     renormalize : bool, default False
         If ``True``, rescale each channel after adding the tone so its mean
-        power matches the input, preserving the library power-normalisation
-        invariant (``E[|x|²] = 1/sps``).  The data then gives up a sliver of
-        power to the tone (the SNR penalty above).  If ``False`` (default), the
-        tone is added on top and the total power rises by ``1 + 10^(PSR/10)``.
+        power matches the input (preserves the library power invariant E[|x|²] = 1/sps).
+        If ``False``, total power rises by 1 + 10^(PSR/10).
 
     Returns
     -------
@@ -172,44 +150,20 @@ def add_pilot_tone(
         the input.
     actual_frequency : float
         The grid-quantized tone frequency in Hz actually applied (see Notes).
-        Store this (e.g. in :attr:`Signal.pilot_tone_hz`) and pass it to the
+        Store this (e.g. in ``pilot_tone_frequency``) and pass it to the
         receiver, since it — not the requested value — is where the tone sits.
 
     Notes
     -----
-    **Grid quantization (buffer-periodic playback).**  The requested frequency
-    is snapped to the nearest FFT bin, :math:`f_s/N`, exactly as
-    :func:`shift_frequency` snaps a mixing offset.  This makes the tone complete
-    an integer number of cycles over the ``N``-sample buffer, so it is
-    *seamless across the loop boundary* when an AWG/DAC plays the buffer
-    repeatedly — an off-grid tone would jump in phase at each wrap and radiate
-    spurs spaced at :math:`f_s/N`.  The quantization error is at most
-    :math:`f_s/2N`.
-
-    The per-channel tone amplitude is
-
-    .. math::
-
-        a = \sqrt{P_\text{signal} \cdot 10^{\,\text{PSR}/10}}, \qquad
-        P_\text{signal} = \tfrac{1}{N}\sum_n |x[n]|^2 .
-
-    The phase ramp is accumulated in ``float64`` and wrapped to
-    :math:`[-\pi, \pi)` before the complex exponential, matching the precision
-    pattern of :func:`~commstools.frequency.correct_static_frequency_offset` so
-    that ``complex64`` waveforms do not suffer trig argument-reduction error for
-    large ``N``.
-
-    Examples
-    --------
-    >>> # Tone in the guard band of a 16-QAM RRC waveform at sps=4
-    >>> f_p = 0.62 * sig.symbol_rate            # just outside (1+β)/2 · Rs
-    >>> sig.samples, sig.pilot_tone_hz = add_pilot_tone(
-    ...     sig.samples, sig.sampling_rate, f_p, power_ratio_db=-15.0
-    ... )
+    The requested frequency is snapped to the nearest FFT bin (fs/N) so the
+    tone completes an integer number of cycles per buffer — ensuring seamless
+    playback on an AWG/DAC.  The quantization error is at most fs/(2N).
+    The phase ramp is accumulated in float64 to avoid trig argument-reduction
+    error for large N.
     """
-    if not (-sampling_rate / 2.0 < frequency_hz < sampling_rate / 2.0):
+    if not (-sampling_rate / 2.0 < frequency < sampling_rate / 2.0):
         raise ValueError(
-            f"frequency_hz={frequency_hz} must lie in (-fs/2, fs/2) = "
+            f"frequency={frequency} must lie in (-fs/2, fs/2) = "
             f"(±{sampling_rate / 2.0:.3g}) Hz."
         )
 
@@ -222,10 +176,10 @@ def add_pilot_tone(
     # Snap to the FFT bin grid so the tone is buffer-periodic (loop-seamless on
     # an AWG/DAC), mirroring shift_frequency's quantization.
     df = sampling_rate / N
-    actual_frequency = float(round(frequency_hz / df) * df)
-    if abs(actual_frequency - frequency_hz) > 1e-12 * max(1.0, abs(frequency_hz)):
+    actual_frequency = float(round(frequency / df) * df)
+    if abs(actual_frequency - frequency) > 1e-12 * max(1.0, abs(frequency)):
         logger.warning(
-            f"add_pilot_tone: requested {frequency_hz:.3f} Hz quantized to "
+            f"add_pilot_tone: requested {frequency:.3f} Hz quantized to "
             f"{actual_frequency:.3f} Hz (grid step fs/N={df:.3f} Hz) for "
             f"buffer-periodic (loop-seamless) playback."
         )
@@ -310,18 +264,17 @@ def welch_psd(
         where Pxx has units of V**2/Hz and computing the power spectrum
         ('spectrum') where Pxx has units of V**2.
     return_onesided : bool, optional
-        If True, returns a one-sided spectrum (frequencies 0 to $f_s/2$)
+        If True, returns a one-sided spectrum (frequencies 0 to f_s/2)
         for real-valued data. For complex data, only two-sided spectra
-        (frequencies $-f_s/2$ to $f_s/2$) are supported.
-    axis : int, default -1
-        The axis along which to compute the PSD.
+        (frequencies -f_s/2 to f_s/2) are supported.
+        Axis along which to compute the PSD.
 
     Returns
     -------
     f : array_like
         Array of sample frequencies.
     Pxx : array_like
-        Power spectral density (linear scale, units: $V^2/Hz$).
+        Power spectral density (linear scale, units: V^2/Hz).
 
     Raises
     ------
@@ -404,7 +357,7 @@ def spectrogram(
     detrend : str or bool, default False
         Specifies how to detrend each segment (e.g., 'constant', 'linear').
     return_onesided : bool, optional
-        If True, returns a one-sided spectrum (frequencies 0 to $f_s/2$)
+        If True, returns a one-sided spectrum (frequencies 0 to f_s/2)
         for real-valued data. For complex data, only two-sided spectra
         are supported.
     scaling : {"density", "spectrum"}, default "density"

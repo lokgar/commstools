@@ -275,8 +275,8 @@ class TestCprPilotTone:
         self,
         xp,
         n_symbols=2000,
-        df_hz=0.0,
-        linewidth_hz=0.0,
+        df=0.0,
+        linewidth=0.0,
         psr_db=-12.0,
         num_streams=1,
         seed=7,
@@ -303,13 +303,13 @@ class TestCprPilotTone:
 
         N = samples.shape[-1]
         n = xp.arange(N, dtype=xp.float64)
-        if linewidth_hz > 0.0:
+        if linewidth > 0.0:
             rng = xp.random.RandomState(seed)
-            incr = rng.normal(0.0, float(np.sqrt(2 * np.pi * linewidth_hz / fs)), N)
+            incr = rng.normal(0.0, float(np.sqrt(2 * np.pi * linewidth / fs)), N)
             pn = xp.cumsum(incr)
         else:
             pn = xp.zeros(N, dtype=xp.float64)
-        common = 2 * np.pi * df_hz * n / fs + pn  # (N,) float64
+        common = 2 * np.pi * df * n / fs + pn  # (N,) float64
         samples = samples * xp.exp(1j * common).astype(samples.dtype)
         return samples, fs, common
 
@@ -317,20 +317,20 @@ class TestCprPilotTone:
         g = slice(self.EDGE, -self.EDGE)
         return _rms_phase_error(xp, phase_est[..., g], common[..., g])
 
-    @pytest.mark.parametrize("df_hz", [0.0, 0.05e6, 0.1e6])
-    def test_phase_residual_foe(self, backend_device, xp, df_hz):
+    @pytest.mark.parametrize("df", [0.0, 0.05e6, 0.1e6])
+    def test_phase_residual_foe(self, backend_device, xp, df):
         """Recovers a frequency-offset ramp (< B) to < 0.1 rad RMS."""
-        samples, fs, common = self._setup(xp, df_hz=df_hz)
+        samples, fs, common = self._setup(xp, df=df)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+            samples, fs, self.F_TONE, bandwidth=self.BW
         )
         assert self._interior_rms(xp, theta, common) < 0.1
 
     def test_phase_residual_foe_and_phase_noise(self, backend_device, xp):
         """Recovers joint frequency offset + Wiener phase noise."""
-        samples, fs, common = self._setup(xp, df_hz=0.05e6, linewidth_hz=5e3)
+        samples, fs, common = self._setup(xp, df=0.05e6, linewidth=5e3)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+            samples, fs, self.F_TONE, bandwidth=self.BW
         )
         assert self._interior_rms(xp, theta, common) < 0.15
 
@@ -339,9 +339,9 @@ class TestCprPilotTone:
     )
     def test_window_options(self, backend_device, xp, window):
         """Any scipy.get_window spec tracks the common phase to < 0.12 rad RMS."""
-        samples, fs, common = self._setup(xp, df_hz=0.05e6)
+        samples, fs, common = self._setup(xp, df=0.05e6)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW, window=window
+            samples, fs, self.F_TONE, bandwidth=self.BW, window=window
         )
         assert self._interior_rms(xp, theta, common) < 0.12
 
@@ -349,7 +349,7 @@ class TestCprPilotTone:
         """1D input → 1D phase output of matching length."""
         samples, fs, _ = self._setup(xp)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+            samples, fs, self.F_TONE, bandwidth=self.BW
         )
         assert theta.shape == samples.shape
 
@@ -357,26 +357,26 @@ class TestCprPilotTone:
         """2D input (C, N) → 2D phase output (C, N)."""
         samples, fs, _ = self._setup(xp, num_streams=2)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW
+            samples, fs, self.F_TONE, bandwidth=self.BW
         )
         assert theta.shape == samples.shape
 
     def test_joint_rows_identical(self, backend_device, xp):
         """joint_channels broadcasts a single trajectory to all rows."""
-        samples, fs, _ = self._setup(xp, num_streams=2, df_hz=0.05e6)
+        samples, fs, _ = self._setup(xp, num_streams=2, df=0.05e6)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW, joint_channels=True
+            samples, fs, self.F_TONE, bandwidth=self.BW, joint_channels=True
         )
         assert bool(xp.allclose(theta[0], theta[1]))
 
     def test_remove_frequency_offset_false_leaves_pure_pn(self, backend_device, xp):
         """With FOE removal off, the estimate matches the detrended common phase."""
-        samples, fs, common = self._setup(xp, df_hz=0.08e6, linewidth_hz=5e3)
+        samples, fs, common = self._setup(xp, df=0.08e6, linewidth=5e3)
         theta = recovery.recover_carrier_phase_pilot_tone(
             samples,
             fs,
             self.F_TONE,
-            bandwidth_hz=self.BW,
+            bandwidth=self.BW,
             remove_frequency_offset=False,
         )
         N = samples.shape[-1]
@@ -393,17 +393,17 @@ class TestCprPilotTone:
         """An offset > B is tracked when the search band covers the shifted tone."""
         # df = 0.6 MHz exceeds B = 0.3 MHz: a window centred at nominal would miss
         # the tone, but refine + a wide search band relocates it.
-        samples, fs, common = self._setup(xp, df_hz=0.6e6)
+        samples, fs, common = self._setup(xp, df=0.6e6)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW, search_band_hz=1.0e6
+            samples, fs, self.F_TONE, bandwidth=self.BW, search_band=1.0e6
         )
         assert self._interior_rms(xp, theta, common) < 0.1
 
     def test_refine_off_fails_when_tone_leaves_window(self, backend_device, xp):
         """Without refinement, an offset > B drags the tone out of the window."""
-        samples, fs, common = self._setup(xp, df_hz=0.6e6)
+        samples, fs, common = self._setup(xp, df=0.6e6)
         theta = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F_TONE, bandwidth_hz=self.BW, refine_tone=False
+            samples, fs, self.F_TONE, bandwidth=self.BW, refine_tone=False
         )
         # The tone is outside the nominal window → estimate is garbage, not tracking.
         assert self._interior_rms(xp, theta, common) > 1.0
@@ -412,21 +412,21 @@ class TestCprPilotTone:
         samples, fs, _ = self._setup(xp, n_symbols=256)
         with pytest.raises(ValueError, match="Invalid window"):
             recovery.recover_carrier_phase_pilot_tone(
-                samples, fs, self.F_TONE, bandwidth_hz=self.BW, window="brick"
+                samples, fs, self.F_TONE, bandwidth=self.BW, window="brick"
             )
 
     def test_invalid_bandwidth_raises(self, backend_device, xp):
         samples, fs, _ = self._setup(xp, n_symbols=256)
-        with pytest.raises(ValueError, match="bandwidth_hz must be > 0"):
+        with pytest.raises(ValueError, match="bandwidth must be > 0"):
             recovery.recover_carrier_phase_pilot_tone(
-                samples, fs, self.F_TONE, bandwidth_hz=0.0
+                samples, fs, self.F_TONE, bandwidth=0.0
             )
 
     def test_tone_frequency_out_of_range_raises(self, backend_device, xp):
         samples, fs, _ = self._setup(xp, n_symbols=256)
         with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
             recovery.recover_carrier_phase_pilot_tone(
-                samples, fs, fs, bandwidth_hz=self.BW
+                samples, fs, fs, bandwidth=self.BW
             )
 
 

@@ -609,9 +609,9 @@ def demap_symbols_hard(
         input symbols are scaled by ``sqrt(E_PS)`` (where
         ``E_PS = Σ P(s_m) |s_m|²`` on the normalised grid) before the
         nearest-neighbour search, mapping unit-avg-power resolved symbols
-        back to the ``{s_m}`` grid used by :func:`gray_constellation`.
+        back to the ``{s_m}`` grid used by ``gray_constellation``.
         Use this when ``symbols`` comes from
-        :meth:`commstools.core.Signal.resolved_symbols` of a PS-QAM signal.
+        ``resolved_symbols`` of a PS-QAM signal.
         Has no effect for uniform modulations.
 
     Returns
@@ -636,7 +636,7 @@ def demap_symbols_hard(
 
     # PS-QAM: receive-path symbols at unit average power live on the
     # ``{s_m/sqrt(E_PS)}`` grid.  Rescale by ``sqrt(E_PS)`` to bring them back
-    # to the ``{s_m}`` grid that :func:`gray_constellation` returns, so the
+    # to the ``{s_m}`` grid that ``gray_constellation`` returns, so the
     # nearest-neighbour search is exact.  No-op for uniform modulations.
     if pmf is not None:
         pmf_arr = np.asarray(pmf, dtype=np.float64)
@@ -717,17 +717,8 @@ def compute_llr(
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
 
-    LLRs quantify bit reliability at the output of a soft-input channel.
-    Positive values favor bit 0, negative values favor bit 1. The magnitude
-    reflects confidence (higher → more reliable).
-
-    Implemented as a JAX JIT-compiled kernel with ``jax.vmap`` over bit
-    positions. Input arrays (NumPy, CuPy, or JAX) are converted to JAX
-    internally.
-
-    Fully differentiable: ``jax.grad`` through LLRs w.r.t. input symbols is
-    supported, enabling end-to-end gradient flow through the demapping step
-    into upstream channel estimation or shaping models.
+    Positive LLR → bit 0 more likely; negative → bit 1; magnitude = confidence.
+    JAX JIT-compiled with ``jax.vmap`` over bit positions; fully differentiable.
 
     Parameters
     ----------
@@ -738,80 +729,35 @@ def compute_llr(
     order : int
         Modulation order.
     noise_var : float
-        Total complex noise variance (:math:`\\sigma^2`) of the
-        :math:`\\mathcal{CN}(0, \\sigma^2)` AWGN model, **referenced to the
-        normalised constellation** (unit average power under the uniform
-        distribution, matching :func:`gray_constellation`).
-        For unit-power symbols at :math:`E_s/N_0` (dB):
-        :math:`\\sigma^2 = 10^{-E_s/N_0 / 10}`.
+        Complex noise variance sigma^2 referenced to the normalised
+        constellation (unit avg power).  sigma^2 = 10^(-EsN0_dB / 10).
     method : {"maxlog", "exact"}, default "maxlog"
-        LLR computation algorithm. ``"maxlog"`` is faster (single min per
-        bit); ``"exact"`` uses log-sum-exp for a tighter result.
+        LLR algorithm. ``"maxlog"`` is faster; ``"exact"`` uses log-sum-exp.
     unipolar : bool, default False
         Use unipolar constellation for ASK/PAM.
     output : {"jax", "input", "numpy"}, default "jax"
-        Controls the array type of the returned LLRs.
-
-        * ``"jax"`` (default) — always returns a :class:`jax.Array`.
-          Preserves differentiability for gradient-based pipelines
-          (autograd, LDPC/turbo neural decoders).
-        * ``"input"`` — returns the same backend as the *input* array:
-          JAX input → JAX output; NumPy input → NumPy output;
-          CuPy input → CuPy output.
-        * ``"numpy"`` — always returns a plain :class:`numpy.ndarray`.
-          Convenient for downstream code that expects NumPy.
+        Output array type.  ``"jax"`` preserves differentiability;
+        ``"input"`` matches the input backend; ``"numpy"`` forces NumPy.
     pmf : np.ndarray, optional
-        Symbol probability mass function (shape ``(order,)``). When provided,
-        computes PS-aware LLRs that incorporate the non-uniform prior
-        ``P(sₘ)`` from a Maxwell-Boltzmann shaped constellation.
-        Pass ``maxwell_boltzmann(order, nu)`` here for PS-QAM signals.
-        When ``None`` (default), assumes uniform prior (standard QAM).
+        Symbol PMF of shape ``(order,)`` for PS-QAM.  Pass
+        ``maxwell_boltzmann(order, nu)`` to incorporate the non-uniform prior.
+        ``None`` assumes uniform prior.
 
     Returns
     -------
     array_like
         LLR values. Shape: (..., N_symbols * log2(order)).
-        Array type determined by ``output`` parameter.
-
-    Warnings
-    --------
-    When ``output='jax'`` (default), the computation runs inside JAX and the
-    result is returned asynchronously.  Call ``result.block_until_ready()``
-    before timing measurements.  Conversion to NumPy (``np.asarray(result)``)
-    blocks implicitly.
-
-    Choosing ``output='input'`` or ``output='numpy'`` forces a synchronous
-    device→host copy and discards differentiability.
+        Array type determined by ``output``.
 
     Notes
     -----
-    Max-Log approximation:
+    Max-Log: LLR_k ≈ (1/sigma^2) * (min_{S_1^k} |r-s|^2 - min_{S_0^k} |r-s|^2).
+    Exact: LLR_k = log sum_{S_0^k} exp(-|r-s|^2/sigma^2) - log sum_{S_1^k} ...
 
-    :math:`LLR_k \\approx \\frac{1}{\\sigma^2}
-    \\left(\\min_{s \\in S_1^k} |r-s|^2 - \\min_{s \\in S_0^k} |r-s|^2\\right)`
-
-    Exact LLR:
-
-    :math:`LLR_k = \\log \\sum_{s \\in S_0^k} e^{-|r-s|^2/\\sigma^2}
-    - \\log \\sum_{s \\in S_1^k} e^{-|r-s|^2/\\sigma^2}`
-
-    .. warning:: **PS-QAM scale convention**
-
-        ``symbols`` and ``noise_var`` must be on the **same scale** as the
-        normalised :func:`gray_constellation` (unit average power under the
-        uniform distribution).
-
-        :meth:`~commstools.core.Signal.ps_qam` transmits at unit symbol
-        power (``shape_pulse`` normalises), so samples from
-        :attr:`~commstools.core.Signal.samples` and after
-        :func:`~commstools.impairments.apply_awgn` are already correct.
-
-        After :meth:`~commstools.core.Signal.resolve_symbols` the receiver
-        re-normalises, shifting PS symbols from :math:`\\{s_m\\}` to
-        :math:`\\{c \\cdot s_m\\}` (where :math:`c = 1/\\sqrt{E_{PS}}`).
-        Passing ``resolved_symbols`` directly will give slightly incorrect
-        LLRs.  Use :meth:`~commstools.core.Signal.gmi` instead — it applies
-        the :math:`E_{PS}` scale correction automatically.
+    For PS-QAM, ``symbols`` must be on the same scale as
+    ``gray_constellation`` (unit avg power).  After
+    ``resolve_symbols`` the receiver renormalises;
+    use ``gmi`` instead for correct scale.
     """
     logger.debug(
         f"Computing LLRs for {modulation.upper()} {order}-level (method={method}, output={output})."
@@ -927,47 +873,26 @@ def compute_llr(
 
 @lru_cache(maxsize=256)
 def maxwell_boltzmann(order: int, nu: float) -> np.ndarray:
-    r"""
+    """
     Computes the Maxwell-Boltzmann PMF over a QAM constellation.
 
-    .. math::
-
-        P(s_m) = \frac{\exp(-\nu |s_m|^2)}{Z(\nu)}, \quad
-        Z(\nu) = \sum_m \exp(-\nu |s_m|^2)
-
-    where :math:`|s_m|^2` is measured on the **unnormalized** integer grid
-    (e.g. :math:`\{(\pm 1 \pm j), (\pm 1 \pm 3j), \ldots\}` for 16-QAM),
-    making :math:`\nu` directly comparable to values in the literature
-    (e.g. Böcherer 2015, Schulte 2016).
-
-    The returned PMF is indexed consistently with the **normalized**
-    :func:`gray_constellation` used everywhere else in the library, so
-    ``pmf[i]`` is the probability of the symbol at ``gray_constellation(...)[i]``.
+    P(s_m) = exp(-nu * |s_m|^2) / Z(nu), where |s_m|^2 is on the unnormalized
+    integer grid (literature-compatible nu scale).  Indexed consistently with
+    ``gray_constellation``.
 
     Parameters
     ----------
     order : int
         QAM modulation order (must be a power of 2, e.g. 16, 64, 256).
     nu : float
-        Shaping parameter ``ν ≥ 0``.
-        ``ν = 0`` returns the uniform distribution ``1/M``.
-        Larger ``ν`` concentrates probability on lower-energy inner points.
-        Values are on the unnormalized grid scale (typical range 0.001-0.5
-        depending on order; see :func:`optimal_nu`).
+        Shaping parameter nu >= 0.  nu = 0 returns the uniform distribution.
+        Larger nu concentrates probability on lower-energy points.
 
     Returns
     -------
     np.ndarray
         PMF array of shape ``(order,)``, dtype float64, summing to 1.
-
-    Notes
-    -----
-    Results are cached by ``(order, nu)``; call once and reuse the array.
-
-    The unnormalized grid has average power :math:`P_\\text{avg}` (10 for
-    16-QAM, 42 for 64-QAM, 170 for 256-QAM).  To convert a
-    ``ν_normalized`` value from an older version of this library:
-    ``ν = ν_normalized / P_avg``.
+        Cached by ``(order, nu)``.
     """
     # Energies computed on the unnormalized integer grid for literature-compatible ν.
     # The PMF index ordering matches gray_constellation (normalized), since both
@@ -986,21 +911,19 @@ def ps_entropy(order: int, nu: float) -> float:
     r"""
     Computes the per-symbol Shannon entropy under a Maxwell-Boltzmann distribution.
 
-    .. math::
-
-        H(X) = -\sum_m P(s_m) \log_2 P(s_m) \quad [\text{bits/symbol}]
+    H(X) = -sum_m P(s_m) * log2(P(s_m)) [bits/symbol]
 
     Parameters
     ----------
     order : int
         QAM modulation order.
     nu : float
-        MB shaping parameter ``ν ≥ 0``. ``ν = 0`` returns ``log₂(order)``.
+        MB shaping parameter nu >= 0. nu = 0 returns log2(order).
 
     Returns
     -------
     float
-        Entropy in bits per symbol. In the range ``(0, log₂(order)]``.
+        Entropy in bits per symbol. In the range (0, log2(order)].
     """
     pmf = maxwell_boltzmann(order, nu)
     nonzero = pmf > 0
@@ -1073,7 +996,7 @@ def sample_ps_symbols(
         QAM modulation order.
     pmf : np.ndarray
         Symbol PMF of shape ``(order,)``. Typically from
-        :func:`maxwell_boltzmann`.
+        ``maxwell_boltzmann``.
     seed : int, optional
         Random seed for reproducibility.
 
