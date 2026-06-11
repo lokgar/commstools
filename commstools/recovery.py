@@ -32,6 +32,9 @@ resolve_channel_permutation :
     Resolves polarization (channel) permutation ambiguity after MIMO equalization.
 resolve_phase_ambiguity :
     Resolves rotational phase ambiguity after blind carrier phase recovery.
+correct_phase_rotation :
+    Corrects the arbitrary constant phase rotation left by a blind equalizer
+    (CMA, RDE) using a known reference symbol sequence.
 """
 
 from typing import Optional, Tuple, Union
@@ -2251,6 +2254,76 @@ def resolve_phase_ambiguity(
             f"Phase ambiguity resolution: ch={ch}, best_k={best_k}, "
             f"rotation={best_k * step * 180.0 / xp.pi:.1f}°, SER={best_ser:.4f}"
         )
+
+    if was_1d:
+        return out[0]
+    return out
+
+
+def correct_phase_rotation(
+    symbols: ArrayType,
+    ref_symbols: ArrayType,
+    num_skip_symbols: int = 0,
+) -> ArrayType:
+    """Correct the static per-channel phase rotation using a reference sequence.
+
+    A rotationally-invariant blind equalizer (CMA, RDE) leaves an arbitrary
+    constant phase offset on each output channel — not limited to the discrete
+    ``k·π/M`` grid that ``resolve_phase_ambiguity`` tests.  This function
+    estimates the continuous rotation per channel via the ML inner-product
+    estimator ``θ = −∠(Σ y·s*)`` over a known reference sequence and applies
+    the correction to the full symbol block.
+
+    The reference may be shorter than ``symbols`` (e.g. a transmitted preamble
+    or the first ``N_ref`` source symbols); estimation uses only the overlapping
+    window.
+
+    Parameters
+    ----------
+    symbols : array_like
+        Equalizer output symbols.  Shape: ``(N,)`` or ``(C, N)``.
+    ref_symbols : array_like
+        Known transmitted symbols.  Shape: ``(N_ref,)`` or ``(C, N_ref)``,
+        where ``N_ref <= N``.  Each channel is matched independently; a
+        single-channel ref is broadcast across all output channels.
+    num_skip_symbols : int, default 0
+        Leading symbols excluded from the rotation estimate (e.g. the
+        unconverged equalizer transient).  The correction is still applied
+        to the full ``symbols``.
+
+    Returns
+    -------
+    array_like
+        Phase-corrected symbols, same shape and dtype as ``symbols``.
+    """
+    symbols, xp, _ = dispatch(symbols)
+    was_1d = symbols.ndim == 1
+    if was_1d:
+        symbols = symbols[None, :]
+    C, N = symbols.shape
+
+    ref = xp.asarray(ref_symbols)
+    if ref.ndim == 1:
+        ref = ref[None, :]
+    N_ref = ref.shape[-1]
+    if ref.shape[0] == 1 and C > 1:
+        ref = xp.broadcast_to(ref, (C, N_ref))
+
+    if num_skip_symbols >= N_ref:
+        raise ValueError(
+            f"num_skip_symbols={num_skip_symbols} must be less than the reference "
+            f"length N_ref={N_ref}."
+        )
+
+    seg_y = symbols[:, num_skip_symbols:N_ref]   # (C, N_est)
+    seg_r = ref[:, num_skip_symbols:]             # (C, N_est)
+    thetas = -xp.angle(xp.sum(seg_y * xp.conj(seg_r), axis=-1))  # (C,) on device
+    phasors = xp.exp(1j * thetas).astype(symbols.dtype)            # (C,) on device
+    out = symbols * phasors[:, None]
+
+    thetas_deg = np.degrees(to_device(thetas, "cpu"))
+    for ch, deg in enumerate(thetas_deg.tolist()):
+        logger.info(f"correct_phase_rotation: ch={ch}, theta={deg:.2f}°")
 
     if was_1d:
         return out[0]

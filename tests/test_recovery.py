@@ -1401,3 +1401,94 @@ def test_resolve_phase_ambiguity_skip_ge_n_raises(backend_device, xp):
 
     with pytest.raises(ValueError, match="num_skip_symbols"):
         recovery.resolve_phase_ambiguity(symbols, ref, "qam", 16, num_skip_symbols=200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# correct_phase_rotation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _clean_qam16(xp, n, seed=0):
+    """Noiseless unit-power 16-QAM symbols."""
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("qam", 16).astype(np.complex64)
+    const /= np.sqrt(np.mean(np.abs(const) ** 2))
+    return xp.asarray(const[rng.integers(0, 16, n)])
+
+
+class TestCorrectPhaseRotation:
+    """correct_phase_rotation corrects arbitrary constant per-channel rotation."""
+
+    N = 2048
+
+    def test_arbitrary_rotation_corrected_siso(self, backend_device, xp, xpt):
+        """Arbitrary non-grid rotation is removed; residual angle is near zero."""
+        ref = _clean_qam16(xp, self.N, seed=0)
+        theta_true = 0.7  # ~40°, not a π/2 multiple
+        rotated = ref * xp.array(np.exp(1j * theta_true), dtype=ref.dtype)
+        out = recovery.correct_phase_rotation(rotated, ref)
+        residual = float(xp.abs(xp.angle(xp.mean(out * xp.conj(ref)))))
+        assert residual < 0.02
+
+    def test_short_ref_applies_to_full_sequence(self, backend_device, xp):
+        """Estimation from first N_pre symbols; correction spans the full N sequence."""
+        N, N_pre = self.N, 256
+        ref_full = _clean_qam16(xp, N, seed=1)
+        rotated = ref_full * xp.array(np.exp(1j * 1.2), dtype=ref_full.dtype)
+        out = recovery.correct_phase_rotation(rotated, ref_full[:N_pre])
+        assert out.shape == rotated.shape
+        residual = float(xp.abs(xp.angle(xp.mean(out * xp.conj(ref_full)))))
+        assert residual < 0.02
+
+    def test_mimo_independent_channels(self, backend_device, xp):
+        """Each MIMO channel gets its own rotation corrected independently."""
+        ref_a = _clean_qam16(xp, self.N, seed=2)
+        ref_b = _clean_qam16(xp, self.N, seed=3)
+        ref = xp.stack([ref_a, ref_b])
+        rotated = xp.stack(
+            [
+                ref_a * xp.array(np.exp(1j * 0.4), dtype=ref_a.dtype),
+                ref_b * xp.array(np.exp(1j * -1.1), dtype=ref_b.dtype),
+            ]
+        )
+        out = recovery.correct_phase_rotation(rotated, ref)
+        assert out.shape == (2, self.N)
+        for ch in range(2):
+            residual = float(xp.abs(xp.angle(xp.mean(out[ch] * xp.conj(ref[ch])))))
+            assert residual < 0.02
+
+    def test_num_skip_symbols_excludes_transient(self, backend_device, xp):
+        """Corrupted head is excluded; tail correction uses the clean portion only."""
+        N, skip = self.N, 200
+        ref = _clean_qam16(xp, N, seed=4)
+        rotated = ref * xp.array(np.exp(1j * 0.9), dtype=ref.dtype)
+        corrupted = xp.array(rotated)
+        corrupted[:skip] = ref[:skip] * xp.array(np.exp(1j * 2.5), dtype=ref.dtype)
+        out = recovery.correct_phase_rotation(corrupted, ref, num_skip_symbols=skip)
+        residual = float(xp.abs(xp.angle(xp.mean(out[skip:] * xp.conj(ref[skip:])))))
+        assert residual < 0.02
+
+    def test_num_skip_ge_nref_raises(self, backend_device, xp):
+        """num_skip_symbols >= N_ref must raise ValueError."""
+        ref = _clean_qam16(xp, 100, seed=0)
+        symbols = _clean_qam16(xp, 500, seed=1)
+        with pytest.raises(ValueError, match="num_skip_symbols"):
+            recovery.correct_phase_rotation(symbols, ref, num_skip_symbols=100)
+        with pytest.raises(ValueError, match="num_skip_symbols"):
+            recovery.correct_phase_rotation(symbols, ref, num_skip_symbols=200)
+
+    def test_dtype_preserved(self, backend_device, xp):
+        """complex64 input → complex64 output."""
+        ref = _clean_qam16(xp, 256, seed=0)
+        out = recovery.correct_phase_rotation(
+            ref * xp.array(np.exp(1j * 0.5), dtype=ref.dtype), ref
+        )
+        assert out.dtype == ref.dtype
+
+    def test_1d_input_returns_1d(self, backend_device, xp):
+        """1-D input returns 1-D output."""
+        ref = _clean_qam16(xp, 256, seed=0)
+        out = recovery.correct_phase_rotation(
+            ref * xp.array(np.exp(1j * 0.3), dtype=ref.dtype), ref
+        )
+        assert out.ndim == 1
