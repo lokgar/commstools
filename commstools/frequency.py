@@ -18,8 +18,8 @@ estimate_frequency_offset_pilots :
 find_bias_tone :
     Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment via
     log-parabolic sub-bin interpolation.  Modulation-agnostic.
-correct_frequency_drift :
-    Estimate and correct a time-varying frequency drift in one call; uses a callable
+correct_frequency_offset_blockwise :
+    Estimate and correct a time-varying frequency offset in one call; uses a callable
     estimator per block with PCHIP interpolation; fully MIMO-aware.
 correct_static_frequency_offset :
     Applies a **constant** frequency offset correction via exact complex mixing.
@@ -842,7 +842,7 @@ def find_bias_tone(
     return float(f_refined)
 
 
-def correct_frequency_drift(
+def correct_frequency_offset_blockwise(
     samples: ArrayType,
     sampling_rate: float,
     block_size: int,
@@ -852,7 +852,7 @@ def correct_frequency_drift(
     debug_plot: bool = False,
 ) -> ArrayType:
     """
-    Estimate and correct a time-varying frequency drift in one call.
+    Estimate and correct a time-varying frequency offset in one call.
 
     Divides the signal into overlapping blocks, calls an arbitrary
     ``estimator(block_1d_cpu, fs) → float`` independently on each channel,
@@ -898,7 +898,7 @@ def correct_frequency_drift(
     Returns
     -------
     array_like
-        Frequency-drift-corrected samples, **same shape and dtype as the
+        Frequency-offset-corrected samples, **same shape and dtype as the
         input**, on the same backend device.
 
     Notes
@@ -987,12 +987,12 @@ def correct_frequency_drift(
 
     df_log = df_all.mean(axis=0) if (combine_channels and C > 1) else df_all[0]
     logger.debug(
-        f"correct_frequency_drift: C={C}, B={B} blocks, "
+        f"correct_frequency_offset_blockwise: C={C}, B={B} blocks, "
         f"freq range=[{df_log.min():.2f}, {df_log.max():.2f}] Hz, "
         f"total phase drift={float(theta_np_full[0, -1]):.3f} rad"
     )
     logger.info(
-        f"correct_frequency_drift:  mean = {df_all.mean():+.1f} Hz,  "
+        f"correct_frequency_offset_blockwise:  mean = {df_all.mean():+.1f} Hz,  "
         f"std = {df_all.std():.1f} Hz,  "
         f"range = [{df_all.min():+.1f}, {df_all.max():+.1f}] Hz "
         f"({len(starts)} segments)"
@@ -1002,11 +1002,11 @@ def correct_frequency_drift(
         from . import plotting as _plotting  # noqa: PLC0415
 
         title = (
-            f"correct_frequency_drift — channel 0 of {C}"
+            f"correct_frequency_offset_blockwise — channel 0 of {C}"
             if C > 1 and not combine_channels
-            else "correct_frequency_drift"
+            else "correct_frequency_offset_blockwise"
         )
-        _plotting.frequency_drift_blockwise_result(
+        _plotting.frequency_offset_blockwise_result(
             t_centers=t_centers,
             df_estimates=df_for_interp[0],
             n_grid=n_grid,
@@ -1032,7 +1032,7 @@ def correct_static_frequency_offset(
 
     Warning: designed for full-signal correction of a single static offset.
     Calling it on sub-blocks breaks phase continuity (phasor restarts at n = 0).
-    For time-varying or block-streamed correction use ``correct_frequency_drift``.
+    For time-varying or block-streamed correction use ``correct_frequency_offset_blockwise``.
 
     Unlike ``shift_frequency``, this function applies the
     correction **without bin quantization**, preserving the full precision of

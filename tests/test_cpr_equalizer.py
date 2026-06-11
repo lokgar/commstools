@@ -22,7 +22,7 @@ import pytest
 from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
 from commstools.frequency import (
-    correct_frequency_drift,
+    correct_frequency_offset_blockwise,
     estimate_frequency_offset_mth_power,
 )
 
@@ -234,7 +234,7 @@ def test_pll_phase_noise_tracking(backend_device, xp):
 
 
 def test_blockwise_foe_chirp(backend_device, xp):
-    """correct_frequency_drift recovers a linearly chirping frequency."""
+    """correct_frequency_offset_blockwise recovers a linearly chirping frequency."""
     rng = np.random.default_rng(3)
     fs = 1e9
     n = 65536
@@ -252,7 +252,7 @@ def test_blockwise_foe_chirp(backend_device, xp):
     samples = xp.asarray((base_np * carrier).astype(np.complex64))
     base = xp.asarray(base_np)
 
-    corrected = correct_frequency_drift(
+    corrected = correct_frequency_offset_blockwise(
         samples,
         fs,
         block_size=4096,

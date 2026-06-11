@@ -609,12 +609,12 @@ class TestFindBiasTone:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOE — piecewise_frequency_correction
+# FOE — correct_frequency_offset_blockwise
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestCorrectFrequencyDrift:
-    """Tests for correct_frequency_drift."""
+class TestCorrectFrequencyOffsetBlockwise:
+    """Tests for correct_frequency_offset_blockwise."""
 
     FS = 1e6
 
@@ -624,7 +624,7 @@ class TestCorrectFrequencyDrift:
         fo_hz = 10_000.0
         N = 4096
         sig = _qam_signal(xp, 4, N, fo_hz=fo_hz)
-        corrected = frequency.correct_frequency_drift(
+        corrected = frequency.correct_frequency_offset_blockwise(
             sig.samples,
             fs,
             block_size=512,
@@ -640,7 +640,7 @@ class TestCorrectFrequencyDrift:
     def test_output_on_same_device(self, backend_device, xp):
         """Output array is on the same backend as the input."""
         sig = xp.ones(2048, dtype=xp.complex64)
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             sig,
             self.FS,
             block_size=512,
@@ -663,7 +663,7 @@ class TestCorrectFrequencyDrift:
             call_log.append(1)
             return 0.0
 
-        frequency.correct_frequency_drift(
+        frequency.correct_frequency_offset_blockwise(
             xp.zeros(N, dtype=xp.complex64),
             self.FS,
             block_size=block_size,
@@ -682,7 +682,7 @@ class TestCorrectFrequencyDrift:
             counter[0] += 1
             return v
 
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             xp.ones(N, dtype=xp.complex64),
             self.FS,
             block_size=512,
@@ -694,7 +694,7 @@ class TestCorrectFrequencyDrift:
 
     def test_overlap_zero(self, backend_device, xp):
         """overlap=0: output has correct shape and is finite."""
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             xp.ones(4096, dtype=xp.complex64),
             self.FS,
             block_size=512,
@@ -708,7 +708,7 @@ class TestCorrectFrequencyDrift:
     def test_single_block_fallback(self, backend_device, xp):
         """Signal shorter than block_size: single block, output shape matches input."""
         N = 200
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             xp.ones(N, dtype=xp.complex64),
             self.FS,
             block_size=512,
@@ -726,7 +726,7 @@ class TestCorrectFrequencyDrift:
         sig_a = _qam_signal(xp, 4, N, fo_hz=fo_a)
         sig_b = _qam_signal(xp, 4, N, fo_hz=fo_b)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             mimo,
             self.FS,
             block_size=512,
@@ -744,7 +744,7 @@ class TestCorrectFrequencyDrift:
         sig_a = _qam_signal(xp, 4, N, fo_hz=fo_hz)
         sig_b = _qam_signal(xp, 4, N, fo_hz=fo_hz)
         mimo = xp.stack([sig_a.samples, sig_b.samples], axis=0)
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             mimo,
             self.FS,
             block_size=512,
@@ -775,7 +775,7 @@ class TestCorrectFrequencyDrift:
             target_frequency=tone_hz,
             search_band=20e6,
         )
-        out = frequency.correct_frequency_drift(
+        out = frequency.correct_frequency_offset_blockwise(
             sig, fs, block_size=1024, overlap=0.5, estimator=track
         )
         out_np = out if xp is np else out.get()
