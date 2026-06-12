@@ -614,19 +614,29 @@ def mi(
         h_x_bits = log2_M
 
     # Log-joint: log P(sₘ) + log p(r | sₘ)   (drop noise-normalisation constant)
-    # Shape: (N, M)
-    diff = rx[:, None] - constellation[None, :]  # (N, M)
-    log_liks = log_prior[None, :] - (diff.real**2 + diff.imag**2) / noise_var
+    # Chunk over N to bound the (chunk, M) complex128/float64 intermediates —
+    # a full-N allocation is ~4 GB at N=1e6, M=256.  The per-row math is
+    # unchanged; chunk sums accumulate on device (single sync at the end).
+    N_sym = rx.shape[0]
+    CHUNK_N = 65536
+    acc = xp.zeros((), dtype=xp.float64)
+    for n0 in range(0, N_sym, CHUNK_N):
+        rx_c = rx[n0 : n0 + CHUNK_N]
+        diff = rx_c[:, None] - constellation[None, :]  # (chunk, M)
+        log_liks = log_prior[None, :] - (diff.real**2 + diff.imag**2) / noise_var
 
-    # log p(s_m | r) via log-sum-exp for numerical stability
-    lse_shift = log_liks.max(axis=1, keepdims=True)  # (N, 1)
-    log_sum = xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
+        # log p(s_m | r) via log-sum-exp for numerical stability
+        lse_shift = log_liks.max(axis=1, keepdims=True)  # (chunk, 1)
+        log_sum = (
+            xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
+        )
 
-    log_posterior = log_liks - log_sum[:, None]  # (N, M), log base e
-    posterior = xp.exp(log_posterior)  # (N, M), sum-to-1 per row
+        log_posterior = log_liks - log_sum[:, None]  # (chunk, M), log base e
+        posterior = xp.exp(log_posterior)  # (chunk, M), sum-to-1 per row
 
-    # MI = H(X) + (1/N) Σ_n Σ_m p(s_m|r_n) · log2 p(s_m|r_n)
-    mi_nats = float(xp.sum(posterior * log_posterior, axis=1).mean())
+        # MI = H(X) + (1/N) Σ_n Σ_m p(s_m|r_n) · log2 p(s_m|r_n)
+        acc += xp.sum(posterior * log_posterior)
+    mi_nats = float(acc) / N_sym
     mi_value = float(np.clip(h_x_bits + mi_nats / ln2, 0.0, h_x_bits))
 
     logger.info(f"MI: {mi_value:.4f} b/cu  (max {h_x_bits:.2f} b/cu)")
