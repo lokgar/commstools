@@ -33,7 +33,7 @@
 - [x] Point 1 — DD-00 benchmark harness
 - [x] Point 2 — DD-05 hygiene
 - [x] Point 3 — DD-01 Part A infra
-- [ ] Point 4 — DD-01 Part B BPS kernel
+- [x] Point 4 — DD-01 Part B BPS kernel
 - [ ] Point 5 — DD-02 step 1
 - [ ] Point 6 — DD-02 step 2
 - [ ] Point 7 — DD-02 step 3 (optional)

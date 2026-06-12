@@ -5926,6 +5926,27 @@ def block_lms(
             cs_stats = np.zeros((C, 4), dtype=np.float64)
             bps_d2_hist = xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
 
+    # ── Fused CUDA kernels (CuPy only; None ⇒ xp fallback) ───────────────────
+    # _k_bps: per-block inline-BPS min-distance metric (GRID for square QAM,
+    # TABLE otherwise).  _k_dd: nearest-point search for the non-square DD
+    # slicer (TABLE + argmin, called with a single unit phasor).
+    _k_bps = None
+    _k_dd = None
+    _dd_phasor = None
+    if xp is not np:
+        from . import _cuda
+
+        _M_const = int(constellation_np.size)
+        if cpr_type == "bps" and P <= 128:
+            if _sq_side > 0:
+                _k_bps = _cuda.get_kernel("bps_min_d2", mode="grid")
+            elif _M_const <= 1024:
+                _k_bps = _cuda.get_kernel("bps_min_d2", mode="table")
+        if n_train_aligned < n_sym and _sq_side == 0 and _M_const <= 1024:
+            _k_dd = _cuda.get_kernel("bps_min_d2", mode="table", return_argmin=True)
+            if _k_dd is not None:
+                _dd_phasor = xp.ones(1, dtype=xp.complex64)
+
     # ── OLS block size ────────────────────────────────────────────────────────
     # fftsize must be >= block_size * sps + num_taps - 1 (linear OLS condition)
     _ols_min = block_size * sps + num_taps - 1
@@ -6024,33 +6045,55 @@ def block_lms(
 
         # ── BPS phase recovery ────────────────────────────────────────────
         if cpr_type == "bps":
-            # rotated: (P, C, B) — all candidate rotations for all block symbols
-            rotated = bps_phases_neg[:, None, None] * y_block[None, :, :]
-            # min_d2: (P, C, B) — min squared distance to constellation.
-            # O(1) square-QAM: snap I/Q independently to nearest level grid point.
-            if _sq_side > 0:
-                _nr = (
-                    _sq_lev_min
-                    + xp.clip(
-                        xp.round((rotated.real - _sq_lev_min) / _sq_d_grid), 0, _sq_m1
+            # min_d2: (P, C, B) — min squared distance to constellation over
+            # all candidate rotations of all block symbols.
+            if _k_bps is not None:
+                # Fused kernel: single pass over y_block, no (P, C, B[, M])
+                # rotated/distance intermediates.
+                if _sq_side > 0:
+                    min_d2 = _k_bps(
+                        y_block,
+                        bps_phases_neg,
+                        lev_min=_sq_lev_min,
+                        d_grid=_sq_d_grid,
+                        side=_sq_side,
                     )
-                    * _sq_d_grid
-                )
-                _ni = (
-                    _sq_lev_min
-                    + xp.clip(
-                        xp.round((rotated.imag - _sq_lev_min) / _sq_d_grid), 0, _sq_m1
+                else:
+                    min_d2 = _k_bps(
+                        y_block, bps_phases_neg, constellation=constellation
                     )
-                    * _sq_d_grid
-                )
-                min_d2 = ((rotated.real - _nr) ** 2 + (rotated.imag - _ni) ** 2).astype(
-                    xp.float32
-                )
             else:
-                d2_all = (
-                    xp.abs(rotated[..., None] - constellation[None, None, None, :]) ** 2
-                ).real
-                min_d2 = xp.min(d2_all, axis=-1).astype(xp.float32)
+                # rotated: (P, C, B) — all candidate rotations for all block symbols
+                rotated = bps_phases_neg[:, None, None] * y_block[None, :, :]
+                # O(1) square-QAM: snap I/Q independently to nearest level grid point.
+                if _sq_side > 0:
+                    _nr = (
+                        _sq_lev_min
+                        + xp.clip(
+                            xp.round((rotated.real - _sq_lev_min) / _sq_d_grid),
+                            0,
+                            _sq_m1,
+                        )
+                        * _sq_d_grid
+                    )
+                    _ni = (
+                        _sq_lev_min
+                        + xp.clip(
+                            xp.round((rotated.imag - _sq_lev_min) / _sq_d_grid),
+                            0,
+                            _sq_m1,
+                        )
+                        * _sq_d_grid
+                    )
+                    min_d2 = (
+                        (rotated.real - _nr) ** 2 + (rotated.imag - _ni) ** 2
+                    ).astype(xp.float32)
+                else:
+                    d2_all = (
+                        xp.abs(rotated[..., None] - constellation[None, None, None, :])
+                        ** 2
+                    ).real
+                    min_d2 = xp.min(d2_all, axis=-1).astype(xp.float32)
 
             # Causal sliding-window average of width K along the B (symbol) axis.
             # win_sum[:,:,n] = sum of min_d2[:,:, n-K+1..n] (with K-1 samples from
@@ -6257,6 +6300,11 @@ def block_lms(
                 d_dd = xp.empty(y_dd.shape, dtype=xp.complex64)
                 d_dd.real[:] = _dd_r
                 d_dd.imag[:] = _dd_i
+            elif _k_dd is not None:
+                # Fused nearest-point search: (1, C, B_dd) argmin indices with
+                # a unit phasor, replacing the (C, B_dd, M) distance tensor.
+                _, _dd_idx = _k_dd(y_dd, _dd_phasor, constellation=constellation)
+                d_dd = constellation[_dd_idx[0]]
             else:
                 d2_sl = (
                     xp.abs(y_dd[:, :, None] - constellation[None, None, :]) ** 2

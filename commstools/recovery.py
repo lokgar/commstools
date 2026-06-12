@@ -950,6 +950,19 @@ def recover_carrier_phase_bps(
 
     float_dtype = xp.float32 if symbols.dtype == xp.complex64 else xp.float64
 
+    # Fused CUDA kernel (CuPy + complex64 only): computes the per-symbol
+    # min-distance metric for all B candidate phases and all C channels in a
+    # single pass, avoiding the materialized (CHUNK, B[, M]) intermediates of
+    # the xp path.  None ⇒ fall back to the xp implementation below.
+    _kern = None
+    if xp is not np and symbols.dtype == xp.complex64 and B <= 128:
+        if is_sq_qam or const_xp.size <= 1024:
+            from . import _cuda
+
+            _kern = _cuda.get_kernel(
+                "bps_min_d2", mode="grid" if is_sq_qam else "table"
+            )
+
     # Chunk size for N axis: bounds peak memory of the distance tensor.
     # Always a multiple of block_size so each chunk covers a whole number of
     # blocks exactly.  Rounded up to the nearest multiple ≥ 1024.
@@ -961,40 +974,66 @@ def recover_carrier_phase_bps(
     # Accumulate per-channel distance metrics (N_blocks, B) for all channels.
     metrics_all = xp.zeros((C, N_blocks, B), dtype=float_dtype)
 
-    for ch in range(C):
-        sym = symbols[ch, :N_trunc]  # (N_trunc,)
-
-        for n0 in range(0, N_trunc, CHUNK_N):
-            n1 = min(n0 + CHUNK_N, N_trunc)
-            x_rot = sym[n0:n1, None] * phasors[None, :]  # (CHUNK, B)
-
+    if _kern is not None:
+        # One kernel call per chunk covering all C channels; output (B, C, n)
+        # is block-summed and transposed into metrics_all's (C, n_b, B)
+        # layout.  The kernel writes only the minima, so the chunk can be far
+        # larger than the tensor-bounded CHUNK_N of the xp path.
+        chunk_gpu = ((131072 + block_size - 1) // block_size) * block_size
+        const_c64 = None if is_sq_qam else const_xp.astype(xp.complex64)
+        for n0 in range(0, N_trunc, chunk_gpu):
+            n1 = min(n0 + chunk_gpu, N_trunc)
             if is_sq_qam:
-                # O(1) nearest-point: round each component to the nearest grid level
-                r_idx = xp.clip(
-                    xp.round((x_rot.real - lev_min) / d_grid).astype(xp.int64),
-                    0,
-                    side - 1,
+                md = _kern(
+                    symbols[:, n0:n1],
+                    phasors,
+                    lev_min=lev_min,
+                    d_grid=d_grid,
+                    side=side,
                 )
-                i_idx = xp.clip(
-                    xp.round((x_rot.imag - lev_min) / d_grid).astype(xp.int64),
-                    0,
-                    side - 1,
-                )
-                r_near = levels[r_idx]  # (CHUNK, B)
-                i_near = levels[i_idx]  # (CHUNK, B)
-                chunk_min_d = (
-                    (x_rot.real - r_near) ** 2 + (x_rot.imag - i_near) ** 2
-                ).astype(float_dtype)
             else:
-                # General: (CHUNK, B, M_const) — bounded by CHUNK_N
-                d_sq = xp.abs(x_rot[:, :, None] - const_xp[None, None, :]) ** 2
-                chunk_min_d = xp.min(d_sq, axis=-1).astype(float_dtype)
-
+                md = _kern(symbols[:, n0:n1], phasors, constellation=const_c64)
             b0 = n0 // block_size
             n_b = (n1 - n0) // block_size
-            metrics_all[ch, b0 : b0 + n_b] = chunk_min_d.reshape(
-                n_b, block_size, B
-            ).sum(axis=1)
+            metrics_all[:, b0 : b0 + n_b] = (
+                md.reshape(B, C, n_b, block_size).sum(axis=3).transpose(1, 2, 0)
+            )
+
+    else:
+        for ch in range(C):
+            sym = symbols[ch, :N_trunc]  # (N_trunc,)
+
+            for n0 in range(0, N_trunc, CHUNK_N):
+                n1 = min(n0 + CHUNK_N, N_trunc)
+                x_rot = sym[n0:n1, None] * phasors[None, :]  # (CHUNK, B)
+
+                if is_sq_qam:
+                    # O(1) nearest-point: round each component to the nearest grid level
+                    r_idx = xp.clip(
+                        xp.round((x_rot.real - lev_min) / d_grid).astype(xp.int64),
+                        0,
+                        side - 1,
+                    )
+                    i_idx = xp.clip(
+                        xp.round((x_rot.imag - lev_min) / d_grid).astype(xp.int64),
+                        0,
+                        side - 1,
+                    )
+                    r_near = levels[r_idx]  # (CHUNK, B)
+                    i_near = levels[i_idx]  # (CHUNK, B)
+                    chunk_min_d = (
+                        (x_rot.real - r_near) ** 2 + (x_rot.imag - i_near) ** 2
+                    ).astype(float_dtype)
+                else:
+                    # General: (CHUNK, B, M_const) — bounded by CHUNK_N
+                    d_sq = xp.abs(x_rot[:, :, None] - const_xp[None, None, :]) ** 2
+                    chunk_min_d = xp.min(d_sq, axis=-1).astype(float_dtype)
+
+                b0 = n0 // block_size
+                n_b = (n1 - n0) // block_size
+                metrics_all[ch, b0 : b0 + n_b] = chunk_min_d.reshape(
+                    n_b, block_size, B
+                ).sum(axis=1)
 
     # Phase estimation: joint (sum metrics across channels) or independent per channel.
     if joint_channels and C > 1:
@@ -2326,10 +2365,10 @@ def correct_phase_rotation(
             f"length N_ref={N_ref}."
         )
 
-    seg_y = symbols[:, num_skip_symbols:N_ref]   # (C, N_est)
-    seg_r = ref[:, num_skip_symbols:]             # (C, N_est)
+    seg_y = symbols[:, num_skip_symbols:N_ref]  # (C, N_est)
+    seg_r = ref[:, num_skip_symbols:]  # (C, N_est)
     thetas = -xp.angle(xp.sum(seg_y * xp.conj(seg_r), axis=-1))  # (C,) on device
-    phasors = xp.exp(1j * thetas).astype(symbols.dtype)            # (C,) on device
+    phasors = xp.exp(1j * thetas).astype(symbols.dtype)  # (C,) on device
     out = symbols * phasors[:, None]
 
     thetas_deg = np.degrees(to_device(thetas, "cpu"))

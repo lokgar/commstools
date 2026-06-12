@@ -146,8 +146,104 @@ def _selftest_scale_factory(dtype: str = "float32") -> Callable:
     return launch
 
 
+def _bps_min_d2_factory(mode: str = "table", return_argmin: bool = False) -> Callable:
+    """Wrapper factory for the fused BPS minimum-distance kernel.
+
+    Computes ``min_d2[p, c, n] = min_m |x[c, n] * phasor[p] - const[m]|**2``
+    in one pass. ``mode="table"`` searches an explicit constellation table;
+    ``mode="grid"`` snaps to the uniform square-QAM level grid. With
+    ``return_argmin=True`` (TABLE only) the nearest-point indices are
+    returned alongside the distances.
+    """
+    import cupy as cp
+
+    from . import compiler
+
+    mode_id = {"table": 0, "grid": 1}[mode]
+    if mode_id == 1 and return_argmin:
+        raise ValueError("return_argmin is only supported in TABLE mode")
+    kern = compiler.get_raw_kernel(
+        "bps_min_d2",
+        f"bps_min_d2<{mode_id}, {'true' if return_argmin else 'false'}>",
+    )
+    block_n = 128
+    _empty_i32 = cp.empty(0, dtype=cp.int32)
+
+    def launch(
+        x: Any,
+        phasor: Any,
+        constellation: Any = None,
+        lev_min: float = 0.0,
+        d_grid: float = 1.0,
+        side: int = 0,
+    ) -> Any:
+        """Returns min_d2 (P, C, N) float32; with argmin, an (min_d2, idx) tuple.
+
+        `x` is (C, N) complex64 with time on the last axis; `phasor` is
+        (P,) complex64, P <= 128. TABLE mode requires `constellation`
+        ((M,) complex64, M <= 1024); GRID mode requires the level-grid
+        scalars `lev_min`, `d_grid`, `side`.
+        """
+        x = cp.ascontiguousarray(x)
+        phasor = cp.ascontiguousarray(phasor)
+        if x.ndim != 2:
+            raise ValueError(f"x must be 2-D (C, N), got shape {x.shape}")
+        if x.dtype != cp.complex64 or phasor.dtype != cp.complex64:
+            raise TypeError(
+                f"x and phasor must be complex64, got {x.dtype}/{phasor.dtype}"
+            )
+        C, N = x.shape
+        P = int(phasor.size)
+        if P < 1 or P > 128:
+            raise ValueError(f"phasor count must be in [1, 128], got {P}")
+
+        if mode_id == 0:
+            constellation = cp.ascontiguousarray(constellation)
+            if constellation.dtype != cp.complex64:
+                raise TypeError(
+                    f"constellation must be complex64, got {constellation.dtype}"
+                )
+            M = int(constellation.size)
+            if M < 1 or M > 1024:
+                raise ValueError(f"constellation size must be in [1, 1024], got {M}")
+            shared_mem = M * 8
+        else:
+            if side < 2:
+                raise ValueError(f"GRID mode requires side >= 2, got {side}")
+            constellation = _empty_i32  # never dereferenced (M == 0)
+            M = 0
+            shared_mem = 0
+
+        min_d2 = cp.empty((P, C, N), dtype=cp.float32)
+        argmin = cp.empty((P, C, N), dtype=cp.int32) if return_argmin else _empty_i32
+        grid = ((N + block_n - 1) // block_n, P, C)
+        kern(
+            grid,
+            (block_n,),
+            (
+                x,
+                phasor,
+                constellation,
+                cp.float32(lev_min),
+                cp.float32(d_grid),
+                cp.int32(side),
+                cp.int32(M),
+                cp.int64(N),
+                min_d2,
+                argmin,
+            ),
+            shared_mem=shared_mem,
+        )
+        if return_argmin:
+            return min_d2, argmin
+        return min_d2
+
+    return launch
+
+
 # name -> wrapper factory. Factories may raise; get_kernel translates any
 # failure into the warn-once-and-return-None fallback contract.
 _KERNEL_FACTORIES: dict[str, Callable[..., Callable]] = {
     "selftest_scale": _selftest_scale_factory,
+    "bps_min_d2": _bps_min_d2_factory,
 }
