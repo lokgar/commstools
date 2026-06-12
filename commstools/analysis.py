@@ -579,9 +579,10 @@ def linewidth_beta_separation(
         in_band = s[band]
         lw_floor[ch] = xp.pi * xp.median(in_band) if in_band.size else 0.0
 
-    lw_cpu = to_device(lw, "cpu")
-    lw_floor_cpu = to_device(lw_floor, "cpu")
-    area_cpu = to_device(area, "cpu")
+    # Pack the three (C,) metrics into one D2H transfer instead of three.
+    lw_cpu, lw_floor_cpu, area_cpu = to_device(
+        xp.stack([lw, lw_floor, area]), "cpu"
+    )
     f_cpu = np.asarray(to_device(f, "cpu"), dtype=np.float64)
     S_cpu = np.asarray(to_device(S_f, "cpu"), dtype=np.float64)
     beta_cpu = np.asarray(to_device(beta, "cpu"), dtype=np.float64)
