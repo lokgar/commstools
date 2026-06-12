@@ -730,10 +730,11 @@ def recover_carrier_phase_viterbi_viterbi(
         # MIMO M-fold alignment: align every channel to channel 0's branch.
         # Skipped in joint mode (all channels share the same trajectory).
         if C > 1:
-            for ch in range(1, C):
-                diff = float(xp.mean(phi_u[ch] - phi_u[0]))
-                k = round(diff * M / (2 * np.pi))
-                phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
+            # All per-channel means on device, one batched D2H, vectorized shift
+            # (instead of one float() sync + one rounding per channel).
+            diffs_np = to_device(xp.mean(phi_u[1:] - phi_u[0:1], axis=-1), "cpu")
+            k_np = np.round(diffs_np * M / (2 * np.pi))
+            phi_u[1:] = phi_u[1:] - xp.asarray(k_np)[:, None] * (2 * np.pi / M)
 
         # xp.interp is 1D-only; loop over C channels.
         for ch in range(C):
@@ -1334,10 +1335,11 @@ def recover_carrier_phase_tikhonov(
             phi_u = phi_u - (np.pi / M)
 
         if C > 1:
-            for ch in range(1, C):
-                diff = float(xp.mean(phi_u[ch] - phi_u[0]))
-                k = round(diff * M / (2 * np.pi))
-                phi_u[ch] = phi_u[ch] - k * (2 * np.pi / M)
+            # All per-channel means on device, one batched D2H, vectorized shift
+            # (instead of one float() sync + one rounding per channel).
+            diffs_np = to_device(xp.mean(phi_u[1:] - phi_u[0:1], axis=-1), "cpu")
+            k_np = np.round(diffs_np * M / (2 * np.pi))
+            phi_u[1:] = phi_u[1:] - xp.asarray(k_np)[:, None] * (2 * np.pi / M)
 
         # Kalman smoother — dispatch on method
         if method == "exact":
