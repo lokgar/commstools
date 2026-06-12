@@ -37,14 +37,14 @@ uv run <script.py>
 ### Testing (pytest)
 
 ```bash
-# Run tests on CPU only (default)
+# Run tests on all backends — CPU and GPU (project default via addopts)
+uv run pytest
+
+# Run tests on CPU only
 uv run pytest --device=cpu
 
-# Run tests on GPU (requires CuPy + CUDA)
+# Run tests on GPU only (requires CuPy + CUDA)
 uv run pytest --device=gpu
-
-# Run tests on all backends (CPU and GPU)
-uv run pytest --device=all
 
 # Run a single test file
 uv run pytest tests/test_signal.py
@@ -55,6 +55,29 @@ uv run pytest tests/test_signal.py::test_signal_creation -v
 # Run with test coverage
 uv run pytest --cov=commstools
 ```
+
+### Benchmarking (pytest-benchmark)
+
+The `benchmarks/` suite is **explicit-only**: the default `uv run pytest` collects `tests/` only (`testpaths` in `pyproject.toml`), so benchmarks never slow down a normal test run.
+
+```bash
+# Run the full benchmark suite (CPU and GPU)
+uv run pytest benchmarks/ --benchmark-only --device=all
+
+# Run one benchmark file / one benchmark
+uv run pytest benchmarks/bench_bps.py --benchmark-only --device=gpu
+uv run pytest "benchmarks/bench_equalizers.py::bench_lms" --benchmark-only --device=all
+
+# Save a named baseline (commit the JSON under benchmarks/baselines/)
+uv run pytest benchmarks/ --benchmark-only --device=all \
+    --benchmark-save=<label> --benchmark-storage=file://benchmarks/baselines
+
+# Compare the current code against a saved baseline (e.g. 0001_main)
+uv run pytest benchmarks/ --benchmark-only --device=all \
+    --benchmark-compare=0001 --benchmark-storage=file://benchmarks/baselines
+```
+
+See **Section 6 — Benchmark Suite** for what each file measures and how to read the results.
 
 ### Linting & Formatting
 
@@ -173,8 +196,17 @@ Never call `np.random` directly inside library code. Every function performing s
 
 ### Performance JIT Compilation
 
-* **Numba**: Use `@numba.njit(cache=True, fastmath=True, nogil=True)` for serial loops (like sequential LMS/RLS adaptive updates on CPU). Keep kernels compiled lazily and cached.
-* **JAX**: Use `jax.lax.scan` for compiling sequential weight updates to GPU.
+* **Numba**: Use `@numba.njit(cache=True, fastmath=True, nogil=True)` for serial loops (like sequential LMS/RLS adaptive updates on CPU). Keep kernels compiled lazily and cached. For single-stream sequential equalization, Numba on CPU is the **fastest existing backend** — measured 150-200× faster than the per-symbol JAX scan on GPU (see `benchmarks/`).
+* **JAX**: `jax.lax.scan` compiles sequential weight updates, but per-symbol scans on GPU are dominated by per-step XLA overhead and are slow for single streams. Reserve the JAX path for differentiability or batched workloads; GPU-side throughput improvements should use block/chunked formulations (see `gpu_acceleration_review.md` and `docs/design/`).
+
+### Host-Device Synchronization Hygiene
+
+Inside library code, **never extract a scalar from a possibly-GPU array inside a loop** (`float(x[ch])`, `int(x[ch])`, `.item()`) — each extraction forces a full GPU pipeline flush. Instead:
+
+* Compute the full per-channel vector on device, transfer it **once** with `to_device(vec, "cpu")`, then loop over the host copy.
+* Prefer on-device gathers (`xp.take_along_axis`) over Python list comprehensions with indexed scalars.
+* Per-channel **diagnostic logging** must be gated: wrap the transfer + loop in `if logger.isEnabledFor(logging.INFO):` so disabled logging costs zero syncs (see `metrics.py` for the canonical pattern).
+* Bound large broadcast intermediates: distance-matrix style `(N, M)` allocations should be chunked over N with an on-device accumulator (see `metrics.mi`).
 
 ### Array Shapes
 
@@ -194,3 +226,35 @@ Never call `np.random` directly inside library code. Every function performing s
   xpt.assert_allclose(result, expected, rtol=1e-5)
   assert float(xp.mean(xp.abs(result))) > 0.0
   ```
+
+---
+
+## 6. Benchmark Suite
+
+The `benchmarks/` directory tracks the performance of the GPU-relevant hot paths. Baselines are committed under `benchmarks/baselines/` so any optimization PR can be gated quantitatively (run → compare → quote the delta). The performance workstream itself is documented in `gpu_acceleration_review.md` and `docs/design/`.
+
+### What each file measures
+
+| File | Functions | What the numbers show |
+| --- | --- | --- |
+| `bench_bps.py` | `recover_carrier_phase_bps` | Square-QAM O(1) fast path vs. the non-square `(CHUNK, B, M)` distance-tensor path (16-QAM vs. 128-cross). Includes the GPU-only gate workload `128cross / N=1e6 / C=2` for the fused-kernel work. |
+| `bench_block_lms.py` | `block_lms` | Frequency-domain equalizer with CPR off / `bps` / `bps + cycle-slip` — isolates the per-block host-sync and kernel-launch overhead on GPU (currently makes GPU *slower* than CPU at 100k symbols). |
+| `bench_equalizers.py` | `lms`, `cma`, `rls` | Sequential equalizers across `numba` and `jax` backends, 50k symbols (20k for RLS, symbol-spaced). |
+| `bench_sync_misc.py` | Viterbi-Viterbi + cycle slips, `resolve_phase_ambiguity`, `evm` | Host-sync hygiene targets in recovery/metrics. |
+
+### How to read the IDs
+
+Benchmark IDs encode `[<input-device>-<equalizer-backend>]`:
+
+* `[cpu-numba]` — NumPy input, Numba CPU loop (the reference).
+* `[gpu-numba]` — **CuPy input** with `backend='numba'`: measures the documented D2H → CPU loop → H2D round trip (the Δ vs. `[cpu-numba]` is the transfer + sync cost, ~1-3 ms per 50k symbols).
+* `[gpu-jax]` — JAX `lax.scan` running on the GPU.
+
+### Methodology rules
+
+* Timed bodies must end with the `sync` fixture call — GPU wall time without a stream sync measures kernel *launches*, not execution.
+* Every benchmark does one warmup round so Numba/NVRTC/XLA compilation and CuPy pool growth are excluded.
+* Workloads come from `benchmarks/workloads.py` with **fixed seeds** — never inline ad-hoc signal generation, or baselines stop being comparable.
+* `benchmarks/benchutils.py` provides `CudaEventTimer` (pure device time) and `nvtx_range` (annotate stages for `nsys profile` — used to count D2H transfers per function).
+* **Trust deltas, not single runs**: the default 3 rounds are noisy (±20-40% has been observed under ambient load). Before believing a regression, re-run the benchmark in isolation or do a controlled A/B against the prior revision (`git checkout <rev> -- <file>` + a fixed-seed timing script with ≥7 repetitions).
+* Library logging is set to WARNING in `benchmarks/conftest.py` — benchmark numbers exclude diagnostic-logging costs by design (and INFO-gated diagnostics are skipped entirely).
