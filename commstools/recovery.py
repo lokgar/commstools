@@ -1199,11 +1199,14 @@ def recover_carrier_phase_tikhonov(
 
         * ``'exact'``: full RTS smoother (``_rts_smoother_1d``); Numba
           kernel when available.  Sequential CPU recurrence; exact for any
-          ``N_blocks``.
+          ``N_blocks``.  On GPU inputs this forces a full device-to-host
+          transfer of the block-phase trajectory (and back), stalling the
+          GPU pipeline — prefer ``'sskf'`` for GPU-resident signals.
         * ``'sskf'``: steady-state approximation via ``filtfilt``
           (``_sskf_smoother_1d``); runs on the input device (GPU-native
-          when data is on GPU).  Excellent for ``N_blocks ≥ 20``; for
-          ``N_blocks < 7`` silently falls back to ``'exact'``.
+          when data is on GPU, no host transfer).  Excellent for
+          ``N_blocks ≥ 20``; for ``N_blocks < 7`` silently falls back to
+          ``'exact'``.
     joint_channels : bool, default False
         For MIMO inputs (C > 1): if ``True``, sum the M-th-power block
         phasors across all channels before the VV phase extraction and

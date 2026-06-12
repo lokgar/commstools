@@ -3348,49 +3348,47 @@ def _build_padded_samples(
     When ``samples_prefix`` is supplied its last ``pad_left`` samples replace the
     leading zero-pad, eliminating the warm-start transient.  Otherwise the
     leading edge is filled according to ``pad_mode``.
+
+    Backend-generic: runs on whichever device ``samples_np`` lives on (NumPy
+    callers see unchanged behavior; ``apply_taps`` can pad GPU-resident
+    signals without a host round trip).
     """
+    samples_arr, xp, _ = dispatch(samples_np)
     if samples_prefix is not None:
         # Normalize prefix by the same factor used for the main block.
-        prefix_np = np.ascontiguousarray(
-            to_device(samples_prefix, "cpu"), dtype=np.complex64
+        prefix = xp.ascontiguousarray(
+            to_device(samples_prefix, "cpu" if xp is np else "gpu"),
+            dtype=xp.complex64,
         )
-        if prefix_np.ndim == 1:
-            prefix_np = prefix_np[np.newaxis, :]
-        if prefix_np.shape[-1] < pad_left:
+        if prefix.ndim == 1:
+            prefix = prefix[None, :]
+        if prefix.shape[-1] < pad_left:
             raise ValueError(
-                f"samples_prefix last axis length {prefix_np.shape[-1]} is less than "
+                f"samples_prefix last axis length {prefix.shape[-1]} is less than "
                 f"pad_left={pad_left}. Provide at least pad_left samples."
             )
         if eq_norm is not None:
-            nf = eq_norm
-            if prefix_np.shape[0] == 1:
-                prefix_np = (
-                    prefix_np / float(nf)
-                    if np.ndim(nf) == 0
-                    else prefix_np / float(np.asarray(nf).ravel()[0])
-                )
+            nf_arr = np.asarray(to_device(eq_norm, "cpu"), dtype=np.float64).ravel()
+            if prefix.shape[0] == 1:
+                prefix = prefix / float(nf_arr[0])
             else:
-                nf_arr = np.asarray(nf, dtype=np.float64).ravel()
-                prefix_np = prefix_np / nf_arr[:, None]
-        left_pad = prefix_np[:, -pad_left:]
-        if samples_np.ndim == 1:
-            samples_2d = samples_np[np.newaxis, :]
+                prefix = prefix / xp.asarray(nf_arr)[:, None]
+        left_pad = prefix[:, -pad_left:]
+        if samples_arr.ndim == 1:
+            samples_2d = samples_arr[None, :]
         else:
-            samples_2d = samples_np
-        right_zero = np.zeros((samples_2d.shape[0], pad_right), dtype=np.complex64)
-        padded = np.concatenate([left_pad, samples_2d, right_zero], axis=-1)
+            samples_2d = samples_arr
+        right_zero = xp.zeros((samples_2d.shape[0], pad_right), dtype=xp.complex64)
+        padded = xp.concatenate([left_pad, samples_2d, right_zero], axis=-1)
         return padded
     if pad_mode == "zeros":
-        if samples_np.ndim == 1:
-            return np.pad(samples_np, (pad_left, pad_right))[np.newaxis, :]
-        return np.pad(samples_np, ((0, 0), (pad_left, pad_right)))
+        if samples_arr.ndim == 1:
+            return xp.pad(samples_arr, (pad_left, pad_right))[None, :]
+        return xp.pad(samples_arr, ((0, 0), (pad_left, pad_right)))
     if pad_mode in ("edge", "reflect"):
-        np_mode = pad_mode
-        if samples_np.ndim == 1:
-            return np.pad(samples_np, (pad_left, pad_right), mode=np_mode)[
-                np.newaxis, :
-            ]
-        return np.pad(samples_np, ((0, 0), (pad_left, pad_right)), mode=np_mode)
+        if samples_arr.ndim == 1:
+            return xp.pad(samples_arr, (pad_left, pad_right), mode=pad_mode)[None, :]
+        return xp.pad(samples_arr, ((0, 0), (pad_left, pad_right)), mode=pad_mode)
     raise ValueError(
         f"pad_mode must be 'zeros', 'edge', or 'reflect'. Got {pad_mode!r}."
     )
@@ -7434,10 +7432,11 @@ def apply_taps(
     if samples_prefix is None and pad_mode == "zeros":
         samples_padded = xp.pad(samples, ((0, 0), (pad_left, pad_right)))
     else:
-        _samp_cpu_at = to_device(samples, "cpu").astype(np.complex64)
-        samples_padded = xp.asarray(
+        # _build_padded_samples is backend-generic: pad on the input device
+        # instead of round-tripping the full signal through the host.
+        samples_padded = xp.ascontiguousarray(
             _build_padded_samples(
-                _samp_cpu_at,
+                samples.astype(xp.complex64),
                 pad_left,
                 pad_right,
                 samples_prefix,
