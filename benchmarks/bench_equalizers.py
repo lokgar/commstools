@@ -1,0 +1,99 @@
+"""Benchmarks: sequential adaptive equalizers (DD-03 / DD-04 gates).
+
+``backend='numba'`` with GPU input measures the documented D2H round-trip +
+CPU-loop case; ``backend='jax'`` measures the per-symbol ``lax.scan`` that
+DD-04's block-update mode is gated against (≥ 10× at D=16).
+"""
+
+import pytest
+
+from commstools.equalization import cma, lms, rls
+from workloads import mimo_equalizer_workload
+
+ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
+
+
+@pytest.mark.parametrize("eq_backend", ["numba", "jax"])
+def bench_lms(benchmark, backend_device, xp, sync, eq_backend):
+    samples, syms = mimo_equalizer_workload(n_sym=50_000, order=16, sps=2)
+    x = xp.asarray(samples)
+    t = xp.asarray(syms)
+    device = backend_device if eq_backend == "jax" else "cpu"
+
+    def run():
+        r = lms(
+            x,
+            t,
+            num_taps=21,
+            sps=2,
+            step_size=1e-3,
+            modulation="qam",
+            order=16,
+            backend=eq_backend,
+            device=device,
+        )
+        sync()
+        return r
+
+    benchmark.pedantic(run, **ROUNDS)
+
+
+@pytest.mark.parametrize("eq_backend", ["numba", "jax"])
+def bench_cma(benchmark, backend_device, xp, sync, eq_backend):
+    samples, _ = mimo_equalizer_workload(n_sym=50_000, order=4, sps=2)
+    x = xp.asarray(samples)
+    device = backend_device if eq_backend == "jax" else "cpu"
+
+    def run():
+        r = cma(
+            x,
+            num_taps=21,
+            sps=2,
+            step_size=1e-3,
+            modulation="qam",
+            order=4,
+            backend=eq_backend,
+            device=device,
+        )
+        sync()
+        return r
+
+    benchmark.pedantic(run, **ROUNDS)
+
+
+@pytest.mark.parametrize("eq_backend", ["numba", "jax"])
+def bench_rls(benchmark, backend_device, xp, sync, eq_backend):
+    # sps=1: the library itself warns that fractionally-spaced RLS is
+    # ill-conditioned — benchmark the supported symbol-spaced regime.
+    samples, syms = mimo_equalizer_workload(n_sym=20_000, order=16, sps=1)
+    x = xp.asarray(samples)
+    t = xp.asarray(syms)
+    device = backend_device if eq_backend == "jax" else "cpu"
+
+    if eq_backend == "jax":
+        # RLS-JAX mandates x64 (complex128 P matrix); restore afterwards so
+        # the LMS/CMA JAX benches keep their representative f32 config.
+        import jax
+
+        prev_x64 = bool(jax.config.jax_enable_x64)
+        jax.config.update("jax_enable_x64", True)
+
+    def run():
+        r = rls(
+            x,
+            t,
+            num_taps=21,
+            sps=1,
+            modulation="qam",
+            order=16,
+            backend=eq_backend,
+            device=device,
+        )
+        sync()
+        return r
+
+    try:
+        benchmark.pedantic(run, **ROUNDS)
+    finally:
+        if eq_backend == "jax":
+            jax.config.update("jax_enable_x64", prev_x64)

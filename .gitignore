@@ -7,6 +7,7 @@ dist/
 wheels/
 *.egg-info
 .ruff_cache
+.benchmarks
 
 # Virtual environments
 .venv
