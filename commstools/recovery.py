@@ -37,6 +37,7 @@ correct_phase_rotation :
     (CMA, RDE) using a known reference symbol sequence.
 """
 
+import logging
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -2222,40 +2223,45 @@ def resolve_phase_ambiguity(
     if symmetry_order is None:
         symmetry_order = 4 if "qam" in modulation.lower() else order
 
-    step = 2.0 * xp.pi / symmetry_order
-    candidates = [
-        xp.exp(1j * k * step).astype(symbols.dtype) for k in range(symmetry_order)
-    ]
+    step = 2.0 * np.pi / symmetry_order
 
-    out = xp.empty_like(symbols)
-    for ch in range(C):
-        # ML phase ambiguity estimator: the optimal rotation maximises
-        # Re(e^{jkθ} · Σ y_n s_n*), which equals choosing k closest to
-        # -∠(Σ y_n s_n*) / step.  Single inner product replaces symmetry_order
-        # full SER passes.
-        seg_y = symbols[ch, num_skip_symbols:]
-        seg_r = ref[ch, num_skip_symbols:]
-        correlation = xp.sum(seg_y * xp.conj(seg_r))
-        theta_est = -float(xp.angle(correlation))
-        best_k = int(round(theta_est / step)) % symmetry_order
-        out[ch] = symbols[ch] * candidates[best_k]
-        best_ser = float(
-            xp.mean(
-                xp.asarray(
-                    _ser(
-                        out[ch, num_skip_symbols:],
-                        seg_r,
-                        modulation,
-                        order,
-                        pmf=pmf,
+    # ML phase ambiguity estimator: the optimal rotation maximises
+    # Re(e^{jkθ} · Σ y_n s_n*), which equals choosing k closest to
+    # -∠(Σ y_n s_n*) / step.  Single inner product replaces symmetry_order
+    # full SER passes.  All channels batched: one D2H of the (C,) angles
+    # instead of one float() sync per channel.
+    seg_y = symbols[:, num_skip_symbols:]
+    seg_r = ref[:, num_skip_symbols:]
+    corr = xp.sum(seg_y * xp.conj(seg_r), axis=-1)  # (C,)
+    theta_np = -to_device(xp.angle(corr), "cpu")  # (C,) float64, one transfer
+    best_k_np = np.round(theta_np / step).astype(np.int64) % symmetry_order
+    phasors = xp.asarray(
+        np.exp(1j * best_k_np * step).astype(symbols.dtype)
+    )  # (C,) — built on host from host indices, single H2D
+    out = symbols * phasors[:, None]
+
+    # SER is diagnostic-only: skip the per-channel reduction syncs entirely
+    # when INFO logging is disabled.
+    if logger.isEnabledFor(logging.INFO):
+        for ch in range(C):
+            best_ser = float(
+                xp.mean(
+                    xp.asarray(
+                        _ser(
+                            out[ch, num_skip_symbols:],
+                            seg_r[ch],
+                            modulation,
+                            order,
+                            pmf=pmf,
+                        )
                     )
                 )
             )
-        )
-        logger.info(
-            f"Phase ambiguity resolution: ch={ch}, best_k={best_k}, "
-            f"rotation={best_k * step * 180.0 / xp.pi:.1f}°, SER={best_ser:.4f}"
-        )
+            logger.info(
+                f"Phase ambiguity resolution: ch={ch}, best_k={int(best_k_np[ch])}, "
+                f"rotation={best_k_np[ch] * step * 180.0 / np.pi:.1f}°, "
+                f"SER={best_ser:.4f}"
+            )
 
     if was_1d:
         return out[0]
