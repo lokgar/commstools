@@ -19,6 +19,7 @@ Coverage:
 import numpy as np
 import pytest
 
+from commstools.backend import to_device
 from commstools.equalization import CPRState, block_lms
 from commstools.mapping import gray_constellation
 from commstools.helpers import normalize
@@ -583,8 +584,8 @@ def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
     t1, t2 = syms_np[:half], syms_np[half:]
 
     r1 = block_lms(
-        s1,
-        t1,
+        xp.asarray(s1),
+        xp.asarray(t1),
         num_taps=11,
         sps=1,
         step_size=5e-4,
@@ -599,10 +600,14 @@ def test_cpr_state_warmstart_block_lms_bps(backend_device, xp):
     assert r1.cpr_state.bps_prev4 is not None
     assert r1.cpr_state.bps_offset4 is not None
     assert r1.cpr_state.bps_d2_hist is not None
+    # CPRState contract: exported arrays are CPU NumPy on every backend.
+    assert isinstance(r1.cpr_state.bps_prev4, np.ndarray)
+    assert isinstance(r1.cpr_state.bps_offset4, np.ndarray)
+    assert isinstance(r1.cpr_state.bps_d2_hist, np.ndarray)
 
     r2 = block_lms(
-        s2,
-        t2[:50],
+        xp.asarray(s2),
+        xp.asarray(t2[:50]),
         num_taps=11,
         sps=1,
         step_size=5e-4,
@@ -640,6 +645,139 @@ def test_cpr_state_none_is_baseline_block_lms(backend_device, xp):
     np.testing.assert_array_equal(
         np.asarray(r_default.y_hat),
         np.asarray(r_none.y_hat),
+    )
+
+
+def _wiener_qam16_trackable(n_sym, snr_db=25.0, sigma_phi=0.005, seed=33):
+    """16-QAM under slow Wiener phase noise that BPS can actually track.
+
+    The second half of the symbol sequence is a permutation of the first half,
+    so both halves and the full sequence share the same symbol multiset — the
+    per-call training-symbol normalization then applies the same scale to the
+    uninterrupted run and to each half-run (up to float summation order).
+    """
+    rng = np.random.default_rng(seed)
+    const = gray_constellation("qam", 16).astype(np.complex64)
+    const = normalize(const, "average_power").astype(np.complex64)
+    half = n_sym // 2
+    syms_h = const[rng.integers(0, 16, half)]
+    syms = np.concatenate([syms_h, rng.permutation(syms_h)])
+    phase = np.cumsum(rng.normal(0.0, sigma_phi, n_sym))
+    samples = (syms * np.exp(1j * phase)).astype(np.complex64)
+    noise_std = float(np.sqrt(10 ** (-snr_db / 10) / 2))
+    samples += noise_std * (
+        rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
+    ).astype(np.complex64)
+    return samples, syms
+
+
+@pytest.mark.parametrize("cs_corr", [False, True])
+def test_cpr_state_roundtrip_matches_uninterrupted(cs_corr, backend_device, xp):
+    """Split run (export CPRState at half, resume) matches one uninterrupted run.
+
+    With num_taps=1 (no padding, no look-ahead) and the split aligned to a
+    block boundary, the two runs see identical per-block inputs — the only
+    state crossing the split is what w_init + cpr_state + input_norm_factor
+    carry.  This gates the full unwrap/offset/d2-history/cycle-slip round
+    trip through the CPU-NumPy CPRState contract on both backends.
+    """
+    n_sym = 2048
+    half = n_sym // 2
+    samples_np, syms_np = _wiener_qam16_trackable(n_sym)
+
+    kw = dict(
+        num_taps=1,
+        sps=1,
+        step_size=5e-4,
+        block_size=256,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
+        cpr_cycle_slip_correction=cs_corr,
+    )
+
+    r_full = block_lms(xp.asarray(samples_np), xp.asarray(syms_np), **kw)
+
+    r1 = block_lms(
+        xp.asarray(samples_np[:half]),
+        xp.asarray(syms_np[:half]),
+        **kw,
+        input_norm_factor=r_full.input_norm_factor,
+    )
+    r2 = block_lms(
+        xp.asarray(samples_np[half:]),
+        xp.asarray(syms_np[half:]),
+        **kw,
+        w_init=r1.weights,
+        cpr_state=r1.cpr_state,
+        input_norm_factor=r_full.input_norm_factor,
+    )
+
+    y_full = np.asarray(to_device(r_full.y_hat, "cpu"))
+    y_split = np.concatenate(
+        [np.asarray(to_device(r1.y_hat, "cpu")), np.asarray(to_device(r2.y_hat, "cpu"))]
+    )
+    np.testing.assert_allclose(y_split, y_full, rtol=1e-5, atol=1e-5)
+
+    assert r_full.phase_trajectory is not None
+    p_full = np.asarray(to_device(r_full.phase_trajectory, "cpu"))
+    p_split = np.concatenate(
+        [
+            np.asarray(to_device(r1.phase_trajectory, "cpu")),
+            np.asarray(to_device(r2.phase_trajectory, "cpu")),
+        ]
+    )
+    # Unwrapped trajectories must agree absolutely — a lost carry shows up as
+    # an O(π/2) jump at the split point.
+    np.testing.assert_allclose(p_split, p_full, rtol=1e-5, atol=1e-5)
+
+
+def test_block_lms_bps_loop_transfer_count_constant(backend_device, xp, monkeypatch):
+    """GPU: D2H/H2D transfers must not scale with the number of blocks.
+
+    Spies on to_device in the equalization module and asserts the call count
+    is identical for a 4-block and a 16-block run — i.e. the unwrap-carry
+    transfers happen at entry/exit only, never inside the block loop.
+    """
+    if xp is np:
+        pytest.skip("GPU-only host-sync hygiene check")
+
+    import commstools.equalization as eqmod
+
+    real_to_device = eqmod.to_device
+    counts = {"n": 0}
+
+    def spy(data, device):
+        counts["n"] += 1
+        return real_to_device(data, device)
+
+    monkeypatch.setattr(eqmod, "to_device", spy)
+
+    def run(n_sym):
+        samples_np, syms_np = _wiener_qam16_trackable(n_sym)
+        counts["n"] = 0
+        block_lms(
+            xp.asarray(samples_np),
+            xp.asarray(syms_np[:128]),
+            num_taps=11,
+            sps=1,
+            step_size=5e-4,
+            block_size=128,
+            modulation="qam",
+            order=16,
+            cpr_type="bps",
+            cpr_bps_test_phases=32,
+            cpr_bps_block_size=16,
+        )
+        return counts["n"]
+
+    n_small = run(512)  # 4 blocks
+    n_large = run(2048)  # 16 blocks
+    assert n_small == n_large, (
+        f"to_device call count scales with block count: "
+        f"{n_small} (4 blocks) vs {n_large} (16 blocks)"
     )
 
 

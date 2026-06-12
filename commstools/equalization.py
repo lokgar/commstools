@@ -5881,7 +5881,7 @@ def block_lms(
         bps_angles = xp.asarray(bps_angles_np)  # (P,)
         quantum = np.float64(2.0 * np.pi / symmetry)
         _two_pi = xp.float64(2.0 * np.pi)
-        # Cross-block 4-fold unwrap state (CPU, one value per channel)
+        # Cross-block 4-fold unwrap state (one float64 per channel)
         _cs_H = min(int(cpr_cycle_slip_history), n_sym)
         _bps_K = int(cpr_bps_block_size)
         _bps_hist_len = max(0, _bps_K - 1)
@@ -5925,6 +5925,14 @@ def block_lms(
             cs_buf_n = np.zeros(C, dtype=np.int64)
             cs_stats = np.zeros((C, 4), dtype=np.float64)
             bps_d2_hist = xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
+        # Promote the unwrap carries to the active device once — every
+        # per-block update then runs on-device, with no per-block H2D/D2H
+        # sync.  The CPRState CPU-NumPy contract is honoured at the API
+        # boundary only: ingested above, exported back via to_device() at
+        # state export.  Cycle-slip buffers stay CPU-resident because the
+        # slip kernel itself still runs on the host.
+        bps_prev4 = xp.asarray(bps_prev4)
+        bps_offset4 = xp.asarray(bps_offset4)
 
     # ── Fused CUDA kernels (CuPy only; None ⇒ xp fallback) ───────────────────
     # _k_bps: per-block inline-BPS min-distance metric (GRID for square QAM,
@@ -6128,7 +6136,8 @@ def block_lms(
 
             # 4-fold causal unwrap: equivalent to np.unwrap(phi*4)/4 via
             # diff→wrap[-π,π]→cumsum.  CPU: np.unwrap directly (no transfer cost).
-            # GPU: run arithmetic on-device, sync only (C,) float64 per block.
+            # GPU: fully on-device — the carries are device arrays, so the
+            # block loop issues no host sync for the unwrap state.
             if xp is np:
                 raw4 = phi_raw.astype(np.float64) * 4.0  # (C, B)
                 extended = np.concatenate(
@@ -6142,18 +6151,15 @@ def block_lms(
             else:
                 raw4_dev = phi_raw.astype(xp.float64) * xp.float64(4.0)  # (C, B)
                 ext_dev = xp.concatenate(
-                    [xp.asarray(bps_prev4)[:, None], raw4_dev], axis=1
+                    [bps_prev4[:, None], raw4_dev], axis=1
                 )  # (C, B+1)
                 _two_pi_d = xp.float64(2.0 * np.pi)
                 d4 = ext_dev[:, 1:] - ext_dev[:, :-1]  # (C, B)
                 d4 -= xp.round(d4 / _two_pi_d) * _two_pi_d  # wrap to [-π, π]
                 _cumul_dev = xp.cumsum(d4, axis=1)  # (C, B)
-                _phi_f64 = (xp.asarray(bps_offset4)[:, None] + _cumul_dev) / xp.float64(
-                    4.0
-                )
-                _delta = to_device(_cumul_dev[:, -1], "cpu")  # (C,) — 16 bytes for C=2
-                bps_prev4 += _delta
-                bps_offset4 += _delta
+                _phi_f64 = (bps_offset4[:, None] + _cumul_dev) / xp.float64(4.0)
+                bps_prev4 += _cumul_dev[:, -1]
+                bps_offset4 += _cumul_dev[:, -1]
             # ── Per-symbol cycle-slip correction ──────────────────────────
             # Identical algorithm to per-symbol lms: for each symbol in the
             # block, compare its BPS phase to the regression prediction, snap
@@ -6245,17 +6251,17 @@ def block_lms(
                             if n_b < _cs_H:
                                 cs_buf_n[ci] = n_b + 1
 
-                _phi_f64 = xp.asarray(phi_corr_np)
+                _phi_corr_dev = xp.asarray(phi_corr_np)
 
                 # Carry the net slip correction into bps_offset4 so that
                 # subsequent blocks do not re-detect the same slip.
                 # bps_offset4 tracks the 4x-domain accumulated phase; the slip
                 # quantum is π/2 → 2π in 4x, which is a multiple of 2π and
                 # therefore transparent to the 4-fold unwrap of bps_prev4.
-                for ci in range(C):
-                    net4 = (phi_corr_np[ci, -1] - phi_blk_np[ci, -1]) * 4.0
-                    if net4 != 0.0:
-                        bps_offset4[ci] += net4
+                # Vectorized on-device op — a zero net slip adds 0.0 for free,
+                # so no per-channel host-side != 0.0 test is needed.
+                bps_offset4 += (_phi_corr_dev[:, -1] - _phi_f64[:, -1]) * 4.0
+                _phi_f64 = _phi_corr_dev
 
             # Wrap unbounded float64 phase to [-π, π] before float32 cast so that
             # the GPU exp() argument is bounded (dual-path: wrapped for rotation,
@@ -6382,8 +6388,8 @@ def block_lms(
     )
     if cpr_type == "bps":
         result.cpr_state = CPRState(
-            bps_prev4=bps_prev4.copy(),
-            bps_offset4=bps_offset4.copy(),
+            bps_prev4=to_device(bps_prev4, "cpu").copy(),
+            bps_offset4=to_device(bps_offset4, "cpu").copy(),
             bps_d2_hist=to_device(bps_d2_hist, "cpu"),
             cs_buf_x=cs_buf_x.copy(),
             cs_buf_y=cs_buf_y.copy(),
