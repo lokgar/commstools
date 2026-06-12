@@ -560,9 +560,9 @@ def estimate_timing(
         # identity is not resolved here (see recovery.resolve_channel_permutation).
         corr_all_mag = xp.abs(corr_all)  # (C_rx, C_tx, N_lag)
         best_tx = xp.argmax(xp.max(corr_all_mag, axis=-1), axis=-1)  # (C_rx,)
-        corr = xp.stack(
-            [corr_all[rx, int(best_tx[rx])] for rx in range(num_sig_ch)], axis=0
-        )  # (C_rx, N_lag) complex
+        corr = xp.take_along_axis(corr_all, best_tx[:, None, None], axis=1)[
+            :, 0
+        ]  # (C_rx, N_lag) complex — on-device gather, no per-channel host sync
         corr_incoherent = xp.abs(corr)  # (C_rx, N_lag)
         peak_indices = xp.argmax(corr_incoherent, axis=-1)  # (C_rx,)
     else:
@@ -587,11 +587,13 @@ def estimate_timing(
     else:
         e_ref = xp.full(num_sig_ch, xp.mean(e_ref))
 
-    # Local signal energy: sum |sig|² in the L-sample window at each peak
+    # Local signal energy: sum |sig|² in the L-sample window at each peak.
+    # Batch the peak indices to host once instead of one sync per channel.
     N_sig = sig_processing.shape[-1]
+    peaks_np = to_device(peak_indices, "cpu")
     e_s = xp.empty(num_sig_ch, dtype=sig_processing.real.dtype)
     for ch in range(num_sig_ch):
-        pk = int(peak_indices[ch])
+        pk = int(peaks_np[ch])
         end_idx = min(pk + L, N_sig)
         e_s[ch] = xp.sum(xp.abs(sig_processing[ch, pk:end_idx]) ** 2)
 
@@ -617,10 +619,12 @@ def estimate_timing(
     mean_vals = xp.maximum(mean_vals, 1e-12)
     metrics = peak_vals / mean_vals
 
-    # Log coherence diagnostics
+    # Log coherence diagnostics — one batched D2H per array, not per channel
+    coherence_np = to_device(coherence, "cpu")
+    metrics_np = to_device(metrics, "cpu")
     for ch in range(num_sig_ch):
-        c_val = float(coherence[ch])
-        p_val = float(metrics[ch])
+        c_val = float(coherence_np[ch])
+        p_val = float(metrics_np[ch])
         if c_val < 0.5 and p_val >= threshold:
             logger.warning(
                 f"Channel {ch}: Peak phase coherence is very low ({c_val:.2f}), but "
@@ -633,14 +637,14 @@ def estimate_timing(
                 f"Channel {ch}: Peak prominence = {p_val:.1f}, coherence = {c_val:.2f}"
             )
 
-    # === Threshold Check ===
-    max_metric = float(xp.max(metrics))
+    # === Threshold Check === (reuses the host copy — no further syncs)
+    max_metric = float(metrics_np.max())
     if max_metric < threshold:
         raise ValueError(
             f"No correlation peak above threshold {threshold} (max: {max_metric:.3f})"
         )
     for _ch in range(num_sig_ch):
-        _m = float(metrics[_ch])
+        _m = float(metrics_np[_ch])
         if _m < threshold:
             logger.warning(
                 f"Channel {_ch}: correlation metric {_m:.3f} is below threshold "
