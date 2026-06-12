@@ -34,6 +34,21 @@ Each row is one independent commit. "Fix pattern" abbreviations: **V** = vectori
 
 Out-of-scope syncs (justified, do not "fix"): `linear_sum_assignment` transfer in `resolve_channel_permutation` (CPU LP solver, one small matrix); filter-design (`firwin`) and scalar root-finding (`brentq`) on CPU; intentional float64 promotion before every `xp.unwrap` (precision-mandated).
 
+## 2.1 Implementation outcome (2026-06-12)
+
+| # | Outcome |
+| --- | --- |
+| 1, 2 | Done — `take_along_axis` gather + batched peak/coherence/metric transfers in `estimate_timing` |
+| 3, 4 | Partially pre-existing: m-th-power (one scalar argmax sync + batched `mu`), Mengali-Morelli, and pilot-power weights were already batched in current code; the remaining `slopes` per-channel comprehension fixed |
+| 5 | Done — vectorized M-fold alignment in both VV and Tikhonov (one (C-1,) D2H) |
+| 6 | **No-op by design**: the per-channel `xp.interp` loop contains no host syncs (kernel launches only), and a code comment documents that a `searchsorted` form was deliberately replaced for boundary safety. Left as is. |
+| 7 | Done — batched (C,) angle transfer + vectorized rotation; SER gated behind INFO |
+| 8 | L402 already batched; the three same-shape linewidth metrics packed into one transfer. PSD arrays (f/S/β) stay as separate transfers (returned to the caller anyway). |
+| 9 | Done — all four metrics loops gated behind `isEnabledFor(INFO)` with batched transfers |
+| 10 | mapping.py sites are `@jax.jit` (XLA-fused) — skipped per design. metrics.py `mi()` chunked at 64k symbols with on-device accumulator (peak memory ~4 GB → ~270 MB at N=1e6, M=256). |
+| 11 | Done — Tikhonov docstring steers GPU users to `'sskf'` |
+| 12 | Done — `_build_padded_samples` made backend-generic; `apply_taps` pads on-device |
+
 ## 3. Test & acceptance criteria
 
 1. **Numerics**: all existing tests green on `--device=cpu` and `--device=gpu`; the touched functions produce identical results (same dtype, `xpt.assert_allclose` at tight tolerance — these are reorderings of transfers, not of arithmetic, so exact equality is expected for items 1-9; item 10 chunking changes no summation order either).
