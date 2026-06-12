@@ -241,9 +241,80 @@ def _bps_min_d2_factory(mode: str = "table", return_argmin: bool = False) -> Cal
     return launch
 
 
+def _cs_block_factory() -> Callable:
+    """Wrapper factory for the block_lms cycle-slip correction kernel.
+
+    Sequential per-channel slip detector (one block, one thread per channel)
+    operating in-place on device-resident state buffers. One launch processes
+    one equalizer block, replacing the per-block D2H -> CPU Numba -> H2D
+    round trip of the fallback path. All state arrays are float64/int64 and
+    are mutated in place — the wrapper therefore rejects non-contiguous
+    inputs instead of silently copying them.
+    """
+    import cupy as cp
+
+    from . import compiler
+
+    kern = compiler.get_raw_kernel("cs_block", "cs_block")
+
+    def launch(
+        phi_blk: Any,
+        phi_corr: Any,
+        cs_buf_y: Any,
+        cs_buf_ptr: Any,
+        cs_buf_n: Any,
+        cs_stats: Any,
+        quantum: float,
+        threshold: float,
+        cs_H: int,
+    ) -> Any:
+        """Corrects phi_blk into phi_corr ((C, B) float64), updating the
+        per-channel circular history buffers in place."""
+        if phi_blk.ndim != 2:
+            raise ValueError(f"phi_blk must be 2-D (C, B), got shape {phi_blk.shape}")
+        C, B = phi_blk.shape
+        if C > 1024:
+            raise ValueError(f"channel count must be <= 1024, got {C}")
+        cs_H = int(cs_H)
+        for label, arr, dtype, shape in (
+            ("phi_blk", phi_blk, cp.float64, (C, B)),
+            ("phi_corr", phi_corr, cp.float64, (C, B)),
+            ("cs_buf_y", cs_buf_y, cp.float64, (C, cs_H)),
+            ("cs_buf_ptr", cs_buf_ptr, cp.int64, (C,)),
+            ("cs_buf_n", cs_buf_n, cp.int64, (C,)),
+            ("cs_stats", cs_stats, cp.float64, (C, 4)),
+        ):
+            if arr.dtype != dtype:
+                raise TypeError(f"{label} must be {dtype}, got {arr.dtype}")
+            if arr.shape != shape:
+                raise ValueError(f"{label} must have shape {shape}, got {arr.shape}")
+            if not arr.flags.c_contiguous:
+                raise ValueError(f"{label} must be C-contiguous (mutated in place)")
+        kern(
+            (1,),
+            (C,),
+            (
+                phi_blk,
+                phi_corr,
+                cs_buf_y,
+                cs_buf_ptr,
+                cs_buf_n,
+                cs_stats,
+                cp.float64(quantum),
+                cp.float64(threshold),
+                cp.int32(cs_H),
+                cp.int32(B),
+            ),
+        )
+        return phi_corr
+
+    return launch
+
+
 # name -> wrapper factory. Factories may raise; get_kernel translates any
 # failure into the warn-once-and-return-None fallback contract.
 _KERNEL_FACTORIES: dict[str, Callable[..., Callable]] = {
     "selftest_scale": _selftest_scale_factory,
     "bps_min_d2": _bps_min_d2_factory,
+    "cs_block": _cs_block_factory,
 }

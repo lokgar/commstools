@@ -35,7 +35,7 @@
 - [x] Point 3 — DD-01 Part A infra
 - [x] Point 4 — DD-01 Part B BPS kernel
 - [x] Point 5 — DD-02 step 1
-- [ ] Point 6 — DD-02 step 2
+- [x] Point 6 — DD-02 step 2 (cumulative steps 1-2 speedup on the N1e5 gate workload: 1.48× — see point report; the ≥2× target is expected to be met by Point 7 graph capture)
 - [ ] Point 7 — DD-02 step 3 (optional)
 - [ ] Point 8 — DD-04 §3.4
 - [ ] Point 9 — DD-04 main

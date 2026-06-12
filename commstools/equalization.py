@@ -5591,18 +5591,18 @@ def block_lms(
        ``[0, pi/2)`` argmin is converted to full-range radians by a causal 4-fold
        unwrap, and stored in a float64 accumulator in ``phase_trajectory``.
 
-    3. **Cycle-slip correction** (if ``cpr_cycle_slip_correction=True``) — the
-       full per-symbol BPS phase tensor ``phi_n`` (shape ``(C, B)``)
-       is transferred device→host; for each symbol the phase is compared to a
-       linear-regression prediction built from a circular buffer of
-       ``cpr_cycle_slip_history`` past corrected phases (identical algorithm to
-       ``lms`` with ``cpr_type='bps'``).  If
-       ``|phi_n - phi_pred| > cpr_cycle_slip_threshold``
-       the nearest ``2*pi/symmetry`` quantum is subtracted, the
-       corrected value is stored in the history buffer, and the corrected block
-       is written back to device.  Cost: one ``(C, B)`` float64 D→H + H→D
-       round-trip per block; disable on slip-free channels to avoid this
-       transfer.
+    3. **Cycle-slip correction** (if ``cpr_cycle_slip_correction=True``) — for
+       each symbol of the per-symbol BPS phase tensor ``phi_n`` (shape
+       ``(C, B)``) the phase is compared to a linear-regression prediction
+       built from a circular buffer of ``cpr_cycle_slip_history`` past
+       corrected phases (identical algorithm to ``lms`` with
+       ``cpr_type='bps'``).  If ``|phi_n - phi_pred| > cpr_cycle_slip_threshold``
+       the nearest ``2*pi/symmetry`` quantum is subtracted and the corrected
+       value is stored in the history buffer.  On GPU the detector runs as a
+       small sequential CUDA kernel on device-resident buffers (no host
+       round-trip); when that kernel is unavailable the ``(C, B)`` float64
+       block is transferred device→host, corrected by the Numba/Python
+       detector, and written back — one D→H + H→D round-trip per block.
 
     4. **Error** — training or DD slicer on CPR-corrected output; back-rotated
        to the tap plane using the block-average phase ``phi_b``::
@@ -5700,12 +5700,11 @@ def block_lms(
         channel estimates its phase independently.  Ignored for SISO inputs.
     cpr_cycle_slip_correction : bool, default False
         Enable per-symbol cycle-slip detection and correction using the same
-        algorithm as ``lms``.  After each BPS block the full ``(C, B)``
-        float64 phase tensor is transferred device→host; every symbol is
+        algorithm as ``lms``: after each BPS block every symbol phase is
         compared to a regression prediction, corrected if a slip is detected,
-        and added to the circular history buffer before the corrected block is
-        written back.  Disable on slip-free channels to avoid the D→H/H→D
-        round-trip per block.
+        and added to the circular history buffer.  On GPU the detector runs
+        on-device (custom CUDA kernel); without it each block costs one
+        ``(C, B)`` float64 D→H + H→D round-trip through the CPU detector.
     cpr_cycle_slip_history : int, default 100
         Length of the per-symbol phase history buffer used for the linear
         regression predictor.  Same semantics as in ``lms``: one entry
@@ -5763,11 +5762,12 @@ def block_lms(
     ``block_size`` ≥ 512, ideally 1024-4096.
 
     **BPS cycle-slip correction (``cpr_cycle_slip_correction=True``):**
-    Every block transfers the full ``(C, block_size)`` float64 phase
-    tensor device→host, runs a Python loop over ``C x block_size``
-    symbols, then writes it back host→device.  This synchronous round-trip
-    serialises the GPU pipeline.  Keep this disabled if slips are rare or
-    absent, and enable only when necessary.
+    On GPU the detector runs as a sequential CUDA kernel on device-resident
+    history buffers, so enabling it adds one extra kernel launch per block
+    and no host synchronization.  Only when that kernel is unavailable
+    (no custom-kernel support) does each block fall back to a synchronous
+    ``(C, block_size)`` float64 device→host round-trip through the CPU
+    detector, which serialises the GPU pipeline.
 
     **CPU (NumPy) backend:** even slower than GPU because the Python loop
     dominates at any practical block size.  Use ``lms(backend='numba')``
@@ -5937,9 +5937,12 @@ def block_lms(
     # ── Fused CUDA kernels (CuPy only; None ⇒ xp fallback) ───────────────────
     # _k_bps: per-block inline-BPS min-distance metric (GRID for square QAM,
     # TABLE otherwise).  _k_dd: nearest-point search for the non-square DD
-    # slicer (TABLE + argmin, called with a single unit phasor).
+    # slicer (TABLE + argmin, called with a single unit phasor).  _k_cs: the
+    # sequential cycle-slip detector (one thread per channel) operating on
+    # device-resident history buffers.
     _k_bps = None
     _k_dd = None
+    _k_cs = None
     _dd_phasor = None
     if xp is not np:
         from . import _cuda
@@ -5954,6 +5957,17 @@ def block_lms(
             _k_dd = _cuda.get_kernel("bps_min_d2", mode="table", return_argmin=True)
             if _k_dd is not None:
                 _dd_phasor = xp.ones(1, dtype=xp.complex64)
+        if cpr_type == "bps" and cpr_cycle_slip_correction and C <= 1024:
+            _k_cs = _cuda.get_kernel("cs_block")
+    if _k_cs is not None:
+        # Cycle-slip state lives in device memory for the whole block loop;
+        # the kernel mutates it in place.  Exported back to CPU NumPy at
+        # state export, preserving the CPRState contract.  cs_buf_x is
+        # unused by the detector and stays on CPU.
+        cs_buf_y = xp.asarray(cs_buf_y)
+        cs_buf_ptr = xp.asarray(cs_buf_ptr)
+        cs_buf_n = xp.asarray(cs_buf_n)
+        cs_stats = xp.asarray(cs_stats)
 
     # ── OLS block size ────────────────────────────────────────────────────────
     # fftsize must be >= block_size * sps + num_taps - 1 (linear OLS condition)
@@ -6165,93 +6179,115 @@ def block_lms(
             # block, compare its BPS phase to the regression prediction, snap
             # to the nearest quantum if |diff| > threshold, then add the
             # corrected (x, y) pair to the circular history buffer.
-            # Requires a D→H transfer of the full (C, B) float64 phase block
-            # and an H→D write-back; cost is O(C·B) per block.
+            # GPU with the cs_block CUDA kernel: one launch per block on the
+            # device-resident history buffers — zero host syncs.  Fallback
+            # (CPU, or kernel unavailable): D→H transfer of the full (C, B)
+            # float64 phase block, CPU detector (Numba or Python), H→D
+            # write-back; cost is O(C·B) per block.
             if cpr_cycle_slip_correction:
-                phi_blk_np = to_device(_phi_f64, "cpu").astype(np.float64)  # (C, B)
-                phi_corr_np = phi_blk_np.copy()
-
-                _cs_kernel = _get_numba_cs_block()
-                if _cs_kernel is not None:
-                    _cs_kernel(
-                        phi_blk_np,
-                        phi_corr_np,
-                        cs_buf_x,
+                if _k_cs is not None:
+                    _phi_corr_dev = xp.empty_like(_phi_f64)
+                    _k_cs(
+                        _phi_f64,
+                        _phi_corr_dev,
                         cs_buf_y,
                         cs_buf_ptr,
                         cs_buf_n,
                         cs_stats,
-                        b_start,
                         float(quantum),
                         float(cpr_cycle_slip_threshold),
                         _cs_H,
                     )
                 else:
-                    _H_f = float(_cs_H)
-                    for ci in range(C):
-                        for i in range(B):
-                            y_b = phi_blk_np[ci, i]
-                            n_b = int(cs_buf_n[ci])
-                            ptr = int(cs_buf_ptr[ci])
+                    phi_blk_np = to_device(_phi_f64, "cpu").astype(np.float64)  # (C, B)
+                    phi_corr_np = phi_blk_np.copy()
 
-                            if n_b == 0:
-                                phi_expected = y_b
-                            elif n_b < 10:
-                                last_pos = (ptr - 1 + _cs_H) % _cs_H
-                                phi_expected = cs_buf_y[ci, last_pos]
-                            else:
-                                sy = cs_stats[ci, 0]
-                                sxy = cs_stats[ci, 1]
-                                n_f = float(n_b)
-                                if n_b < _cs_H:
-                                    Sx_c = n_f * (n_f - 1.0) / 2.0
-                                    Sxx_c = n_f * (n_f - 1.0) * (2.0 * n_f - 1.0) / 6.0
-                                    denom = n_f * Sxx_c - Sx_c * Sx_c
+                    _cs_kernel = _get_numba_cs_block()
+                    if _cs_kernel is not None:
+                        _cs_kernel(
+                            phi_blk_np,
+                            phi_corr_np,
+                            cs_buf_x,
+                            cs_buf_y,
+                            cs_buf_ptr,
+                            cs_buf_n,
+                            cs_stats,
+                            b_start,
+                            float(quantum),
+                            float(cpr_cycle_slip_threshold),
+                            _cs_H,
+                        )
+                    else:
+                        _H_f = float(_cs_H)
+                        for ci in range(C):
+                            for i in range(B):
+                                y_b = phi_blk_np[ci, i]
+                                n_b = int(cs_buf_n[ci])
+                                ptr = int(cs_buf_ptr[ci])
+
+                                if n_b == 0:
+                                    phi_expected = y_b
+                                elif n_b < 10:
+                                    last_pos = (ptr - 1 + _cs_H) % _cs_H
+                                    phi_expected = cs_buf_y[ci, last_pos]
                                 else:
-                                    Sx_c = _H_f * (_H_f - 1.0) / 2.0
-                                    Sxx_c = (
-                                        _H_f * (_H_f - 1.0) * (2.0 * _H_f - 1.0) / 6.0
+                                    sy = cs_stats[ci, 0]
+                                    sxy = cs_stats[ci, 1]
+                                    n_f = float(n_b)
+                                    if n_b < _cs_H:
+                                        Sx_c = n_f * (n_f - 1.0) / 2.0
+                                        Sxx_c = (
+                                            n_f * (n_f - 1.0) * (2.0 * n_f - 1.0) / 6.0
+                                        )
+                                        denom = n_f * Sxx_c - Sx_c * Sx_c
+                                    else:
+                                        Sx_c = _H_f * (_H_f - 1.0) / 2.0
+                                        Sxx_c = (
+                                            _H_f
+                                            * (_H_f - 1.0)
+                                            * (2.0 * _H_f - 1.0)
+                                            / 6.0
+                                        )
+                                        denom = _H_f * Sxx_c - Sx_c * Sx_c
+                                    if abs(denom) > 1e-30:
+                                        slope = (n_f * sxy - Sx_c * sy) / denom
+                                        intercept = (sy - slope * Sx_c) / n_f
+                                    else:
+                                        slope = 0.0
+                                        intercept = sy / n_f
+                                    phi_expected = slope * n_f + intercept
+
+                                diff = y_b - phi_expected
+                                k_slip = int(round(diff / quantum))
+                                if (
+                                    abs(diff) > float(cpr_cycle_slip_threshold)
+                                    and k_slip != 0
+                                ):
+                                    y_b -= float(k_slip) * quantum
+                                phi_corr_np[ci, i] = y_b
+
+                                # Update circular buffer — relative coords, only y needed
+                                write_pos = ptr % _cs_H
+                                if n_b == _cs_H:
+                                    old_y = cs_buf_y[ci, write_pos]
+                                    old_sy = cs_stats[ci, 0]
+                                    # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
+                                    cs_stats[ci, 1] = (
+                                        cs_stats[ci, 1]
+                                        - old_sy
+                                        + old_y
+                                        + (_H_f - 1.0) * y_b
                                     )
-                                    denom = _H_f * Sxx_c - Sx_c * Sx_c
-                                if abs(denom) > 1e-30:
-                                    slope = (n_f * sxy - Sx_c * sy) / denom
-                                    intercept = (sy - slope * Sx_c) / n_f
+                                    cs_stats[ci, 0] = old_sy - old_y + y_b
                                 else:
-                                    slope = 0.0
-                                    intercept = sy / n_f
-                                phi_expected = slope * n_f + intercept
+                                    cs_stats[ci, 1] += float(n_b) * y_b
+                                    cs_stats[ci, 0] += y_b
+                                cs_buf_y[ci, write_pos] = y_b
+                                cs_buf_ptr[ci] = ptr + 1
+                                if n_b < _cs_H:
+                                    cs_buf_n[ci] = n_b + 1
 
-                            diff = y_b - phi_expected
-                            k_slip = int(round(diff / quantum))
-                            if (
-                                abs(diff) > float(cpr_cycle_slip_threshold)
-                                and k_slip != 0
-                            ):
-                                y_b -= float(k_slip) * quantum
-                            phi_corr_np[ci, i] = y_b
-
-                            # Update circular buffer — relative coords, only y needed
-                            write_pos = ptr % _cs_H
-                            if n_b == _cs_H:
-                                old_y = cs_buf_y[ci, write_pos]
-                                old_sy = cs_stats[ci, 0]
-                                # Sxy_new = Sxy_old - Sy_old + y_old + (H-1)*y_new
-                                cs_stats[ci, 1] = (
-                                    cs_stats[ci, 1]
-                                    - old_sy
-                                    + old_y
-                                    + (_H_f - 1.0) * y_b
-                                )
-                                cs_stats[ci, 0] = old_sy - old_y + y_b
-                            else:
-                                cs_stats[ci, 1] += float(n_b) * y_b
-                                cs_stats[ci, 0] += y_b
-                            cs_buf_y[ci, write_pos] = y_b
-                            cs_buf_ptr[ci] = ptr + 1
-                            if n_b < _cs_H:
-                                cs_buf_n[ci] = n_b + 1
-
-                _phi_corr_dev = xp.asarray(phi_corr_np)
+                    _phi_corr_dev = xp.asarray(phi_corr_np)
 
                 # Carry the net slip correction into bps_offset4 so that
                 # subsequent blocks do not re-detect the same slip.
@@ -6392,10 +6428,10 @@ def block_lms(
             bps_offset4=to_device(bps_offset4, "cpu").copy(),
             bps_d2_hist=to_device(bps_d2_hist, "cpu"),
             cs_buf_x=cs_buf_x.copy(),
-            cs_buf_y=cs_buf_y.copy(),
-            cs_buf_ptr=cs_buf_ptr.copy(),
-            cs_buf_n=cs_buf_n.copy(),
-            cs_stats=cs_stats.copy(),
+            cs_buf_y=to_device(cs_buf_y, "cpu").copy(),
+            cs_buf_ptr=to_device(cs_buf_ptr, "cpu").copy(),
+            cs_buf_n=to_device(cs_buf_n, "cpu").copy(),
+            cs_stats=to_device(cs_stats, "cpu").copy(),
             cpr_type=cpr_type,
             num_ch=C,
             symmetry=_cpr_symmetry(modulation, order),

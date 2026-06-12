@@ -734,15 +734,24 @@ def test_cpr_state_roundtrip_matches_uninterrupted(cs_corr, backend_device, xp):
     np.testing.assert_allclose(p_split, p_full, rtol=1e-5, atol=1e-5)
 
 
-def test_block_lms_bps_loop_transfer_count_constant(backend_device, xp, monkeypatch):
+@pytest.mark.parametrize("cs_corr", [False, True])
+def test_block_lms_bps_loop_transfer_count_constant(
+    cs_corr, backend_device, xp, monkeypatch
+):
     """GPU: D2H/H2D transfers must not scale with the number of blocks.
 
     Spies on to_device in the equalization module and asserts the call count
-    is identical for a 4-block and a 16-block run — i.e. the unwrap-carry
-    transfers happen at entry/exit only, never inside the block loop.
+    is identical for a 4-block and a 16-block run — i.e. the unwrap-carry and
+    cycle-slip transfers happen at entry/exit only, never inside the block
+    loop.
     """
     if xp is np:
         pytest.skip("GPU-only host-sync hygiene check")
+    if cs_corr:
+        from commstools import _cuda
+
+        if _cuda.get_kernel("cs_block") is None:
+            pytest.skip("cs_block CUDA kernel unavailable — fallback transfers")
 
     import commstools.equalization as eqmod
 
@@ -770,6 +779,7 @@ def test_block_lms_bps_loop_transfer_count_constant(backend_device, xp, monkeypa
             cpr_type="bps",
             cpr_bps_test_phases=32,
             cpr_bps_block_size=16,
+            cpr_cycle_slip_correction=cs_corr,
         )
         return counts["n"]
 
@@ -779,6 +789,72 @@ def test_block_lms_bps_loop_transfer_count_constant(backend_device, xp, monkeypa
         f"to_device call count scales with block count: "
         f"{n_small} (4 blocks) vs {n_large} (16 blocks)"
     )
+
+
+def test_block_lms_cycle_slip_kernel_matches_cpu_fallback(
+    backend_device, xp, monkeypatch
+):
+    """GPU: cs_block CUDA kernel path matches the D2H + Numba fallback path.
+
+    Runs the same bps+cs workload twice on GPU — once with the CUDA detector,
+    once with get_kernel('cs_block') forced to None — and requires matching
+    outputs.  A disagreement in any slip decision would show up as an O(π/2)
+    phase divergence.
+    """
+    if xp is np:
+        pytest.skip("GPU-only kernel-vs-fallback check")
+
+    from commstools import _cuda
+
+    if _cuda.get_kernel("cs_block") is None:
+        pytest.skip("cs_block CUDA kernel unavailable")
+
+    samples_np, syms_np = _wiener_qam16_trackable(2048, sigma_phi=0.02)
+    kw = dict(
+        num_taps=11,
+        sps=1,
+        step_size=5e-4,
+        block_size=128,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
+        cpr_cycle_slip_correction=True,
+    )
+
+    r_kernel = block_lms(xp.asarray(samples_np), xp.asarray(syms_np[:128]), **kw)
+
+    real_get_kernel = _cuda.get_kernel
+
+    def no_cs_kernel(name, **spec):
+        if name == "cs_block":
+            return None
+        return real_get_kernel(name, **spec)
+
+    monkeypatch.setattr(_cuda, "get_kernel", no_cs_kernel)
+    r_fallback = block_lms(xp.asarray(samples_np), xp.asarray(syms_np[:128]), **kw)
+
+    np.testing.assert_allclose(
+        np.asarray(to_device(r_kernel.phase_trajectory, "cpu")),
+        np.asarray(to_device(r_fallback.phase_trajectory, "cpu")),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(to_device(r_kernel.y_hat, "cpu")),
+        np.asarray(to_device(r_fallback.y_hat, "cpu")),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    for attr in ("cs_buf_y", "cs_buf_ptr", "cs_buf_n", "cs_stats"):
+        np.testing.assert_allclose(
+            getattr(r_kernel.cpr_state, attr),
+            getattr(r_fallback.cpr_state, attr),
+            rtol=1e-8,
+            atol=1e-8,
+            err_msg=attr,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
