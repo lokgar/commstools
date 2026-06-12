@@ -685,7 +685,8 @@ def estimate_frequency_offset_pilots(
     lock_range = sampling_rate / (2 * max_gap) if max_gap > 0 else float("inf")
     wt_str = "WLSQ" if snr_weighted else "OLS"
 
-    f_per_ch = [float(slopes[c]) / (2.0 * np.pi) for c in range(C)]
+    slopes_np = to_device(slopes, "cpu")  # one batched D2H instead of C syncs
+    f_per_ch = [float(slopes_np[c]) / (2.0 * np.pi) for c in range(C)]
 
     logger.info(
         f"FOE (pilots, {wt_str}): {[f'{f:.2f}' for f in f_per_ch]} Hz "
