@@ -20,11 +20,12 @@ mi :
     Mutual Information (MI) under a Gaussian channel assumption.
 """
 
+import logging
 from typing import Optional, Tuple, Union
 
 import numpy as np
 
-from .backend import ArrayType, dispatch
+from .backend import ArrayType, dispatch, to_device
 from .logger import logger
 
 
@@ -183,11 +184,15 @@ def evm(
     evm_percent[low_pwr_mask] = float("inf")
     evm_db[low_pwr_mask] = float("inf")
 
-    for ch in range(evm_percent.shape[0]):
-        logger.info(
-            f"EVM [{mode}] Ch{ch}: {float(evm_percent[ch]):.2f}%"
-            f" ({float(evm_db[ch]):.2f} dB)"
-        )
+    if logger.isEnabledFor(logging.INFO):
+        # One batched D2H per array (and none at all when INFO is off).
+        evm_pct_np = to_device(evm_percent, "cpu")
+        evm_db_np = to_device(evm_db, "cpu")
+        for ch in range(evm_pct_np.shape[0]):
+            logger.info(
+                f"EVM [{mode}] Ch{ch}: {float(evm_pct_np[ch]):.2f}%"
+                f" ({float(evm_db_np[ch]):.2f} dB)"
+            )
 
     return evm_percent, evm_db
 
@@ -275,8 +280,10 @@ def snr(
     mask_to_neg_inf = low_pwr_mask & (~zero_noise_mask)
     snr_db[mask_to_neg_inf] = float("-inf")
 
-    for ch in range(snr_db.shape[0]):
-        logger.info(f"SNR Ch{ch}: {float(snr_db[ch]):.2f} dB")
+    if logger.isEnabledFor(logging.INFO):
+        snr_db_np = to_device(snr_db, "cpu")
+        for ch in range(snr_db_np.shape[0]):
+            logger.info(f"SNR Ch{ch}: {float(snr_db_np[ch]):.2f} dB")
 
     return snr_db
 
@@ -327,11 +334,14 @@ def ber(
         logger.info(f"BER: {ber_value:.2e} ({int(errors)}/{total} errors)")
         return ber_value
 
-    for ch in range(ber_values.shape[0]):
-        logger.info(
-            f"BER Ch{ch}: {float(ber_values[ch]):.2e} "
-            f"({int(errors[ch])}/{total} errors)"
-        )
+    if logger.isEnabledFor(logging.INFO):
+        ber_np = to_device(ber_values, "cpu")
+        errors_np = to_device(errors, "cpu")
+        for ch in range(ber_np.shape[0]):
+            logger.info(
+                f"BER Ch{ch}: {float(ber_np[ch]):.2e} "
+                f"({int(errors_np[ch])}/{total} errors)"
+            )
     return ber_values
 
 
@@ -423,11 +433,14 @@ def ser(
         logger.info(f"SER: {ser_val:.2e} ({int(errors)}/{total} errors)")
         return ser_val
 
-    for ch in range(ser_values.shape[0]):
-        logger.info(
-            f"SER Ch{ch}: {float(ser_values[ch]):.2e} "
-            f"({int(errors[ch])}/{total} errors)"
-        )
+    if logger.isEnabledFor(logging.INFO):
+        ser_np = to_device(ser_values, "cpu")
+        errors_np = to_device(errors, "cpu")
+        for ch in range(ser_np.shape[0]):
+            logger.info(
+                f"SER Ch{ch}: {float(ser_np[ch]):.2e} "
+                f"({int(errors_np[ch])}/{total} errors)"
+            )
     return ser_values
 
 
