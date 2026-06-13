@@ -238,7 +238,7 @@ The `benchmarks/` directory tracks the performance of the GPU-relevant hot paths
 | File | Functions | What the numbers show |
 | --- | --- | --- |
 | `bench_bps.py` | `recover_carrier_phase_bps` | Square-QAM O(1) fast path vs. the non-square `(CHUNK, B, M)` distance-tensor path (16-QAM vs. 128-cross). Includes the GPU-only gate workload `128cross / N=1e6 / C=2` for the fused-kernel work. |
-| `bench_block_lms.py` | `block_lms` | Frequency-domain equalizer with CPR off / `bps` / `bps + cycle-slip`, at two block sizes: `bench_block_lms` (block_size=256) is the launch-overhead-bound stress case and gate workload (GPU *slower* than CPU at 100k symbols); `bench_block_lms_large` (block_size=2048) is the recommended GPU operating point (GPU ~2× faster than CPU) and guards regressions that scale with block size. |
+| `bench_block_lms.py` | `block_lms` | Frequency-domain equalizer with CPR off / `bps` / `bps + cycle-slip`. Three legs: `bench_block_lms` (block_size=256, fully trained) is the launch-overhead-bound eager stress case; `bench_block_lms_large` (block_size=2048) is the recommended large-block operating point and guards block-size-scaling regressions; `bench_block_lms_dd` (block_size=256, short training prefix) is the realistic decision-directed steady state and the only leg that exercises the DD-02 step-3 CUDA-graph path (graph captures full DD blocks only) — a graph regression / silent fallback shows up here as a jump back toward the eager ~800 ms. |
 | `bench_equalizers.py` | `lms`, `cma`, `rls` | Sequential equalizers across `numba` and `jax` backends, 50k symbols (20k for RLS, symbol-spaced). |
 | `bench_sync_misc.py` | Viterbi-Viterbi + cycle slips, `resolve_phase_ambiguity`, `evm` | Host-sync hygiene targets in recovery/metrics. |
 

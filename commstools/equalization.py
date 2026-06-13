@@ -57,6 +57,7 @@ apply_taps :
     Apply frozen equalizer taps to a new signal (no weight updates).
 """
 
+import contextlib
 import functools
 from dataclasses import dataclass
 from typing import Any, Optional, Union
@@ -5557,6 +5558,7 @@ def block_lms(
     input_norm_factor: Optional[Union[float, np.ndarray]] = None,
     samples_prefix: Optional[ArrayType] = None,
     pad_mode: str = "zeros",
+    cuda_graph: bool = True,
 ) -> EqualizerResult:
     """Block LMS equalizer with frequency-domain gradient accumulation.
 
@@ -5738,6 +5740,17 @@ def block_lms(
     pad_mode : {'zeros', 'edge'}, default 'zeros'
         Padding strategy when ``samples_prefix`` is ``None``.  See
         ``lms()`` for the full description; behaviour is identical.
+    cuda_graph : bool, default True
+        On the GPU (CuPy) backend, capture the per-block compute into a CUDA
+        graph and replay it once per block, collapsing the ~30-50 per-block
+        kernel launches into a single launch.  This removes the launch-overhead
+        floor that dominates small/medium ``block_size`` runs.  Only full blocks
+        in the decision-directed region are captured; the training and final
+        partial blocks always run eagerly.  Has no effect on CPU, when
+        ``store_weights=True``, or when cycle-slip correction is enabled without
+        the ``cs_block`` CUDA kernel; capture failures fall back to the eager
+        loop with a warning, so output is unaffected either way.  Set ``False``
+        to force the eager loop (e.g. for debugging or profiling).
 
     Returns
     -------
@@ -5911,8 +5924,10 @@ def block_lms(
             cs_buf_ptr = _st.cs_buf_ptr.copy()
             cs_buf_n = _st.cs_buf_n.copy()
             cs_stats = _st.cs_stats.copy()
+            # xp.array (not asarray): the history buffer is updated in place
+            # inside the block loop, so it must never alias the caller's state.
             bps_d2_hist = (
-                xp.asarray(_st.bps_d2_hist)
+                xp.array(_st.bps_d2_hist, dtype=xp.float32)
                 if _st.bps_d2_hist is not None
                 else xp.zeros((P, C, _bps_hist_len), dtype=xp.float32)
             )
@@ -6033,35 +6048,49 @@ def block_lms(
     )
     phi_all = xp.zeros((C, n_sym), dtype=xp.float32) if cpr_type == "bps" else None
 
-    # Pre-allocate scratch buffers — reused every block to avoid per-block heap pressure.
+    # Pre-allocate scratch buffers — reused every block to avoid per-block heap
+    # pressure, and (on GPU) to give the CUDA-graph capture stable pointers.
     x_win = xp.zeros((C, fftsize), dtype=xp.complex64)
     e_scatter = xp.zeros((C, fftsize), dtype=xp.complex64)
+    # Fixed-width output workspaces (block_size columns).  The block body always
+    # writes its per-symbol outputs here; the driver copies the valid [:, :B]
+    # slice into the full-length result arrays at the right offset.  Routing
+    # through fixed buffers (rather than writing y_all[:, b_start:b_end]
+    # directly) is what lets the body be captured once and replayed: the only
+    # thing that varies per block is the eager input fill and output copy.
+    y_rot_ws = xp.empty((C, block_size), dtype=xp.complex64)
+    e_clean_ws = xp.empty((C, block_size), dtype=xp.complex64)
+    phi_ws = xp.empty((C, block_size), dtype=xp.float32) if cpr_type == "bps" else None
 
     n_blocks = (n_sym + block_size - 1) // block_size
     # On-device divergence flag — accumulates with |= inside the loop, zero D→H
     # syncs during iteration.  Checked once with bool() after the loop exits.
     _div_flag = xp.zeros(1, dtype=xp.bool_)
 
-    # ── Block loop ────────────────────────────────────────────────────────────
-    for b in range(n_blocks):
-        b_start = b * block_size
-        b_end = min(b_start + block_size, n_sym)
-        B = b_end - b_start  # symbols in this block (may be < block_size for last)
+    def _run_block(B, b_start, n_train_blk):
+        """Compute one block: forward filter, CPR, error, gradient, weight update.
 
-        # Input window: x_padded[:, b_start*sps : b_start*sps + fftsize]
-        # fftsize = next_pow2(B*sps + num_taps - 1), so the window includes
-        # B*sps new samples plus num_taps-1 anti-causal look-ahead samples
-        # needed by the cross-correlation filter y[n]=Σ conj(h[τ])·x[n+τ].
-        x_start = b_start * sps
-        x_win.fill(0)
-        available = min(fftsize, N_padded - x_start)
-        if available > 0:
-            x_win[:, :available] = x_padded[:, x_start : x_start + available]
+        Reads the input window from ``x_win`` (filled by the caller), reads and
+        updates the persistent filter/CPR state in place, and writes the
+        per-symbol outputs into the fixed workspaces ``y_rot_ws``/``e_clean_ws``/
+        ``phi_ws`` (columns ``[:, :B]``).  Issues no host synchronization, so on
+        GPU it is safe to capture into a CUDA graph and replay.
+        """
+        nonlocal h, bps_prev4, bps_offset4, _div_flag
 
         # ── Forward pass (frequency-domain butterfly) ─────────────────────
         X_fd = xp.fft.fft(x_win, axis=-1)  # (C, F)
         H_fd = xp.fft.fft(h, n=fftsize, axis=-1)  # (C, C, F)
-        Y_fd = xp.einsum("ijk,jk->ik", xp.conj(H_fd), X_fd)  # (C, F)
+        # Butterfly contraction Y[i,k] = Σ_j conj(H[i,j,k]) X[j,k].  Written as a
+        # broadcast-multiply + reduction (not einsum) for two reasons: einsum
+        # dispatches to cuBLAS, which cannot be called inside a CUDA-graph stream
+        # capture; and the reduction is accumulated in complex128 before the
+        # complex64 downcast, per the CLAUDE.md filter-dot-product precision rule.
+        Y_fd = (
+            (xp.conj(H_fd).astype(xp.complex128) * X_fd.astype(xp.complex128)[None])
+            .sum(axis=1)
+            .astype(xp.complex64)
+        )  # (C, F)
         y_time = xp.fft.ifft(Y_fd, axis=-1)  # (C, F)
         y_block = y_time[:, : B * sps : sps].astype(xp.complex64)  # (C, B)
 
@@ -6143,10 +6172,12 @@ def block_lms(
                 best_k = xp.argmin(metric, axis=0)  # (C, B)
                 phi_raw = bps_angles[best_k]  # (C, B)
 
-            # Slide BPS distance history across block boundary (for next block's prefix)
+            # Slide BPS distance history across block boundary (for next block's
+            # prefix).  In-place write into the persistent buffer (not a rebind)
+            # so the captured graph reads/writes the same address every replay.
             if _bps_hist_len > 0:
                 combined_hist = xp.concatenate([bps_d2_hist, min_d2], axis=2)
-                bps_d2_hist = combined_hist[:, :, -_bps_hist_len:]
+                bps_d2_hist[...] = combined_hist[:, :, -_bps_hist_len:]
 
             # 4-fold causal unwrap: equivalent to np.unwrap(phi*4)/4 via
             # diff→wrap[-π,π]→cumsum.  CPU: np.unwrap directly (no transfer cost).
@@ -6309,14 +6340,13 @@ def block_lms(
 
             phi_c = phi_c_dev  # wrapped float32, for rotation
             y_rot = y_block * xp.exp(-1j * phi_c.astype(xp.complex64))  # (C, B)
-            assert phi_all is not None
-            phi_all[:, b_start:b_end] = phi_c_traj  # unwrapped float32, for trajectory
+            assert phi_ws is not None
+            phi_ws[:, :B] = phi_c_traj  # unwrapped float32, for trajectory
         else:
             y_rot = y_block
 
         # ── Error computation (training or DD slicer) ─────────────────────
         e_clean = xp.empty((C, B), dtype=xp.complex64)
-        n_train_blk = max(0, min(n_train_aligned - b_start, B))
 
         if n_train_blk > 0:
             d_train = training_symbols[:, b_start : b_start + n_train_blk]
@@ -6354,12 +6384,12 @@ def block_lms(
                 d_dd = constellation[xp.argmin(d2_sl, axis=-1)]
             e_clean[:, n_train_blk:] = d_dd - y_dd
 
-        # ── Store per-symbol outputs ──────────────────────────────────────
-        y_all[:, b_start:b_end] = y_rot
-        e_all[:, b_start:b_end] = e_clean
+        # ── Store per-symbol outputs into the fixed workspaces ────────────
+        y_rot_ws[:, :B] = y_rot
+        e_clean_ws[:, :B] = e_clean
         if store_weights:
             assert w_hist is not None
-            w_hist[b_start:b_end] = h[None, :, :, :]
+            w_hist[b_start : b_start + B] = h[None, :, :, :]
 
         # ── Back-rotate error to tap plane and compute gradient ───────────
         if cpr_type == "bps":
@@ -6371,15 +6401,118 @@ def block_lms(
         e_scatter.fill(0)
         e_scatter[:, : B * sps : sps] = e_taps
 
-        # Frequency-domain gradient: dH_fd[i,j,k] = conj(E_fd[i,k]) * X_fd[j,k]
+        # Frequency-domain gradient: dH_fd[i,j,k] = conj(E_fd[i,k]) * X_fd[j,k].
+        # Outer product over the channel axes — no contracted index, hence no
+        # accumulation (complex64 is exact enough) and no cuBLAS, so the
+        # broadcast form is both capture-safe and replaces the einsum directly.
         E_fd = xp.fft.fft(e_scatter, axis=-1)  # (C, F)
-        dH_fd = xp.einsum("ik,jk->ijk", xp.conj(E_fd), X_fd)  # (C, C, F)
+        dH_fd = xp.conj(E_fd)[:, None, :] * X_fd[None, :, :]  # (C, C, F)
         dh = xp.fft.ifft(dH_fd, axis=-1)[:, :, :num_taps]  # (C, C, T)
 
-        h = h + xp.float32(step_size) * dh
+        # In-place weight update so the captured graph reads/writes one buffer.
+        h += xp.float32(step_size) * dh
 
         # Accumulate divergence flag on-device — no D→H sync here.
         _div_flag |= ~xp.isfinite(h).all()
+
+    def _fill_x_win(b_start):
+        """Eager (per-block, varying offset) load of the input window into x_win.
+
+        Kept outside ``_run_block`` because the source offset changes every
+        block — a varying-pointer copy cannot live inside the captured graph.
+        """
+        x_start = b_start * sps
+        x_win.fill(0)
+        available = min(fftsize, N_padded - x_start)
+        if available > 0:
+            x_win[:, :available] = x_padded[:, x_start : x_start + available]
+
+    def _store_outputs(b_start, b_end, B):
+        """Eager copy of the fixed workspaces into the result arrays."""
+        y_all[:, b_start:b_end] = y_rot_ws[:, :B]
+        e_all[:, b_start:b_end] = e_clean_ws[:, :B]
+        if cpr_type == "bps":
+            assert phi_all is not None and phi_ws is not None
+            phi_all[:, b_start:b_end] = phi_ws[:, :B]
+
+    # ── CUDA-graph eligibility ────────────────────────────────────────────────
+    # The block-loop body is host-sync-free (DD-02 steps 1-2), so on GPU it can
+    # be captured once and replayed per block, collapsing ~30-50 kernel launches
+    # into one.  Only full blocks (B == block_size) lying entirely in the
+    # decision-directed region (n_train_blk == 0) share one fixed control flow
+    # and shape, so only those are captured; the training/straddle blocks and
+    # the final partial block always run eagerly.  Cycle-slip correction is
+    # capturable only via the cs_block CUDA kernel (the CPU fallback syncs).
+    _first_dd_full = ((n_train_aligned + block_size - 1) // block_size) * block_size
+    _n_dd_full = max(0, (n_sym - _first_dd_full) // block_size)
+    _use_graph = (
+        cuda_graph
+        and xp is not np
+        and not store_weights
+        and (not cpr_cycle_slip_correction or _k_cs is not None)
+        and _n_dd_full >= 2  # need ≥1 warmup block + ≥1 captured block to pay off
+    )
+    try:
+        import cupy as _cp_graph  # noqa: PLC0415
+
+        _graph_stream = _cp_graph.cuda.Stream(non_blocking=True) if _use_graph else None
+    except Exception:
+        _use_graph = False
+        _graph_stream = None
+
+    # All loop work — eager blocks, input fills, output copies, and graph
+    # capture/replay — runs on a single stream so the shared state buffers
+    # (h, bps_*, cs_*) stay ordered across the eager↔replay boundary.  On the
+    # eager (CPU or graph-disabled) path this is a no-op context.
+    _loop_stream_ctx = _graph_stream if _use_graph else contextlib.nullcontext()
+
+    # ── Block loop ────────────────────────────────────────────────────────────
+    _graph = None  # captured CUDA graph, built lazily on the 2nd full DD block
+    _graph_warmed = False  # True once one full DD block has primed the mem pool
+    with _loop_stream_ctx:
+        for b in range(n_blocks):
+            b_start = b * block_size
+            b_end = min(b_start + block_size, n_sym)
+            B = b_end - b_start  # symbols this block (may be < block_size for last)
+            n_train_blk = max(0, min(n_train_aligned - b_start, B))
+            _capturable = _use_graph and B == block_size and n_train_blk == 0
+
+            _fill_x_win(b_start)
+
+            if not _capturable:
+                _run_block(B, b_start, n_train_blk)  # eager
+            elif _graph is not None:
+                _graph.launch()  # replay (current stream == _graph_stream)
+            elif not _graph_warmed:
+                _run_block(B, b_start, 0)  # eager warmup — primes the memory pool
+                _graph_warmed = True
+            else:
+                # Capture the body once.  Stream capture records the kernel
+                # sequence without executing it (pool allocations reuse the
+                # blocks the warmup freed, so no cudaMalloc occurs); launch()
+                # then executes this block.  On any capture failure, fall back
+                # to running the remaining blocks eagerly.
+                try:
+                    _graph_stream.begin_capture()
+                    _run_block(B, b_start, 0)
+                    _graph = _graph_stream.end_capture()
+                    _graph.launch()
+                except Exception as exc:  # pragma: no cover - hw/version dependent
+                    with contextlib.suppress(Exception):
+                        _graph_stream.end_capture()
+                    _graph = None
+                    _use_graph = False
+                    logger.warning(
+                        "block_lms CUDA-graph capture failed (%s); "
+                        "continuing with the eager block loop.",
+                        exc,
+                    )
+                    _run_block(B, b_start, 0)  # ensure this block runs once
+
+            _store_outputs(b_start, b_end, B)
+
+    if _graph_stream is not None:
+        _graph_stream.synchronize()
 
     # Single D→H sync after the full loop to check for divergence.
     if bool(_div_flag[0]):

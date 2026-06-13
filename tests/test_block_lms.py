@@ -648,6 +648,67 @@ def test_cpr_state_none_is_baseline_block_lms(backend_device, xp):
     )
 
 
+@pytest.mark.parametrize("cs_corr", [False, True])
+@pytest.mark.parametrize("n_sym", [100_000, 100_137])
+def test_block_lms_cuda_graph_matches_eager(cs_corr, n_sym, backend_device, xp):
+    """GPU: cuda_graph=True must be bit-exact with cuda_graph=False.
+
+    Uses a short training prefix so the bulk of the run is decision-directed
+    (the only blocks the graph captures), and an odd ``n_sym`` to exercise the
+    eager partial last block alongside the captured full blocks.  Graph replay
+    recomputes every block from the same inputs and state, so the two paths
+    must agree to the last bit — any divergence flags a capture/replay aliasing
+    bug.
+    """
+    if xp is np:
+        pytest.skip("CUDA-graph capture is GPU-only")
+    from commstools import _cuda
+
+    if not _cuda.is_available():
+        pytest.skip("CUDA device below compute capability 7.0")
+
+    rng = np.random.default_rng(5)
+    const = normalize(gray_constellation("qam", 16), "average_power").astype(
+        np.complex64
+    )
+    syms = const[rng.integers(0, 16, n_sym)]
+    phase = np.cumsum(rng.normal(0.0, 0.01, n_sym))
+    samples = (syms * np.exp(1j * phase)).astype(np.complex64)
+    noise = np.sqrt(10 ** (-25.0 / 10) / 2)
+    samples += noise * (
+        rng.standard_normal(n_sym) + 1j * rng.standard_normal(n_sym)
+    ).astype(np.complex64)
+
+    kw = dict(
+        num_taps=21,
+        sps=1,
+        step_size=5e-4,
+        block_size=256,
+        modulation="qam",
+        order=16,
+        cpr_type="bps",
+        cpr_cycle_slip_correction=cs_corr,
+    )
+    x = xp.asarray(samples)
+    t = xp.asarray(syms[:512])  # short data-aided preamble; rest is graph-eligible
+
+    r_graph = block_lms(x, t, **kw, cuda_graph=True)
+    r_eager = block_lms(x, t, **kw, cuda_graph=False)
+
+    np.testing.assert_array_equal(
+        np.asarray(to_device(r_graph.y_hat, "cpu")),
+        np.asarray(to_device(r_eager.y_hat, "cpu")),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(to_device(r_graph.phase_trajectory, "cpu")),
+        np.asarray(to_device(r_eager.phase_trajectory, "cpu")),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(to_device(r_graph.weights, "cpu")),
+        np.asarray(to_device(r_eager.weights, "cpu")),
+    )
+
+
 def _wiener_qam16_trackable(n_sym, snr_db=25.0, sigma_phi=0.005, seed=33):
     """16-QAM under slow Wiener phase noise that BPS can actually track.
 

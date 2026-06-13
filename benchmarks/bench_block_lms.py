@@ -16,6 +16,16 @@ Two block sizes are tracked:
   scale with block size (per-element work, intermediate-tensor growth) which
   the overhead-bound 256 case would mask, and provides the throughput ceiling
   that graph capture at small block sizes is judged against.
+* ``bench_block_lms_dd`` (block_size=256, short training prefix) — the
+  decision-directed steady state, the realistic operating mode and the only
+  one that exercises the DD-02 step-3 CUDA-graph path (graph capture covers
+  full DD blocks only; the fully-trained ``bench_block_lms`` above runs the
+  eager loop because every block is a training block).  This is the headline
+  Point-7 number; a graph regression / silent fallback shows up here as a
+  jump back to the eager ~800 ms.
+
+``bench_block_lms``/``_large`` pass the full symbol sequence as training, so
+they measure the eager loop on both backends regardless of ``cuda_graph``.
 """
 
 import pytest
@@ -25,6 +35,9 @@ from workloads import mimo_equalizer_workload
 
 ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
 N_SYM = 100_000
+# Short data-aided preamble for the DD benchmark: enough to seed the taps,
+# small enough that the bulk of the run is decision-directed (graph-eligible).
+N_TRAIN_DD = 512
 
 CPR_CONFIGS = [
     ("no-cpr", dict()),
@@ -33,13 +46,13 @@ CPR_CONFIGS = [
 ]
 
 
-def _bench_block_lms(benchmark, xp, sync, cpr_kwargs, block_size):
+def _bench_block_lms(benchmark, xp, sync, cpr_kwargs, block_size, n_train=None):
     linewidth = 1e4 if cpr_kwargs else 0.0
     samples, syms = mimo_equalizer_workload(
         n_sym=N_SYM, order=16, sps=2, linewidth_hz=linewidth
     )
     x = xp.asarray(samples)
-    t = xp.asarray(syms)
+    t = xp.asarray(syms if n_train is None else syms[:, :n_train])
 
     def run():
         r = block_lms(
@@ -66,3 +79,10 @@ def bench_block_lms(benchmark, backend_device, xp, sync, label, cpr_kwargs):
 @pytest.mark.parametrize("label,cpr_kwargs", CPR_CONFIGS)
 def bench_block_lms_large(benchmark, backend_device, xp, sync, label, cpr_kwargs):
     _bench_block_lms(benchmark, xp, sync, cpr_kwargs, block_size=2048)
+
+
+@pytest.mark.parametrize("label,cpr_kwargs", CPR_CONFIGS)
+def bench_block_lms_dd(benchmark, backend_device, xp, sync, label, cpr_kwargs):
+    _bench_block_lms(
+        benchmark, xp, sync, cpr_kwargs, block_size=256, n_train=N_TRAIN_DD
+    )
