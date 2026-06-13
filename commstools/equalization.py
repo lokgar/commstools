@@ -2075,6 +2075,41 @@ def _get_jax_lms_cpr(
             #   cs_buf_x      : (C, H)            float64  — symbol index
             #   cs_buf_y      : (C, H)            float64  — phase value
             #   cs_buf_ptr    : (C,)              int32    — write pointer
+            #   bps_d2_slots  : (B, KB, C)        float64  — per-slot BPS sq-dist
+            #   bps_metric    : (B, C)            float64  — running sum of slots
+
+            def _bps_d2(rotated):
+                # Min squared distance of `rotated` (..., complex) to the
+                # constellation, returned float64.  Shared by the per-symbol
+                # new-slot update and the warm-start reconstruction so the
+                # distance formula has a single source of truth.
+                if sq_side > 0:  # static branch at trace time
+                    r_idx = jnp.clip(
+                        jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(
+                            jnp.int32
+                        ),
+                        0,
+                        sq_side - 1,
+                    )
+                    i_idx = jnp.clip(
+                        jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(
+                            jnp.int32
+                        ),
+                        0,
+                        sq_side - 1,
+                    )
+                    r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(
+                        sq_d_grid
+                    )
+                    i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(
+                        sq_d_grid
+                    )
+                    d2 = (rotated.real - r_near) ** 2 + (rotated.imag - i_near) ** 2
+                    return d2.astype(jnp.float64)
+                return jnp.min(
+                    jnp.abs(rotated[..., None] - constellation) ** 2,
+                    axis=-1,
+                ).astype(jnp.float64)
 
             def step(carry, idx):
                 (
@@ -2084,6 +2119,8 @@ def _get_jax_lms_cpr(
                     bps_buf,
                     bps_buf_ptr,
                     bps_prev4,
+                    bps_d2_slots,
+                    bps_metric,
                     cs_buf_x,
                     cs_buf_y,
                     cs_buf_ptr,
@@ -2109,6 +2146,8 @@ def _get_jax_lms_cpr(
                     bps_buf_new = bps_buf
                     bps_buf_ptr_new = bps_buf_ptr
                     bps_prev4_new = bps_prev4
+                    bps_d2_slots_new = bps_d2_slots
+                    bps_metric_new = bps_metric
                 else:
                     # Fill BPS circular buffer with current y_raw
                     slot = jnp.int32(bps_buf_ptr % KB)
@@ -2118,54 +2157,23 @@ def _get_jax_lms_cpr(
                         (slot, jnp.int32(0)),
                     )  # broadcast doesn't work for transpose, use (C, KB) layout instead
                     bps_buf_ptr_new = bps_buf_ptr + 1
-                    fill = jnp.minimum(bps_buf_ptr_new, KB)
 
-                    # rotated: (B, KB, C)
-                    rotated = (
-                        bps_phases_neg[:, None, None] * bps_buf_new[None, :, :]
-                    )  # (B, KB, C)
-                    # min-dist per candidate per slot per channel: (B, KB, C)
-                    if sq_side > 0:  # static branch at trace time
-                        r_idx = jnp.clip(
-                            jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(
-                                jnp.int32
-                            ),
-                            0,
-                            sq_side - 1,
-                        )
-                        i_idx = jnp.clip(
-                            jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(
-                                jnp.int32
-                            ),
-                            0,
-                            sq_side - 1,
-                        )
-                        r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(
-                            sq_d_grid
-                        )
-                        i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(
-                            sq_d_grid
-                        )
-                        d2_all = (rotated.real - r_near) ** 2 + (
-                            rotated.imag - i_near
-                        ) ** 2
-                    else:
-                        d2_all = jnp.min(
-                            jnp.abs(
-                                rotated[:, :, :, None]
-                                - constellation[None, None, None, :]
-                            )
-                            ** 2,
-                            axis=-1,
-                        )
-                    # Mask slots beyond fill
-                    slot_mask = jnp.arange(KB)[None, :, None] < fill  # (1, KB, 1)
-                    d2_masked = jnp.where(
-                        slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)
+                    # Incremental running sum (O(B*M)/symbol vs O(B*KB*M) for a
+                    # full re-sum, matching the Numba bps_running_sum): score the
+                    # NEW slot only, add it to the metric and subtract the evicted
+                    # slot's stored distance.  Not-yet-filled slots hold 0 (set at
+                    # warm-start reconstruction), so the subtraction is exact and
+                    # reproduces the old fill-mask semantics.
+                    rotated_new = bps_phases_neg[:, None] * y_raw[None, :]  # (B, C)
+                    d2_new = _bps_d2(rotated_new)  # (B, C) float64
+                    old_d2 = jax.lax.dynamic_slice_in_dim(
+                        bps_d2_slots, slot, 1, axis=1
+                    )[:, 0, :]  # (B, C)
+                    metric = bps_metric + d2_new - old_d2  # (B, C) float64
+                    bps_d2_slots_new = jax.lax.dynamic_update_slice_in_dim(
+                        bps_d2_slots, d2_new[:, None, :], slot, axis=1
                     )
-                    metric = d2_masked.sum(
-                        axis=1
-                    )  # (B, C) float64 — matches Numba bps_running_sum
+                    bps_metric_new = metric
 
                     if bps_joint_channels:
                         # Sum over channels too → (B,); broadcast winner to all C
@@ -2322,6 +2330,8 @@ def _get_jax_lms_cpr(
                     bps_buf_new,
                     bps_buf_ptr_new,
                     bps_prev4_new,
+                    bps_d2_slots_new,
+                    bps_metric_new,
                     cs_buf_x_new,
                     cs_buf_y_new,
                     cs_buf_ptr_new,
@@ -2329,6 +2339,16 @@ def _get_jax_lms_cpr(
                 return carry_new, (y_fin, e_clean, W_new, phi_corr)
 
             n_sym = training_padded.shape[1]
+            # Warm-start: reconstruct per-slot BPS distances + running metric from
+            # the buffer (single source of truth via _bps_d2).  Cold start (zero
+            # buffer, ptr=0) yields an all-zero metric through the fill mask; the
+            # mask also stores 0 for unfilled slots so the in-loop eviction stays
+            # exact.
+            _fill0 = jnp.minimum(bps_buf_ptr_init, KB)
+            _rot0 = bps_phases_neg[:, None, None] * bps_buf_init[None, :, :]  # (B,KB,C)
+            _mask0 = jnp.arange(KB)[None, :, None] < _fill0
+            bps_d2_slots_init = jnp.where(_mask0, _bps_d2(_rot0), jnp.float64(0.0))
+            bps_metric_init = bps_d2_slots_init.sum(axis=1)  # (B, C) float64
             init_carry = (
                 w_init,
                 pll_phi_init,
@@ -2336,6 +2356,8 @@ def _get_jax_lms_cpr(
                 bps_buf_init,
                 bps_buf_ptr_init,
                 bps_prev4_init,
+                bps_d2_slots_init,
+                bps_metric_init,
                 cs_buf_x_init,
                 cs_buf_y_init,
                 cs_buf_ptr_init,
@@ -2348,6 +2370,8 @@ def _get_jax_lms_cpr(
                     bps_buf_f,
                     bps_buf_ptr_f,
                     bps_prev4_f,
+                    _bps_d2_slots_f,
+                    _bps_metric_f,
                     cs_buf_x_f,
                     cs_buf_y_f,
                     cs_buf_ptr_f,
@@ -2448,6 +2472,39 @@ def _get_jax_rls_cpr(
             cs_buf_y_init,
             cs_buf_ptr_init,
         ):
+            def _bps_d2(rotated):
+                # Min squared distance of `rotated` (..., complex) to the
+                # constellation, returned float64.  Shared by the per-symbol
+                # new-slot update and the warm-start reconstruction so the
+                # distance formula has a single source of truth.
+                if sq_side > 0:  # static branch at trace time
+                    r_idx = jnp.clip(
+                        jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(
+                            jnp.int32
+                        ),
+                        0,
+                        sq_side - 1,
+                    )
+                    i_idx = jnp.clip(
+                        jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(
+                            jnp.int32
+                        ),
+                        0,
+                        sq_side - 1,
+                    )
+                    r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(
+                        sq_d_grid
+                    )
+                    i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(
+                        sq_d_grid
+                    )
+                    d2 = (rotated.real - r_near) ** 2 + (rotated.imag - i_near) ** 2
+                    return d2.astype(jnp.float64)
+                return jnp.min(
+                    jnp.abs(rotated[..., None] - constellation) ** 2,
+                    axis=-1,
+                ).astype(jnp.float64)
+
             def step(carry, idx):
                 (
                     W,
@@ -2457,6 +2514,8 @@ def _get_jax_rls_cpr(
                     bps_buf,
                     bps_buf_ptr,
                     bps_prev4,
+                    bps_d2_slots,
+                    bps_metric,
                     cs_buf_x,
                     cs_buf_y,
                     cs_buf_ptr,
@@ -2480,6 +2539,8 @@ def _get_jax_rls_cpr(
                     bps_buf_new = bps_buf
                     bps_buf_ptr_new = bps_buf_ptr
                     bps_prev4_new = bps_prev4
+                    bps_d2_slots_new = bps_d2_slots
+                    bps_metric_new = bps_metric
                 else:
                     slot = jnp.int32(bps_buf_ptr % KB)
                     bps_buf_new = jax.lax.dynamic_update_slice(
@@ -2488,48 +2549,23 @@ def _get_jax_rls_cpr(
                         (slot, jnp.int32(0)),
                     )
                     bps_buf_ptr_new = bps_buf_ptr + 1
-                    fill = jnp.minimum(bps_buf_ptr_new, KB)
 
-                    rotated = (
-                        bps_phases_neg[:, None, None] * bps_buf_new[None, :, :]
-                    )  # (B, KB, C)
-                    if sq_side > 0:  # static branch at trace time
-                        r_idx = jnp.clip(
-                            jnp.round((rotated.real - sq_lev_min) / sq_d_grid).astype(
-                                jnp.int32
-                            ),
-                            0,
-                            sq_side - 1,
-                        )
-                        i_idx = jnp.clip(
-                            jnp.round((rotated.imag - sq_lev_min) / sq_d_grid).astype(
-                                jnp.int32
-                            ),
-                            0,
-                            sq_side - 1,
-                        )
-                        r_near = sq_lev_min + r_idx.astype(jnp.float32) * jnp.float32(
-                            sq_d_grid
-                        )
-                        i_near = sq_lev_min + i_idx.astype(jnp.float32) * jnp.float32(
-                            sq_d_grid
-                        )
-                        d2_all = (rotated.real - r_near) ** 2 + (
-                            rotated.imag - i_near
-                        ) ** 2
-                    else:
-                        d2_all = jnp.min(
-                            jnp.abs(
-                                rotated[:, :, :, None]
-                                - constellation[None, None, None, :]
-                            )
-                            ** 2,
-                            axis=-1,
-                        )
-                    slot_mask = jnp.arange(KB)[None, :, None] < fill
-                    metric = jnp.where(
-                        slot_mask, d2_all.astype(jnp.float64), jnp.float64(0.0)
-                    ).sum(axis=1)  # (B, C) float64
+                    # Incremental running sum (O(B*M)/symbol vs O(B*KB*M) for a
+                    # full re-sum, matching the Numba bps_running_sum): score the
+                    # NEW slot only, add it to the metric and subtract the evicted
+                    # slot's stored distance.  Not-yet-filled slots hold 0 (set at
+                    # warm-start reconstruction), so the subtraction is exact and
+                    # reproduces the old fill-mask semantics.
+                    rotated_new = bps_phases_neg[:, None] * y_raw[None, :]  # (B, C)
+                    d2_new = _bps_d2(rotated_new)  # (B, C) float64
+                    old_d2 = jax.lax.dynamic_slice_in_dim(
+                        bps_d2_slots, slot, 1, axis=1
+                    )[:, 0, :]  # (B, C)
+                    metric = bps_metric + d2_new - old_d2  # (B, C) float64
+                    bps_d2_slots_new = jax.lax.dynamic_update_slice_in_dim(
+                        bps_d2_slots, d2_new[:, None, :], slot, axis=1
+                    )
+                    bps_metric_new = metric
 
                     if bps_joint_channels:
                         best_k = jnp.argmin(metric.sum(axis=-1))
@@ -2694,6 +2730,8 @@ def _get_jax_rls_cpr(
                     bps_buf_new,
                     bps_buf_ptr_new,
                     bps_prev4_new,
+                    bps_d2_slots_new,
+                    bps_metric_new,
                     cs_buf_x_new,
                     cs_buf_y_new,
                     cs_buf_ptr_new,
@@ -2701,6 +2739,16 @@ def _get_jax_rls_cpr(
                 return carry_new, (y_fin, e_clean, W_new, phi_corr)
 
             n_sym = training_padded.shape[1]
+            # Warm-start: reconstruct per-slot BPS distances + running metric from
+            # the buffer (single source of truth via _bps_d2).  Cold start (zero
+            # buffer, ptr=0) yields an all-zero metric through the fill mask; the
+            # mask also stores 0 for unfilled slots so the in-loop eviction stays
+            # exact.
+            _fill0 = jnp.minimum(bps_buf_ptr_init, KB)
+            _rot0 = bps_phases_neg[:, None, None] * bps_buf_init[None, :, :]  # (B,KB,C)
+            _mask0 = jnp.arange(KB)[None, :, None] < _fill0
+            bps_d2_slots_init = jnp.where(_mask0, _bps_d2(_rot0), jnp.float64(0.0))
+            bps_metric_init = bps_d2_slots_init.sum(axis=1)  # (B, C) float64
             init_carry = (
                 w_init,
                 P_init,
@@ -2709,6 +2757,8 @@ def _get_jax_rls_cpr(
                 bps_buf_init,
                 bps_buf_ptr_init,
                 bps_prev4_init,
+                bps_d2_slots_init,
+                bps_metric_init,
                 cs_buf_x_init,
                 cs_buf_y_init,
                 cs_buf_ptr_init,
@@ -2722,6 +2772,8 @@ def _get_jax_rls_cpr(
                     bps_buf_f,
                     bps_buf_ptr_f,
                     bps_prev4_f,
+                    _bps_d2_slots_f,
+                    _bps_metric_f,
                     cs_buf_x_f,
                     cs_buf_y_f,
                     cs_buf_ptr_f,
@@ -4565,18 +4617,21 @@ def lms(
             num_train_symbols=int(n_train_aligned),
             input_norm_factor=eq_norm,
         )
-        phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
+        # from_jax returns CuPy for a GPU-resident JAX array; coerce to host
+        # NumPy via to_device (CuPy.get / NumPy passthrough) so CPRState stays
+        # host-side and np.asarray never sees a CuPy array.
+        phi_np = to_device(from_jax(phi_jax), "cpu")  # (N_sym, C)
         phi_t = xp.asarray(phi_np.T)  # (C, N_sym)
         result.phase_trajectory = phi_t[0] if was_1d else phi_t
         result.cpr_state = CPRState(
-            pll_phi=np.asarray(from_jax(pll_phi_f)),
-            pll_freq=np.asarray(from_jax(pll_freq_f)),
-            bps_prev4=np.asarray(from_jax(bps_prev4_f)),
-            jax_bps_buf=np.asarray(from_jax(bps_buf_f)),
-            jax_bps_buf_ptr=int(np.asarray(from_jax(bps_buf_ptr_f))),
-            cs_buf_x=np.asarray(from_jax(cs_buf_x_f)),
-            cs_buf_y=np.asarray(from_jax(cs_buf_y_f)),
-            cs_buf_ptr=np.asarray(from_jax(cs_buf_ptr_f)),
+            pll_phi=to_device(from_jax(pll_phi_f), "cpu"),
+            pll_freq=to_device(from_jax(pll_freq_f), "cpu"),
+            bps_prev4=to_device(from_jax(bps_prev4_f), "cpu"),
+            jax_bps_buf=to_device(from_jax(bps_buf_f), "cpu"),
+            jax_bps_buf_ptr=int(to_device(from_jax(bps_buf_ptr_f), "cpu")),
+            cs_buf_x=to_device(from_jax(cs_buf_x_f), "cpu"),
+            cs_buf_y=to_device(from_jax(cs_buf_y_f), "cpu"),
+            cs_buf_ptr=to_device(from_jax(cs_buf_ptr_f), "cpu"),
             cpr_type=cpr_type,
             num_ch=num_ch,
             symmetry=symmetry,
@@ -5399,18 +5454,21 @@ def rls(
             num_train_symbols=int(n_train_aligned),
             input_norm_factor=eq_norm,
         )
-        phi_np = np.asarray(from_jax(phi_jax))  # (N_sym, C)
+        # from_jax returns CuPy for a GPU-resident JAX array; coerce to host
+        # NumPy via to_device (CuPy.get / NumPy passthrough) so CPRState stays
+        # host-side and np.asarray never sees a CuPy array.
+        phi_np = to_device(from_jax(phi_jax), "cpu")  # (N_sym, C)
         phi_t = xp.asarray(phi_np[:n_update_halt].T)  # (C, n_update_halt)
         result.phase_trajectory = phi_t[0] if was_1d else phi_t
         result.cpr_state = CPRState(
-            pll_phi=np.asarray(from_jax(pll_phi_f)),
-            pll_freq=np.asarray(from_jax(pll_freq_f)),
-            bps_prev4=np.asarray(from_jax(bps_prev4_f)),
-            jax_bps_buf=np.asarray(from_jax(bps_buf_f)),
-            jax_bps_buf_ptr=int(np.asarray(from_jax(bps_buf_ptr_f))),
-            cs_buf_x=np.asarray(from_jax(cs_buf_x_f)),
-            cs_buf_y=np.asarray(from_jax(cs_buf_y_f)),
-            cs_buf_ptr=np.asarray(from_jax(cs_buf_ptr_f)),
+            pll_phi=to_device(from_jax(pll_phi_f), "cpu"),
+            pll_freq=to_device(from_jax(pll_freq_f), "cpu"),
+            bps_prev4=to_device(from_jax(bps_prev4_f), "cpu"),
+            jax_bps_buf=to_device(from_jax(bps_buf_f), "cpu"),
+            jax_bps_buf_ptr=int(to_device(from_jax(bps_buf_ptr_f), "cpu")),
+            cs_buf_x=to_device(from_jax(cs_buf_x_f), "cpu"),
+            cs_buf_y=to_device(from_jax(cs_buf_y_f), "cpu"),
+            cs_buf_ptr=to_device(from_jax(cs_buf_ptr_f), "cpu"),
             cpr_type=cpr_type,
             num_ch=num_ch,
             symmetry=symmetry,

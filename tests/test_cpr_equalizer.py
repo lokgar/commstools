@@ -19,6 +19,7 @@ Verification plan:
 import numpy as np
 import pytest
 
+from commstools.backend import to_device
 from commstools.equalization import CPRState, lms, rls
 from commstools.mapping import gray_constellation
 from commstools.frequency import (
@@ -129,6 +130,102 @@ def test_numba_jax_parity_lms(cpr_type, backend_device, xp):
     )
     assert res_nb.phase_trajectory is not None
     assert res_jx.phase_trajectory is not None
+
+
+def test_numba_jax_parity_bps_nonsquare(backend_device, xp):
+    """Numba/JAX BPS parity on a non-square (32-QAM cross) constellation.
+
+    Exercises the ``sq_side == 0`` distance branch of the JAX inline-BPS
+    incremental running sum (the table-free per-slot min-distance path) with a
+    block size > 1, which the square-QAM parity test does not reach.
+    """
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    rng = np.random.default_rng(7)
+    const = gray_constellation("qam", 32).astype(np.complex64)
+    idxs = rng.integers(0, 32, 1200)
+    syms = const[idxs]
+    samples = np.repeat(syms, 2)
+    noise_pwr = 10 ** (-30.0 / 10)
+    samples = (
+        samples
+        + np.sqrt(noise_pwr / 2)
+        * (rng.standard_normal(len(samples)) + 1j * rng.standard_normal(len(samples)))
+    ).astype(np.complex64)
+
+    kwargs = dict(
+        training_symbols=syms[:400],
+        num_taps=11,
+        sps=2,
+        modulation="qam",
+        order=32,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
+        cpr_cycle_slip_correction=False,
+    )
+    res_nb = lms(xp.asarray(samples), **kwargs, backend="numba")
+    res_jx = lms(xp.asarray(samples), **kwargs, backend="jax")
+
+    max_diff = float(
+        xp.max(xp.abs(xp.asarray(res_nb.y_hat) - xp.asarray(res_jx.y_hat)))
+    )
+    assert max_diff < 1e-4, (
+        f"32-QAM BPS: Numba vs JAX y_hat mismatch (max diff {max_diff:.2e})"
+    )
+
+
+def test_jax_cpr_gpu_device(backend_device, xp):
+    """JAX-CPR runs on an explicit GPU device and matches the CPU-JAX result.
+
+    Guards the result-unpacking boundary: ``from_jax`` returns a CuPy array for
+    a GPU-resident JAX result, so the unpacking must coerce CPRState fields to
+    host NumPy (and keep ``phase_trajectory`` on the active backend).  The rest
+    of the suite calls ``backend='jax'`` without ``device=``, which runs the
+    scan on CPU-JAX and never exercises this path.
+    """
+    if backend_device != "gpu":
+        pytest.skip("explicit GPU-device JAX path; requires CuPy/GPU")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    samples, syms = _qpsk_signal(n_sym=1500)
+    kwargs = dict(
+        training_symbols=syms[:400],
+        num_taps=11,
+        sps=2,
+        modulation="psk",
+        order=4,
+        cpr_type="bps",
+        cpr_bps_test_phases=32,
+        cpr_bps_block_size=16,
+    )
+    r_cpu = lms(np.asarray(samples), **kwargs, backend="jax", device="cpu")
+    r_gpu = lms(xp.asarray(samples), **kwargs, backend="jax", device="gpu")
+
+    # CPRState fields must be host NumPy regardless of compute device.
+    assert isinstance(r_gpu.cpr_state.bps_prev4, np.ndarray)
+    assert isinstance(r_gpu.cpr_state.jax_bps_buf, np.ndarray)
+
+    max_diff = float(
+        np.max(
+            np.abs(
+                np.asarray(r_cpu.y_hat) - to_device(r_gpu.y_hat, "cpu")
+            )
+        )
+    )
+    assert max_diff < 1e-4, (
+        f"GPU vs CPU JAX-CPR y_hat mismatch (max diff {max_diff:.2e})"
+    )
+
+    # GPU warm-start round-trip resumes without error.
+    r_gpu2 = lms(
+        xp.asarray(samples),
+        **kwargs,
+        backend="jax",
+        device="gpu",
+        cpr_state=r_gpu.cpr_state,
+    )
+    assert r_gpu2.y_hat is not None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -37,6 +37,6 @@
 - [x] Point 5 — DD-02 step 1
 - [x] Point 6 — DD-02 step 2 (cumulative steps 1-2 speedup on the N1e5 gate workload: 1.48× — see point report; the ≥2× target is expected to be met by Point 7 graph capture)
 - [x] Point 7 — DD-02 step 3 (CUDA-graph capture; **GO**: graph==eager bit-exact, step-3 speedup 12-15× on `bps`, 4.6× on `bps+cs` (cs kernel is sequential-compute-bound, not launch-bound, so the graph can't collapse it); GPU now beats CPU at block_size=256 in DD mode. Deviation: capture forbids cuBLAS, so the butterfly einsum became a complex128-accumulated broadcast (per CLAUDE.md dot-product rule) — block_lms is no longer bit-identical to pre-Point-7 `main` (±1 float32 ulp), which flips BPS argmin at the ambiguity boundary; EVM/MSE unchanged, all quality tests pass.)
-- [ ] Point 8 — DD-04 §3.4
+- [x] Point 8 — DD-04 §3.4 (JAX inline-BPS incremental running sum: O(B·KB·M)→O(B·M)/symbol; **cpu-jax 606→102 ms = 5.9×** at KB=B=64. On gpu-jax the per-symbol scan is launch-bound so the compute cut is invisible (950→965 ms, noise) — GPU throughput is Point 9's job. Also fixed a latent pre-existing bug: JAX-CPR result unpacking used `np.asarray(from_jax(...))`, which raised on `device='gpu'` (from_jax returns CuPy); coerced to host NumPy via `to_device`, so GPU-JAX CPR now runs end-to-end and matches CPU-JAX to 3.4e-7. Tests: 32-QAM Numba/JAX parity + GPU-device regression test; baseline 0010.)
 - [ ] Point 9 — DD-04 main
 - [ ] Point 10 — DD-03 (go/no-go decision)
