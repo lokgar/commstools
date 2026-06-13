@@ -43,7 +43,7 @@ analysis :
 
 import warnings
 
-__version__ = "3.8.0"
+__version__ = "4.0.0"
 
 from . import (
     analysis,
