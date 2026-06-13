@@ -2947,7 +2947,7 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
 
 
 # -----------------------------------------------------------------------------
-# BLOCK-UPDATE EQUALIZERS  (update_mode='block' — time-domain, DD-04 main)
+# BLOCK-UPDATE EQUALIZERS  (update_mode='block' — time-domain)
 # -----------------------------------------------------------------------------
 #
 # Block-update LMS/CMA/RDE freeze the butterfly weights over a chunk of ``D``
@@ -3020,7 +3020,7 @@ def _jax_block_core(
 
     # unroll a few chunks per scan step to amortise XLA loop-control overhead —
     # the per-chunk matmuls are small, so loop dispatch is a real cost at the
-    # default block_len (DD-04 gate is D=16).
+    # default block_len.
     W_final, (Y_chunks, E_chunks) = jax.lax.scan(
         body, W_init, (X_chunks, valid, aux_xs), unroll=4
     )
@@ -3168,7 +3168,15 @@ def _get_jax_cma_block(num_taps, stride, num_ch, n_sym, D, has_pilots=False):
         @jax.jit
         def run(x_input, W_init, mu, r2, pref, pmask):
             aux_xs, error_fn = _jax_block_pilot_aux(
-                jax, jnp, n_sym, D, num_ch, n_chunks, has_pilots, pref, pmask,
+                jax,
+                jnp,
+                n_sym,
+                D,
+                num_ch,
+                n_chunks,
+                has_pilots,
+                pref,
+                pmask,
                 lambda Y: Y * (jnp.real(Y * jnp.conj(Y)) - r2),
             )
             y_hat, errors, W_final = _jax_block_core(
@@ -3292,16 +3300,10 @@ def _block_eq_xp(
         Y = Y.astype(xp.complex64)
 
         if kind == "lms":
-            dd = _slice_block_xp(
-                Y, xp, constellation, sq_side, sq_lev_min, sq_d_grid
-            )
+            dd = _slice_block_xp(Y, xp, constellation, sq_side, sq_lev_min, sq_d_grid)
             sym_idx = start + xp.arange(d)
             use_train = (sym_idx < n_train)[:, None]
-            tr = (
-                training[:, start:stop].T
-                if training is not None
-                else xp.zeros_like(Y)
-            )
+            tr = training[:, start:stop].T if training is not None else xp.zeros_like(Y)
             dsym = xp.where(use_train, tr, dd)
             E = Y - dsym
         elif kind == "cma":
@@ -3309,7 +3311,9 @@ def _block_eq_xp(
         elif kind == "rde":
             abs_y2 = xp.real(Y * xp.conj(Y))
             abs_y = xp.sqrt(abs_y2)
-            rd = radii[xp.argmin(xp.abs(abs_y[..., None] - radii[None, None, :]), axis=-1)]
+            rd = radii[
+                xp.argmin(xp.abs(abs_y[..., None] - radii[None, None, :]), axis=-1)
+            ]
             E = Y * (abs_y2 - rd.astype(xp.float32) ** 2)
         else:
             raise ValueError(f"unknown block kind {kind!r}")
@@ -3356,7 +3360,7 @@ def _validate_block_mode(
     """Validate ``update_mode``/``block_len`` and the block-mode constraints.
 
     No-op for ``update_mode='sequential'``.  For ``'block'`` it enforces the
-    DD-04 contract: ``backend in {'jax', 'xp'}`` (``'numba'`` is a pointless
+    following: ``backend in {'jax', 'xp'}`` (``'numba'`` is a pointless
     combination), a positive ``block_len``, and no ``cpr_type``/``store_weights``
     (unsupported in v1).
     """
@@ -3407,7 +3411,9 @@ def _build_slicer_constellation(modulation, order, unipolar, training_np, pmf):
     if modulation is not None and order is not None:
         from .mapping import gray_constellation
 
-        reference_constellation = gray_constellation(modulation, order, unipolar=unipolar)
+        reference_constellation = gray_constellation(
+            modulation, order, unipolar=unipolar
+        )
         constellation_np = (
             to_device(reference_constellation, "cpu").flatten().astype(np.complex64)
         )
@@ -3418,7 +3424,9 @@ def _build_slicer_constellation(modulation, order, unipolar, training_np, pmf):
 
     if pmf is not None and modulation is not None and order is not None:
         _pmf_arr = np.asarray(pmf, dtype=np.float64)
-        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        _e_ps = float(
+            np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
+        )
         if _e_ps < 1.0 - 1e-6:
             constellation_np = (
                 constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
@@ -3596,9 +3604,7 @@ def _run_block_equalizer(
             pref_jax = to_jax(pref_np, device=platform)  # (C, n_sym)
             pmask_jax = to_jax(pmask_np.astype(bool), device=platform)  # (n_sym,)
         else:
-            pref_jax = to_jax(
-                np.zeros((num_ch, n_sym), np.complex64), device=platform
-            )
+            pref_jax = to_jax(np.zeros((num_ch, n_sym), np.complex64), device=platform)
             pmask_jax = to_jax(np.zeros((n_sym,), bool), device=platform)
         if kind == "cma":
             r2_jax = to_jax(jnp.float32(r2), device=platform)
@@ -4948,7 +4954,9 @@ def lms(
         constellation_np = _build_slicer_constellation(
             modulation, order, unipolar, training_np, pmf
         )
-        train_full, n_train_aligned = _prepare_training_numpy(training_np, num_ch, n_sym)
+        train_full, n_train_aligned = _prepare_training_numpy(
+            training_np, num_ch, n_sym
+        )
         _sq_side, _sq_lev_min, _sq_d_grid = _sq_qam_slicer_params(constellation_np)
         if w_init is not None:
             w_arr = _validate_w_init(
@@ -7284,7 +7292,7 @@ def block_lms(
             phi_all[:, b_start:b_end] = phi_ws[:, :B]
 
     # ── CUDA-graph eligibility ────────────────────────────────────────────────
-    # The block-loop body is host-sync-free (DD-02 steps 1-2), so on GPU it can
+    # The block-loop body is host-sync-free, so on GPU it can
     # be captured once and replayed per block, collapsing ~30-50 kernel launches
     # into one.  Only full blocks (B == block_size) lying entirely in the
     # decision-directed region (n_train_blk == 0) share one fixed control flow
@@ -7422,6 +7430,400 @@ def block_lms(
         )
     return _log_equalizer_exit(
         result, name="Block-LMS", debug_plot=debug_plot, plot_smoothing=plot_smoothing
+    )
+
+
+# -----------------------------------------------------------------------------
+# BLIND FREQUENCY-DOMAIN EQUALIZERS  (block_cma / block_rde)
+# -----------------------------------------------------------------------------
+#
+# block_cma / block_rde are the blind, phase-directed siblings of block_lms:
+# the same overlap-save frequency-domain adaptive filter (FDAF), but with the
+# Godard / ring-radius error instead of the trained/DD slicer.  They share the
+# two FDAF primitives below (forward butterfly + frequency-domain gradient);
+# block_lms keeps its own CPR/cycle-slip/CUDA-graph-optimised body.
+#
+# All three use the same additive update ``h += mu * conj(E_fd) * X_fd`` with
+# the gradient correlation in the frequency domain, so the blind error is cast
+# into the trained convention's sign: CMA ``E = y*(R2 - |y|^2)`` and RDE
+# ``E = y*(R_d^2 - |y|^2)`` (the negated Godard/ring gradient), and pilot
+# positions use the LMS residual ``E = pilot_ref - y`` directly.
+
+
+def _fdaf_forward(h, x_win, fftsize, sps, B, xp):
+    """One overlap-save FDAF forward block.
+
+    Returns ``(y_block (C, B), X_fd (C, F))`` — the decimated output symbols and
+    the input spectrum (reused by the gradient).  The butterfly contraction is a
+    complex128-accumulated broadcast-reduce (CLAUDE.md filter-dot-product rule),
+    matching ``block_lms``'s capture-safe form.
+    """
+    X_fd = xp.fft.fft(x_win, axis=-1)  # (C, F)
+    H_fd = xp.fft.fft(h, n=fftsize, axis=-1)  # (C, C, F)
+    Y_fd = (
+        (xp.conj(H_fd).astype(xp.complex128) * X_fd.astype(xp.complex128)[None])
+        .sum(axis=1)
+        .astype(xp.complex64)
+    )  # (C, F)
+    y_time = xp.fft.ifft(Y_fd, axis=-1)
+    y_block = y_time[:, : B * sps : sps].astype(xp.complex64)  # (C, B)
+    return y_block, X_fd
+
+
+def _fdaf_gradient_update(h, X_fd, e_block, e_scatter, sps, B, num_taps, mu, xp):
+    """Scatter ``e_block`` to sample positions, form the frequency-domain
+    gradient ``dH[i,j] = conj(E_fd[i]) * X_fd[j]``, and apply the in-place
+    update ``h += mu * IFFT(dH)[..., :num_taps]``."""
+    e_scatter.fill(0)
+    e_scatter[:, : B * sps : sps] = e_block
+    E_fd = xp.fft.fft(e_scatter, axis=-1)  # (C, F)
+    dH_fd = xp.conj(E_fd)[:, None, :] * X_fd[None, :, :]  # (C, C, F)
+    dh = xp.fft.ifft(dH_fd, axis=-1)[:, :, :num_taps]  # (C, C, T)
+    h += xp.float32(mu) * dh
+
+
+def _block_fdaf_blind(
+    kind,
+    samples,
+    *,
+    num_taps,
+    sps,
+    step_size,
+    block_size,
+    r2,
+    radii_np,
+    w_init,
+    input_norm_factor,
+    samples_prefix,
+    pad_mode,
+    pilot_ref,
+    pilot_mask,
+    pilot_gain_db,
+    c_ps,
+    debug_plot,
+    plot_smoothing,
+    name,
+):
+    """Shared overlap-save FDAF engine for ``block_cma``/``block_rde``.
+
+    Blind, phase-directed adaptation with no CPR — the per-block error is the
+    Godard (``kind='cma'``) or nearest-ring (``kind='rde'``) gradient, with
+    pilot positions overridden by the LMS residual.  ``r2`` is the Godard radius
+    (CMA) and ``radii_np`` the unique ring radii (RDE).
+    """
+    num_taps = int(num_taps)
+    sps = int(sps)
+    block_size = int(block_size)
+    _validate_sps(sps, num_taps)
+
+    samples, xp, _ = dispatch(samples)
+    if xp is np:
+        logger.warning(
+            f"{name} is running on CPU (NumPy). For CPU workloads "
+            f"{kind}(..., backend='numba') is typically faster. Move samples to "
+            "GPU (CuPy) to benefit from block-FFT acceleration."
+        )
+
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[np.newaxis, :]
+    C = samples.shape[0]
+    N = samples.shape[1]
+    n_sym = N // sps
+
+    use_pilots = pilot_ref is not None and pilot_mask is not None
+    # Deboost pilot positions before normalisation so boosted pilots don't
+    # inflate the RMS and bias the Godard target (matches cma/rde).
+    if use_pilots and pilot_gain_db != 0.0:
+        amp = xp.float32(10.0 ** (pilot_gain_db / 20.0))
+        smask = xp.asarray(np.repeat(np.asarray(pilot_mask).astype(bool), sps))
+        samples = samples.copy()
+        samples[..., smask] /= amp
+    samples, _, eq_norm = _normalize_inputs(
+        samples, None, sps, input_norm_factor=input_norm_factor
+    )
+
+    # ── OLS block size + padding (matches block_lms) ───────────────────────
+    _ols_min = block_size * sps + num_taps - 1
+    fftsize = 1 << (_ols_min - 1).bit_length()
+    logger.info(
+        f"{name}: C={C}, num_taps={num_taps}, sps={sps}, block_size={block_size}, "
+        f"fftsize={fftsize}, mu={step_size}, n_sym={n_sym}, pilot_aided={use_pilots}"
+    )
+    c_tap = num_taps // 2
+    pad_total = max(0, n_sym * sps - N + num_taps - 1)
+    pad_left = min(c_tap, pad_total)
+    pad_right = pad_total - pad_left
+    if samples_prefix is not None or xp is np or pad_mode != "zeros":
+        _cpu = to_device(samples, "cpu").astype(np.complex64)
+        x_padded = xp.asarray(
+            _build_padded_samples(
+                _cpu, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
+            )
+        )
+    else:
+        _f32 = samples if samples.dtype == xp.complex64 else samples.astype(xp.complex64)
+        _l = xp.zeros((C, pad_left), dtype=xp.complex64)
+        _r = (
+            xp.zeros((C, pad_right), dtype=xp.complex64)
+            if pad_right > 0
+            else xp.empty((C, 0), dtype=xp.complex64)
+        )
+        x_padded = xp.concatenate([_l, _f32, _r], axis=1)
+    N_padded = x_padded.shape[1]
+
+    # ── Weight initialisation ──────────────────────────────────────────────
+    if w_init is not None:
+        w_arr = _validate_w_init(
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
+            C,
+            num_taps,
+        )
+        h = xp.asarray(w_arr.copy())
+    else:
+        h = xp.asarray(_init_butterfly_weights_numpy(C, num_taps))  # (C, C, T)
+
+    # ── Pilot / radii device arrays ────────────────────────────────────────
+    if use_pilots:
+        pref = xp.asarray(
+            np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        )
+        if pref.ndim == 1:
+            pref = xp.tile(pref[None, :], (C, 1))
+        if c_ps is not None:
+            pref = (pref * xp.complex64(c_ps)).astype(xp.complex64)
+        pmask_dev = xp.asarray(np.asarray(pilot_mask).astype(bool))
+    if kind == "rde":
+        radii = xp.asarray(np.asarray(radii_np, dtype=np.float64))
+
+    # ── Scratch + output buffers ───────────────────────────────────────────
+    x_win = xp.zeros((C, fftsize), dtype=xp.complex64)
+    e_scatter = xp.zeros((C, fftsize), dtype=xp.complex64)
+    y_all = xp.empty((C, n_sym), dtype=xp.complex64)
+    e_all = xp.empty((C, n_sym), dtype=xp.complex64)
+    n_blocks = (n_sym + block_size - 1) // block_size
+
+    for b in range(n_blocks):
+        b_start = b * block_size
+        B = min(block_size, n_sym - b_start)
+        x_start = b_start * sps
+        x_win.fill(0)
+        avail = min(fftsize, N_padded - x_start)
+        if avail > 0:
+            x_win[:, :avail] = x_padded[:, x_start : x_start + avail]
+
+        y_block, X_fd = _fdaf_forward(h, x_win, fftsize, sps, B, xp)
+
+        abs2 = xp.real(y_block * xp.conj(y_block))  # (C, B) strict-real |y|^2
+        if kind == "cma":
+            e = y_block * (xp.float32(r2) - abs2)
+        else:  # rde — nearest ring radius per symbol
+            abs_y = xp.sqrt(abs2)
+            rd = radii[
+                xp.argmin(xp.abs(abs_y[:, :, None] - radii[None, None, :]), axis=-1)
+            ]
+            e = y_block * (rd.astype(xp.float32) ** 2 - abs2)
+        if use_pilots:
+            pm = pmask_dev[b_start : b_start + B][None, :]
+            e = xp.where(pm, pref[:, b_start : b_start + B] - y_block, e)
+
+        y_all[:, b_start : b_start + B] = y_block
+        e_all[:, b_start : b_start + B] = e
+        _fdaf_gradient_update(h, X_fd, e, e_scatter, sps, B, num_taps, step_size, xp)
+
+    # Single D→H sync to surface divergence after the whole loop.
+    if not bool(xp.isfinite(h).all()):
+        raise RuntimeError(
+            f"{name} diverged (step_size={step_size}, block_size={block_size}). "
+            f"step_size is on the same scale as {kind}(); because the weights are "
+            f"frozen across the block the stability ceiling is ~{block_size}x lower. "
+            f"Reduce step_size (e.g. {step_size / 2:.2e}, then keep halving)."
+        )
+
+    if was_1d:
+        y_out, e_out, W_out = y_all[0], e_all[0], h[0, 0]
+    else:
+        y_out, e_out, W_out = y_all, e_all, h
+    result = EqualizerResult(
+        y_hat=y_out,
+        weights=W_out,
+        error=e_out,
+        weights_history=None,
+        num_train_symbols=0,
+        input_norm_factor=eq_norm,
+    )
+    return _log_equalizer_exit(
+        result,
+        name=name,
+        debug_plot=debug_plot,
+        check_convergence=True,
+        plot_smoothing=plot_smoothing,
+    )
+
+
+def _godard_radius(modulation, order, unipolar, pmf):
+    """Godard dispersion radius R2 and PS-QAM pilot scale (mirrors ``cma``)."""
+    if modulation is None or order is None:
+        return 1.0, None
+    from .mapping import gray_constellation
+
+    const = gray_constellation(modulation, order, unipolar=unipolar)
+    if pmf is not None:
+        _pmf = np.asarray(pmf, dtype=np.float64)
+        _abs2 = np.abs(const) ** 2
+        _e_ps = float(np.dot(_pmf, _abs2))
+        r2 = float(np.dot(_pmf, np.abs(const) ** 4)) / (_e_ps**2)
+        c_ps = np.float32(1.0 / np.sqrt(_e_ps)) if _e_ps < 1.0 - 1e-6 else None
+        return r2, c_ps
+    r2 = float(np.mean(np.abs(const) ** 4) / np.mean(np.abs(const) ** 2))
+    return r2, None
+
+
+def _rde_ring_radii(modulation, order, unipolar, pmf):
+    """Unique constellation ring radii and PS-QAM pilot scale (mirrors ``rde``)."""
+    if modulation is None or order is None:
+        return np.array([1.0], dtype=np.float32), None
+    from .mapping import gray_constellation
+
+    const = gray_constellation(modulation, order, unipolar=unipolar)
+    raw = np.abs(const).astype(np.float32)
+    c_ps = None
+    if pmf is not None:
+        _pmf = np.asarray(pmf, dtype=np.float64)
+        _e_ps = float(np.dot(_pmf, raw.astype(np.float64) ** 2))
+        if _e_ps < 1.0 - 1e-6:
+            c_ps = np.float32(1.0 / np.sqrt(_e_ps))
+            raw = (raw * c_ps).astype(np.float32)
+    return np.unique(np.round(raw, 6)), c_ps
+
+
+def block_cma(
+    samples: ArrayType,
+    num_taps: int = 21,
+    sps: int = 2,
+    step_size: float = 2e-4,
+    block_size: int = 256,
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
+    unipolar: bool = False,
+    w_init: Optional[ArrayType] = None,
+    pilot_ref: Optional[ArrayType] = None,
+    pilot_mask: Optional[np.ndarray] = None,
+    pilot_gain_db: float = 0.0,
+    pmf: Optional[Any] = None,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
+    debug_plot: bool = False,
+    plot_smoothing: int = 50,
+) -> EqualizerResult:
+    """Blind frequency-domain CMA equalizer (overlap-save FDAF).
+
+    The blind, phase-directed sibling of :func:`block_lms`: the same
+    overlap-save frequency-domain adaptive filter, but driven by the Godard
+    constant-modulus error instead of a trained/DD slicer.  Use it for blind
+    acquisition at the high-throughput frequency-domain operating point (slow or
+    static channels, GPU/CuPy input); for the trained/DD case use
+    :func:`block_lms`, and for fastest dynamics on a single stream use
+    :func:`cma` with ``backend='numba'``.
+
+    Like :func:`cma`, it is fully blind and recovers the channel up to a phase
+    ambiguity — run a carrier-phase recovery stage afterwards.  Supplying
+    ``pilot_ref``/``pilot_mask`` (build them with :func:`build_pilot_ref`)
+    switches pilot positions to the LMS residual error, resolving the phase
+    ambiguity there while data positions stay blind.
+
+    ``step_size`` is on the same scale as :func:`cma`; because the weights are
+    frozen across each ``block_size``-symbol block, the stability ceiling is
+    ~``block_size``× lower (reduce ``mu`` only if the run raises divergence).
+    The primary target is GPU (CuPy); on CPU :func:`cma` is usually faster.
+
+    Parameters mirror :func:`cma` (no ``cpr_type`` — CMA is phase-blind, see
+    :func:`cma` Notes).  Returns an :class:`EqualizerResult` with ``y_hat``,
+    ``weights``, ``error`` on the input's device.
+    """
+    r2, c_ps = _godard_radius(modulation, order, unipolar, pmf)
+    return _block_fdaf_blind(
+        "cma",
+        samples,
+        num_taps=num_taps,
+        sps=sps,
+        step_size=step_size,
+        block_size=block_size,
+        r2=r2,
+        radii_np=None,
+        w_init=w_init,
+        input_norm_factor=input_norm_factor,
+        samples_prefix=samples_prefix,
+        pad_mode=pad_mode,
+        pilot_ref=pilot_ref,
+        pilot_mask=pilot_mask,
+        pilot_gain_db=pilot_gain_db,
+        c_ps=c_ps,
+        debug_plot=debug_plot,
+        plot_smoothing=plot_smoothing,
+        name="Block-CMA" if pilot_ref is None else "Block-CMA(PA)",
+    )
+
+
+def block_rde(
+    samples: ArrayType,
+    num_taps: int = 21,
+    sps: int = 2,
+    step_size: float = 2e-4,
+    block_size: int = 256,
+    modulation: Optional[str] = None,
+    order: Optional[int] = None,
+    unipolar: bool = False,
+    w_init: Optional[ArrayType] = None,
+    pilot_ref: Optional[ArrayType] = None,
+    pilot_mask: Optional[np.ndarray] = None,
+    pilot_gain_db: float = 0.0,
+    pmf: Optional[Any] = None,
+    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
+    samples_prefix: Optional[ArrayType] = None,
+    pad_mode: str = "zeros",
+    debug_plot: bool = False,
+    plot_smoothing: int = 50,
+) -> EqualizerResult:
+    """Blind frequency-domain radius-directed equalizer (overlap-save FDAF).
+
+    The multi-ring blind sibling of :func:`block_lms`, related to
+    :func:`block_cma` as :func:`rde` is to :func:`cma`: it drives each symbol
+    toward its nearest constellation ring instead of a single Godard circle,
+    giving correct blind convergence on higher-order QAM (16/64-QAM) where CMA's
+    single-radius target stalls.  Same overlap-save frequency-domain engine and
+    throughput positioning as :func:`block_cma`.
+
+    Fully blind up to a phase ambiguity (run CPR afterwards);
+    ``pilot_ref``/``pilot_mask`` resolve the ambiguity at pilot positions.
+    ``step_size`` is on the same scale as :func:`rde`, with the
+    ~``block_size``×-lower stability ceiling of frozen-block adaptation.
+
+    Parameters mirror :func:`rde`.  Returns an :class:`EqualizerResult` with
+    ``y_hat``, ``weights``, ``error`` on the input's device.
+    """
+    radii_np, c_ps = _rde_ring_radii(modulation, order, unipolar, pmf)
+    return _block_fdaf_blind(
+        "rde",
+        samples,
+        num_taps=num_taps,
+        sps=sps,
+        step_size=step_size,
+        block_size=block_size,
+        r2=1.0,
+        radii_np=radii_np,
+        w_init=w_init,
+        input_norm_factor=input_norm_factor,
+        samples_prefix=samples_prefix,
+        pad_mode=pad_mode,
+        pilot_ref=pilot_ref,
+        pilot_mask=pilot_mask,
+        pilot_gain_db=pilot_gain_db,
+        c_ps=c_ps,
+        debug_plot=debug_plot,
+        plot_smoothing=plot_smoothing,
+        name="Block-RDE" if pilot_ref is None else "Block-RDE(PA)",
     )
 
 
