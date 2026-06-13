@@ -627,9 +627,7 @@ def mi(
 
         # log p(s_m | r) via log-sum-exp for numerical stability
         lse_shift = log_liks.max(axis=1, keepdims=True)  # (chunk, 1)
-        log_sum = (
-            xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
-        )
+        log_sum = xp.log(xp.sum(xp.exp(log_liks - lse_shift), axis=1)) + lse_shift[:, 0]
 
         log_posterior = log_liks - log_sum[:, None]  # (chunk, M), log base e
         posterior = xp.exp(log_posterior)  # (chunk, M), sum-to-1 per row

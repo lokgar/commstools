@@ -1,4 +1,4 @@
-"""Canonical fixed-seed workload generators for the benchmark suite (DD-00).
+"""Canonical fixed-seed workload generators for the benchmark suite.
 
 All generation happens in NumPy on the host; benchmarks move data to the
 active device with ``xp.asarray`` during setup (excluded from timing).

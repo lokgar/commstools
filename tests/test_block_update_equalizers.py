@@ -1,4 +1,4 @@
-"""Tests for the time-domain block-update equalizers (DD-04 main).
+"""Tests for the time-domain block-update equalizers.
 
 Covers ``update_mode='block'`` on ``lms``/``cma``/``rde`` across the
 ``backend='xp'`` (array-native NumPy/CuPy) and ``backend='jax'`` (chunked
@@ -68,8 +68,6 @@ _BACKENDS = ["xp", "jax"]
 
 
 class TestBlockUpdateValidation:
-    """The DD-04 §4 block-mode contract."""
-
     def test_numba_block_raises(self):
         rx = np.zeros(2048, np.complex64)
         with pytest.raises(ValueError, match="backend='jax'"):
@@ -249,7 +247,10 @@ class TestBlockUpdateLMS:
         )
         # The interior (away from the right edge) is unaffected by total length.
         xpt.assert_allclose(
-            r_odd.y_hat[: n_even - 32], r_even.y_hat[: n_even - 32], atol=1e-4, rtol=1e-4
+            r_odd.y_hat[: n_even - 32],
+            r_even.y_hat[: n_even - 32],
+            atol=1e-4,
+            rtol=1e-4,
         )
 
 

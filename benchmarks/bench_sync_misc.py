@@ -1,10 +1,4 @@
-"""Benchmarks: recovery/metrics functions with per-channel host syncs (DD-05 gate).
-
-Covers the DD-05 items with self-contained inputs: Viterbi-Viterbi with
-cycle-slip correction (item 5 MIMO-alignment syncs), resolve_phase_ambiguity
-(item 7), and EVM (item 9 logging-loop transfers). DD-05 implementers extend
-this file when an item needs a dedicated before/after number.
-"""
+"""Benchmarks: recovery/metrics functions with per-channel host syncs."""
 
 from commstools import recovery
 from commstools.metrics import evm

@@ -207,11 +207,7 @@ def test_jax_cpr_gpu_device(backend_device, xp):
     assert isinstance(r_gpu.cpr_state.jax_bps_buf, np.ndarray)
 
     max_diff = float(
-        np.max(
-            np.abs(
-                np.asarray(r_cpu.y_hat) - to_device(r_gpu.y_hat, "cpu")
-            )
-        )
+        np.max(np.abs(np.asarray(r_cpu.y_hat) - to_device(r_gpu.y_hat, "cpu")))
     )
     assert max_diff < 1e-4, (
         f"GPU vs CPU JAX-CPR y_hat mismatch (max diff {max_diff:.2e})"

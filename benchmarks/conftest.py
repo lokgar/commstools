@@ -1,4 +1,4 @@
-"""Fixtures for the CommsTools benchmark suite (DD-00).
+"""Fixtures for the CommsTools benchmark suite.
 
 Mirrors the ``backend_device``/``xp`` fixtures from ``tests/conftest.py`` so
 benchmarks parametrize over CPU/GPU exactly like the test suite, and adds a

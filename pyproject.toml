@@ -46,7 +46,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--device=all"
-# bench_* patterns exist for the explicit-only benchmarks/ suite (DD-00);
+# bench_* patterns exist for the explicit-only benchmarks/ suite;
 # the default run still collects tests/ only via testpaths.
 python_files = ["test_*.py", "bench_*.py"]
 python_functions = ["test_*", "bench_*"]

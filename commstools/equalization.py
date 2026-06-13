@@ -4877,7 +4877,7 @@ def lms(
         values amortise launch overhead further but reduce the tracking
         bandwidth proportionally.  ``step_size`` stays on the same scale as
         sequential mode (same ``mu`` ⇒ same steady-state floor); only the
-        stability ceiling is ~``block_len``× lower.
+        stability ceiling is ~``block_len``x lower.
 
     Returns
     -------
@@ -7360,7 +7360,12 @@ def block_lms(
     # capture/replay — runs on a single stream so the shared state buffers
     # (h, bps_*, cs_*) stay ordered across the eager↔replay boundary.  On the
     # eager (CPU or graph-disabled) path this is a no-op context.
-    _loop_stream_ctx = _graph_stream if _use_graph else contextlib.nullcontext()
+    _loop_stream_ctx: Any
+    if _use_graph:
+        assert _graph_stream is not None  # set together with _use_graph above
+        _loop_stream_ctx = _graph_stream
+    else:
+        _loop_stream_ctx = contextlib.nullcontext()
 
     # ── Block loop ────────────────────────────────────────────────────────────
     _graph = None  # captured CUDA graph, built lazily on the 2nd full DD block
@@ -7388,6 +7393,9 @@ def block_lms(
                 # blocks the warmup freed, so no cudaMalloc occurs); launch()
                 # then executes this block.  On any capture failure, fall back
                 # to running the remaining blocks eagerly.
+                assert (
+                    _graph_stream is not None
+                )  # _capturable ⇒ _use_graph ⇒ stream set
                 try:
                     _graph_stream.begin_capture()
                     _run_block(B, b_start, 0)
@@ -7602,7 +7610,9 @@ def _block_fdaf_blind(
             )
         )
     else:
-        _f32 = samples if samples.dtype == xp.complex64 else samples.astype(xp.complex64)
+        _f32 = (
+            samples if samples.dtype == xp.complex64 else samples.astype(xp.complex64)
+        )
         _l = xp.zeros((C, pad_left), dtype=xp.complex64)
         _r = (
             xp.zeros((C, pad_right), dtype=xp.complex64)
@@ -7775,7 +7785,7 @@ def block_cma(
 
     ``step_size`` is on the same scale as :func:`cma`; because the weights are
     frozen across each ``block_size``-symbol block, the stability ceiling is
-    ~``block_size``× lower (reduce ``mu`` only if the run raises divergence).
+    ~``block_size``x lower (reduce ``mu`` only if the run raises divergence).
     The primary target is GPU (CuPy); on CPU :func:`cma` is usually faster.
 
     Parameters mirror :func:`cma` (no ``cpr_type`` — CMA is phase-blind, see
@@ -7838,7 +7848,7 @@ def block_rde(
     Fully blind up to a phase ambiguity (run CPR afterwards);
     ``pilot_ref``/``pilot_mask`` resolve the ambiguity at pilot positions.
     ``step_size`` is on the same scale as :func:`rde`, with the
-    ~``block_size``×-lower stability ceiling of frozen-block adaptation.
+    ~``block_size``x-lower stability ceiling of frozen-block adaptation.
 
     Parameters mirror :func:`rde`.  Returns an :class:`EqualizerResult` with
     ``y_hat``, ``weights``, ``error`` on the input's device.
@@ -7971,7 +7981,7 @@ def cma(
     (array-native NumPy/CuPy); ``backend='numba'`` and ``store_weights`` are not
     supported.  ``step_size`` is on the **same scale as** sequential mode (the
     aggregated gradient is the sum over the chunk): the same ``mu`` gives the
-    same floor — only the stability ceiling is ~``block_len``× lower, so reduce
+    same floor — only the stability ceiling is ~``block_len``x lower, so reduce
     ``mu`` only if the run diverges.  Pilot-aided masking carries over unchanged.
 
     CMA minimizes the Godard dispersion criterion and requires no training
@@ -8115,7 +8125,7 @@ def cma(
     block_len : int, default 16
         Symbols per frozen-weight chunk when ``update_mode='block'`` (typically
         8-32; ignored otherwise).  ``step_size`` stays on the same scale as
-        sequential mode; only the stability ceiling is ~``block_len``× lower.
+        sequential mode; only the stability ceiling is ~``block_len``x lower.
 
     Returns
     -------
@@ -8440,7 +8450,7 @@ def rde(
     ``store_weights`` are not supported.  ``step_size`` is on the **same scale
     as** sequential mode (the aggregated gradient is the sum over the chunk):
     the same ``mu`` gives the same floor — only the stability ceiling is
-    ~``block_len``× lower, so reduce ``mu`` only if the run diverges.
+    ~``block_len``x lower, so reduce ``mu`` only if the run diverges.
     Pilot-aided masking carries over to block mode unchanged.
 
     RDE is a CMA variant that replaces the single Godard dispersion radius with
@@ -8563,7 +8573,7 @@ def rde(
     block_len : int, default 16
         Symbols per frozen-weight chunk when ``update_mode='block'`` (typically
         8-32; ignored otherwise).  ``step_size`` stays on the same scale as
-        sequential mode; only the stability ceiling is ~``block_len``× lower.
+        sequential mode; only the stability ceiling is ~``block_len``x lower.
 
     Returns
     -------

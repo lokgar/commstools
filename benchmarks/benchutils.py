@@ -1,9 +1,9 @@
-"""Device-timing and profiling helpers for the benchmark suite (DD-00).
+"""Device-timing and profiling helpers for the benchmark suite.
 
 ``CudaEventTimer`` measures pure device time (diagnostic — acceptance criteria
 quote pytest-benchmark wall time); ``nvtx_range`` annotates DSP stages so
 ``nsys profile uv run pytest benchmarks/...`` produces a readable timeline and
-D2H transfers can be counted per stage (DD-02/DD-05 acceptance criteria).
+D2H transfers can be counted per stage.
 """
 
 from contextlib import contextmanager

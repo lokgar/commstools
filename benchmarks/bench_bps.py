@@ -1,7 +1,7 @@
-"""Benchmarks: standalone Blind Phase Search CPR (DD-01 gate).
+"""Benchmarks: standalone Blind Phase Search CPR.
 
-Canonical DD-01 workload: ``bps/128cross/N1e6/C2`` (GPU-only — the non-square
-CPU path at that size is prohibitively slow, which is rather the point).
+``bps/128cross/N1e6/C2`` (GPU-only — the non-square CPU path
+at that size is prohibitively slow, which is rather the point).
 """
 
 import pytest
@@ -35,9 +35,8 @@ def bench_bps(benchmark, backend_device, xp, sync, label, order):
 
 
 def bench_bps_128cross_N1e6_C2(benchmark, backend_device, xp, sync):
-    """DD-01 acceptance-gate workload (GPU only)."""
     if backend_device != "gpu":
-        pytest.skip("DD-01 gate workload is GPU-only")
+        pytest.skip("Workload is GPU-only")
     x = xp.asarray(bps_workload(order=128, n_sym=1_000_000, num_ch=2))
 
     def run():

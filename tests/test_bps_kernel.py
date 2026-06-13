@@ -80,7 +80,7 @@ def test_table_argmin_matches_reference(backend_device, xp):
     out, idx = kern(xp.asarray(x), xp.asarray(phasor), constellation=xp.asarray(const))
     idx_np = xp.asnumpy(idx)
 
-    # ≥ 99.9 % index agreement (DD-01 gate; ties allowed) ...
+    # ≥ 99.9 % index agreement
     assert float(np.mean(idx_np == ref_idx)) >= 0.999
     # ... and tie-tolerant: the distance at every returned index is the minimum.
     d_at_idx = np.take_along_axis(d2, idx_np[..., None], axis=-1)[..., 0]

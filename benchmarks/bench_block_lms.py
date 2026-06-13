@@ -1,16 +1,13 @@
-"""Benchmarks: block_lms frequency-domain equalizer (DD-02 gate).
+"""Benchmarks: block_lms frequency-domain equalizer.
 
-Canonical DD-02 workload: ``block_lms/bps+cs/16qam/N1e5/C2`` — BPS CPR with
-per-symbol cycle-slip correction enabled, which exercises the per-block
-D2H/H2D synchronization points that DD-02 removes.
+``block_lms/bps+cs/16qam/N1e5/C2`` — BPS CPR
+with per-symbol cycle-slip correction enabled.
 
 Two block sizes are tracked:
 
 * ``bench_block_lms`` (block_size=256) — the deliberate stress case: on GPU
   the per-block work is too small to amortize the ~30-50 kernel launches per
-  iteration, so wall time is dominated by fixed launch overhead.  This is the
-  DD-02 gate workload (kept ID-stable across baselines) and the case CUDA
-  graph capture (DD-02 step 3) is meant to rescue.
+  iteration, so wall time is dominated by fixed launch overhead.
 * ``bench_block_lms_large`` (block_size=2048) — the recommended GPU operating
   point with launch overhead amortized.  Guards against regressions that
   scale with block size (per-element work, intermediate-tensor growth) which
@@ -18,7 +15,7 @@ Two block sizes are tracked:
   that graph capture at small block sizes is judged against.
 * ``bench_block_lms_dd`` (block_size=256, short training prefix) — the
   decision-directed steady state, the realistic operating mode and the only
-  one that exercises the DD-02 step-3 CUDA-graph path (graph capture covers
+  one that exercises the CUDA-graph path (graph capture covers
   full DD blocks only; the fully-trained ``bench_block_lms`` above runs the
   eager loop because every block is a training block).  This is the headline
   Point-7 number; a graph regression / silent fallback shows up here as a

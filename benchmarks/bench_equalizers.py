@@ -1,8 +1,8 @@
-"""Benchmarks: sequential adaptive equalizers (DD-03 / DD-04 gates).
+"""Benchmarks: sequential adaptive equalizers.
 
 ``backend='numba'`` with GPU input measures the documented D2H round-trip +
 CPU-loop case; ``backend='jax'`` measures the per-symbol ``lax.scan`` that
-DD-04's block-update mode is gated against (≥ 10× at D=16).
+block-update mode is gated against (≥ 10x at D=16).
 """
 
 import pytest
@@ -41,7 +41,7 @@ def bench_lms(benchmark, backend_device, xp, sync, eq_backend):
 @pytest.mark.parametrize("eq_backend", ["jax", "xp"])
 @pytest.mark.parametrize("block_len", [16])
 def bench_lms_block(benchmark, backend_device, xp, sync, eq_backend, block_len):
-    """Block-update LMS (DD-04 main).  The gate: ``[gpu-jax]`` here vs. the
+    """Block-update LMS.  The gate: ``[gpu-jax]`` here vs. the
     per-symbol ``bench_lms[gpu-jax]`` scan should be >= 10x faster at D=16.
     ``[*-xp]`` is the array-native NumPy/CuPy path (no JAX)."""
     samples, syms = mimo_equalizer_workload(n_sym=50_000, order=16, sps=2)
@@ -73,7 +73,7 @@ def bench_lms_block(benchmark, backend_device, xp, sync, eq_backend, block_len):
 def bench_lms_bps(benchmark, backend_device, xp, sync, eq_backend):
     # LMS + inline BPS carrier-phase recovery (cpr_type='bps').  Exercises the
     # _get_jax_lms_cpr scan whose per-symbol BPS metric is an incremental
-    # running sum (DD-04 §3.4): O(B*M)/symbol instead of re-scoring all KB
+    # running sum: O(B*M)/symbol instead of re-scoring all KB
     # buffer slots.  A large block size (KB=64) is where that saving is largest.
     samples, syms = mimo_equalizer_workload(n_sym=20_000, order=16, sps=2)
     x = xp.asarray(samples)
