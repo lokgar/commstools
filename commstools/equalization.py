@@ -3018,8 +3018,11 @@ def _jax_block_core(
         W_new = (W - mu * grad).astype(W.dtype)
         return W_new, (Y, E)
 
+    # unroll a few chunks per scan step to amortise XLA loop-control overhead —
+    # the per-chunk matmuls are small, so loop dispatch is a real cost at the
+    # default block_len (DD-04 gate is D=16).
     W_final, (Y_chunks, E_chunks) = jax.lax.scan(
-        body, W_init, (X_chunks, valid, aux_xs)
+        body, W_init, (X_chunks, valid, aux_xs), unroll=4
     )
     y_hat = Y_chunks.reshape(n_pad, num_ch)[:n_sym]
     errors = E_chunks.reshape(n_pad, num_ch)[:n_sym]
@@ -4564,7 +4567,7 @@ def lms(
     product the GPU can occupy.  ``step_size`` is therefore on the **same scale
     as** ``update_mode='sequential'``: the same ``mu`` yields the same
     convergence and steady-state floor (do **not** divide by ``block_len``).
-    Only the *stability ceiling* is ~``block_len``× lower (the weights are
+    Only the *stability ceiling* is ~``block_len``x lower (the weights are
     frozen across the chunk); reduce ``mu`` below your sequential value only if
     the run diverges.  Block mode requires ``backend='jax'`` (chunked
     ``lax.scan``) or ``backend='xp'`` (array-native NumPy/CuPy loop);
