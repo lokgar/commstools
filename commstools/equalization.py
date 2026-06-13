@@ -3664,9 +3664,15 @@ def _unpack_result_jax(
     -------
     EqualizerResult
     """
-    y_hat = xp.asarray(from_jax(y_hat_jax).T)  # (N_sym, C) -> (C, N_sym)
-    errors = xp.asarray(from_jax(errors_jax).T)
-    W_final = xp.asarray(from_jax(W_final_jax))
+    # ``from_jax`` follows the JAX *compute* device (CuPy if the scan ran on
+    # GPU, NumPy on CPU), which may differ from the input's module ``xp`` — e.g.
+    # NumPy input with ``device='gpu'``.  Coerce to the input's device so the
+    # result honours the "output on the input's device" convention (same
+    # pattern as the Point 8 CPR-state unpacking).
+    _tgt = "cpu" if xp is np else "gpu"
+    y_hat = xp.asarray(to_device(from_jax(y_hat_jax), _tgt).T)  # (N,C) -> (C,N)
+    errors = xp.asarray(to_device(from_jax(errors_jax), _tgt).T)
+    W_final = xp.asarray(to_device(from_jax(W_final_jax), _tgt))
 
     if n_sym is not None:
         y_hat = y_hat[..., :n_sym]
@@ -3679,7 +3685,7 @@ def _unpack_result_jax(
 
     w_history = None
     if store_weights:
-        w_history = xp.asarray(from_jax(w_hist_jax))
+        w_history = xp.asarray(to_device(from_jax(w_hist_jax), _tgt))
         if was_1d:
             w_history = w_history[:, 0, 0, :]
 
