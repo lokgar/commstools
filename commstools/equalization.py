@@ -15,8 +15,18 @@ Adaptive algorithms (LMS, RLS, CMA) support two execution backends:
   updates on both CPU and GPU. Enables end-to-end automatic differentiation
   through the equalizer for gradient-based learning pipelines.
 
+``lms``/``cma``/``rde`` additionally offer ``update_mode='block'``: the weights
+are frozen over ``block_len`` symbols and one aggregated gradient is applied per
+chunk, turning the per-symbol update into a matrix product that occupies the
+GPU (the per-symbol scan is launch-overhead-bound).  Block mode runs on
+``backend='jax'`` (chunked ``lax.scan``) or ``backend='xp'`` (array-native
+NumPy/CuPy loop).
+
 Block algorithms (ZF/MMSE) use NumPy/CuPy dispatch for vectorized
-frequency-domain Overlap-Save processing.
+frequency-domain Overlap-Save processing.  ``block_lms``/``block_cma``/
+``block_rde`` are frequency-domain overlap-save adaptive filters (trained/DD,
+blind Godard, and blind ring-directed respectively) — the throughput-oriented
+endpoint for slow/static channels on GPU.
 
 All adaptive equalization support a **butterfly MIMO** topology: for an input
 of shape ``(C, N)``, the equalizer maintains a ``(C, C, num_taps)`` weight
@@ -53,6 +63,11 @@ zf_equalizer :
     Zero-Forcing / MMSE frequency-domain block equalizer.
 block_lms :
     Block LMS equalizer with frequency-domain gradient accumulation (GPU-optimised).
+block_cma :
+    Blind frequency-domain CMA equalizer (overlap-save FDAF; optionally pilot-aided).
+block_rde :
+    Blind frequency-domain radius-directed equalizer (overlap-save FDAF;
+    optionally pilot-aided).
 apply_taps :
     Apply frozen equalizer taps to a new signal (no weight updates).
 """
@@ -4696,6 +4711,8 @@ def lms(
         SISO/small-MIMO signals (no scan serialization overhead).
         ``'jax'`` uses ``jax.lax.scan`` and supports GPU placement and
         automatic differentiation through the equalizer.
+        ``'xp'`` is valid only with ``update_mode='block'``: it runs the
+        array-native NumPy/CuPy block loop on the input's device (no JAX).
     w_init : array_like, optional
         Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
         SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
@@ -4845,6 +4862,22 @@ def lms(
         replicates the first sample of the current block, which can reduce
         the initial amplitude jump at cold start.  Has no effect when
         ``samples_prefix`` is provided.
+    update_mode : {'sequential', 'block'}, default 'sequential'
+        Weight-update cadence (see the *Update modes* section above).
+        ``'sequential'`` updates the weights every symbol (the default; the
+        only mode supported by ``backend='numba'``).  ``'block'`` freezes the
+        weights over ``block_len`` symbols and applies one aggregated gradient
+        per chunk — a matrix product that occupies the GPU — and requires
+        ``backend='jax'`` (chunked ``lax.scan``) or ``backend='xp'``
+        (array-native NumPy/CuPy loop).  ``cpr_type`` and ``store_weights`` are
+        not supported with ``'block'`` (both raise).
+    block_len : int, default 16
+        Number of symbols per frozen-weight update chunk when
+        ``update_mode='block'`` (typically 8-32; ignored otherwise).  Larger
+        values amortise launch overhead further but reduce the tracking
+        bandwidth proportionally.  ``step_size`` stays on the same scale as
+        sequential mode (same ``mu`` ⇒ same steady-state floor); only the
+        stability ceiling is ~``block_len``× lower.
 
     Returns
     -------
@@ -6429,6 +6462,13 @@ def block_lms(
     Numba backend (``lms(..., backend='numba')``) is typically faster because
     the block-FFT overhead outweighs the gradient-accumulation saving for
     small channel counts.
+
+    ``block_lms`` is the **trained / decision-directed** frequency-domain
+    equalizer.  Its blind siblings share the same overlap-save engine but use a
+    phase-blind error: :func:`block_cma` (Godard constant-modulus) and
+    :func:`block_rde` (ring-directed, for multi-ring QAM).  For a time-domain
+    block update with shorter adaptation lag (fast dynamics) use
+    ``lms(..., update_mode='block')``.
 
     Algorithm (per block b)
     -----------------------
@@ -8025,7 +8065,8 @@ def cma(
     backend : str, default 'numba'
         Execution backend. ``'numba'`` uses Numba ``@njit``; LLVM-compiled,
         typically fastest on CPU. ``'jax'`` uses ``jax.lax.scan``
-        (XLA-compiled, GPU-capable).
+        (XLA-compiled, GPU-capable).  ``'xp'`` is valid only with
+        ``update_mode='block'`` — the array-native NumPy/CuPy block loop.
     w_init : array_like, optional
         Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
         SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
@@ -8064,6 +8105,17 @@ def cma(
     pad_mode : {'zeros', 'edge'}, default 'zeros'
         Padding strategy when ``samples_prefix`` is ``None``.  See
         ``lms()`` for the full description; behaviour is identical.
+    update_mode : {'sequential', 'block'}, default 'sequential'
+        Weight-update cadence.  ``'sequential'`` updates every symbol (the
+        default; the only mode for ``backend='numba'``).  ``'block'`` freezes
+        the weights over ``block_len`` symbols and applies one aggregated Godard
+        gradient per chunk (a GPU-occupying matrix product); requires
+        ``backend='jax'`` or ``backend='xp'`` and is incompatible with
+        ``store_weights``.  Pilot-aided masking carries over unchanged.
+    block_len : int, default 16
+        Symbols per frozen-weight chunk when ``update_mode='block'`` (typically
+        8-32; ignored otherwise).  ``step_size`` stays on the same scale as
+        sequential mode; only the stability ceiling is ~``block_len``× lower.
 
     Returns
     -------
@@ -8463,6 +8515,8 @@ def rde(
         Index of the center tap. Defaults to ``num_taps // 2``.
     backend : str, default 'numba'
         ``'numba'`` uses Numba ``@njit``; ``'jax'`` uses ``jax.lax.scan``.
+        ``'xp'`` is valid only with ``update_mode='block'`` — the array-native
+        NumPy/CuPy block loop.
     w_init : array_like, optional
         Initial tap weights. Shape: ``(C, C, num_taps)`` complex64, or the
         SISO short-hand ``(num_taps,)`` / ``(1, num_taps)`` as returned by
@@ -8499,6 +8553,17 @@ def rde(
     pad_mode : {'zeros', 'edge'}, default 'zeros'
         Padding strategy when ``samples_prefix`` is ``None``.  See
         ``lms()`` for the full description; behaviour is identical.
+    update_mode : {'sequential', 'block'}, default 'sequential'
+        Weight-update cadence.  ``'sequential'`` updates every symbol (the
+        default; the only mode for ``backend='numba'``).  ``'block'`` freezes
+        the weights over ``block_len`` symbols and applies one aggregated
+        ring-directed gradient per chunk (a GPU-occupying matrix product);
+        requires ``backend='jax'`` or ``backend='xp'`` and is incompatible with
+        ``store_weights``.  Pilot-aided masking carries over unchanged.
+    block_len : int, default 16
+        Symbols per frozen-weight chunk when ``update_mode='block'`` (typically
+        8-32; ignored otherwise).  ``step_size`` stays on the same scale as
+        sequential mode; only the stability ceiling is ~``block_len``× lower.
 
     Returns
     -------
