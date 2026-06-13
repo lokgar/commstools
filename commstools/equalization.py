@@ -2947,6 +2947,693 @@ def _get_jax_rde(num_taps, stride, num_radii, num_ch):
 
 
 # -----------------------------------------------------------------------------
+# BLOCK-UPDATE EQUALIZERS  (update_mode='block' — time-domain, DD-04 main)
+# -----------------------------------------------------------------------------
+#
+# Block-update LMS/CMA/RDE freeze the butterfly weights over a chunk of ``D``
+# symbols, accumulate one aggregated gradient, and apply a single weight update
+# per chunk.  This replaces the per-symbol weight dependency with one matrix
+# product per chunk, which XLA (JAX) and CuPy execute on the wide units — the
+# per-symbol ``lax.scan`` is launch-overhead-bound and cannot occupy a GPU.
+#
+# All variants share the **unified subtractive update**
+#     W -= mu * sum_d conj(E[d]) ⊗ X[d]
+# (matching the pilot-aided kernels): LMS uses ``E = y - d`` (algebraically
+# identical to the additive ``W += mu·conj(d-y)·X``); CMA/RDE use the Godard /
+# ring error; pilot positions invert to ``E = y - pilot_ref``.  Per CLAUDE.md
+# the two einsums run at ``Precision.HIGHEST`` to force true FP32 (no TF32).
+
+
+def _jax_block_core(
+    jax,
+    jnp,
+    x_input,
+    W_init,
+    mu,
+    error_fn,
+    aux_xs,
+    *,
+    n_sym,
+    D,
+    stride,
+    num_taps,
+    num_ch,
+):
+    """Run a chunked block-update butterfly scan under an active jit trace.
+
+    Builds the per-symbol strided regressor windows, reshapes into
+    ``n_chunks`` chunks of ``D`` symbols (zero-padding the final partial
+    chunk and masking its gradient contribution), and scans over chunks with
+    frozen weights.  ``error_fn(Y_chunk, aux_chunk) -> E_chunk`` (both
+    ``(D, num_ch)``) supplies the variant-specific error; the unified
+    subtractive update is applied once per chunk.
+
+    Returns ``(y_hat (n_sym, C), errors (n_sym, C), W_final (C, C, T))``.
+    """
+    _P = jax.lax.Precision.HIGHEST
+    n_chunks = (n_sym + D - 1) // D
+    n_pad = n_chunks * D
+
+    # Per-symbol strided window gather → (n_pad, C, num_taps).  Padded symbols
+    # (>= n_sym) index past the real signal; clamp to stay in-bounds — their
+    # rows are masked out of the gradient and trimmed from the outputs.
+    sym_ids = jnp.arange(n_pad)
+    tap_ids = jnp.arange(num_taps)
+    idx = sym_ids[:, None] * stride + tap_ids[None, :]  # (n_pad, num_taps)
+    idx = jnp.clip(idx, 0, x_input.shape[1] - 1)
+    X_all = jnp.transpose(x_input[:, idx], (1, 0, 2))  # (n_pad, C, T)
+    X_chunks = X_all.reshape(n_chunks, D, num_ch, num_taps)
+
+    valid = (sym_ids < n_sym).reshape(n_chunks, D)  # (n_chunks, D)
+
+    def body(W, xs):
+        X_chunk, valid_chunk, aux = xs
+        Y = jnp.einsum("ijt,djt->di", jnp.conj(W), X_chunk, precision=_P)  # (D,C)
+        E = error_fn(Y, aux)  # (D, C)
+        E_masked = jnp.where(valid_chunk[:, None], E, jnp.zeros_like(E))
+        grad = jnp.einsum("di,djt->ijt", jnp.conj(E_masked), X_chunk, precision=_P)
+        # Accumulate at HIGHEST precision but keep complex64 weight storage
+        # (CLAUDE.md): an x64-enabled session can otherwise promote the error to
+        # complex128 and break the scan carry dtype.
+        W_new = (W - mu * grad).astype(W.dtype)
+        return W_new, (Y, E)
+
+    W_final, (Y_chunks, E_chunks) = jax.lax.scan(
+        body, W_init, (X_chunks, valid, aux_xs)
+    )
+    y_hat = Y_chunks.reshape(n_pad, num_ch)[:n_sym]
+    errors = E_chunks.reshape(n_pad, num_ch)[:n_sym]
+    return y_hat, errors, W_final
+
+
+def _jax_block_pilot_aux(
+    jax, jnp, n_sym, D, num_ch, n_chunks, has_pilots, pref, pmask, blind_fn
+):
+    """Build the per-chunk pilot aux and wrap a blind error with a pilot override.
+
+    ``blind_fn(Y) -> E_blind`` (both ``(D, C)``).  When ``has_pilots`` is True,
+    masked positions invert to the LMS residual ``Y - pref`` (subtractive
+    update, matching the per-symbol pilot-aided kernels); otherwise the aux is
+    a dummy per-chunk index and the blind error is used everywhere.
+
+    Returns ``(aux_xs, error_fn)`` ready for ``_jax_block_core``.
+    """
+    n_pad = n_chunks * D
+    if has_pilots:
+        pref_T = jnp.transpose(pref)  # (n_sym, C)
+        pref_pad = jnp.zeros((n_pad, num_ch), pref_T.dtype).at[:n_sym].set(pref_T)
+        pmask_pad = (
+            jnp.zeros((n_pad,), jnp.bool_).at[:n_sym].set(pmask.astype(jnp.bool_))
+        )
+        aux_xs = (
+            pref_pad.reshape(n_chunks, D, num_ch),
+            pmask_pad.reshape(n_chunks, D),
+        )
+
+        def error_fn(Y, aux):
+            pref_c, pmask_c = aux
+            return jnp.where(pmask_c[:, None], Y - pref_c, blind_fn(Y))
+
+    else:
+        aux_xs = jnp.arange(n_chunks)
+
+        def error_fn(Y, aux):
+            return blind_fn(Y)
+
+    return aux_xs, error_fn
+
+
+def _get_jax_lms_block(
+    num_taps,
+    stride,
+    const_size,
+    num_ch,
+    n_sym,
+    D,
+    sq_side=0,
+    sq_lev_min=0.0,
+    sq_d_grid=1.0,
+):
+    """JIT-compile and cache the block-update LMS butterfly scan.
+
+    Static closure variables mirror ``_get_jax_lms`` plus ``n_sym`` and the
+    update block length ``D`` (both fix the chunk count / scan length at trace
+    time).  Training/DD switch is applied elementwise within each chunk.
+    """
+    key = (
+        "lms_block",
+        num_taps,
+        stride,
+        const_size,
+        num_ch,
+        n_sym,
+        D,
+        sq_side,
+        float(sq_lev_min),
+        float(sq_d_grid),
+    )
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+        n_chunks = (n_sym + D - 1) // D
+        n_pad = n_chunks * D
+
+        def _slice_block(Y, constellation):
+            if sq_side > 0:  # static branch — O(1) square-QAM slicer
+                ir = jnp.clip(
+                    jnp.round((Y.real - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                    0,
+                    sq_side - 1,
+                )
+                ii = jnp.clip(
+                    jnp.round((Y.imag - sq_lev_min) / sq_d_grid).astype(jnp.int32),
+                    0,
+                    sq_side - 1,
+                )
+                nr = sq_lev_min + ir.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                ni = sq_lev_min + ii.astype(jnp.float32) * jnp.float32(sq_d_grid)
+                return jax.lax.complex(nr, ni)
+            d2 = jnp.abs(Y[..., None] - constellation) ** 2  # (D, C, M)
+            return constellation[jnp.argmin(d2, axis=-1)]
+
+        @jax.jit
+        def run(x_input, training_padded, constellation, W_init, mu, n_train):
+            # training_padded: (C, n_sym) → per-symbol (n_pad, C) chunks
+            train_T = jnp.transpose(training_padded)  # (n_sym, C)
+            train_pad = jnp.zeros((n_pad, num_ch), train_T.dtype)
+            train_pad = train_pad.at[:n_sym].set(train_T)
+            train_chunks = train_pad.reshape(n_chunks, D, num_ch)
+            gidx_chunks = jnp.arange(n_pad).reshape(n_chunks, D)
+
+            def error_fn(Y, aux):
+                train_chunk, gidx = aux  # (D, C), (D,)
+                dd = _slice_block(Y, constellation)
+                d = jnp.where((gidx < n_train)[:, None], train_chunk, dd)
+                return Y - d
+
+            y_hat, errors, W_final = _jax_block_core(
+                jax,
+                jnp,
+                x_input,
+                W_init,
+                mu,
+                error_fn,
+                (train_chunks, gidx_chunks),
+                n_sym=n_sym,
+                D=D,
+                stride=stride,
+                num_taps=num_taps,
+                num_ch=num_ch,
+            )
+            return y_hat, errors, W_final, jnp.zeros((1,), jnp.complex64)
+
+        _JITTED_EQ[key] = run
+    return _JITTED_EQ[key]
+
+
+def _get_jax_cma_block(num_taps, stride, num_ch, n_sym, D, has_pilots=False):
+    """JIT-compile and cache the block-update CMA butterfly scan.
+
+    Blind Godard error per chunk; when ``has_pilots`` the error inverts to the
+    LMS residual ``y - pilot_ref`` at masked positions (subtractive update,
+    matching ``_get_numba_pa_cma``).
+    """
+    key = ("cma_block", num_taps, stride, num_ch, n_sym, D, has_pilots)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+        n_chunks = (n_sym + D - 1) // D
+
+        @jax.jit
+        def run(x_input, W_init, mu, r2, pref, pmask):
+            aux_xs, error_fn = _jax_block_pilot_aux(
+                jax, jnp, n_sym, D, num_ch, n_chunks, has_pilots, pref, pmask,
+                lambda Y: Y * (jnp.real(Y * jnp.conj(Y)) - r2),
+            )
+            y_hat, errors, W_final = _jax_block_core(
+                jax,
+                jnp,
+                x_input,
+                W_init,
+                mu,
+                error_fn,
+                aux_xs,
+                n_sym=n_sym,
+                D=D,
+                stride=stride,
+                num_taps=num_taps,
+                num_ch=num_ch,
+            )
+            return y_hat, errors, W_final, jnp.zeros((1,), jnp.complex64)
+
+        _JITTED_EQ[key] = run
+    return _JITTED_EQ[key]
+
+
+def _get_jax_rde_block(num_taps, stride, num_radii, num_ch, n_sym, D, has_pilots=False):
+    """JIT-compile and cache the block-update RDE butterfly scan.
+
+    Per-symbol nearest-ring radial error per chunk; pilot positions invert to
+    the LMS residual as in CMA.
+    """
+    key = ("rde_block", num_taps, stride, num_radii, num_ch, n_sym, D, has_pilots)
+    if key not in _JITTED_EQ:
+        jax, jnp, _ = _get_jax()
+        n_chunks = (n_sym + D - 1) // D
+
+        @jax.jit
+        def run(x_input, W_init, mu, radii, pref, pmask):
+            def blind_fn(Y):
+                abs_y2 = jnp.real(Y * jnp.conj(Y))  # (D, C)
+                abs_y = jnp.sqrt(abs_y2)
+                dist = jnp.abs(abs_y[..., None] - radii[None, None, :])  # (D, C, K)
+                rd = radii[jnp.argmin(dist, axis=-1)]  # (D, C)
+                return Y * (abs_y2 - rd**2)
+
+            aux_xs, error_fn = _jax_block_pilot_aux(
+                jax, jnp, n_sym, D, num_ch, n_chunks, has_pilots, pref, pmask, blind_fn
+            )
+            y_hat, errors, W_final = _jax_block_core(
+                jax,
+                jnp,
+                x_input,
+                W_init,
+                mu,
+                error_fn,
+                aux_xs,
+                n_sym=n_sym,
+                D=D,
+                stride=stride,
+                num_taps=num_taps,
+                num_ch=num_ch,
+            )
+            return y_hat, errors, W_final, jnp.zeros((1,), jnp.complex64)
+
+        _JITTED_EQ[key] = run
+    return _JITTED_EQ[key]
+
+
+def _block_eq_xp(
+    kind,
+    x_padded,
+    W,
+    mu,
+    D,
+    stride,
+    *,
+    constellation=None,
+    n_train=0,
+    training=None,
+    r2=1.0,
+    radii=None,
+    pref=None,
+    pmask=None,
+    sq_side=0,
+    sq_lev_min=0.0,
+    sq_d_grid=1.0,
+):
+    """Array-native (NumPy/CuPy) block-update butterfly equalizer.
+
+    A plain Python loop over ``ceil(n_sym/D)`` chunks: the per-chunk work is
+    matmul-sized so interpreter overhead is amortised, and the same code runs
+    on NumPy (CPU) and CuPy (GPU) via the array module of ``x_padded``.  The
+    forward/gradient einsums promote to ``complex128`` per CLAUDE.md, with
+    ``complex64`` weight storage.
+
+    Parameters mirror the per-symbol kernels; ``kind`` is ``'lms'``/``'cma'``/
+    ``'rde'`` and pilots (``pref``/``pmask``) invert the error to ``y - pref``.
+
+    Returns ``(y_out (n_sym, C), e_out (n_sym, C), W)`` on the input's backend.
+    """
+    x, xp, _ = dispatch(x_padded)
+    num_ch = W.shape[0]
+    num_taps = W.shape[2]
+    n_pad_samples = x.shape[1]
+    n_sym = (n_pad_samples - num_taps) // stride + 1
+
+    y_out = xp.empty((n_sym, num_ch), dtype=xp.complex64)
+    e_out = xp.empty((n_sym, num_ch), dtype=xp.complex64)
+
+    has_pilots = pref is not None and pmask is not None
+    if radii is not None:
+        radii = xp.asarray(radii).astype(xp.float64)
+    if constellation is not None:
+        constellation = xp.asarray(constellation).astype(xp.complex64)
+
+    for start in range(0, n_sym, D):
+        stop = min(start + D, n_sym)
+        d = stop - start  # actual chunk length (D, or shorter for the tail)
+        # Window gather for this chunk → (d, C, T)
+        base = (start + xp.arange(d))[:, None] * stride + xp.arange(num_taps)[None, :]
+        X_chunk = xp.transpose(x[:, base], (1, 0, 2))  # (d, C, T)
+        X64 = X_chunk.astype(xp.complex128)
+        Y = xp.einsum("ijt,djt->di", xp.conj(W).astype(xp.complex128), X64)  # (d, C)
+        Y = Y.astype(xp.complex64)
+
+        if kind == "lms":
+            dd = _slice_block_xp(
+                Y, xp, constellation, sq_side, sq_lev_min, sq_d_grid
+            )
+            sym_idx = start + xp.arange(d)
+            use_train = (sym_idx < n_train)[:, None]
+            tr = (
+                training[:, start:stop].T
+                if training is not None
+                else xp.zeros_like(Y)
+            )
+            dsym = xp.where(use_train, tr, dd)
+            E = Y - dsym
+        elif kind == "cma":
+            E = Y * (xp.real(Y * xp.conj(Y)) - xp.float32(r2))
+        elif kind == "rde":
+            abs_y2 = xp.real(Y * xp.conj(Y))
+            abs_y = xp.sqrt(abs_y2)
+            rd = radii[xp.argmin(xp.abs(abs_y[..., None] - radii[None, None, :]), axis=-1)]
+            E = Y * (abs_y2 - rd.astype(xp.float32) ** 2)
+        else:
+            raise ValueError(f"unknown block kind {kind!r}")
+
+        if has_pilots:
+            pm = pmask[start:stop].astype(bool)[:, None]
+            pr = pref[:, start:stop].T
+            E = xp.where(pm, Y - pr, E)
+
+        grad = xp.einsum(
+            "di,djt->ijt", xp.conj(E).astype(xp.complex128), X64
+        )  # (C, C, T)
+        W = (W - (xp.complex128(mu) * grad)).astype(xp.complex64)
+
+        y_out[start:stop] = Y
+        e_out[start:stop] = E
+
+    return y_out, e_out, W
+
+
+def _slice_block_xp(Y, xp, constellation, sq_side, sq_lev_min, sq_d_grid):
+    """Vectorised nearest-constellation slicer for the array-native block path."""
+    if sq_side > 0:
+        ir = xp.clip(
+            xp.round((Y.real - sq_lev_min) / sq_d_grid).astype(xp.int32),
+            0,
+            sq_side - 1,
+        )
+        ii = xp.clip(
+            xp.round((Y.imag - sq_lev_min) / sq_d_grid).astype(xp.int32),
+            0,
+            sq_side - 1,
+        )
+        nr = sq_lev_min + ir.astype(xp.float32) * xp.float32(sq_d_grid)
+        ni = sq_lev_min + ii.astype(xp.float32) * xp.float32(sq_d_grid)
+        return (nr + 1j * ni).astype(xp.complex64)
+    d2 = xp.abs(Y[..., None] - constellation) ** 2  # (d, C, M)
+    return constellation[xp.argmin(d2, axis=-1)]
+
+
+def _validate_block_mode(
+    update_mode, block_len, backend, *, cpr_type=None, store_weights=False
+):
+    """Validate ``update_mode``/``block_len`` and the block-mode constraints.
+
+    No-op for ``update_mode='sequential'``.  For ``'block'`` it enforces the
+    DD-04 contract: ``backend in {'jax', 'xp'}`` (``'numba'`` is a pointless
+    combination), a positive ``block_len``, and no ``cpr_type``/``store_weights``
+    (unsupported in v1).
+    """
+    if update_mode not in ("sequential", "block"):
+        raise ValueError(
+            f"update_mode must be 'sequential' or 'block'. Got {update_mode!r}."
+        )
+    if update_mode == "sequential":
+        return
+    if block_len < 1:
+        raise ValueError(f"block_len must be >= 1. Got {block_len}.")
+    if backend not in ("jax", "xp"):
+        raise ValueError(
+            "update_mode='block' requires backend='jax' (chunked scan) or "
+            f"backend='xp' (array-native NumPy/CuPy). Got backend={backend!r}; "
+            "backend='numba' is a pointless combination for block updates."
+        )
+    if cpr_type is not None:
+        raise ValueError(
+            "cpr_type is not supported with update_mode='block' (v1). Run CPR "
+            "as a separate stage, or use update_mode='sequential'."
+        )
+    if store_weights:
+        raise ValueError(
+            "store_weights is not supported with update_mode='block' (v1)."
+        )
+
+
+def _resolve_jax_platform(x_jax, device):
+    """Resolve the JAX placement platform string for a transferred input."""
+    try:
+        if device is not None:
+            return device.lower()
+        if hasattr(x_jax, "device"):
+            return x_jax.device.platform
+        return list(x_jax.devices())[0].platform
+    except Exception:
+        return "cpu"
+
+
+def _build_slicer_constellation(modulation, order, unipolar, training_np, pmf):
+    """Build the NumPy slicer constellation for the DD/block paths.
+
+    Mirrors the per-symbol kernels: a Gray constellation when ``modulation``
+    and ``order`` are given (PS-QAM scaled to unit power when ``pmf`` is
+    supplied), otherwise the unique rounded training symbols.
+    """
+    if modulation is not None and order is not None:
+        from .mapping import gray_constellation
+
+        reference_constellation = gray_constellation(modulation, order, unipolar=unipolar)
+        constellation_np = (
+            to_device(reference_constellation, "cpu").flatten().astype(np.complex64)
+        )
+    elif training_np is not None:
+        constellation_np = np.unique(np.round(training_np.reshape(-1), decimals=8))
+    else:
+        raise ValueError("modulation and order must be provided for DD mode.")
+
+    if pmf is not None and modulation is not None and order is not None:
+        _pmf_arr = np.asarray(pmf, dtype=np.float64)
+        _e_ps = float(np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2))
+        if _e_ps < 1.0 - 1e-6:
+            constellation_np = (
+                constellation_np * np.float32(1.0 / np.sqrt(_e_ps))
+            ).astype(np.complex64)
+    return constellation_np
+
+
+def _prep_blind_block_inputs(
+    samples,
+    *,
+    sps,
+    stride,
+    pad_left,
+    pad_right,
+    samples_prefix,
+    pad_mode,
+    input_norm_factor,
+    use_pilots,
+    pilot_gain_db,
+    pilot_mask,
+    pilot_ref,
+    c_ps,
+    num_ch,
+    num_taps,
+    center_tap,
+    w_init,
+):
+    """Normalise/pad inputs and build pilot arrays for blind block CMA/RDE.
+
+    Mirrors the per-symbol ``cma``/``rde`` numba prep: pilot deboost before the
+    global RMS normalisation, overlap padding, initial butterfly weights, and
+    the dense pilot reference/mask (PS-QAM-scaled).  Returns NumPy arrays for
+    the backend-agnostic block dispatch.
+    """
+    samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
+    if use_pilots and pilot_gain_db != 0.0:
+        _amp = np.float32(10.0 ** (pilot_gain_db / 20.0))
+        _smask = np.repeat(pilot_mask.astype(bool), stride)
+        samples_np[..., _smask] /= _amp
+    samples_np, _, eq_norm = _normalize_inputs(
+        samples_np, None, sps, input_norm_factor=input_norm_factor
+    )
+    samples_padded_np = _build_padded_samples(
+        samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
+    )
+    if w_init is not None:
+        w_arr = _validate_w_init(
+            np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
+            num_ch,
+            num_taps,
+        )
+    else:
+        w_arr = _init_butterfly_weights_numpy(num_ch, num_taps, center_tap=center_tap)
+    pref_np = pmask_np = None
+    if use_pilots:
+        pref_np = np.ascontiguousarray(to_device(pilot_ref, "cpu"), dtype=np.complex64)
+        if c_ps is not None:
+            pref_np = (pref_np * c_ps).astype(np.complex64)
+        pmask_np = np.ascontiguousarray(pilot_mask, dtype=np.uint8)
+    return samples_padded_np, w_arr, eq_norm, pref_np, pmask_np
+
+
+def _run_block_equalizer(
+    kind,
+    *,
+    samples_padded_np,
+    w_arr,
+    num_ch,
+    num_taps,
+    n_sym,
+    stride,
+    block_len,
+    step_size,
+    backend,
+    device,
+    was_1d,
+    xp,
+    eq_norm,
+    name,
+    debug_plot=False,
+    plot_smoothing=50,
+    check_convergence=False,
+    constellation_np=None,
+    train_full=None,
+    n_train_aligned=0,
+    sq_side=0,
+    sq_lev_min=0.0,
+    sq_d_grid=1.0,
+    r2=1.0,
+    radii_np=None,
+    pref_np=None,
+    pmask_np=None,
+):
+    """Backend dispatch shared by the ``update_mode='block'`` path of the
+    time-domain equalizers (``lms``/``cma``/``rde``).
+
+    ``backend='xp'`` runs the array-native loop on the input's module
+    (NumPy/CuPy); ``backend='jax'`` runs the chunked ``lax.scan``.  Returns a
+    finalised ``EqualizerResult`` (via ``_log_equalizer_exit``).
+    """
+    D = int(block_len)
+    has_pilots = pref_np is not None and pmask_np is not None
+
+    if backend == "xp":
+        x_pad = xp.asarray(samples_padded_np)
+        W0 = xp.asarray(w_arr)
+        kwargs = {}
+        if kind == "lms":
+            kwargs.update(
+                constellation=xp.asarray(constellation_np),
+                n_train=int(n_train_aligned),
+                training=xp.asarray(train_full),
+                sq_side=int(sq_side),
+                sq_lev_min=float(sq_lev_min),
+                sq_d_grid=float(sq_d_grid),
+            )
+        elif kind == "cma":
+            kwargs.update(r2=float(r2))
+        elif kind == "rde":
+            kwargs.update(radii=xp.asarray(radii_np))
+        if has_pilots:
+            kwargs.update(pref=xp.asarray(pref_np), pmask=xp.asarray(pmask_np))
+        y_out, e_out, W_final = _block_eq_xp(
+            kind, x_pad, W0, float(step_size), D, stride, **kwargs
+        )
+        result = _unpack_result_numpy(
+            y_out,
+            e_out,
+            W_final,
+            np.empty((1, num_ch, num_ch, num_taps), dtype=np.complex64),
+            was_1d,
+            False,
+            n_sym=None,
+            xp=xp,
+            num_train_symbols=int(n_train_aligned),
+            input_norm_factor=eq_norm,
+        )
+        return _log_equalizer_exit(
+            result,
+            name=name,
+            debug_plot=debug_plot,
+            check_convergence=check_convergence,
+            plot_smoothing=plot_smoothing,
+        )
+
+    # backend == "jax"
+    jax, jnp, _ = _get_jax()
+    if jax is None or jnp is None:
+        raise ImportError("JAX is required for backend='jax'.")
+    x_jax = to_jax(samples_padded_np, device=device)  # (C, N_pad)
+    platform = _resolve_jax_platform(x_jax, device)
+    W_jax = to_jax(w_arr, device=platform)
+    mu_jax = to_jax(jnp.float32(step_size), device=platform)
+
+    if kind == "lms":
+        const_jax = to_jax(constellation_np, device=platform)
+        train_jax = to_jax(train_full, device=platform)
+        n_train_jax = to_jax(jnp.int32(n_train_aligned), device=platform)
+        run = _get_jax_lms_block(
+            num_taps,
+            stride,
+            len(constellation_np),
+            num_ch,
+            n_sym,
+            D,
+            int(sq_side),
+            float(sq_lev_min),
+            float(sq_d_grid),
+        )
+        y_jax, e_jax, W_out, _ = run(
+            x_jax, train_jax, const_jax, W_jax, mu_jax, n_train_jax
+        )
+    else:
+        if has_pilots:
+            pref_jax = to_jax(pref_np, device=platform)  # (C, n_sym)
+            pmask_jax = to_jax(pmask_np.astype(bool), device=platform)  # (n_sym,)
+        else:
+            pref_jax = to_jax(
+                np.zeros((num_ch, n_sym), np.complex64), device=platform
+            )
+            pmask_jax = to_jax(np.zeros((n_sym,), bool), device=platform)
+        if kind == "cma":
+            r2_jax = to_jax(jnp.float32(r2), device=platform)
+            run = _get_jax_cma_block(num_taps, stride, num_ch, n_sym, D, has_pilots)
+            y_jax, e_jax, W_out, _ = run(
+                x_jax, W_jax, mu_jax, r2_jax, pref_jax, pmask_jax
+            )
+        else:  # rde
+            radii_jax = to_jax(np.asarray(radii_np, np.float32), device=platform)
+            run = _get_jax_rde_block(
+                num_taps, stride, len(radii_np), num_ch, n_sym, D, has_pilots
+            )
+            y_jax, e_jax, W_out, _ = run(
+                x_jax, W_jax, mu_jax, radii_jax, pref_jax, pmask_jax
+            )
+
+    result = _unpack_result_jax(
+        y_jax,
+        e_jax,
+        W_out,
+        None,
+        was_1d,
+        False,
+        n_sym=None,
+        xp=xp,
+        num_train_symbols=int(n_train_aligned),
+        input_norm_factor=eq_norm,
+    )
+    return _log_equalizer_exit(
+        result,
+        name=name,
+        debug_plot=debug_plot,
+        check_convergence=check_convergence,
+        plot_smoothing=plot_smoothing,
+    )
+
+
+# -----------------------------------------------------------------------------
 # HYBRID DA / BLIND KERNELS  (internal — used by cma/rde when pilot_ref supplied)
 # -----------------------------------------------------------------------------
 #
@@ -3846,9 +4533,42 @@ def lms(
     input_norm_factor: Optional[Union[float, np.ndarray]] = None,
     samples_prefix: Optional[ArrayType] = None,
     pad_mode: str = "zeros",
+    update_mode: str = "sequential",
+    block_len: int = 16,
 ) -> EqualizerResult:
     """
     Least Mean Squares adaptive equalizer with butterfly MIMO support.
+
+    Update modes
+    ------------
+    The weight-update cadence is selected by ``update_mode`` — the equalizer
+    math, regressor windows, slicer, and error are otherwise identical:
+
+    +-----------------------+--------+----------------+----------------------+
+    | Mode                  | Domain | Adaptation lag | Use case             |
+    +=======================+========+================+======================+
+    | ``'sequential'``      | time   | 1 symbol       | fastest dynamics,    |
+    | (default)             |        |                | CPU (Numba)          |
+    +-----------------------+--------+----------------+----------------------+
+    | ``'block'``,          | time   | ``block_len``  | fast dynamics on GPU |
+    | ``block_len`` 8-32    |        | symbols        | (JAX/CuPy)           |
+    +-----------------------+--------+----------------+----------------------+
+    | ``block_lms``         | freq.  | ``block_size`` | throughput king,     |
+    | (separate function)   |        | (~256)         | slow/static channels |
+    +-----------------------+--------+----------------+----------------------+
+
+    With ``update_mode='block'`` the weights are frozen over ``block_len``
+    symbols and one aggregated gradient — exactly the sum of what a
+    frozen-weight per-symbol LMS would accumulate over those symbols — is
+    applied per chunk, turning ``block_len`` rank-1 updates into a single matrix
+    product the GPU can occupy.  ``step_size`` is therefore on the **same scale
+    as** ``update_mode='sequential'``: the same ``mu`` yields the same
+    convergence and steady-state floor (do **not** divide by ``block_len``).
+    Only the *stability ceiling* is ~``block_len``× lower (the weights are
+    frozen across the chunk); reduce ``mu`` below your sequential value only if
+    the run diverges.  Block mode requires ``backend='jax'`` (chunked
+    ``lax.scan``) or ``backend='xp'`` (array-native NumPy/CuPy loop);
+    ``backend='numba'`` and ``cpr_type``/``store_weights`` are not supported.
 
     Supports data-aided (training) and decision-directed (DD) modes.
     When ``training_symbols`` are provided, the equalizer uses them for the
@@ -4165,6 +4885,13 @@ def lms(
     """
     if cpr_type is not None and cpr_type not in ("pll", "bps"):
         raise ValueError(f"cpr_type must be 'pll', 'bps', or None. Got {cpr_type!r}.")
+    _validate_block_mode(
+        update_mode,
+        block_len,
+        backend,
+        cpr_type=cpr_type,
+        store_weights=store_weights,
+    )
 
     n_train_log = training_symbols.shape[-1] if training_symbols is not None else 0
     logger.info(
@@ -4201,6 +4928,60 @@ def lms(
     pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
     pad_left = min(c_tap, pad_total)
     pad_right = pad_total - pad_left
+
+    if update_mode == "block":
+        samples_np = np.ascontiguousarray(to_device(samples, "cpu"), dtype=np.complex64)
+        training_np = (
+            to_device(training_symbols, "cpu").astype(np.complex64)
+            if training_symbols is not None
+            else None
+        )
+        samples_np, training_np, eq_norm = _normalize_inputs(
+            samples_np, training_np, sps, input_norm_factor=input_norm_factor
+        )
+        samples_padded_np = _build_padded_samples(
+            samples_np, pad_left, pad_right, samples_prefix, pad_mode, eq_norm, sps
+        )
+        constellation_np = _build_slicer_constellation(
+            modulation, order, unipolar, training_np, pmf
+        )
+        train_full, n_train_aligned = _prepare_training_numpy(training_np, num_ch, n_sym)
+        _sq_side, _sq_lev_min, _sq_d_grid = _sq_qam_slicer_params(constellation_np)
+        if w_init is not None:
+            w_arr = _validate_w_init(
+                np.ascontiguousarray(to_device(w_init, "cpu"), dtype=np.complex64),
+                num_ch,
+                num_taps,
+            )
+        else:
+            w_arr = _init_butterfly_weights_numpy(
+                num_ch, num_taps, center_tap=center_tap
+            )
+        return _run_block_equalizer(
+            "lms",
+            samples_padded_np=samples_padded_np,
+            w_arr=w_arr,
+            num_ch=num_ch,
+            num_taps=num_taps,
+            n_sym=n_sym,
+            stride=stride,
+            block_len=block_len,
+            step_size=step_size,
+            backend=backend,
+            device=device,
+            was_1d=was_1d,
+            xp=xp,
+            eq_norm=eq_norm,
+            name="LMS(block)",
+            debug_plot=debug_plot,
+            plot_smoothing=plot_smoothing,
+            constellation_np=constellation_np,
+            train_full=train_full,
+            n_train_aligned=n_train_aligned,
+            sq_side=_sq_side,
+            sq_lev_min=_sq_lev_min,
+            sq_d_grid=_sq_d_grid,
+        )
 
     if backend == "numba":
         # Convert to plain NumPy (no-op for CPU NumPy; downloads for CuPy)
@@ -6732,9 +7513,21 @@ def cma(
     input_norm_factor: Optional[Union[float, np.ndarray]] = None,
     samples_prefix: Optional[ArrayType] = None,
     pad_mode: str = "zeros",
+    update_mode: str = "sequential",
+    block_len: int = 16,
 ) -> EqualizerResult:
     """
     Constant Modulus Algorithm blind equalizer with butterfly MIMO support.
+
+    ``update_mode='block'`` (``block_len`` 8-32) freezes the weights over
+    ``block_len`` symbols and applies one aggregated Godard gradient per chunk,
+    turning the per-symbol update into a matrix product the GPU can occupy.  It
+    requires ``backend='jax'`` (chunked ``lax.scan``) or ``backend='xp'``
+    (array-native NumPy/CuPy); ``backend='numba'`` and ``store_weights`` are not
+    supported.  ``step_size`` is on the **same scale as** sequential mode (the
+    aggregated gradient is the sum over the chunk): the same ``mu`` gives the
+    same floor — only the stability ceiling is ~``block_len``× lower, so reduce
+    ``mu`` only if the run diverges.  Pilot-aided masking carries over unchanged.
 
     CMA minimizes the Godard dispersion criterion and requires no training
     symbols. It is the standard blind equalizer for constant-modulus signals
@@ -6882,6 +7675,7 @@ def cma(
     CPU-optimal throughput.
     """
     use_pilots = pilot_ref is not None and pilot_mask is not None
+    _validate_block_mode(update_mode, block_len, backend, store_weights=store_weights)
     logger.info(
         f"CMA equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
@@ -6935,6 +7729,50 @@ def cma(
     pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
     pad_left = min(c_tap, pad_total)
     pad_right = pad_total - pad_left
+
+    if update_mode == "block":
+        samples_padded_np, w_arr, eq_norm, pref_np, pmask_np = _prep_blind_block_inputs(
+            samples,
+            sps=sps,
+            stride=stride,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            samples_prefix=samples_prefix,
+            pad_mode=pad_mode,
+            input_norm_factor=input_norm_factor,
+            use_pilots=use_pilots,
+            pilot_gain_db=pilot_gain_db,
+            pilot_mask=pilot_mask,
+            pilot_ref=pilot_ref,
+            c_ps=_c_ps,
+            num_ch=num_ch,
+            num_taps=num_taps,
+            center_tap=center_tap,
+            w_init=w_init,
+        )
+        return _run_block_equalizer(
+            "cma",
+            samples_padded_np=samples_padded_np,
+            w_arr=w_arr,
+            num_ch=num_ch,
+            num_taps=num_taps,
+            n_sym=n_sym,
+            stride=stride,
+            block_len=block_len,
+            step_size=step_size,
+            backend=backend,
+            device=device,
+            was_1d=was_1d,
+            xp=xp,
+            eq_norm=eq_norm,
+            name="CMA(block)" if not use_pilots else "CMA(PA,block)",
+            debug_plot=debug_plot,
+            plot_smoothing=plot_smoothing,
+            check_convergence=True,
+            r2=r2,
+            pref_np=pref_np,
+            pmask_np=pmask_np,
+        )
 
     if backend == "numba":
         numba = _get_numba()
@@ -7132,9 +7970,21 @@ def rde(
     input_norm_factor: Optional[Union[float, np.ndarray]] = None,
     samples_prefix: Optional[ArrayType] = None,
     pad_mode: str = "zeros",
+    update_mode: str = "sequential",
+    block_len: int = 16,
 ) -> EqualizerResult:
     """
     Radius Directed Equalizer (RDE) — blind equalizer for multi-ring constellations.
+
+    ``update_mode='block'`` (``block_len`` 8-32) freezes the weights over
+    ``block_len`` symbols and applies one aggregated ring-directed gradient per
+    chunk.  It requires ``backend='jax'`` (chunked ``lax.scan``) or
+    ``backend='xp'`` (array-native NumPy/CuPy); ``backend='numba'`` and
+    ``store_weights`` are not supported.  ``step_size`` is on the **same scale
+    as** sequential mode (the aggregated gradient is the sum over the chunk):
+    the same ``mu`` gives the same floor — only the stability ceiling is
+    ~``block_len``× lower, so reduce ``mu`` only if the run diverges.
+    Pilot-aided masking carries over to block mode unchanged.
 
     RDE is a CMA variant that replaces the single Godard dispersion radius with
     per-symbol radius selection from the set of unique constellation ring radii.
@@ -7272,6 +8122,7 @@ def rde(
     for CPU-optimal throughput.
     """
     use_pilots = pilot_ref is not None and pilot_mask is not None
+    _validate_block_mode(update_mode, block_len, backend, store_weights=store_weights)
     logger.info(
         f"RDE equalizer: num_taps={num_taps}, mu={step_size}, sps={sps}, "
         f"backend={backend}, pilot_aided={use_pilots}, pilot_gain_db={pilot_gain_db}"
@@ -7326,6 +8177,50 @@ def rde(
     pad_total = max(0, n_sym * stride - n_samples + num_taps - 1)
     pad_left = min(c_tap, pad_total)
     pad_right = pad_total - pad_left
+
+    if update_mode == "block":
+        samples_padded_np, w_arr, eq_norm, pref_np, pmask_np = _prep_blind_block_inputs(
+            samples,
+            sps=sps,
+            stride=stride,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            samples_prefix=samples_prefix,
+            pad_mode=pad_mode,
+            input_norm_factor=input_norm_factor,
+            use_pilots=use_pilots,
+            pilot_gain_db=pilot_gain_db,
+            pilot_mask=pilot_mask,
+            pilot_ref=pilot_ref,
+            c_ps=_c_ps,
+            num_ch=num_ch,
+            num_taps=num_taps,
+            center_tap=center_tap,
+            w_init=w_init,
+        )
+        return _run_block_equalizer(
+            "rde",
+            samples_padded_np=samples_padded_np,
+            w_arr=w_arr,
+            num_ch=num_ch,
+            num_taps=num_taps,
+            n_sym=n_sym,
+            stride=stride,
+            block_len=block_len,
+            step_size=step_size,
+            backend=backend,
+            device=device,
+            was_1d=was_1d,
+            xp=xp,
+            eq_norm=eq_norm,
+            name="RDE(block)" if not use_pilots else "RDE(PA,block)",
+            debug_plot=debug_plot,
+            plot_smoothing=plot_smoothing,
+            check_convergence=True,
+            radii_np=radii,
+            pref_np=pref_np,
+            pmask_np=pmask_np,
+        )
 
     if backend == "numba":
         numba = _get_numba()
