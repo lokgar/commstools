@@ -7311,6 +7311,13 @@ def block_lms(
         # Accumulate divergence flag on-device — no D→H sync here.
         _div_flag |= ~xp.isfinite(h).all()
 
+    # CUDA-graph invariant: _fill_x_win and _store_outputs run eagerly *between*
+    # graph replays, so they MUST NOT allocate from the device memory pool.  The
+    # captured graph's intermediates were freed back to the pool after capture;
+    # any allocation here could hand those exact blocks out and clobber the
+    # pointers the replay reads/writes (intermittent garbage / divergence).  Both
+    # helpers touch only pre-allocated buffers (x_win, y_all/e_all/phi_all,
+    # *_ws) via fill/slice-assign — keep them allocation-free.
     def _fill_x_win(b_start):
         """Eager (per-block, varying offset) load of the input window into x_win.
 
@@ -7363,6 +7370,16 @@ def block_lms(
     _loop_stream_ctx: Any
     if _use_graph:
         assert _graph_stream is not None  # set together with _use_graph above
+        # _graph_stream is non-blocking, so it does NOT implicitly serialize
+        # with the default stream that produced x_padded, h, the scratch
+        # buffers, and the BPS/cs constants above.  Without an explicit join the
+        # first block (and the graph capture) races those still-in-flight setup
+        # writes — intermittently reading/capturing garbage, which surfaces as
+        # divergence or bad convergence that "fixes itself" on rerun (the race
+        # is timing-dependent).  Make the loop stream wait for that setup work.
+        _setup_done = _cp_graph.cuda.Event()
+        _setup_done.record()  # records on the current (default) stream
+        _graph_stream.wait_event(_setup_done)
         _loop_stream_ctx = _graph_stream
     else:
         _loop_stream_ctx = contextlib.nullcontext()
