@@ -3424,7 +3424,7 @@ def _build_slicer_constellation(modulation, order, unipolar, training_np, pmf):
     supplied), otherwise the unique rounded training symbols.
     """
     if modulation is not None and order is not None:
-        from .mapping import gray_constellation
+        from .mapping import constellation_power, gray_constellation
 
         reference_constellation = gray_constellation(
             modulation, order, unipolar=unipolar
@@ -3438,10 +3438,7 @@ def _build_slicer_constellation(modulation, order, unipolar, training_np, pmf):
         raise ValueError("modulation and order must be provided for DD mode.")
 
     if pmf is not None and modulation is not None and order is not None:
-        _pmf_arr = np.asarray(pmf, dtype=np.float64)
-        _e_ps = float(
-            np.dot(_pmf_arr, np.abs(constellation_np).astype(np.float64) ** 2)
-        )
+        _e_ps = constellation_power(constellation_np, pmf)
         if _e_ps < 1.0 - 1e-6:
             constellation_np = (
                 constellation_np * np.float32(1.0 / np.sqrt(_e_ps))

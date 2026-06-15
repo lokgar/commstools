@@ -28,7 +28,7 @@ import numpy as np
 from functools import lru_cache
 from typing import Any, Optional
 
-from .backend import ArrayType, dispatch, is_jax_array, to_jax, _get_jax
+from .backend import ArrayType, dispatch, is_jax_array, to_jax, to_device, _get_jax
 from .logger import logger
 
 
@@ -639,8 +639,7 @@ def demap_symbols_hard(
     # to the ``{s_m}`` grid that ``gray_constellation`` returns, so the
     # nearest-neighbour search is exact.  No-op for uniform modulations.
     if pmf is not None:
-        pmf_arr = np.asarray(pmf, dtype=np.float64)
-        e_ps = float(np.dot(pmf_arr, np.abs(constellation) ** 2))
+        e_ps = constellation_power(constellation, pmf)
         if e_ps < 1.0 - 1e-6:
             symbols_flat = symbols_flat * xp.asarray(
                 np.sqrt(e_ps), dtype=symbols_flat.real.dtype
@@ -869,6 +868,60 @@ def compute_llr(
 # =============================================================================
 # Probabilistic Shaping (PS-QAM)
 # =============================================================================
+
+
+def constellation_power(
+    constellation: ArrayType, pmf: Optional[ArrayType] = None
+) -> float:
+    r"""Average symbol power ``E[|s|^2]`` of a constellation.
+
+    For a uniform constellation (``pmf=None``) this is the unweighted mean
+    power ``mean(|s|^2)``.  For probabilistic shaping it is the pmf-weighted
+    power ``Σ_m P(s_m) |s_m|^2`` — the quantity written ``E_PS`` when the
+    constellation is on the normalised grid (where it is ``< 1``).
+
+    The value is *grid-agnostic*: it reports the average power of the
+    constellation exactly as passed — ``≈1`` for a normalised uniform grid,
+    ``E_PS < 1`` for a normalised shaped grid, or the raw integer-grid energy
+    (e.g. ``10`` for an unnormalised 16-QAM).  Callers apply their own
+    rescaling (``√E_PS`` on the received symbols, or ``1/√E_PS`` on the
+    constellation) using the returned value.
+
+    This is the single source of truth for PS-QAM power across the library;
+    prefer it over the inline ``Σ pmf·|s|^2`` idiom.
+
+    Parameters
+    ----------
+    constellation : array_like
+        Constellation points, shape ``(M,)``.  NumPy, CuPy, or list.
+    pmf : array_like, optional
+        Per-point probabilities, shape ``(M,)``, aligned with
+        ``constellation`` and summing to 1 (e.g. from
+        :func:`maxwell_boltzmann`).  ``None`` (uniform) returns the
+        unweighted mean power.
+
+    Returns
+    -------
+    float
+        Host scalar ``E[|s|^2]``.
+
+    Raises
+    ------
+    ValueError
+        If ``pmf`` is supplied and its length does not match the
+        constellation.
+    """
+    const = np.asarray(to_device(constellation, "cpu"))
+    energies = np.abs(const).astype(np.float64) ** 2
+    if pmf is None:
+        return float(np.mean(energies))
+    pmf_arr = np.asarray(to_device(pmf, "cpu"), dtype=np.float64).ravel()
+    if pmf_arr.shape[0] != energies.shape[0]:
+        raise ValueError(
+            f"pmf length {pmf_arr.shape[0]} does not match constellation "
+            f"length {energies.shape[0]}."
+        )
+    return float(np.dot(pmf_arr, energies))
 
 
 @lru_cache(maxsize=256)

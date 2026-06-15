@@ -1415,7 +1415,7 @@ def constellation(
                 "Modulation and order must be provided to overlay ideal constellation."
             )
         else:
-            from .mapping import gray_constellation
+            from .mapping import constellation_power, gray_constellation
 
             try:
                 const = gray_constellation(modulation, order, unipolar=unipolar)
@@ -1426,8 +1426,7 @@ def constellation(
                 # {s_m / sqrt(E_PS)}, matching where the received clusters
                 # sit after shape_pulse normalises to E_s = 1.
                 if pmf is not None:
-                    pmf_arr = np.asarray(pmf, dtype=np.float64)
-                    e_ps = float(np.dot(pmf_arr, np.abs(to_device(const, "cpu")) ** 2))
+                    e_ps = constellation_power(const, pmf)
                     const_rms = float(np.sqrt(e_ps)) if e_ps > 0 else helpers.rms(const)
                 else:
                     const_rms = helpers.rms(const)

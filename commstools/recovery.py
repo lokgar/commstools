@@ -861,7 +861,7 @@ def recover_carrier_phase_bps(
     Memory: the distance tensor scales as N * B * M * 8 bytes; reduce
     ``num_test_phases`` or segment length for high-order constellations.
     """
-    from .mapping import gray_constellation
+    from .mapping import constellation_power, gray_constellation
 
     from .helpers import normalize
 
@@ -884,8 +884,7 @@ def recover_carrier_phase_bps(
     # Rescale the comparison constellation to the same grid so the nearest-
     # neighbour distance metric is correct.  Skip on uniform PMF.
     if pmf is not None:
-        pmf_arr = np.asarray(pmf, dtype=np.float64)
-        e_ps = float(np.dot(pmf_arr, np.abs(const_np) ** 2))
+        e_ps = constellation_power(const_np, pmf)
         if e_ps < 1.0 - 1e-6:
             const_np = const_np / np.sqrt(e_ps)
 

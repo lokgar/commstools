@@ -2766,11 +2766,10 @@ class Signal(BaseModel):
             # resolved_symbols therefore lives on {c·s_m}, not {s_m}.
             # Rescale back to {s_m} so distances against gray_constellation are
             # correct; noise_var scales by the same factor (c^2 = 1/E_PS).
-            from .mapping import gray_constellation as _gc
+            from .mapping import constellation_power, gray_constellation as _gc
 
             const = _gc(mod, ord_)
-            pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
-            e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
+            e_ps = constellation_power(const, effective_pmf)
             if e_ps < 1.0 - 1e-6:
                 xp = get_array_module(resolved)
                 scale = xp.asarray(np.sqrt(e_ps), dtype=resolved.real.dtype)
@@ -2845,11 +2844,10 @@ class Signal(BaseModel):
             # unit symbol power, placing resolved_symbols on {c·s_m} with
             # c = 1/√E_PS.  Rescale to {s_m} before LLR computation so that
             # distances against gray_constellation are correct.
-            from .mapping import gray_constellation as _gc
+            from .mapping import constellation_power, gray_constellation as _gc
 
             const = _gc(mod, ord_)
-            pmf_arr = np.asarray(effective_pmf, dtype=np.float64)
-            e_ps = float(np.dot(pmf_arr, np.abs(const) ** 2))
+            e_ps = constellation_power(const, effective_pmf)
             if e_ps < 1.0 - 1e-6:
                 xp = get_array_module(resolved)
                 scale = xp.asarray(np.sqrt(e_ps), dtype=resolved.real.dtype)

@@ -134,7 +134,7 @@ def evm(
                 "mode='blind' requires modulation and order. "
                 "Example: evm(rx, mode='blind', modulation='qam', order=16)."
             )
-        from .mapping import gray_constellation
+        from .mapping import constellation_power, gray_constellation
 
         # gray_constellation always returns unit-average-power constellations.
         # No gain correction of rx is applied here — the caller is responsible
@@ -146,8 +146,7 @@ def evm(
         # ``{s_m/sqrt(E_PS)}`` grid.  Rescale rx by ``sqrt(E_PS)`` so the
         # nearest-neighbour decision against ``{s_m}`` is exact.
         if pmf is not None:
-            pmf_arr = np.asarray(pmf, dtype=np.float64)
-            e_ps = float(np.dot(pmf_arr, np.abs(constellation_np) ** 2))
+            e_ps = constellation_power(constellation_np, pmf)
             if e_ps < 1.0 - 1e-6:
                 rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 
@@ -393,7 +392,7 @@ def ser(
     constellation so the function is robust to any floating-point rounding
     in the reference values.
     """
-    from .mapping import gray_constellation
+    from .mapping import constellation_power, gray_constellation
 
     rx, xp, _ = dispatch(rx_symbols)
     tx = xp.asarray(tx_symbols)
@@ -412,8 +411,7 @@ def ser(
     # ``gray_constellation`` is correct for both rx and tx.  Has no effect on
     # uniform modulations.
     if pmf is not None:
-        pmf_arr = np.asarray(pmf, dtype=np.float64)
-        e_ps = float(np.dot(pmf_arr, np.abs(constellation_np) ** 2))
+        e_ps = constellation_power(constellation_np, pmf)
         if e_ps < 1.0 - 1e-6:
             rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 
