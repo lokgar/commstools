@@ -288,3 +288,40 @@ class TestAddPilotTone:
         x = self._signal(xp)
         with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
             spectral.add_pilot_tone(x, fs, fs)
+
+    def test_scalar_returns_float(self, backend_device, xp):
+        """Scalar frequency returns a plain float (back-compat), even for MIMO."""
+        fs = 100.0
+        mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
+        _, f_actual = spectral.add_pilot_tone(mimo, fs, 30.0)
+        assert isinstance(f_actual, float)
+
+    def test_per_channel_frequencies(self, backend_device, xp):
+        """A per-channel list places one distinct tone per channel at its bin."""
+        fs = 100.0
+        N = 4096
+        f_req = [20.0, -35.0]
+        mimo = xp.stack([self._signal(xp, N=N), self._signal(xp, N=N, seed=1)])
+        y, f_actual = spectral.add_pilot_tone(mimo, fs, f_req, power_ratio_db=10.0)
+        assert isinstance(f_actual, list) and len(f_actual) == 2
+        freqs = xp.fft.fftfreq(N, d=1.0 / fs)
+        for c in range(2):
+            k = int(xp.argmax(xp.abs(xp.fft.fft(y[c]))))
+            assert abs(float(freqs[k]) - f_actual[c]) < fs / N
+            assert abs(f_actual[c] - f_req[c]) <= fs / N / 2 + 1e-9
+        # Each channel's dominant tone sits at a *different* bin.
+        assert f_actual[0] != f_actual[1]
+
+    def test_per_channel_length_mismatch_raises(self, backend_device, xp):
+        """A per-channel sequence whose length != C raises ValueError."""
+        fs = 100.0
+        mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
+        with pytest.raises(ValueError, match=r"one frequency per channel"):
+            spectral.add_pilot_tone(mimo, fs, [20.0, -30.0, 10.0])
+
+    def test_per_channel_invalid_frequency_raises(self, backend_device, xp):
+        """An out-of-range entry in a per-channel sequence raises ValueError."""
+        fs = 100.0
+        mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
+        with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
+            spectral.add_pilot_tone(mimo, fs, [20.0, fs])

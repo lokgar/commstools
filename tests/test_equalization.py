@@ -2615,3 +2615,117 @@ class TestPrefixPadNormPhase4:
         )
         assert isinstance(r.input_norm_factor, float)
         assert r.input_norm_factor > 0.0
+
+
+# -----------------------------------------------------------------------------
+# TONE-BASED POLARIZATION DEMULTIPLEXING
+# -----------------------------------------------------------------------------
+
+
+class TestDemultiplexPolarizationTones:
+    """Tests for equalization.demultiplex_polarization_tones."""
+
+    # Data occupies |f| < 0.3*fs; tones live in the clean guard band beyond it,
+    # mirroring a real pilot-tone placement so single-bin extraction is exact.
+    TONES = [35.0, -42.0]  # Hz, both inside the guard for fs=100
+
+    @staticmethod
+    def _streams(xp, C=2, N=8192, seed=0, fs=100.0, band_frac=0.3):
+        """C independent, band-limited, unit-power complex streams, shape (C, N)."""
+        rng = xp.random.RandomState(seed)
+        s = (rng.randn(C, N) + 1j * rng.randn(C, N)).astype(xp.complex64)
+        # Brick-wall low-pass so a guard band is left for the pilot tones.
+        freqs = xp.fft.fftfreq(N, d=1.0 / fs)
+        mask = (xp.abs(freqs) < band_frac * fs)[None, :]
+        s = xp.fft.ifft(xp.fft.fft(s, axis=-1) * mask, axis=-1).astype(xp.complex64)
+        s /= xp.sqrt(xp.mean(xp.abs(s) ** 2, axis=-1, keepdims=True))
+        return s
+
+    @staticmethod
+    def _corr(xp, a, b):
+        """Magnitude of the normalised complex correlation (scale-invariant)."""
+        num = xp.abs(xp.sum(a * xp.conj(b)))
+        den = xp.sqrt(xp.sum(xp.abs(a) ** 2) * xp.sum(xp.abs(b) ** 2))
+        return float(num / den)
+
+    def test_demux_recovers_streams_no_permutation(self, backend_device, xp):
+        """A static rotation is inverted; row j tracks tone j (no permutation)."""
+        from commstools.impairments import apply_polarization_mixing
+        from commstools.spectral import add_pilot_tone
+
+        fs = 100.0
+        s = self._streams(xp)
+        tx, f_used = add_pilot_tone(s, fs, self.TONES, power_ratio_db=-10.0)
+        rx = apply_polarization_mixing(tx, theta=0.6)  # frequency-flat Jones mix
+
+        demuxed = equalization.demultiplex_polarization_tones(rx, fs, f_used)
+
+        assert demuxed.shape == tx.shape
+        assert demuxed.dtype == rx.dtype
+        for j in range(2):
+            # Row j recovers the transmitted stream j (data+tone) up to a scale.
+            assert self._corr(xp, demuxed[j], tx[j]) > 0.999
+            # ...and rejects the other stream (cross-talk suppressed).
+            assert self._corr(xp, demuxed[j], tx[1 - j]) < 0.05
+
+    def test_demux_robust_to_noise(self, backend_device, xp):
+        """The tone-phasor estimate still locks under moderate AWGN."""
+        from commstools.impairments import apply_polarization_mixing
+        from commstools.spectral import add_pilot_tone
+
+        fs = 100.0
+        s = self._streams(xp, N=8192)
+        tx, f_used = add_pilot_tone(s, fs, self.TONES, power_ratio_db=-8.0)
+        rx = apply_polarization_mixing(tx, theta=-0.9)
+        rng = xp.random.RandomState(123)
+        std = 0.1
+        rx = rx + std * (rng.randn(*rx.shape) + 1j * rng.randn(*rx.shape)).astype(
+            rx.dtype
+        )
+
+        demuxed = equalization.demultiplex_polarization_tones(rx, fs, f_used)
+        for j in range(2):
+            assert self._corr(xp, demuxed[j], tx[j]) > 0.99
+
+    def test_return_matrix_shape(self, backend_device, xp):
+        """return_matrix yields the (K, C) complex128 unmixing matrix."""
+        from commstools.spectral import add_pilot_tone
+
+        fs = 100.0
+        s = self._streams(xp)
+        tx, f_used = add_pilot_tone(s, fs, self.TONES, power_ratio_db=-10.0)
+        demuxed, W = equalization.demultiplex_polarization_tones(
+            tx, fs, f_used, return_matrix=True
+        )
+        assert W.shape == (2, 2)
+        assert W.dtype == xp.complex128
+
+    def test_overdetermined_pinv(self, backend_device, xp):
+        """C > K: a (3, 2) mixing is unmixed to 2 streams via the pseudo-inverse."""
+        from commstools.spectral import add_pilot_tone
+
+        fs = 100.0
+        s = self._streams(xp, C=2, N=8192)
+        tx, f_used = add_pilot_tone(s, fs, self.TONES, power_ratio_db=-10.0)
+        rng = xp.random.RandomState(7)
+        J = (rng.randn(3, 2) + 1j * rng.randn(3, 2)).astype(xp.complex64)  # (3, 2)
+        rx = (J @ tx.astype(xp.complex64)).astype(xp.complex64)  # (3, N)
+
+        demuxed = equalization.demultiplex_polarization_tones(rx, fs, f_used)
+        assert demuxed.shape == (2, tx.shape[-1])
+        for j in range(2):
+            assert self._corr(xp, demuxed[j], tx[j]) > 0.999
+
+    def test_more_tones_than_channels_raises(self, backend_device, xp):
+        """K > C is rejected (cannot unmix more streams than receive channels)."""
+        fs = 100.0
+        s = self._streams(xp, C=2)
+        with pytest.raises(ValueError, match=r"need K <= C"):
+            equalization.demultiplex_polarization_tones(s, fs, [10.0, 20.0, 30.0])
+
+    def test_requires_2d(self, backend_device, xp):
+        """A 1-D (SISO) input is rejected — demux is inherently MIMO."""
+        fs = 100.0
+        s = self._streams(xp, C=1)[0]  # (N,)
+        with pytest.raises(ValueError, match=r"2-D \(C, N\)"):
+            equalization.demultiplex_polarization_tones(s, fs, [10.0])

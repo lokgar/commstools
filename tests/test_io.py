@@ -103,6 +103,16 @@ def test_roundtrip_pilot_tone_frequency(tmp_path):
     assert sig2.pilot_tone_frequency == 2.5e9
 
 
+def test_roundtrip_pilot_tone_frequency_per_channel(tmp_path):
+    """A per-channel list of pilot-tone frequencies round-trips intact."""
+    sig = _mimo_signal()
+    sig.pilot_tone_frequency = [2.5e9, -3.0e9]
+    p = tmp_path / "tones.npz"
+    save_npz(sig, p)
+    sig2 = load_npz(p)
+    assert sig2.pilot_tone_frequency == [2.5e9, -3.0e9]
+
+
 def test_roundtrip_source_bits(tmp_path):
     sig = _siso_signal()
     assert sig.source_bits is not None

@@ -70,17 +70,21 @@ block_rde :
     optionally pilot-aided).
 apply_taps :
     Apply frozen equalizer taps to a new signal (no weight updates).
+demultiplex_polarization_tones :
+    One-shot frequency-flat polarization demux from distinct per-stream pilot
+    tones (tone-phasor Jones-matrix inversion; no iteration).
 """
 
 import contextlib
 import functools
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from .backend import ArrayType, _get_jax, dispatch, from_jax, to_jax, to_device
 from .filtering import _ols_backward, _ols_forward
+from .frequency import find_bias_tone
 from .helpers import resolve_pll_gains
 from .logger import logger
 
@@ -9136,3 +9140,190 @@ def apply_taps(
     y = xp.einsum("ijt,jnt->in", xp.conj(weights), windows)  # (C, N_sym)
 
     return y[0] if was_1d else y
+
+
+# -----------------------------------------------------------------------------
+# TONE-BASED POLARIZATION DEMULTIPLEXING
+# -----------------------------------------------------------------------------
+
+
+def demultiplex_polarization_tones(
+    samples: ArrayType,
+    sampling_rate: float,
+    tone_frequencies: Sequence[float],
+    *,
+    refine_tones: bool = True,
+    search_band: Optional[float] = None,
+    normalize: bool = True,
+    return_matrix: bool = False,
+) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
+    r"""
+    One-shot polarization demux from distinct per-stream CW pilot tones.
+
+    Undoes a **frequency-flat** polarization / spatial mixing by inverting the
+    channel's Jones matrix, which is read directly off pilot tones placed at a
+    *distinct* frequency on each transmitted stream (see ``add_pilot_tone`` with
+    a per-channel ``frequency`` list).
+
+    **Principle.**  With tone ``f_j`` carried *only* by transmitted stream ``j``
+    and a frequency-flat mixing ``r = J s`` (e.g.
+    ``apply_polarization_mixing``), the complex amplitude of tone ``f_j`` in
+    received channel ``i`` is ``T[i, j] = J[i, j] · α_j`` (``α_j`` = the TX tone
+    amplitude of stream ``j``).  Hence the measured tone-phasor matrix factors as
+    ``T = J · diag(α)``, and ``W = pinv(T)`` unmixes::
+
+        W r = diag(1/α) · J^{-1} J s = diag(1/α) · s,
+
+    recovering each stream up to a trivial per-stream complex scale ``1/α_j``
+    (removed by ``normalize`` and/or downstream CPR).  Because each tone uniquely
+    labels its stream, output row ``j`` always corresponds to ``tone_frequencies[j]``
+    — there is **no polarization-permutation ambiguity** (unlike blind CMA; cf.
+    ``resolve_polarization_permutation``).
+
+    **Speed.**  Tones added with ``add_pilot_tone`` are grid-quantized
+    (buffer-periodic), so a single DFT bin is the exact, mutually-orthogonal,
+    maximum-likelihood estimator of each tone phasor.  The whole operation is two
+    small GEMMs (extract ``T`` via a ``(C,N)·(N,K)`` product, apply ``W`` via a
+    ``(K,C)·(C,N)`` product) plus one ``KxK`` inverse — no iteration, no
+    convergence, far below the cost of a full FFT.
+
+    **Scope.**  Frequency-flat (static SOP rotation) only.  For PMD / DGD use the
+    returned unmixer (``return_matrix=True``) to seed a butterfly equalizer
+    (``cma`` / ``block_lms``).
+
+    Parameters
+    ----------
+    samples : array_like
+        Received MIMO samples. Shape ``(C, N)`` — time on the last axis.
+    sampling_rate : float
+        Sampling rate f_s in Hz.
+    tone_frequencies : sequence of float
+        The ``K`` distinct per-stream tone frequencies in Hz (as added at the
+        TX, in transmitted-stream order).  Require ``K <= C``.  Output row ``j``
+        corresponds to ``tone_frequencies[j]``.
+    refine_tones : bool, default True
+        If ``True``, sub-bin-refine each tone centre with ``find_bias_tone``
+        (on the receive channel where that tone is strongest) before extraction,
+        absorbing a residual carrier frequency offset that has dragged the tone
+        off its nominal bin.  If ``False``, extract exactly at
+        ``tone_frequencies``.
+    search_band : float, optional
+        Half-width in Hz of the per-tone peak search when ``refine_tones=True``.
+        Defaults to ``4 * f_s / N`` (a few FFT bins).  Widen it if the carrier
+        offset can exceed that, but keep it inside the tone-to-data guard so the
+        data band never wins the argmax.
+    normalize : bool, default True
+        If ``True``, rescale each demuxed row so its mean power equals the mean
+        per-channel input power, removing the arbitrary ``1/α_j`` per-stream
+        scale and preserving the library power invariant.
+    return_matrix : bool, default False
+        If ``True``, also return the ``(K, C)`` unmixing matrix ``W``.
+
+    Returns
+    -------
+    demuxed : array_like
+        Demultiplexed streams. Shape ``(K, N)``, same complex dtype and backend
+        as the input.  Row ``j`` is the stream that carried
+        ``tone_frequencies[j]``.
+    W : array_like, optional
+        Returned only if ``return_matrix=True``: the ``(K, C)`` unmixing matrix
+        (``complex128``), i.e. the estimated inverse Jones matrix up to per-stream
+        scaling.  Suitable as a seed for a butterfly equalizer.
+
+    Raises
+    ------
+    ValueError
+        If ``samples`` is not 2-D, ``tone_frequencies`` is empty, ``K > C``, or
+        any tone frequency lies outside ``(-f_s/2, f_s/2)``.
+
+    See Also
+    --------
+    add_pilot_tone : Add the per-stream tones at the transmitter.
+    """
+    samples, xp, _ = dispatch(samples)
+    if samples.ndim != 2:
+        raise ValueError(
+            "demultiplex_polarization_tones requires a 2-D (C, N) MIMO input; "
+            f"got ndim={samples.ndim}."
+        )
+    C, N = samples.shape
+
+    f_tones = [float(f) for f in tone_frequencies]
+    K = len(f_tones)
+    if K == 0:
+        raise ValueError("tone_frequencies must contain at least one frequency.")
+    if K > C:
+        raise ValueError(
+            f"got K={K} tones but only C={C} receive channels; need K <= C to "
+            "unmix (one tone per transmitted stream)."
+        )
+    nyq = sampling_rate / 2.0
+    for f in f_tones:
+        if not (-nyq < f < nyq):
+            raise ValueError(
+                f"tone_frequencies entry {f} must lie in (-fs/2, fs/2) = "
+                f"(±{nyq:.3g}) Hz."
+            )
+
+    # Promote to complex128: the tone-phasor matrix inverse is precision-sensitive
+    # (CLAUDE.md), and extraction is a single GEMM regardless of width.
+    samples_c = xp.asarray(samples, dtype=xp.complex128)  # (C, N)
+    n = xp.arange(N, dtype=xp.float64)
+    two_pi = 2.0 * np.pi
+
+    def _extract(freqs: Sequence[float]) -> ArrayType:
+        # Tone-phasor matrix T[i, j] = (1/N) Σ_n samples[i, n] exp(-j2π f_j n/fs).
+        # Conj-exponential basis B (K, N); phase wrapped in float64 before exp.
+        fc = xp.asarray(freqs, dtype=xp.float64).reshape(K, 1)  # (K, 1)
+        ph = two_pi * fc * n[None, :] / sampling_rate  # (K, N)
+        ph = ph - xp.round(ph / two_pi) * two_pi
+        basis = xp.exp(-1j * ph)  # (K, N) complex128
+        return (samples_c @ basis.T) / N  # (C, K)
+
+    df = sampling_rate / N
+    T = _extract(f_tones)  # (C, K)
+
+    if refine_tones:
+        if search_band is None:
+            search_band = 4.0 * df
+        # Pick, per tone, the channel where it is strongest (one host transfer),
+        # then sub-bin refine the centre there and re-extract.
+        best_ch = to_device(xp.argmax(xp.abs(T), axis=0), "cpu")  # (K,) host ints
+        f_used = [
+            find_bias_tone(
+                samples_c[int(best_ch[j])],
+                sampling_rate,
+                target_frequency=f_tones[j],
+                search_band=search_band,
+            )
+            for j in range(K)
+        ]
+        T = _extract(f_used)
+    else:
+        f_used = f_tones
+
+    # Unmix.  pinv covers the over-determined C > K case and equals the inverse
+    # when square; kept in complex128 (inversion is precision-sensitive).
+    W = xp.linalg.pinv(T)  # (K, C)
+    demuxed = W @ samples_c  # (K, N) complex128
+
+    if normalize:
+        p_in = xp.mean(xp.abs(samples) ** 2)  # scalar: mean per-channel input power
+        p_out = xp.mean(xp.abs(demuxed) ** 2, axis=-1, keepdims=True)  # (K, 1)
+        scale = xp.sqrt(p_in / xp.where(p_out > 0, p_out, 1.0))
+        demuxed = demuxed * scale
+
+    demuxed = demuxed.astype(samples.dtype)
+
+    logger.info(
+        "demultiplex_polarization_tones: f_tones=%s Hz, refine=%s [C=%d, K=%d, N=%d]",
+        [f"{f:.3g}" for f in f_used],
+        refine_tones,
+        C,
+        K,
+        N,
+    )
+
+    if return_matrix:
+        return demuxed, W
+    return demuxed

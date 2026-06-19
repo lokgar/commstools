@@ -21,7 +21,7 @@ SingleCarrierFrame :
 """
 
 import types
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydantic import (
@@ -138,8 +138,11 @@ class Signal(BaseModel):
         The carrier or center frequency in Hz.
     digital_frequency_offset : float
         Cumulative digital frequency shift applied to the signal in Hz.
-    pilot_tone_frequency : float
-        Frequency of the pilot tone in Hz.
+    pilot_tone_frequency : float or list of float
+        Frequency of the pilot tone in Hz.  A single ``float`` for a tone
+        shared across all channels, or a ``list`` of per-channel frequencies
+        (one per MIMO channel) when distinct tones were added — e.g. for
+        tone-based polarization demultiplexing.
     signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}, optional
         Human-readable label for the signal structure. Informational only.
     frame : Frame, optional
@@ -196,7 +199,7 @@ class Signal(BaseModel):
 
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: Optional[float] = None
-    pilot_tone_frequency: Optional[float] = None
+    pilot_tone_frequency: Optional[Union[float, List[float]]] = None
 
     # Human-readable label for the signal structure
     signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
@@ -397,12 +400,13 @@ class Signal(BaseModel):
             )
 
         if self.pilot_tone_frequency is not None:
-            rows.append(
-                (
-                    "Pilot tone frequency",
-                    helpers.format_si(self.pilot_tone_frequency, "Hz"),
+            if isinstance(self.pilot_tone_frequency, (list, tuple)):
+                ptf_str = ", ".join(
+                    helpers.format_si(f, "Hz") for f in self.pilot_tone_frequency
                 )
-            )
+            else:
+                ptf_str = helpers.format_si(self.pilot_tone_frequency, "Hz")
+            rows.append(("Pilot tone frequency", ptf_str))
 
         rows += [
             ("Backend", self.backend.upper()),
@@ -1427,7 +1431,7 @@ class Signal(BaseModel):
 
     def add_pilot_tone(
         self,
-        frequency: float,
+        frequency: Union[float, Sequence[float]],
         power_ratio_db: float = -15.0,
         phase_init: float = 0.0,
         renormalize: bool = False,
@@ -1446,9 +1450,14 @@ class Signal(BaseModel):
 
         Parameters
         ----------
-        frequency : float
+        frequency : float or sequence of float
             Requested tone frequency f_p in Hz, in ``(-f_s/2, f_s/2)``.
-            Quantized to the nearest ``f_s/N`` bin.
+            A scalar adds the same tone to every channel; a sequence of length
+            ``C`` adds one distinct tone per channel (enabling, e.g.,
+            tone-based polarization demultiplexing).  Each value is quantized
+            to the nearest ``f_s/N`` bin and the applied value(s) are stored in
+            ``pilot_tone_frequency`` (a ``float`` for scalar input, a ``list``
+            for a per-channel sequence).
         power_ratio_db : float, default -15.0
             Pilot-to-signal power ratio in dB.
         phase_init : float, default 0.0

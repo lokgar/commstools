@@ -16,7 +16,9 @@ welch_psd :
 """
 
 import math
-from typing import Any, Optional, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union, cast
+
+import numpy as np
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -104,11 +106,11 @@ def shift_frequency(
 def add_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
-    frequency: float,
+    frequency: Union[float, Sequence[float]],
     power_ratio_db: float = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
-) -> Tuple[ArrayType, float]:
+) -> Tuple[ArrayType, Union[float, List[float]]]:
     r"""
     Add a continuous-wave (CW) pilot tone to a baseband waveform.
 
@@ -125,19 +127,25 @@ def add_pilot_tone(
     samples : array_like
         Complex baseband samples. Shape: ``(N,)`` (SISO) or ``(C, N)`` (MIMO).
         The tone is added to every channel, each scaled to its own power.
+    frequency : float or sequence of float
+        Requested tone frequency fp in Hz, in ``(-f_s/2, f_s/2)``.
+        A **scalar** places the same tone on every channel.  A **sequence**
+        of length ``C`` places one tone per channel (channel ``c`` gets
+        ``frequency[c]``) — distinct per-channel tones enable, e.g.,
+        tone-based polarization demultiplexing
+        (``demultiplex_polarization_tones``).  Each value is quantized to the
+        nearest FFT bin ``f_s/N`` (see Notes); the **actual** applied
+        frequency(ies) are returned.
     sampling_rate : float
         Sampling rate fs in Hz.
-    frequency : float
-        Requested tone frequency fp in Hz, in ``(-f_s/2, f_s/2)``.
-        Quantized to the nearest FFT bin ``f_s/N`` (see Notes) — the **actual**
-        applied frequency is returned.
     power_ratio_db : float, default -15.0
         Pilot-to-signal power ratio (PSR) in dB: 10*log10(P_tone / P_signal).
         Typical range -20 to -10 dB.
     phase_init : float, default 0.0
-        Initial tone phase phi_0 in radians.  Acts as a known phase
-        reference; it appears as a constant offset in the recovered phase and
-        is absorbed by the usual post-CPR ambiguity resolution.
+        Initial tone phase phi_0 in radians, common to all channels.  Acts as
+        a known phase reference; it appears as a constant offset in the
+        recovered phase and is absorbed by the usual post-CPR ambiguity
+        resolution.
     renormalize : bool, default False
         If ``True``, rescale each channel after adding the tone so its mean
         power matches the input (preserves the library power invariant E[|x|²] = 1/sps).
@@ -148,71 +156,98 @@ def add_pilot_tone(
     samples : array_like
         Samples with the pilot tone added, same shape, dtype, and backend as
         the input.
-    actual_frequency : float
-        The grid-quantized tone frequency in Hz actually applied (see Notes).
-        Store this (e.g. in ``pilot_tone_frequency``) and pass it to the
-        receiver, since it — not the requested value — is where the tone sits.
+    actual_frequency : float or list of float
+        The grid-quantized tone frequency(ies) in Hz actually applied (see
+        Notes).  A **scalar** ``frequency`` returns a single ``float``; a
+        per-channel **sequence** returns a ``list`` of ``C`` floats.  Store
+        this (e.g. in ``pilot_tone_frequency``) and pass it to the receiver,
+        since it — not the requested value — is where the tone(s) sit.
+
+    Raises
+    ------
+    ValueError
+        If any requested frequency lies outside ``(-fs/2, fs/2)``, or if a
+        per-channel sequence is given whose length does not equal ``C``.
 
     Notes
     -----
-    The requested frequency is snapped to the nearest FFT bin (fs/N) so the
+    Each requested frequency is snapped to the nearest FFT bin (fs/N) so the
     tone completes an integer number of cycles per buffer — ensuring seamless
     playback on an AWG/DAC.  The quantization error is at most fs/(2N).
     The phase ramp is accumulated in float64 to avoid trig argument-reduction
     error for large N.
     """
-    if not (-sampling_rate / 2.0 < frequency < sampling_rate / 2.0):
-        raise ValueError(
-            f"frequency={frequency} must lie in (-fs/2, fs/2) = "
-            f"(±{sampling_rate / 2.0:.3g}) Hz."
-        )
-
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
     if was_1d:
         samples = samples[None, :]  # (1, N)
     C, N = samples.shape
 
-    # Snap to the FFT bin grid so the tone is buffer-periodic (loop-seamless on
-    # an AWG/DAC), mirroring shift_frequency's quantization.
+    # Normalise ``frequency`` to a per-channel (C,) host array.  A scalar is
+    # broadcast to every channel (and returns a scalar for back-compat); a
+    # sequence must supply exactly one frequency per channel.
+    scalar_input = np.ndim(frequency) == 0
+    if scalar_input:
+        f_req = [float(cast(float, frequency))] * C
+    else:
+        f_req = [float(f) for f in cast(Sequence[float], frequency)]
+        if len(f_req) != C:
+            raise ValueError(
+                f"frequency sequence has length {len(f_req)} but the signal has "
+                f"C={C} channel(s); supply one frequency per channel."
+            )
+
+    nyq = sampling_rate / 2.0
+    for f in f_req:
+        if not (-nyq < f < nyq):
+            raise ValueError(
+                f"frequency={f} must lie in (-fs/2, fs/2) = (±{nyq:.3g}) Hz."
+            )
+
+    # Snap each tone to the FFT bin grid so it is buffer-periodic (loop-seamless
+    # on an AWG/DAC), mirroring shift_frequency's quantization.
     df = sampling_rate / N
-    actual_frequency = float(round(frequency / df) * df)
-    if abs(actual_frequency - frequency) > 1e-12 * max(1.0, abs(frequency)):
-        logger.warning(
-            f"add_pilot_tone: requested {frequency:.3f} Hz quantized to "
-            f"{actual_frequency:.3f} Hz (grid step fs/N={df:.3f} Hz) for "
-            f"buffer-periodic (loop-seamless) playback."
-        )
+    actual = [float(round(f / df) * df) for f in f_req]
+    for f_in, f_out in zip(f_req, actual):
+        if abs(f_out - f_in) > 1e-12 * max(1.0, abs(f_in)):
+            logger.warning(
+                f"add_pilot_tone: requested {f_in:.3f} Hz quantized to "
+                f"{f_out:.3f} Hz (grid step fs/N={df:.3f} Hz) for "
+                f"buffer-periodic (loop-seamless) playback."
+            )
 
     # Per-channel signal power and the tone amplitude that realises the PSR.
     p_signal = xp.mean(xp.abs(samples) ** 2, axis=-1, keepdims=True)  # (C, 1) float
     psr_lin = 10.0 ** (power_ratio_db / 10.0)
     amp = xp.sqrt(p_signal * psr_lin)  # (C, 1)
 
-    # Phase ramp in float64; wrap to [-π, π) before exp so complex64 targets
-    # avoid argument-reduction error on long ramps (cf. correct_static_frequency_offset).
+    # Per-channel phase ramp (C, N) in float64; wrap to [-π, π) before exp so
+    # complex64 targets avoid argument-reduction error on long ramps
+    # (cf. correct_static_frequency_offset).
     two_pi = 2.0 * xp.pi
     n = xp.arange(N, dtype=xp.float64)  # (N,)
-    phase = two_pi * actual_frequency * n / sampling_rate + phase_init  # (N,) float64
+    f_ch = xp.asarray(actual, dtype=xp.float64).reshape(C, 1)  # (C, 1)
+    phase = two_pi * f_ch * n[None, :] / sampling_rate + phase_init  # (C, N) float64
     phase = phase - xp.round(phase / two_pi) * two_pi
 
     dtype_real = xp.float32 if samples.dtype == xp.complex64 else xp.float64
-    tone = xp.exp(1j * phase.astype(dtype_real)).astype(samples.dtype)  # (N,)
-    out = samples + amp.astype(samples.dtype) * tone[None, :]  # (C, N)
+    tone = xp.exp(1j * phase.astype(dtype_real)).astype(samples.dtype)  # (C, N)
+    out = samples + amp.astype(samples.dtype) * tone  # (C, N)
 
     if renormalize:
         # Restore each channel to its original mean power.
         p_out = xp.mean(xp.abs(out) ** 2, axis=-1, keepdims=True)  # (C, 1)
         out = out * xp.sqrt(p_signal / p_out).astype(samples.dtype)
 
+    f_log = f"{actual[0]:.3g} Hz" if scalar_input else f"{actual} Hz"
     logger.info(
-        f"add_pilot_tone: f_p={actual_frequency:.3g} Hz, PSR={power_ratio_db:.1f} dB "
+        f"add_pilot_tone: f_p={f_log}, PSR={power_ratio_db:.1f} dB "
         f"(amp/√P_sig={math.sqrt(psr_lin):.3g}), phase_init={phase_init:.3g} rad, "
         f"renormalize={renormalize} [C={C}, N={N}]"
     )
 
-    if was_1d:
-        return out[0], actual_frequency
+    out = out[0] if was_1d else out
+    actual_frequency: Union[float, List[float]] = actual[0] if scalar_input else actual
     return out, actual_frequency
 
 
