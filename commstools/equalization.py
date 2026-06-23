@@ -9355,6 +9355,7 @@ def demultiplex_polarization_tones_dynamic(
     normalize: bool = True,
     trim_edges: bool = False,
     return_matrix: bool = False,
+    apply: bool = True,
 ) -> Union[ArrayType, Tuple[Any, ...]]:
     r"""
     Time-varying polarization demux from distinct per-stream CW pilot tones.
@@ -9449,13 +9450,24 @@ def demultiplex_polarization_tones_dynamic(
         sample positions ``grid_positions`` it was evaluated at (suitable for
         seeding a time-varying butterfly equalizer).  ``W_grid`` / ``grid_positions``
         always span the **full** record, even when ``trim_edges=True``.
+    apply : bool, default True
+        If ``True`` (default), interpolate ``W(n)`` to full rate and apply it,
+        returning the demuxed signal as documented below.  If ``False``,
+        **matrix-only mode**: skip the ``O(N)`` interpolate-and-apply entirely and
+        return just ``(W_grid, grid_positions)`` (``return_matrix`` is implied).
+        Use this when only the unmixer stack is needed — e.g. to make a
+        PDL/unitarity decision and then apply a *different* factor (a polar unitary
+        ``Qᴴ(n)``) without paying for a demux that would be discarded.  ``normalize``
+        and ``trim_edges`` act on the applied signal, so they have **no effect**
+        when ``apply=False``.
 
     Returns
     -------
     demuxed : array_like
         Demultiplexed streams. Same complex dtype and backend as the input; row
         ``j`` carried ``tone_frequencies[j]``.  Shape ``(K, N)``, or
-        ``(K, N − 2·(num_taps//2))`` when ``trim_edges=True``.
+        ``(K, N − 2·(num_taps//2))`` when ``trim_edges=True``.  **Omitted** when
+        ``apply=False`` (the return is then ``(W_grid, grid_positions)``).
     valid : slice, optional
         Returned only if ``trim_edges=True``: the ``slice(g, N − g)`` of original
         sample indices retained in ``demuxed`` (``g = num_taps//2``).  Always
@@ -9594,6 +9606,25 @@ def demultiplex_polarization_tones_dynamic(
     eye = xp.eye(K, dtype=xp.complex128)
     ridge = (1e-9 * diag_mean)[:, None, None] * eye[None, :, :]
     Wg = xp.linalg.inv(gram + ridge) @ Th  # (G, K, C) — batched, CPU+GPU
+
+    if not apply:
+        # Matrix-only mode: skip the O(N) interpolate-and-apply.  normalize and
+        # trim_edges act on the applied signal, so they are no-ops here.
+        logger.info(
+            "demultiplex_polarization_tones_dynamic (matrix-only): f_tones=%s Hz, "
+            "refine=%s, track_bw=%.3g Hz, taps=%d, grid_step=%d, G=%d "
+            "[C=%d, K=%d, N=%d]",
+            [f"{f:.3g}" for f in f_used],
+            refine_tones,
+            track_bandwidth,
+            num_taps,
+            grid_step,
+            G,
+            C,
+            K,
+            N,
+        )
+        return Wg, grid_positions
 
     # --- Interpolate W to full rate and apply (chunked over time) -----------
     demuxed = xp.empty((K, N), dtype=xp.complex128)
