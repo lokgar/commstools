@@ -89,11 +89,14 @@ def test_signal_add_pilot_tone(backend_device, xp):
 
     assert ret is sig  # chainable, in-place
     assert sig.pilot_tone_frequency is not None
+    # Frequency and power are recorded as 1-D per-channel arrays (SISO -> len 1).
+    assert isinstance(sig.pilot_tone_frequency, np.ndarray)
+    assert sig.pilot_tone_frequency.shape == (1,)
+    np.testing.assert_array_equal(sig.pilot_tone_power_ratio_db, [-12.0])
+    f_p = float(sig.pilot_tone_frequency[0])
     # Recorded frequency is on the FFT grid and near the request.
-    assert (
-        abs(round(sig.pilot_tone_frequency / df) - sig.pilot_tone_frequency / df) < 1e-9
-    )
-    assert abs(sig.pilot_tone_frequency - 2.0e6) <= df / 2 + 1.0
+    assert abs(round(f_p / df) - f_p / df) < 1e-9
+    assert abs(f_p - 2.0e6) <= df / 2 + 1.0
     # Samples actually changed.
     assert float(xp.max(xp.abs(sig.samples - before))) > 0.0
 

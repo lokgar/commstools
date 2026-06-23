@@ -15,7 +15,6 @@ welch_psd :
     Estimates the Power Spectral Density using Welch's method.
 """
 
-import math
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
@@ -107,7 +106,7 @@ def add_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
     frequency: Union[float, Sequence[float]],
-    power_ratio_db: float = -15.0,
+    power_ratio_db: Union[float, Sequence[float]] = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
 ) -> Tuple[ArrayType, Union[float, List[float]]]:
@@ -138,9 +137,11 @@ def add_pilot_tone(
         frequency(ies) are returned.
     sampling_rate : float
         Sampling rate fs in Hz.
-    power_ratio_db : float, default -15.0
+    power_ratio_db : float or sequence of float, default -15.0
         Pilot-to-signal power ratio (PSR) in dB: 10*log10(P_tone / P_signal).
-        Typical range -20 to -10 dB.
+        Typical range -20 to -10 dB.  A **scalar** applies the same PSR to every
+        channel; a **sequence** of length ``C`` sets one PSR per channel
+        (mirroring per-channel ``frequency``).
     phase_init : float, default 0.0
         Initial tone phase phi_0 in radians, common to all channels.  Acts as
         a known phase reference; it appears as a constant offset in the
@@ -216,9 +217,25 @@ def add_pilot_tone(
                 f"buffer-periodic (loop-seamless) playback."
             )
 
+    # Normalise ``power_ratio_db`` to a per-channel (C,) list, mirroring how
+    # ``frequency`` is handled: a scalar broadcasts to every channel; a sequence
+    # must supply exactly one PSR per channel.
+    scalar_power = np.ndim(power_ratio_db) == 0
+    if scalar_power:
+        psr_req = [float(cast(float, power_ratio_db))] * C
+    else:
+        psr_req = [float(p) for p in cast(Sequence[float], power_ratio_db)]
+        if len(psr_req) != C:
+            raise ValueError(
+                f"power_ratio_db sequence has length {len(psr_req)} but the signal "
+                f"has C={C} channel(s); supply one PSR per channel."
+            )
+
     # Per-channel signal power and the tone amplitude that realises the PSR.
     p_signal = xp.mean(xp.abs(samples) ** 2, axis=-1, keepdims=True)  # (C, 1) float
-    psr_lin = 10.0 ** (power_ratio_db / 10.0)
+    psr_lin = (10.0 ** (xp.asarray(psr_req, dtype=xp.float64) / 10.0)).reshape(
+        C, 1
+    )  # (C, 1)
     amp = xp.sqrt(p_signal * psr_lin)  # (C, 1)
 
     # Per-channel phase ramp (C, N) in float64; wrap to [-π, π) before exp so
@@ -240,9 +257,10 @@ def add_pilot_tone(
         out = out * xp.sqrt(p_signal / p_out).astype(samples.dtype)
 
     f_log = f"{actual[0]:.3g} Hz" if scalar_input else f"{actual} Hz"
+    psr_log = f"{psr_req[0]:.1f} dB" if scalar_power else f"{psr_req} dB"
     logger.info(
-        f"add_pilot_tone: f_p={f_log}, PSR={power_ratio_db:.1f} dB "
-        f"(amp/√P_sig={math.sqrt(psr_lin):.3g}), phase_init={phase_init:.3g} rad, "
+        f"add_pilot_tone: f_p={f_log}, PSR={psr_log}, "
+        f"phase_init={phase_init:.3g} rad, "
         f"renormalize={renormalize} [C={C}, N={N}]"
     )
 

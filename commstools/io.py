@@ -64,15 +64,18 @@ _META_FIELDS: tuple[str, ...] = (
     "physical_domain",
     "center_frequency",
     "digital_frequency_offset",
-    "pilot_tone_frequency",
     "ps_nu",
 )
 
-# Optional array fields (not always present)
+# Optional array fields (not always present).  Pilot metadata is stored here —
+# as native npz arrays, exactly like the sample/symbol arrays — rather than in
+# the YAML meta block, so no array-to-list conversion is ever needed.
 _OPTIONAL_ARRAY_FIELDS: tuple[str, ...] = (
     "source_bits",
     "source_symbols",
     "ps_pmf",
+    "pilot_tone_frequency",
+    "pilot_tone_power_ratio_db",
 )
 
 # Derived / cached array fields (only written when include_cache=True)

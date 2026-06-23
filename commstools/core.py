@@ -21,7 +21,7 @@ SingleCarrierFrame :
 """
 
 import types
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydantic import (
@@ -138,11 +138,18 @@ class Signal(BaseModel):
         The carrier or center frequency in Hz.
     digital_frequency_offset : float
         Cumulative digital frequency shift applied to the signal in Hz.
-    pilot_tone_frequency : float or list of float
-        Frequency of the pilot tone in Hz.  A single ``float`` for a tone
-        shared across all channels, or a ``list`` of per-channel frequencies
-        (one per MIMO channel) when distinct tones were added — e.g. for
-        tone-based polarization demultiplexing.
+    pilot_tone_frequency : numpy.ndarray
+        Per-channel pilot-tone frequencies in Hz, as a 1-D ``float64`` array
+        (one entry per channel; length 1 for a SISO / shared tone).  Any scalar
+        or sequence assigned is coerced to this array form, so the field is
+        handled uniformly like the other array fields.  Set by
+        ``add_pilot_tone``; distinct per-channel tones enable e.g. tone-based
+        polarization demultiplexing.
+    pilot_tone_power_ratio_db : numpy.ndarray
+        Per-channel pilot-to-signal power ratio (PSR) in dB of the added
+        tone(s), in the same 1-D ``float64`` array form as
+        ``pilot_tone_frequency``.  Set by ``add_pilot_tone``; travels with the
+        signal through save/load.
     signal_type : {"Single-Carrier Frame", "OFDM Frame", "Preamble"}, optional
         Human-readable label for the signal structure. Informational only.
     frame : Frame, optional
@@ -199,7 +206,8 @@ class Signal(BaseModel):
 
     center_frequency: float = Field(default=0, ge=0)
     digital_frequency_offset: Optional[float] = None
-    pilot_tone_frequency: Optional[Union[float, List[float]]] = None
+    pilot_tone_frequency: Optional[Any] = None
+    pilot_tone_power_ratio_db: Optional[Any] = None
 
     # Human-readable label for the signal structure
     signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
@@ -220,6 +228,22 @@ class Signal(BaseModel):
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
     # -------------------------------------------------------------------------
+
+    @field_validator(
+        "pilot_tone_frequency", "pilot_tone_power_ratio_db", mode="before"
+    )
+    @classmethod
+    def _coerce_pilot_field(cls, v: Any) -> Any:
+        """Coerce pilot metadata to a 1-D per-channel ``float64`` array.
+
+        ``None`` passes through; anything else (scalar, sequence, or array)
+        becomes a 1-D ``float64`` ``np.ndarray`` — one value per channel — so the
+        field is handled uniformly like the other array fields (always an array,
+        never a scalar or list).  A scalar becomes a length-1 array.
+        """
+        if v is None:
+            return None
+        return np.asarray(v, dtype=np.float64).reshape(-1)
 
     @field_validator("samples", mode="before")
     @classmethod
@@ -399,14 +423,28 @@ class Signal(BaseModel):
                 )
             )
 
+        def _pilot_row(value, fmt) -> str:
+            # value is a 1-D per-channel array (validator-coerced).
+            return ", ".join(fmt(float(x)) for x in value)
+
         if self.pilot_tone_frequency is not None:
-            if isinstance(self.pilot_tone_frequency, (list, tuple)):
-                ptf_str = ", ".join(
-                    helpers.format_si(f, "Hz") for f in self.pilot_tone_frequency
+            rows.append(
+                (
+                    "Pilot tone frequency",
+                    _pilot_row(
+                        self.pilot_tone_frequency,
+                        lambda x: helpers.format_si(x, "Hz"),
+                    ),
                 )
-            else:
-                ptf_str = helpers.format_si(self.pilot_tone_frequency, "Hz")
-            rows.append(("Pilot tone frequency", ptf_str))
+            )
+
+        if self.pilot_tone_power_ratio_db is not None:
+            rows.append(
+                (
+                    "Pilot tone power",
+                    _pilot_row(self.pilot_tone_power_ratio_db, lambda x: f"{x:.1f} dB"),
+                )
+            )
 
         rows += [
             ("Backend", self.backend.upper()),
@@ -1432,7 +1470,7 @@ class Signal(BaseModel):
     def add_pilot_tone(
         self,
         frequency: Union[float, Sequence[float]],
-        power_ratio_db: float = -15.0,
+        power_ratio_db: Union[float, Sequence[float]] = -15.0,
         phase_init: float = 0.0,
         renormalize: bool = False,
     ) -> "Signal":
@@ -1458,8 +1496,11 @@ class Signal(BaseModel):
             to the nearest ``f_s/N`` bin and the applied value(s) are stored in
             ``pilot_tone_frequency`` (a ``float`` for scalar input, a ``list``
             for a per-channel sequence).
-        power_ratio_db : float, default -15.0
-            Pilot-to-signal power ratio in dB.
+        power_ratio_db : float or sequence of float, default -15.0
+            Pilot-to-signal power ratio in dB.  A scalar applies the same PSR to
+            every channel; a sequence of length ``C`` sets one PSR per channel
+            (mirroring per-channel ``frequency``).  Stored in
+            ``pilot_tone_power_ratio_db``.
         phase_init : float, default 0.0
             Initial tone phase in radians.
         renormalize : bool, default False
@@ -1469,8 +1510,9 @@ class Signal(BaseModel):
         Returns
         -------
         Signal
-            self (modified in-place); ``self.pilot_tone_frequency`` is set to the
-            applied frequency.
+            self (modified in-place); ``self.pilot_tone_frequency`` and
+            ``self.pilot_tone_power_ratio_db`` are set to the applied values as
+            1-D per-channel ``float64`` arrays.
         """
         from . import spectral
 
@@ -1482,6 +1524,9 @@ class Signal(BaseModel):
             phase_init=phase_init,
             renormalize=renormalize,
         )
+        # PSR is not grid-quantized, so record exactly what was requested; the
+        # field validator coerces scalar→float, sequence→per-channel array.
+        self.pilot_tone_power_ratio_db = power_ratio_db
         return self
 
     def fir_filter(self, taps: ArrayType) -> "Signal":

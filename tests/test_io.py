@@ -92,25 +92,49 @@ def test_roundtrip_scalar_metadata(tmp_path):
 
 
 def test_roundtrip_pilot_tone_frequency(tmp_path):
-    """pilot_tone_frequency round-trips: None when absent, the float value when set."""
+    """pilot_tone_frequency round-trips: None when absent, a 1-D array when set."""
     sig = _siso_signal()
     assert sig.pilot_tone_frequency is None  # default: no tone
 
-    sig.pilot_tone_frequency = 2.5e9
+    sig.pilot_tone_frequency = 2.5e9  # coerced to a length-1 array
+    assert isinstance(sig.pilot_tone_frequency, np.ndarray)
     p = tmp_path / "tone.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
-    assert sig2.pilot_tone_frequency == 2.5e9
+    assert isinstance(sig2.pilot_tone_frequency, np.ndarray)
+    np.testing.assert_array_equal(sig2.pilot_tone_frequency, [2.5e9])
 
 
 def test_roundtrip_pilot_tone_frequency_per_channel(tmp_path):
-    """A per-channel list of pilot-tone frequencies round-trips intact."""
+    """A per-channel sequence of pilot-tone frequencies round-trips as an array."""
     sig = _mimo_signal()
     sig.pilot_tone_frequency = [2.5e9, -3.0e9]
+    # Coerced to a 1-D float array (never a list) on assignment.
+    assert isinstance(sig.pilot_tone_frequency, np.ndarray)
     p = tmp_path / "tones.npz"
     save_npz(sig, p)
     sig2 = load_npz(p)
-    assert sig2.pilot_tone_frequency == [2.5e9, -3.0e9]
+    assert isinstance(sig2.pilot_tone_frequency, np.ndarray)
+    np.testing.assert_array_equal(sig2.pilot_tone_frequency, [2.5e9, -3.0e9])
+
+
+def test_roundtrip_pilot_tone_power_ratio_db(tmp_path):
+    """pilot_tone_power_ratio_db round-trips for both scalar and per-channel."""
+    sig = _siso_signal()
+    assert sig.pilot_tone_power_ratio_db is None  # default
+
+    sig.pilot_tone_power_ratio_db = -12.0
+    p = tmp_path / "psr.npz"
+    save_npz(sig, p)
+    sig2 = load_npz(p)
+    np.testing.assert_array_equal(sig2.pilot_tone_power_ratio_db, [-12.0])
+
+    mimo = _mimo_signal()
+    mimo.pilot_tone_power_ratio_db = [-10.0, -8.0]
+    assert isinstance(mimo.pilot_tone_power_ratio_db, np.ndarray)
+    save_npz(mimo, tmp_path / "psr_mimo.npz")
+    mimo2 = load_npz(tmp_path / "psr_mimo.npz")
+    np.testing.assert_array_equal(mimo2.pilot_tone_power_ratio_db, [-10.0, -8.0])
 
 
 def test_roundtrip_source_bits(tmp_path):

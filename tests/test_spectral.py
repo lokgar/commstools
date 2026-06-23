@@ -325,3 +325,21 @@ class TestAddPilotTone:
         mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
         with pytest.raises(ValueError, match=r"must lie in \(-fs/2, fs/2\)"):
             spectral.add_pilot_tone(mimo, fs, [20.0, fs])
+
+    def test_per_channel_power_ratio(self, backend_device, xp):
+        """A per-channel PSR sequence realises a distinct tone power per channel."""
+        fs = 100.0
+        psr = [-10.0, -20.0]
+        mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
+        y, _ = spectral.add_pilot_tone(mimo, fs, [20.0, -35.0], power_ratio_db=psr)
+        for c in range(2):
+            p_sig = float(xp.mean(xp.abs(mimo[c]) ** 2))
+            p_tone = float(xp.mean(xp.abs(y[c] - mimo[c]) ** 2))
+            assert abs(10 * np.log10(p_tone / p_sig) - psr[c]) < 0.05
+
+    def test_per_channel_power_length_mismatch_raises(self, backend_device, xp):
+        """A per-channel PSR sequence whose length != C raises ValueError."""
+        fs = 100.0
+        mimo = xp.stack([self._signal(xp), self._signal(xp, seed=1)])
+        with pytest.raises(ValueError, match=r"one PSR per channel"):
+            spectral.add_pilot_tone(mimo, fs, [20.0, -30.0], power_ratio_db=[-10.0])
