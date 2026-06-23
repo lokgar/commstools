@@ -9507,7 +9507,7 @@ def demultiplex_polarization_tones_dynamic(
             )
 
     df = sampling_rate / N
-    two_pi = 2.0 * np.pi
+    two_pi = 2.0 * xp.pi
     samples_c = xp.asarray(samples, dtype=xp.complex128)  # (C, N)
     n = xp.arange(N, dtype=xp.float64)
 
@@ -9568,12 +9568,12 @@ def demultiplex_polarization_tones_dynamic(
     # T_t[i, j, n] = LPF{ r_i(n) · exp(-j2π f_j n/fs) } ≈ J_ij(n)·α_j.
     # fir_filter uses centred ('same') linear-phase convolution, so the LPF
     # group delay is compensated and z aligns in time with the input.
-    T_t = xp.empty((C, K, N), dtype=xp.complex128)
-    for j, fj in enumerate(f_used):
-        ph = two_pi * float(fj) * n / sampling_rate
-        ph = ph - xp.round(ph / two_pi) * two_pi
-        mixed = samples_c * xp.exp(-1j * ph)[None, :]  # (C, N)
-        T_t[:, j, :] = fir_filter(mixed, h, axis=-1)
+    f_arr = xp.asarray([float(fj) for fj in f_used], dtype=xp.float64)  # (K,)
+    ph = two_pi * f_arr[:, None] * n[None, :] / sampling_rate  # (K, N)
+    ph = ph - xp.round(ph / two_pi) * two_pi
+    mixed = samples_c[:, None, :] * xp.exp(-1j * ph)[None, :, :]  # (C, K, N)
+    # One batched linear-phase FIR over (C·K) rows instead of K separate calls.
+    T_t = fir_filter(mixed.reshape(C * K, N), h, axis=-1).reshape(C, K, N)
 
     # --- Invert on a decimated grid -----------------------------------------
     if grid_step is None:
@@ -9602,14 +9602,14 @@ def demultiplex_polarization_tones_dynamic(
         stop = min(start + chunk, N)
         nn = n[start:stop]  # (L,) float64
         seg = samples_c[:, start:stop]  # (C, L)
-        for k in range(K):
-            acc = xp.zeros(stop - start, dtype=xp.complex128)
-            for i in range(C):
-                w = xp.interp(nn, grid_positions, Wg[:, k, i].real) + 1j * xp.interp(
-                    nn, grid_positions, Wg[:, k, i].imag
-                )
-                acc = acc + w * seg[i]
-            demuxed[k, start:stop] = acc
+        # The interpolation grid is shared across all (k, i), so locate each
+        # sample's bracketing grid points once and blend, instead of 2·K·C
+        # separate xp.interp binary searches. n spans [0, N-1] and the grid is
+        # pinned to both ends, so frac ∈ [0, 1] (matches xp.interp clamping).
+        lo = xp.clip(xp.searchsorted(grid_positions, nn, side="right") - 1, 0, G - 2)
+        frac = (nn - grid_positions[lo]) / (grid_positions[lo + 1] - grid_positions[lo])
+        W_full = Wg[lo] + (Wg[lo + 1] - Wg[lo]) * frac[:, None, None]  # (L, K, C)
+        demuxed[:, start:stop] = xp.einsum("lkc,cl->kl", W_full, seg)
 
     # Drop the FIR edge transient (the data is untouched; only W is unreliable
     # there).  ``valid`` reports the retained range in original coordinates.

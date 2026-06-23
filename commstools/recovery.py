@@ -1772,7 +1772,6 @@ def recover_carrier_phase_pilot_tone(
         xp.complex128 if samples.dtype == xp.complex64 else samples.dtype
     )
     X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
-    freqs = xp.asarray(np.fft.fftfreq(N, d=1.0 / sampling_rate))  # (N,) float64
 
     # 3) Zero-phase extraction window W (C, N): a window spanning the in-band
     #    width (±B), placed circularly at each channel's tone bin.  The window is
@@ -1783,7 +1782,7 @@ def recover_carrier_phase_pilot_tone(
     #    on both backends.  The window is tiny, so the host→device copy is free.
     from scipy.signal import get_window  # noqa: PLC0415
 
-    half = int(np.floor(bandwidth / df))  # bins from centre to band edge
+    half = int(bandwidth // df)  # bins from centre to band edge
     n_win = 2 * half + 1
     try:
         win_cpu = np.asarray(get_window(window, n_win, fftbins=False), dtype=np.float64)
@@ -1805,7 +1804,7 @@ def recover_carrier_phase_pilot_tone(
 
     # 4) Strip the nominal carrier so a residual frequency offset survives as a
     #    phase ramp.  Wrap the ramp before exp (precision; matches FOE correctors).
-    two_pi = 2.0 * np.pi
+    two_pi = 2.0 * xp.pi
     n = xp.arange(N, dtype=xp.float64)
     carrier_phase = two_pi * float(tone_frequency) * n / sampling_rate
     carrier_phase = carrier_phase - xp.round(carrier_phase / two_pi) * two_pi
@@ -1843,7 +1842,7 @@ def recover_carrier_phase_pilot_tone(
         from . import plotting as _plotting
 
         _plotting.pilot_tone_phase_estimate(
-            freqs=to_device(freqs, "cpu"),
+            freqs=np.fft.fftfreq(N, d=1.0 / sampling_rate),
             mag_spectrum=to_device(xp.abs(X), "cpu"),
             window=to_device(W, "cpu"),
             f_tones=f_centers,
@@ -1886,7 +1885,7 @@ def correct_carrier_phase(
     # Wrap to [-π, π] in float64 (handles unbounded phase trajectories from
     # standalone CPR), then cast to float32 for fast GPU exp.
     phase_f64 = xp.asarray(phase_vector, dtype=xp.float64)
-    two_pi = 2.0 * np.pi
+    two_pi = 2.0 * xp.pi
     phase_wrapped = (phase_f64 - xp.round(phase_f64 / two_pi) * two_pi).astype(
         xp.float32
     )
