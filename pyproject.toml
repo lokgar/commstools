@@ -29,8 +29,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["commstools"]
 # CUDA kernel sources are loaded at runtime via importlib.resources and
-# must ship with the package.
-artifacts = ["commstools/_cuda/src/*.cu"]
+# must ship with the package. py.typed marks the package as typed (PEP 561).
+artifacts = ["commstools/_cuda/src/*.cu", "commstools/py.typed"]
 
 [dependency-groups]
 dev = [
