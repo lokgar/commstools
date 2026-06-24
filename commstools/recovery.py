@@ -24,6 +24,14 @@ recover_carrier_phase_pilot_tone :
     Pilot-tone-aided CPR: extracts a CW tone from a guard band of the
     oversampled waveform and reads its phase to recover the common
     frequency offset + phase noise. Operates before matched filtering.
+recover_carrier_phase_pilot_tones :
+    Multi-pilot common-phase CPR: SNR-weighted maximal-ratio combining of two
+    or more CW tones with slow inter-tone differential tracking (√K residual
+    reduction for a shared-LO link). Operates before matched filtering.
+smooth_phase_wiener :
+    Zero-phase Wiener smoother for a random-walk carrier phase; optimal
+    minimum-variance trade of tracking lag vs. additive noise for a given
+    linewidth and pilot SNR.
 correct_carrier_phase :
     Applies per-symbol phase correction by complex rotation.
 correct_cycle_slips :
@@ -1621,6 +1629,126 @@ def recover_carrier_phase_pilots(
     return phi_full
 
 
+def _extract_pilot_phasor(
+    samples: ArrayType,
+    sampling_rate: float,
+    tone_frequency: float,
+    bandwidth: float,
+    xp,
+    search_band: Optional[float] = None,
+    refine_tone: bool = True,
+    window: Union[str, Tuple] = "tukey",
+) -> Tuple[ArrayType, np.ndarray, np.ndarray, np.ndarray, ArrayType, ArrayType]:
+    """Isolate a CW pilot tone and return its carrier-stripped complex phasor.
+
+    Shared core of the pilot-tone CPR functions
+    (``recover_carrier_phase_pilot_tone``, ``recover_carrier_phase_pilot_tones``):
+    refine the per-channel tone centre, extract it with a zero-phase spectral
+    window (FFT -> window -> IFFT, sample-aligned), and strip the nominal carrier
+    so a residual frequency offset survives as a slow phase ramp.
+
+    Parameters
+    ----------
+    samples : (C, N) array
+        Oversampled complex samples, already 2-D (caller handles the 1-D case).
+    xp : module
+        The dispatched array module for ``samples`` (numpy/cupy).
+    (others) : see ``recover_carrier_phase_pilot_tone``.
+
+    Returns
+    -------
+    phasor : (C, N) complex128
+        ``z(n) ≈ A·e^{jθ(n)}`` per channel (carrier-frequency stripped).
+    f_centers : (C,) float64
+        Detected per-channel tone centre [Hz].
+    sig_power : (C,) float64
+        In-band tone power ``|A|²`` within the tracking window, in the same
+        units as ``mean(|z|²)`` (for SNR weights).
+    noise_power : (C,) float64
+        Additive-noise power ``σ²`` within the tracking window, same units.
+    W : (C, N) float64
+        The extraction window (for diagnostics).
+    X : (C, N) complex128
+        The full FFT (for diagnostics).
+    """
+    C, N = samples.shape
+    df = sampling_rate / N
+    if search_band is None:
+        search_band = bandwidth
+
+    # 1) Per-channel tone centre.  Refinement absorbs a frequency offset that
+    #    has dragged the tone away from nominal, so the window stays centred on it.
+    if refine_tone:
+        f_centers = np.array(
+            [
+                find_bias_tone(
+                    samples[c],
+                    sampling_rate,
+                    target_frequency=tone_frequency,
+                    search_band=search_band,
+                )
+                for c in range(C)
+            ],
+            dtype=np.float64,
+        )
+    else:
+        f_centers = np.full(C, float(tone_frequency), dtype=np.float64)
+
+    # 2) FFT (nfft = N keeps the IFFT sample-aligned).  Promote to complex128 so
+    #    the angle/unwrap downstream stays clear of the ±π wrap boundary.
+    samples_c = samples.astype(
+        xp.complex128 if samples.dtype == xp.complex64 else samples.dtype
+    )
+    X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
+
+    # 3) Zero-phase extraction window placed circularly at each channel's tone bin.
+    from scipy.signal import get_window  # noqa: PLC0415
+
+    half = int(bandwidth // df)  # bins from centre to band edge
+    n_win = 2 * half + 1
+    try:
+        win_cpu = np.asarray(get_window(window, n_win, fftbins=False), dtype=np.float64)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Invalid window {window!r}: {exc}. Pass any scipy.signal.get_window "
+            "spec, e.g. 'tukey', ('tukey', 0.3), 'boxcar', ('gaussian', 50)."
+        ) from exc
+    win_xp = xp.asarray(win_cpu)  # (n_win,) on device
+    offsets = xp.arange(-half, half + 1)  # (n_win,)
+    k_centers = np.round(f_centers / df).astype(np.int64) % N  # (C,) centre bins
+
+    # Per-channel in-band tone power and additive-noise power, via Parseval
+    # (mean|z|² = ΣΣ|X·W|²/N²).  The noise floor is the median |X|² of a guard
+    # band one window-width outside the passband (local, so a neighbouring tone
+    # on the other channel does not inflate it).
+    W = xp.zeros((C, N), dtype=xp.float64)
+    sig_power = np.zeros(C, dtype=np.float64)
+    noise_power = np.zeros(C, dtype=np.float64)
+    pow_X = xp.abs(X) ** 2  # (C, N)
+    guard_off = xp.arange(half + 1, half + 1 + n_win)
+    for c in range(C):
+        kc = int(k_centers[c])
+        idx = (kc + offsets) % N  # circular placement
+        W[c, idx] = win_xp
+        guard = xp.concatenate([(kc + guard_off) % N, (kc - guard_off) % N])
+        floor_psd = float(xp.median(pow_X[c, guard]))
+        win_tot = float(xp.sum(pow_X[c, idx] * win_xp**2))
+        noise_power[c] = floor_psd * n_win / (N * N)
+        sig_power[c] = max(win_tot / (N * N) - noise_power[c], 1e-30)
+
+    tone_t = xp.fft.ifft(X * W, axis=-1)  # (C, N) complex128
+
+    # 4) Strip the *nominal* carrier so a residual frequency offset survives as a
+    #    phase ramp.  Wrap the ramp before exp (precision; matches FOE correctors).
+    two_pi = 2.0 * xp.pi
+    n = xp.arange(N, dtype=xp.float64)
+    carrier_phase = two_pi * float(tone_frequency) * n / sampling_rate
+    carrier_phase = carrier_phase - xp.round(carrier_phase / two_pi) * two_pi
+    carrier_conj = xp.exp(-1j * carrier_phase)  # (N,) complex128
+    phasor = tone_t * carrier_conj[None, :]  # (C, N)
+    return phasor, f_centers, sig_power, noise_power, W, X
+
+
 def recover_carrier_phase_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
@@ -1745,71 +1873,18 @@ def recover_carrier_phase_pilot_tone(
             f"bins. Increase bandwidth or the record length N."
         )
 
-    if search_band is None:
-        search_band = bandwidth
-
-    # 1) Per-channel tone centre.  Refinement absorbs a frequency offset that
-    #    has dragged the tone away from nominal, so the window stays centred on it.
-    if refine_tone:
-        f_centers = np.array(
-            [
-                find_bias_tone(
-                    samples[c],
-                    sampling_rate,
-                    target_frequency=tone_frequency,
-                    search_band=search_band,
-                )
-                for c in range(C)
-            ],
-            dtype=np.float64,
-        )
-    else:
-        f_centers = np.full(C, float(tone_frequency), dtype=np.float64)
-
-    # 2) FFT (nfft = N keeps the IFFT sample-aligned).  Promote to complex128 so
-    #    the angle/unwrap downstream stays clear of the ±π wrap boundary.
-    samples_c = samples.astype(
-        xp.complex128 if samples.dtype == xp.complex64 else samples.dtype
+    # Isolate the tone and strip the nominal carrier (shared core).
+    phasor, f_centers, _, _, W, X = _extract_pilot_phasor(
+        samples,
+        sampling_rate,
+        tone_frequency,
+        bandwidth,
+        xp,
+        search_band=search_band,
+        refine_tone=refine_tone,
+        window=window,
     )
-    X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
-
-    # 3) Zero-phase extraction window W (C, N): a window spanning the in-band
-    #    width (±B), placed circularly at each channel's tone bin.  The window is
-    #    built once with scipy.signal.get_window and moved to the device.  It is
-    #    deliberately *not* built via the dispatched ``sp``: cupyx.scipy's
-    #    get_window is not API-compatible with scipy (bare specs like 'tukey'
-    #    fail on GPU), so the reference scipy build guarantees identical windows
-    #    on both backends.  The window is tiny, so the host→device copy is free.
-    from scipy.signal import get_window  # noqa: PLC0415
-
-    half = int(bandwidth // df)  # bins from centre to band edge
-    n_win = 2 * half + 1
-    try:
-        win_cpu = np.asarray(get_window(window, n_win, fftbins=False), dtype=np.float64)
-    except (ValueError, TypeError) as exc:
-        raise ValueError(
-            f"Invalid window {window!r}: {exc}. Pass any scipy.signal.get_window "
-            "spec, e.g. 'tukey', ('tukey', 0.3), 'boxcar', ('gaussian', 50)."
-        ) from exc
-    win_xp = xp.asarray(win_cpu)  # (n_win,) on device
-    offsets = xp.arange(-half, half + 1)  # (n_win,)
-    k_centers = np.round(f_centers / df).astype(np.int64) % N  # (C,) centre bins
-
-    W = xp.zeros((C, N), dtype=xp.float64)
-    for c in range(C):
-        idx = (int(k_centers[c]) + offsets) % N  # circular placement
-        W[c, idx] = win_xp
-
-    tone_t = xp.fft.ifft(X * W, axis=-1)  # (C, N) complex128
-
-    # 4) Strip the nominal carrier so a residual frequency offset survives as a
-    #    phase ramp.  Wrap the ramp before exp (precision; matches FOE correctors).
-    two_pi = 2.0 * xp.pi
-    n = xp.arange(N, dtype=xp.float64)
-    carrier_phase = two_pi * float(tone_frequency) * n / sampling_rate
-    carrier_phase = carrier_phase - xp.round(carrier_phase / two_pi) * two_pi
-    carrier_conj = xp.exp(-1j * carrier_phase)  # (N,) complex128
-    phasor = tone_t * carrier_conj[None, :]  # (C, N)
+    n = xp.arange(N, dtype=xp.float64)  # for the residual-FOE detrend below
 
     # 5) Phase extraction + unwrap in float64.
     if joint_channels and C > 1:
@@ -1855,6 +1930,334 @@ def recover_carrier_phase_pilot_tone(
     if was_1d:
         return theta[0]
     return theta
+
+
+def _lowpass_fft(z: ArrayType, sampling_rate: float, cutoff: float, xp) -> ArrayType:
+    """Zero-phase brick-wall low-pass of a complex stream (FFT → mask → IFFT).
+
+    Used to isolate the **slow** inter-tone differential phasor; zero-phase so
+    the recovered ``δ(n)`` is lag-free (it is far inside the passband anyway).
+    """
+    N = z.shape[-1]
+    freqs = xp.fft.fftfreq(N, d=1.0 / sampling_rate)
+    mask = (xp.abs(freqs) <= cutoff).astype(z.real.dtype)
+    return xp.fft.ifft(xp.fft.fft(z, axis=-1) * mask, axis=-1)
+
+
+def recover_carrier_phase_pilot_tones(
+    samples: ArrayType,
+    sampling_rate: float,
+    tone_frequencies,
+    bandwidth: float,
+    differential_bandwidth: float = 5e3,
+    search_band: Optional[float] = None,
+    per_tone_channel: Optional[list] = None,
+    snr_gate_db: float = 3.0,
+    coherence_gate: float = 0.3,
+    refine_tone: bool = True,
+    window: Union[str, Tuple] = "tukey",
+    return_diagnostics: bool = False,
+    debug_plot: bool = False,
+):
+    r"""
+    Common carrier-phase recovery from two (or more) CW pilot tones via
+    SNR-weighted maximal-ratio combining with slow inter-tone tracking.
+
+    For a shared-laser/shared-LO dual-pol link the carrier (beat) phase phi[n]
+    is common-mode across both polarizations, and every pilot rides the same
+    phi[n].  Combining K tones lowers the residual phase noise by up to sqrt(K)
+    over a single tone, directly reducing the excess noise it converts into
+    (xi_phi ~ V_A * Var(d_phi)).  The static inter-tone offset theta_k - theta_0
+    is constant back-to-back but drifts over fiber (SOP rotation acting on the
+    orthogonally-launched pilots), so it is tracked, not calibrated: the product
+    z_k * conj(z_0) cancels the common phi[n] exactly, leaving only the slow
+    differential, which a narrow low-pass isolates.
+
+    The whole combine collapses to one expression,
+
+        z_comb[n] = sum_k  z_k[n] * conj(c_k[n]) / sigma_k^2,
+        c_k[n]    = LPF( z_k[n] * conj(z_0[n]) ),
+
+    where conj(c_k) carries both the magnitude weight |A_k||A_0| (so fades are
+    down-weighted per-sample) and the de-rotation exp(-j*delta_k); dividing by
+    the additive-noise power sigma_k^2 makes it true MRC.  A tone whose SNR or
+    differential coherence falls below the gates is dropped, so the combine
+    degrades gracefully to single-tone in a deep fade.
+
+    Operates on the oversampled waveform, before matched filtering, exactly like
+    ``recover_carrier_phase_pilot_tone``.  Best run *after* the polarization
+    demux (each pilot isolated on its own output, ``per_tone_channel=[0, 1]``);
+    pre-demux it falls back to a joint-across-channels sum per tone.
+
+    Parameters
+    ----------
+    samples : (N,) or (C, N) array
+        Oversampled complex samples (``sps > 1``).
+    sampling_rate : float
+        Sampling rate in Hz (of *these* samples — pass the post-resample rate if
+        the demux/resample ran first).
+    tone_frequencies : sequence of float
+        Nominal pilot-tone frequencies in Hz (length ``K``).
+    bandwidth : float
+        Half-width of the per-tone extraction window in Hz (the common-phase
+        tracking bandwidth); see ``recover_carrier_phase_pilot_tone``.
+    differential_bandwidth : float, default 5e3
+        Low-pass cut-off in Hz for the slow inter-tone differential delta_k[n].
+        Choose above the SOP drift rate (so delta is not lagged) and far below
+        the phase-noise band (kHz-scale is typical).  Set it from the knee of the
+        ``angle(z_k·conj(z_0))`` spectrum.
+    search_band : float, optional
+        Peak-search half-width handed to ``find_bias_tone``; defaults to
+        ``bandwidth``.
+    per_tone_channel : list of int, optional
+        Channel each tone is read from (post-demux isolation, e.g. ``[0, 1]``).
+        If ``None``, each tone's phasor is the coherent sum across all channels
+        (pre-demux joint combine).
+    snr_gate_db : float, default 3.0
+        A non-reference tone is dropped if its in-band SNR is below this.
+    coherence_gate : float, default 0.3
+        A non-reference tone is dropped if its differential coherence
+        ``mean|c_k| / sqrt(S_k·S_ref)`` is below this (deep fade / lost lock).
+    refine_tone, window : see ``recover_carrier_phase_pilot_tone``.
+    return_diagnostics : bool, default False
+        If ``True``, also return a dict with ``delta`` (per-tone delta_k[n]),
+        ``snr_db``, ``ref`` (reference-tone index) and ``used`` (combined tone
+        indices).
+    debug_plot : bool, default False
+        If ``True``, plot the per-tone differential phase and the combined track.
+
+    Returns
+    -------
+    array_like
+        Per-sample common phase estimate phi_hat[n], shape matching ``samples``
+        (one track broadcast to all rows).  Apply with
+        ``correct_carrier_phase``.  If ``return_diagnostics``, returns
+        ``(phi, diagnostics)``.
+    """
+    if bandwidth <= 0.0:
+        raise ValueError(f"bandwidth must be > 0, got {bandwidth}.")
+    tone_frequencies = list(tone_frequencies)
+    K = len(tone_frequencies)
+    if K < 1:
+        raise ValueError("tone_frequencies must contain at least one frequency.")
+
+    samples, xp, _ = dispatch(samples)
+    was_1d = samples.ndim == 1
+    if was_1d:
+        samples = samples[None, :]
+    C, N = samples.shape
+    if per_tone_channel is not None and len(per_tone_channel) != K:
+        raise ValueError(
+            f"per_tone_channel must have one entry per tone (len {K}), "
+            f"got {len(per_tone_channel)}."
+        )
+
+    # 1) Extract each tone's scalar phasor stream z_k(n) and its (S_k, σ_k²).
+    z_tones, sig, noise, f_centers = [], [], [], []
+    for k, f_k in enumerate(tone_frequencies):
+        ph, fc, s_c, n_c, _, _ = _extract_pilot_phasor(
+            samples, sampling_rate, f_k, bandwidth, xp,
+            search_band=search_band, refine_tone=refine_tone, window=window,
+        )
+        if per_tone_channel is None:
+            z_k = xp.sum(ph, axis=0)  # joint across channels (pre-demux)
+            s_k, n_k = float(np.sum(s_c)), float(np.sum(n_c))
+        else:
+            ch = int(per_tone_channel[k])
+            z_k, s_k, n_k = ph[ch], float(s_c[ch]), float(n_c[ch])
+        z_tones.append(z_k)
+        sig.append(s_k)
+        noise.append(max(n_k, 1e-30))
+        f_centers.append(fc)
+
+    # 2) Reference = highest-SNR tone; build the slow differential phasors c_k.
+    snr = np.array([s / nz for s, nz in zip(sig, noise)], dtype=np.float64)
+    ref = int(np.argmax(snr))
+    z_ref = z_tones[ref]
+    snr_gate = 10.0 ** (snr_gate_db / 10.0)
+
+    z_comb = xp.zeros(N, dtype=xp.complex128)
+    delta_diag, used = [], []
+    for k in range(K):
+        if k == ref:
+            # Self-product: LPF(|z|²) ≈ |A|² + σ²; subtract the floor so the
+            # reference weight is the true |A|² (its phase is 0 ⇒ no de-rotation).
+            c_k = _lowpass_fft(
+                (xp.abs(z_ref) ** 2).astype(xp.complex128), sampling_rate,
+                differential_bandwidth, xp,
+            )
+            c_k = xp.clip(xp.real(c_k) - noise[ref], 1e-30, None).astype(xp.complex128)
+            coh = 1.0
+        else:
+            # Cross-product: the two tones' noises are independent ⇒ the LPF
+            # rejects them, so c_k ≈ A_k A_0* — carries |A_k||A_0| and e^{jδ_k}.
+            c_k = _lowpass_fft(
+                z_tones[k] * xp.conj(z_ref), sampling_rate,
+                differential_bandwidth, xp,
+            )
+            coh = float(xp.mean(xp.abs(c_k))) / np.sqrt(max(sig[k] * sig[ref], 1e-30))
+            if snr[k] < snr_gate or coh < coherence_gate:
+                logger.info(
+                    f"CPR (pilot-tones): tone {k} dropped "
+                    f"(SNR={10 * np.log10(snr[k]):.1f} dB, coherence={coh:.2f})."
+                )
+                if return_diagnostics:
+                    delta_diag.append(to_device(xp.angle(c_k), "cpu"))
+                continue
+        z_comb = z_comb + z_tones[k] * xp.conj(c_k) / noise[k]
+        used.append(k)
+        if return_diagnostics:
+            delta_diag.append(to_device(xp.angle(c_k), "cpu"))
+
+    # 3) Common phase = angle of the combined phasor, unwrapped in float64.
+    phi = xp.unwrap(xp.angle(z_comb).astype(xp.float64))  # (N,)
+    phi_full = xp.broadcast_to(phi[None, :], (C, N)).copy()
+
+    phi_np = to_device(phi, "cpu")
+    logger.info(
+        f"CPR (pilot-tones, MRC): phase std={float(np.std(phi_np)) * 180 / np.pi:.2f}°, "
+        f"[K={K}, used={used}, ref={ref}, B={bandwidth:.3g} Hz, "
+        f"diff_B={differential_bandwidth:.3g} Hz, C={C}]"
+    )
+
+    if debug_plot:
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+
+        fig, ax = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+        for k, d in zip([k for k in range(K)], delta_diag):
+            if k != ref:
+                ax[0].plot(np.degrees(d), label=f"δ tone {k}", lw=0.8)
+        ax[0].set_ylabel("differential phase [deg]")
+        ax[0].legend(loc="upper right")
+        ax[0].set_title("Pilot-tones CPR — slow inter-tone δ(n) and combined φ(n)")
+        ax[1].plot(np.degrees(phi_np), lw=0.5, color="k")
+        ax[1].set_ylabel("φ̂ [deg]")
+        ax[1].set_xlabel("sample")
+        fig.tight_layout()
+        plt.show()
+
+    phi_out = phi_full[0] if was_1d else phi_full
+    if return_diagnostics:
+        diagnostics = {
+            "delta": delta_diag,
+            "snr_db": 10.0 * np.log10(snr),
+            "ref": ref,
+            "used": used,
+            "f_centers": [np.asarray(fc) for fc in f_centers],
+        }
+        return phi_out, diagnostics
+    return phi_out
+
+
+def smooth_phase_wiener(
+    phase: ArrayType,
+    process_variance: Optional[float] = None,
+    measurement_variance: Optional[float] = None,
+    linewidth: Optional[float] = None,
+    sampling_rate: Optional[float] = None,
+    tone_snr: Optional[float] = None,
+    detrend: bool = True,
+) -> ArrayType:
+    r"""
+    Zero-phase Wiener smoother for a random-walk (Wiener) carrier phase.
+
+    Optimal minimum-variance estimate of a phase that random-walks with
+    per-sample increment variance q (set by the combined laser linewidth)
+    observed in white phase-estimation noise of variance r (set by the
+    pilot-tone SNR).  Applies the non-causal Wiener filter
+
+        H(w)       = S_phi(w) / (S_phi(w) + r),
+        S_phi(w)   = q / (2 - 2*cos(w)),
+
+    in the frequency domain (FFT -> multiply by the real, even H -> IFFT), so it
+    is zero-phase (no group delay) and O(N log N).  This is the principled way to
+    hit the smallest residual phase std for a given linewidth and pilot SNR — it
+    trades tracking lag against additive noise automatically, where a fixed
+    extraction bandwidth must be tuned by hand.
+
+    Because it only rescales the phase track (a deterministic, sample-independent
+    low-pass), it stays a unit-modulus correction downstream and cannot hide
+    excess noise — it is applied to the common pilot phase, never to the quantum
+    samples.
+
+    Parameters
+    ----------
+    phase : (N,) or (C, N) array
+        Unwrapped phase track (e.g. from a ``recover_carrier_phase_pilot_tone*``
+        function), in radians.
+    process_variance : float, optional
+        Per-sample phase-increment variance q [rad²].  If omitted it is derived
+        as q = 2*pi*linewidth / f_s from ``linewidth`` (combined TX+LO linewidth)
+        and ``sampling_rate``.
+    measurement_variance : float, optional
+        Phase-estimation noise variance r [rad²].  If omitted it is derived as
+        r = 1/(2*SNR) from ``tone_snr`` (linear, in-band tone SNR).
+    linewidth, sampling_rate, tone_snr : float, optional
+        Convenience inputs to derive ``process_variance`` / ``measurement_variance``.
+    detrend : bool, default True
+        Remove the per-channel mean + linear trend before filtering and add it
+        back after.  Recommended: the random-walk PSD diverges at DC, so a raw
+        ramp (residual frequency offset) would be distorted; detrending keeps it
+        exact.
+
+    Returns
+    -------
+    array_like
+        Smoothed phase, same shape and backend as ``phase``.
+    """
+    if process_variance is None:
+        if linewidth is None or sampling_rate is None:
+            raise ValueError(
+                "Provide process_variance, or both linewidth and sampling_rate."
+            )
+        process_variance = 2.0 * np.pi * float(linewidth) / float(sampling_rate)
+    if measurement_variance is None:
+        if tone_snr is None:
+            raise ValueError("Provide measurement_variance, or tone_snr.")
+        measurement_variance = 1.0 / (2.0 * float(tone_snr))
+    q, r = float(process_variance), float(measurement_variance)
+    if q <= 0.0 or r <= 0.0:
+        raise ValueError(f"process/measurement variance must be > 0, got q={q}, r={r}.")
+
+    phase, xp, _ = dispatch(phase)
+    was_1d = phase.ndim == 1
+    if was_1d:
+        phase = phase[None, :]
+    C, N = phase.shape
+    phi = phase.astype(xp.float64)
+
+    # Detrend per channel (mean + linear) so the DC-divergent random-walk PSD
+    # does not distort the residual-FOE ramp; restore the trend after filtering.
+    n = xp.arange(N, dtype=xp.float64)
+    if detrend:
+        nc = n - xp.mean(n)
+        denom = xp.sum(nc * nc)
+        mean = xp.mean(phi, axis=-1, keepdims=True)
+        slope = xp.sum((phi - mean) * nc[None, :], axis=-1, keepdims=True) / denom
+        trend = mean + slope * nc[None, :]
+    else:
+        trend = xp.zeros((C, 1), dtype=xp.float64)
+    phi_c = phi - trend
+
+    # Real, even Wiener gain H(ω); keep DC (H[0]=1) where S_φ → ∞.
+    omega = 2.0 * xp.pi * xp.fft.fftfreq(N)
+    denom_w = 2.0 - 2.0 * xp.cos(omega)
+    denom_w = xp.where(denom_w <= 0.0, xp.full_like(denom_w, 1e-300), denom_w)
+    S = q / denom_w
+    H = S / (S + r)
+    H[0] = 1.0
+
+    phi_s = xp.real(xp.fft.ifft(xp.fft.fft(phi_c, axis=-1) * H[None, :], axis=-1))
+    phi_s = phi_s + trend
+
+    std_in = float(xp.std(phi_c))
+    std_out = float(xp.std(phi_s - trend))
+    logger.info(
+        f"Wiener phase smoother: q={q:.3g}, r={r:.3g} rad², "
+        f"residual std {np.degrees(std_in):.2f}° → {np.degrees(std_out):.2f}°."
+    )
+
+    return phi_s[0] if was_1d else phi_s
 
 
 def correct_carrier_phase(

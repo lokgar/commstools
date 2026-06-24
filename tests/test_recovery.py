@@ -431,6 +431,260 @@ class TestCprPilotTone:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CPR — Two-pilot MRC (recover_carrier_phase_pilot_tones)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCprPilotTones:
+    """Multi-pilot common-phase CPR: SNR-weighted MRC + slow inter-tone tracking."""
+
+    SPS = 8
+    BETA = 0.1
+    F0 = 1.5e6  # tone 0 — guard band, below fs/2 = 4 MHz
+    F1 = 2.0e6  # tone 1 — distinct frequency, 0.5 MHz away
+    BW = 0.3e6  # per-tone extraction half-width
+    DIFF_BW = 5e3  # slow-δ low-pass cut-off — narrow, so δ averages out the noise
+    EDGE = 600
+
+    def _setup(
+        self,
+        xp,
+        df=0.0,
+        linewidth=0.0,
+        snr_db=SNR_DB,
+        n_symbols=2000,
+        psr_db=(-12.0, -12.0),
+        delta=0.4,
+        seed=7,
+    ):
+        """Two isolated tones (one per channel) sharing a common carrier phase.
+
+        Models the post-demux case: channel 0 carries tone ``F0``, channel 1
+        carries tone ``F1``; both ride the *same* common phase (FOE ramp + Wiener
+        phase noise).  ``delta`` is a static inter-tone offset applied to tone 1
+        (the differential the slow-δ tracker must absorb).  Returns
+        ``(samples, fs, common)``.
+        """
+        fs = self.SPS * FS
+        sig = Signal.qam(
+            order=16,
+            num_symbols=n_symbols,
+            sps=self.SPS,
+            symbol_rate=FS,
+            rrc_rolloff=self.BETA,
+            num_streams=2,
+            seed=seed,
+        )
+        samples = apply_awgn(xp.asarray(sig.samples), esn0_db=snr_db, sps=self.SPS, seed=seed)
+        # One tone per channel (channel c gets frequency[c]); tone 1 gets a static
+        # phase offset δ so the inter-tone differential is non-trivial.
+        samples, _ = spectral.add_pilot_tone(
+            samples, fs, [self.F0, self.F1],
+            power_ratio_db=list(psr_db), phase_init=0.0,
+        )
+        n = xp.arange(samples.shape[-1], dtype=xp.float64)
+        samples[1] = samples[1] * xp.exp(1j * float(delta)).astype(samples.dtype)
+
+        if linewidth > 0.0:
+            rng = xp.random.RandomState(seed)
+            incr = rng.normal(0.0, float(np.sqrt(2 * np.pi * linewidth / fs)), samples.shape[-1])
+            pn = xp.cumsum(incr)
+        else:
+            pn = xp.zeros(samples.shape[-1], dtype=xp.float64)
+        common = 2 * np.pi * df * n / fs + pn
+        samples = samples * xp.exp(1j * common).astype(samples.dtype)
+        return samples, fs, common
+
+    def _interior_rms(self, xp, phase_est, common):
+        g = slice(self.EDGE, -self.EDGE)
+        return _rms_phase_error(xp, phase_est[..., g], common[..., g])
+
+    @pytest.mark.parametrize("df", [0.0, 0.05e6])
+    def test_recovers_common_phase(self, backend_device, xp, df):
+        """Two-pilot MRC tracks the shared FOE + phase noise to < 0.15 rad RMS."""
+        samples, fs, common = self._setup(xp, df=df, linewidth=5e3)
+        phi = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+        )
+        assert self._interior_rms(xp, phi[0], common) < 0.15
+
+    def test_mrc_beats_single_tone(self, backend_device, xp):
+        """Combining two equal-SNR pilots lowers the residual vs a single tone.
+
+        Run in a noise-limited regime (low tone SNR) where the √2 of the combine
+        is visible; a *narrow* δ low-pass is essential — a wide one tracks noise
+        into δ and the combine can lose to single-tone.
+        """
+        samples, fs, common = self._setup(
+            xp, df=0.0, linewidth=0.0, snr_db=6, psr_db=(-10.0, -10.0),
+        )
+        single = recovery.recover_carrier_phase_pilot_tone(
+            samples, fs, self.F0, bandwidth=self.BW, joint_channels=False,
+        )
+        both, diag = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            return_diagnostics=True,
+        )
+        assert diag["used"] == [0, 1]  # both tones genuinely combined
+        # single-tone reads tone 0 on channel 0; compare like-for-like on row 0.
+        rms_single = self._interior_rms(xp, single[0], common)
+        rms_both = self._interior_rms(xp, both[0], common)
+        assert rms_both < rms_single
+
+    def test_output_shape_and_common_broadcast(self, backend_device, xp):
+        """(C, N) input → (C, N) output; the common track is identical on all rows."""
+        samples, fs, _ = self._setup(xp, df=0.05e6)
+        phi = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+        )
+        assert phi.shape == samples.shape
+        assert bool(xp.allclose(phi[0], phi[1]))
+
+    def test_gating_drops_faded_tone(self, backend_device, xp):
+        """A weak pilot (low tone-to-noise) is gated out → single-tone fallback.
+
+        Fade tone 1 by lowering its PSR (not by scaling the whole channel, which
+        is SNR-invariant): a 48 dB weaker tone falls below the SNR gate.
+        """
+        samples, fs, _ = self._setup(xp, psr_db=(-12.0, -60.0))
+        _, diag = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            snr_gate_db=3.0, return_diagnostics=True,
+        )
+        assert diag["used"] == [diag["ref"]]
+        assert diag["ref"] == 0  # the strong tone
+
+    def test_single_tone_K1_tracks(self, backend_device, xp):
+        """K=1 reduces to a single-tone tracker and still recovers the phase."""
+        samples, fs, common = self._setup(xp, df=0.05e6)
+        phi = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0],
+        )
+        assert self._interior_rms(xp, phi[0], common) < 0.15
+
+    def test_joint_pre_demux_combine(self, backend_device, xp):
+        """per_tone_channel=None coherently sums each tone across channels."""
+        samples, fs, common = self._setup(xp, df=0.05e6)
+        phi = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=None,
+        )
+        assert self._interior_rms(xp, phi[0], common) < 0.15
+
+    def test_diagnostics_keys(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp)
+        _, diag = recovery.recover_carrier_phase_pilot_tones(
+            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            return_diagnostics=True,
+        )
+        assert set(diag) == {"delta", "snr_db", "ref", "used", "f_centers"}
+        assert len(diag["snr_db"]) == 2
+
+    def test_per_tone_channel_length_mismatch_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match="per_tone_channel must have one entry"):
+            recovery.recover_carrier_phase_pilot_tones(
+                samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+                per_tone_channel=[0],
+            )
+
+    def test_invalid_bandwidth_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match="bandwidth must be > 0"):
+            recovery.recover_carrier_phase_pilot_tones(
+                samples, fs, [self.F0, self.F1], bandwidth=0.0,
+            )
+
+    def test_empty_tone_list_raises(self, backend_device, xp):
+        samples, fs, _ = self._setup(xp, n_symbols=256)
+        with pytest.raises(ValueError, match="at least one frequency"):
+            recovery.recover_carrier_phase_pilot_tones(
+                samples, fs, [], bandwidth=self.BW,
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wiener phase smoother (smooth_phase_wiener)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWienerPhaseSmoother:
+    """Zero-phase Wiener smoother for a random-walk carrier phase."""
+
+    def _random_walk(self, xp, N=20000, q=4e-4, seed=3):
+        rng = xp.random.RandomState(seed)
+        return xp.cumsum(rng.normal(0.0, float(np.sqrt(q)), N)), q
+
+    def test_reduces_random_walk_noise(self, backend_device, xp):
+        """Smoothing a noisy random-walk phase lowers the RMS error vs truth."""
+        truth, q = self._random_walk(xp)
+        rng = xp.random.RandomState(11)
+        r = 0.05
+        noisy = truth + rng.normal(0.0, float(np.sqrt(r)), truth.shape[-1])
+        smoothed = recovery.smooth_phase_wiener(
+            noisy, process_variance=q, measurement_variance=r
+        )
+        g = slice(200, -200)  # trim FFT edge transients
+        rms_noisy = _rms_phase_error(xp, noisy[g], truth[g])
+        rms_smooth = _rms_phase_error(xp, smoothed[g], truth[g])
+        assert rms_smooth < rms_noisy
+
+    def test_preserves_linear_trend(self, backend_device, xp):
+        """A pure FOE ramp (+ tiny noise) survives the detrend/add-back path."""
+        N = 8000
+        n = xp.arange(N, dtype=xp.float64)
+        slope = 1e-3
+        ramp = slope * n
+        rng = xp.random.RandomState(5)
+        noisy = ramp + rng.normal(0.0, 0.01, N)
+        smoothed = recovery.smooth_phase_wiener(
+            noisy, process_variance=1e-6, measurement_variance=1e-2
+        )
+        g = slice(200, -200)
+        # The recovered slope (via endpoints) matches the true ramp slope.
+        est_slope = float((smoothed[g][-1] - smoothed[g][0]) / (n[g][-1] - n[g][0]))
+        assert abs(est_slope - slope) < 0.05 * slope + 1e-5
+
+    def test_shape_siso_and_mimo(self, backend_device, xp):
+        truth, q = self._random_walk(xp, N=4000)
+        phi1d = recovery.smooth_phase_wiener(truth, process_variance=q, measurement_variance=0.05)
+        assert phi1d.shape == truth.shape
+        phi2d_in = xp.stack([truth, truth + 0.3])
+        phi2d = recovery.smooth_phase_wiener(phi2d_in, process_variance=q, measurement_variance=0.05)
+        assert phi2d.shape == phi2d_in.shape
+
+    def test_derive_variances_from_physical_params(self, backend_device, xp):
+        """linewidth + sampling_rate + tone_snr derive q and r internally."""
+        truth, _ = self._random_walk(xp, N=4000)
+        smoothed = recovery.smooth_phase_wiener(
+            truth, linewidth=1e5, sampling_rate=4e9, tone_snr=100.0
+        )
+        assert smoothed.shape == truth.shape
+        assert bool(xp.all(xp.isfinite(smoothed)))
+
+    def test_missing_process_params_raise(self, backend_device, xp):
+        truth, _ = self._random_walk(xp, N=512)
+        with pytest.raises(ValueError, match="process_variance"):
+            recovery.smooth_phase_wiener(truth, measurement_variance=0.05)
+
+    def test_missing_measurement_params_raise(self, backend_device, xp):
+        truth, q = self._random_walk(xp, N=512)
+        with pytest.raises(ValueError, match="measurement_variance, or tone_snr"):
+            recovery.smooth_phase_wiener(truth, process_variance=q)
+
+    def test_invalid_variance_raises(self, backend_device, xp):
+        truth, _ = self._random_walk(xp, N=512)
+        with pytest.raises(ValueError, match="must be > 0"):
+            recovery.smooth_phase_wiener(truth, process_variance=0.0, measurement_variance=0.05)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CPR — Tikhonov-RTS
 # ─────────────────────────────────────────────────────────────────────────────
 
