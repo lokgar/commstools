@@ -34,6 +34,8 @@ frequency_offset_blockwise_result :
     Block-wise FOE diagnostic: interpolated frequency and integrated phase.
 pilot_phase_estimate :
     Pilot phase scatter, linear fit, and interpolated phase trajectory.
+pilot_tones_phase_estimate :
+    Two-pilot MRC diagnostic: per-tone differential δ_k[n] and combined φ̂[n].
 zf_equalizer_response :
     Channel, equalizer, and combined frequency responses for ZF/MMSE.
 carrier_phase_decomposition :
@@ -2395,6 +2397,105 @@ def pilot_tone_phase_estimate(
         plt.show()
         return None
     return fig, (ax_spec, ax_phase)
+
+
+def pilot_tones_phase_estimate(
+    delta,
+    phi,
+    ref: int,
+    used: Sequence[int],
+    ax=None,
+    show: bool = False,
+    title: str = "CPR — Pilot Tones (MRC)",
+    max_points: int = 4000,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Diagnostic for ``recover_carrier_phase_pilot_tones``.
+
+    Two panels:
+
+    1. **Inter-tone differential** — the slow tracked phase ``δ_k[n]`` (deg) for
+       each non-reference tone; the line style flags whether the tone was
+       combined (solid) or gated out (dashed).
+    2. **Combined phase** — the per-sample common estimate ``φ̂[n]`` (deg).
+
+    All channels share the active theme; no colours or line widths are set
+    explicitly, so the trace colours come from the rcParams cycle.
+
+    Parameters
+    ----------
+    delta : sequence of array_like
+        Per-tone differential phase ``δ_k[n]`` in radians — a length-``K``
+        sequence (or ``(K, N)`` array) of ``(N,)`` traces.  The reference tone's
+        entry is ``≈ 0`` and is skipped in panel 1.
+    phi : array_like
+        Combined per-sample phase estimate ``φ̂[n]`` in radians.  Shape ``(N,)``.
+    ref : int
+        Reference-tone index (its differential is identically zero).
+    used : sequence of int
+        Indices of the tones that were combined (the rest were gated out).
+    ax : array_like of Axes, optional
+        Two Axes ``[differential, phase]``. If ``None``, a new figure is created.
+    show : bool, default False
+    title : str, default "CPR — Pilot Tones (MRC)"
+    max_points : int, default 4000
+        Per-trace point budget; longer traces are envelope-decimated (min/max)
+        before plotting.  Pass ``<= 0`` to plot every point.
+
+    Returns
+    -------
+    (fig, axes) or None
+    """
+    delta = [np.asarray(to_device(d, "cpu"), dtype=float) for d in delta]
+    phi = np.asarray(to_device(phi, "cpu"), dtype=float)
+    K = len(delta)
+    used_set = {int(u) for u in used}
+
+    if ax is None:
+        fig, raw_axes = plt.subplots(1, 2, figsize=(10, 3.5), squeeze=False)
+        ax_delta, ax_phase = raw_axes[0]
+    else:
+        ax_delta, ax_phase = ax[0], ax[1]
+        fig = ax_delta.figure
+
+    # Panel 1 — per-tone slow differential (skip the reference, whose δ ≡ 0).
+    n_plotted = 0
+    for k in range(K):
+        if k == ref:
+            continue
+        gated = k not in used_set
+        idx = np.arange(delta[k].shape[-1])
+        n_d, d_d = _decimate_minmax(idx, np.degrees(delta[k]), max_points)
+        ax_delta.plot(
+            n_d,
+            d_d,
+            linestyle="--" if gated else "-",
+            alpha=0.85,
+            label=f"δ tone {k}" + (" (gated)" if gated else ""),
+        )
+        n_plotted += 1
+    ax_delta.set_title(f"{title} — Inter-tone δ  (ref = tone {ref})")
+    ax_delta.set_xlabel("Sample Index")
+    ax_delta.set_ylabel("Differential phase [deg]")
+    if n_plotted:
+        ax_delta.legend(fontsize="small", loc="upper right")
+    ax_delta.grid(True, alpha=0.3)
+
+    # Panel 2 — combined common-phase track.
+    idx = np.arange(phi.shape[-1])
+    n_d, p_d = _decimate_minmax(idx, np.degrees(phi), max_points)
+    ax_phase.plot(n_d, p_d, alpha=0.85)
+    ph_std = float(np.std(np.degrees(phi)))
+    ax_phase.set_title(f"{title} — Combined φ̂  [σ={ph_std:.2f}°, used={list(used)}]")
+    ax_phase.set_xlabel("Sample Index")
+    ax_phase.set_ylabel("Phase [deg]")
+    ax_phase.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+        return None
+    return fig, (ax_delta, ax_phase)
 
 
 def zf_equalizer_response(

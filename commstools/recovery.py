@@ -2078,6 +2078,7 @@ def recover_carrier_phase_pilot_tones(
 
     z_comb = xp.zeros(N, dtype=xp.complex128)
     delta_diag, used = [], []
+    want_diag = return_diagnostics or debug_plot  # per-tone δ_k needed either way
     for k in range(K):
         if k == ref:
             # Self-product: LPF(|z|²) ≈ |A|² + σ²; subtract the floor so the
@@ -2101,12 +2102,12 @@ def recover_carrier_phase_pilot_tones(
                     f"CPR (pilot-tones): tone {k} dropped "
                     f"(SNR={10 * np.log10(snr[k]):.1f} dB, coherence={coh:.2f})."
                 )
-                if return_diagnostics:
+                if want_diag:
                     delta_diag.append(to_device(xp.angle(c_k), "cpu"))
                 continue
         z_comb = z_comb + z_tones[k] * xp.conj(c_k) / noise[k]
         used.append(k)
-        if return_diagnostics:
+        if want_diag:
             delta_diag.append(to_device(xp.angle(c_k), "cpu"))
 
     # 3) Common phase = angle of the combined phasor, unwrapped in float64.
@@ -2121,20 +2122,15 @@ def recover_carrier_phase_pilot_tones(
     )
 
     if debug_plot:
-        import matplotlib.pyplot as plt  # noqa: PLC0415
+        from . import plotting as _plotting
 
-        fig, ax = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-        for k, d in zip([k for k in range(K)], delta_diag):
-            if k != ref:
-                ax[0].plot(np.degrees(d), label=f"δ tone {k}", lw=0.8)
-        ax[0].set_ylabel("differential phase [deg]")
-        ax[0].legend(loc="upper right")
-        ax[0].set_title("Pilot-tones CPR — slow inter-tone δ(n) and combined φ(n)")
-        ax[1].plot(np.degrees(phi_np), lw=0.5, color="k")
-        ax[1].set_ylabel("φ̂ [deg]")
-        ax[1].set_xlabel("sample")
-        fig.tight_layout()
-        plt.show()
+        _plotting.pilot_tones_phase_estimate(
+            delta=delta_diag,
+            phi=phi_np,
+            ref=ref,
+            used=used,
+            show=True,
+        )
 
     phi_out = phi_full[0] if was_1d else phi_full
     if return_diagnostics:
