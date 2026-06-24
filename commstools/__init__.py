@@ -64,10 +64,10 @@ from .plotting import apply_default_theme
 warnings.filterwarnings("ignore", message=".*cupyx.jit.rawkernel is experimental.*")
 
 __all__ = [
-    "__version__",
     "Preamble",
     "Signal",
     "SingleCarrierFrame",
+    "__version__",
     "analysis",
     "equalization",
     "frequency",

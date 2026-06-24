@@ -50,16 +50,17 @@ carrier_phase_characterization :
     2x2 dashboard combining the four carrier-phase diagnostics above.
 """
 
-from typing import Any, Optional, Tuple, Union, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
+from . import helpers
 from .backend import dispatch, to_device
 from .logger import logger
-from . import helpers
 
 
 def apply_default_theme() -> None:
@@ -121,7 +122,7 @@ def apply_default_theme() -> None:
     plt.rcParams["mathtext.bf"] = f"{font_name}:bold"
 
 
-def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> Tuple[int, int]:
+def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> tuple[int, int]:
     """
     Computes a grid layout (rows, cols) for a given number of axes.
 
@@ -150,7 +151,7 @@ def _create_subplot_grid(num_axes: int, max_cols: int = 2) -> Tuple[int, int]:
 
 def _decimate_minmax(
     x: np.ndarray, y: np.ndarray, max_points: int = 4000
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Down-sample a line for fast plotting while preserving its envelope.
 
     Buckets the data and keeps the per-bucket min **and** max (emitted in
@@ -206,22 +207,22 @@ def psd(
     samples: Any,
     sampling_rate: float = 1.0,
     nperseg: int = 256,
-    detrend: Optional[Union[str, bool]] = False,
-    average: Optional[str] = "mean",
-    window: Union[str, Tuple[Any, ...], Any] = "hann",
-    noverlap: Optional[int] = None,
-    nfft: Optional[int] = None,
+    detrend: str | bool | None = False,
+    average: str | None = "mean",
+    window: str | tuple[Any, ...] | Any = "hann",
+    noverlap: int | None = None,
+    nfft: int | None = None,
     scaling: str = "density",
     center_frequency: float = 0.0,
     domain: str = "RF",
     x_axis: str = "frequency",
-    ax: Optional[Any] = None,
-    xlim: Optional[Tuple[float, float]] = None,
-    ylim: Optional[Tuple[float, float]] = None,
-    title: Optional[str] = "Power Spectral Density",
+    ax: Any | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    title: str | None = "Power Spectral Density",
     show: bool = False,
     **kwargs: Any,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the Power Spectral Density (PSD) of the signal.
 
@@ -436,13 +437,13 @@ def time_domain(
     samples: Any,
     sampling_rate: float = 1.0,
     start_symbol: int = 0,
-    num_symbols: Optional[int] = None,
-    sps: Optional[float] = None,
-    ax: Optional[Any] = None,
-    title: Optional[str] = "Waveform",
+    num_symbols: int | None = None,
+    sps: float | None = None,
+    ax: Any | None = None,
+    title: str | None = "Waveform",
     show: bool = False,
     **kwargs: Any,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the time-domain representation of the signal.
 
@@ -610,7 +611,7 @@ def _plot_eye_traces(
     num_symbols: int,
     ax: Any,
     type: str,
-    title: Optional[str],
+    title: str | None,
     **kwargs: Any,
 ) -> None:
     """
@@ -778,15 +779,15 @@ def _plot_eye_traces(
 def eye_diagram(
     samples: Any,
     sps: float,
-    ax: Optional[Union[Any, Tuple[Any, Any]]] = None,
+    ax: Any | tuple[Any, Any] | None = None,
     num_symbols: int = 2,
     type: str = "hist",
-    title: Optional[str] = "Eye Diagram",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    title: str | None = "Eye Diagram",
+    vmin: float | None = None,
+    vmax: float | None = None,
     show: bool = False,
     **kwargs: Any,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the eye diagram of the signal.
 
@@ -965,8 +966,8 @@ def eye_diagram(
 
 
 def filter_response(
-    taps: Any, sps: float = 1.0, ax: Optional[Any] = None, show: bool = False
-) -> Optional[Tuple[Any, Tuple[Any, Any, Any]]]:
+    taps: Any, sps: float = 1.0, ax: Any | None = None, show: bool = False
+) -> tuple[Any, tuple[Any, Any, Any]] | None:
     """
     Plots the impulse and frequency response of a filter.
 
@@ -1078,14 +1079,14 @@ def filter_response(
 def ideal_constellation(
     modulation: str,
     order: int,
-    pmf: Optional[Any] = None,
-    nu: Optional[float] = None,
-    ax: Optional[Any] = None,
-    title: Optional[str] = None,
+    pmf: Any | None = None,
+    nu: float | None = None,
+    ax: Any | None = None,
+    title: str | None = None,
     size: float = 5,
     show: bool = False,
-    unipolar: Optional[bool] = None,
-) -> Optional[Tuple[Any, Any]]:
+    unipolar: bool | None = None,
+) -> tuple[Any, Any] | None:
     """
     Plots the ideal constellation diagram for a modulation format.
 
@@ -1240,18 +1241,18 @@ def constellation(
     samples: Any,
     bins: int = 100,
     cmap: str = "inferno",
-    ax: Optional[Any] = None,
+    ax: Any | None = None,
     overlay_ideal: bool = False,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-    unipolar: Optional[bool] = None,
-    pmf: Optional[Any] = None,
-    title: Optional[str] = "Constellation",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    modulation: str | None = None,
+    order: int | None = None,
+    unipolar: bool | None = None,
+    pmf: Any | None = None,
+    title: str | None = "Constellation",
+    vmin: float | None = None,
+    vmax: float | None = None,
     show: bool = False,
     **kwargs: Any,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots a constellation density diagram from received samples.
 
@@ -1478,7 +1479,7 @@ def equalizer_result(
     smoothing: int = 50,
     ax=None,
     show: bool = False,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots adaptive equalizer diagnostics: convergence curve, tap weights, and
     (when CPR was enabled) the recovered phase trajectory.
@@ -1633,7 +1634,7 @@ def timing_correlation(
     ax=None,
     show: bool = False,
     title: str = "Timing Correlation",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots cross-correlation magnitude for timing estimation diagnostics.
 
@@ -1734,7 +1735,7 @@ def mm_autocorrelation(
     ax=None,
     show: bool = False,
     title: str = "FOE — Mengali-Morelli",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the Mengali-Morelli autocorrelation diagnostics.
 
@@ -1850,7 +1851,7 @@ def frequency_offset_spectrum(
     ax=None,
     show: bool = False,
     title: str = "FOE — M-th Power Spectrum",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the M-th power spectrum used for blind frequency offset estimation.
 
@@ -1946,7 +1947,7 @@ def carrier_phase_trajectory(
     ax=None,
     show: bool = False,
     title: str = "Carrier Phase Trajectory",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots per-symbol carrier phase trajectory for CPR algorithm diagnostics.
 
@@ -2033,7 +2034,7 @@ def frequency_offset_blockwise_result(
     show: bool = False,
     title: str = "Block-wise FOE",
     max_points: int = 4000,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Diagnostic plot for ``frequency.correct_frequency_offset_blockwise``.
 
@@ -2120,12 +2121,12 @@ def pilot_phase_estimate(
     pilot_indices,
     phi_pilots_u,
     phi_full=None,
-    f_est: Union[float, Sequence[float], np.ndarray] = 0.0,
+    f_est: float | Sequence[float] | np.ndarray = 0.0,
     sampling_rate: float = 1.0,
     ax=None,
     show: bool = False,
     title: str = "Pilot Phase Estimate",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots pilot phase scatter, linear fit, and the full interpolated trajectory.
 
@@ -2271,7 +2272,7 @@ def pilot_tone_phase_estimate(
     show: bool = False,
     title: str = "CPR — Pilot Tone",
     max_points: int = 4000,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Diagnostic for ``recover_carrier_phase_pilot_tone``.
 
@@ -2408,7 +2409,7 @@ def pilot_tones_phase_estimate(
     show: bool = False,
     title: str = "CPR — Pilot Tones (MRC)",
     max_points: int = 4000,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Diagnostic for ``recover_carrier_phase_pilot_tones``.
 
@@ -2506,7 +2507,7 @@ def zf_equalizer_response(
     ax=None,
     show: bool = False,
     title: str = "ZF/MMSE Equalizer Response",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots channel, equalizer, and combined frequency responses for ZF/MMSE.
 
@@ -2646,7 +2647,7 @@ def carrier_phase_decomposition(
     ax=None,
     show: bool = False,
     title: str = "Recovered carrier phase",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the recovered carrier-phase trajectory and its slow drift component.
 
@@ -2732,11 +2733,11 @@ def frequency_drift(
     df,
     *,
     symbol_rate: float,
-    amp_ref: Optional[float] = None,
+    amp_ref: float | None = None,
     ax=None,
     show: bool = False,
     title: str = "Residual frequency drift",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the instantaneous residual frequency offset vs time.
 
@@ -2800,11 +2801,11 @@ def frequency_noise_psd(
     *,
     beta_line=None,
     floor=None,
-    band: Optional[Tuple[float, float]] = None,
+    band: tuple[float, float] | None = None,
     ax=None,
     show: bool = False,
     title: str = "Frequency-noise PSD",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the frequency-noise PSD S_f(f) on log-log axes.
 
@@ -2906,7 +2907,7 @@ def allan_deviation(
     ax=None,
     show: bool = False,
     title: str = "Allan deviation",
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the (overlapping) Allan deviation vs averaging time on log-log axes.
 
@@ -2984,13 +2985,13 @@ def carrier_phase_characterization(
     report: dict,
     *,
     symbol_rate: float,
-    drift_cutoff: Optional[float] = None,
-    band: Optional[Tuple[float, float]] = None,
+    drift_cutoff: float | None = None,
+    band: tuple[float, float] | None = None,
     floor=None,
-    amp_ref: Optional[float] = None,
+    amp_ref: float | None = None,
     show: bool = False,
-    title: Optional[str] = None,
-) -> Optional[Tuple[Any, Any]]:
+    title: str | None = None,
+) -> tuple[Any, Any] | None:
     """
     Full 2x2 carrier-phase characterization dashboard.
 
@@ -3066,25 +3067,25 @@ def carrier_phase_characterization(
 def spectrogram(
     samples: Any,
     sampling_rate: float = 1.0,
-    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    window: str | tuple[Any, ...] | Any = "hann",
     nperseg: int = 256,
-    noverlap: Optional[int] = None,
-    nfft: Optional[int] = None,
-    detrend: Optional[Union[str, bool]] = False,
-    return_onesided: Optional[bool] = None,
+    noverlap: int | None = None,
+    nfft: int | None = None,
+    detrend: str | bool | None = False,
+    return_onesided: bool | None = None,
     scaling: str = "density",
     axis: int = -1,
     mode: str = "psd",
     center_frequency: float = 0.0,
     domain: str = "RF",
-    ax: Optional[Any] = None,
-    xlim: Optional[Tuple[float, float]] = None,
-    ylim: Optional[Tuple[float, float]] = None,
-    title: Optional[str] = "Spectrogram",
+    ax: Any | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    title: str | None = "Spectrogram",
     cmap: str = "viridis",
     show: bool = False,
     **kwargs: Any,
-) -> Optional[Tuple[Any, Any]]:
+) -> tuple[Any, Any] | None:
     """
     Plots the spectrogram of a signal.
 

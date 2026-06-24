@@ -26,7 +26,6 @@ compensate_iq_imbalance_gram_schmidt :
 """
 
 import math
-from typing import Optional, Union
 
 import numpy as np
 
@@ -38,7 +37,7 @@ def apply_awgn(
     samples: ArrayType,
     sps: float,
     esn0_db: float,
-    seed: Optional[int] = None,
+    seed: int | None = None,
 ) -> ArrayType:
     """
     Adds Additive White Gaussian Noise (AWGN) to a signal based on Es/N0.
@@ -289,7 +288,7 @@ def apply_phase_noise(
     samples: ArrayType,
     sampling_rate: float,
     linewidth: float,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     shared_lo: bool = False,
 ) -> ArrayType:
     """
@@ -365,7 +364,7 @@ def apply_phase_noise(
 
 def apply_polarization_mixing(
     samples: ArrayType,
-    theta: Union[float, ArrayType],
+    theta: float | ArrayType,
     drift_rate_rad_per_sym: float = 0.0,
 ) -> ArrayType:
     """

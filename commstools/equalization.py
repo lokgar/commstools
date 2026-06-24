@@ -81,17 +81,17 @@ demultiplex_polarization_tones_dynamic :
 
 import contextlib
 import functools
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple, Union
+from typing import Any, Optional
 
 import numpy as np
 
-from .backend import ArrayType, _get_jax, dispatch, from_jax, to_jax, to_device
+from .backend import ArrayType, _get_jax, dispatch, from_jax, to_device, to_jax
 from .filtering import _ols_backward, _ols_forward, fir_filter, lowpass_taps
 from .frequency import find_bias_tone
 from .helpers import resolve_pll_gains
 from .logger import logger
-
 
 # -----------------------------------------------------------------------------
 # RESULT CONTAINER
@@ -111,27 +111,27 @@ class CPRState:
     """
 
     # PLL state (lms / rls with cpr_type='pll' or 'bps')
-    pll_phi: Optional[np.ndarray] = None  # (C,) float64
-    pll_freq: Optional[np.ndarray] = None  # (C,) float64
+    pll_phi: np.ndarray | None = None  # (C,) float64
+    pll_freq: np.ndarray | None = None  # (C,) float64
 
     # BPS cross-block unwrap state (block_lms with cpr_type='bps')
-    bps_prev4: Optional[np.ndarray] = None  # (C,) float64
-    bps_offset4: Optional[np.ndarray] = None  # (C,) float64
-    bps_d2_hist: Optional[np.ndarray] = None  # (P, C, K-1) float32 — CPU copy
+    bps_prev4: np.ndarray | None = None  # (C,) float64
+    bps_offset4: np.ndarray | None = None  # (C,) float64
+    bps_d2_hist: np.ndarray | None = None  # (P, C, K-1) float32 — CPU copy
 
     # Cycle-slip regression state (all CPR modes)
-    cs_buf_x: Optional[np.ndarray] = None  # (C, H) float64
-    cs_buf_y: Optional[np.ndarray] = None  # (C, H) float64
-    cs_buf_ptr: Optional[np.ndarray] = None  # (C,) int64
-    cs_buf_n: Optional[np.ndarray] = None  # (C,) int64
-    cs_stats: Optional[np.ndarray] = None  # (C, 4) float64
+    cs_buf_x: np.ndarray | None = None  # (C, H) float64
+    cs_buf_y: np.ndarray | None = None  # (C, H) float64
+    cs_buf_ptr: np.ndarray | None = None  # (C,) int64
+    cs_buf_n: np.ndarray | None = None  # (C,) int64
+    cs_stats: np.ndarray | None = None  # (C, 4) float64
 
     # JAX-specific BPS buffer state (JAX backend only; None for Numba)
-    jax_bps_buf: Optional[np.ndarray] = None  # (KB, C) complex64
-    jax_bps_buf_ptr: Optional[int] = None  # scalar int32
+    jax_bps_buf: np.ndarray | None = None  # (KB, C) complex64
+    jax_bps_buf_ptr: int | None = None  # scalar int32
 
     # Identity tags — used to validate shape compatibility on warm-start
-    cpr_type: Optional[str] = None
+    cpr_type: str | None = None
     num_ch: int = 0
     symmetry: int = 4
     bps_P: int = 0  # number of BPS test phases
@@ -203,11 +203,11 @@ class EqualizerResult:
     y_hat: ArrayType
     weights: ArrayType
     error: ArrayType
-    weights_history: Optional[ArrayType] = None
+    weights_history: ArrayType | None = None
     num_train_symbols: int = 0
-    input_norm_factor: Union[float, np.ndarray] = 1.0
+    input_norm_factor: float | np.ndarray = 1.0
     tail_trim: int = 0
-    phase_trajectory: Optional[ArrayType] = None
+    phase_trajectory: ArrayType | None = None
     cpr_state: Optional["CPRState"] = None
 
 
@@ -276,7 +276,7 @@ def _get_numba():
     """
     if "numba" not in _NUMBA_CACHE:
         try:
-            import numba  # noqa: PLC0415
+            import numba
 
             _NUMBA_CACHE["numba"] = numba
         except ImportError:
@@ -2039,7 +2039,7 @@ def _get_jax_lms_cpr(
         H = cs_history_len
         KB = bps_block_size  # static closure: BPS window length
 
-        import math as _math  # noqa: PLC0415
+        import math as _math
 
         _quantum_static = jnp.float64(2.0 * _math.pi / symmetry)
 
@@ -2463,7 +2463,7 @@ def _get_jax_rls_cpr(
 
         H = cs_history_len
         KB = bps_block_size
-        import math as _math  # noqa: PLC0415
+        import math as _math
 
         _quantum_static = jnp.float64(2.0 * _math.pi / symmetry)
 
@@ -4478,7 +4478,7 @@ def _unpack_result_numpy(
     )
 
 
-def _cpr_symmetry(modulation: Optional[str], order: Optional[int]) -> int:
+def _cpr_symmetry(modulation: str | None, order: int | None) -> int:
     """Return the rotational symmetry order used for cycle-slip correction.
 
     QAM and most practical CPR algorithms exploit 4-fold (π/2) symmetry.
@@ -4533,23 +4533,23 @@ def _validate_sps(sps, num_taps):
 
 def lms(
     samples: ArrayType,
-    training_symbols: Optional[ArrayType] = None,
+    training_symbols: ArrayType | None = None,
     num_taps: int = 21,
     sps: int = 2,
     step_size: float = 0.01,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    device: Optional[str] = "cpu",
-    center_tap: Optional[int] = None,
+    device: str | None = "cpu",
+    center_tap: int | None = None,
     backend: str = "numba",
-    w_init: Optional[ArrayType] = None,
-    pmf: Optional[Any] = None,
-    cpr_type: Optional[str] = None,
+    w_init: ArrayType | None = None,
+    pmf: Any | None = None,
+    cpr_type: str | None = None,
     cpr_pll_bandwidth: float = 1e-3,
-    cpr_pll_mu: Optional[float] = None,
-    cpr_pll_beta: Optional[float] = None,
+    cpr_pll_mu: float | None = None,
+    cpr_pll_beta: float | None = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_joint_channels: bool = False,
@@ -4559,8 +4559,8 @@ def lms(
     debug_plot: bool = False,
     plot_smoothing: int = 50,
     cpr_state: Optional["CPRState"] = None,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     update_mode: str = "sequential",
     block_len: int = 16,
@@ -5497,25 +5497,25 @@ def _check_rls_divergence(weights, xp, forgetting_factor, delta):
 
 def rls(
     samples: ArrayType,
-    training_symbols: Optional[ArrayType] = None,
+    training_symbols: ArrayType | None = None,
     num_taps: int = 21,
     sps: int = 1,
     forgetting_factor: float = 0.99,
     delta: float = 0.01,
     leakage: float = 0.0,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    device: Optional[str] = "cpu",
-    center_tap: Optional[int] = None,
+    device: str | None = "cpu",
+    center_tap: int | None = None,
     backend: str = "numba",
-    w_init: Optional[ArrayType] = None,
-    pmf: Optional[Any] = None,
-    cpr_type: Optional[str] = None,
+    w_init: ArrayType | None = None,
+    pmf: Any | None = None,
+    cpr_type: str | None = None,
     cpr_pll_bandwidth: float = 1e-3,
-    cpr_pll_mu: Optional[float] = None,
-    cpr_pll_beta: Optional[float] = None,
+    cpr_pll_mu: float | None = None,
+    cpr_pll_beta: float | None = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_joint_channels: bool = False,
@@ -5525,8 +5525,8 @@ def rls(
     debug_plot: bool = False,
     plot_smoothing: int = 50,
     cpr_state: Optional["CPRState"] = None,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
 ) -> EqualizerResult:
     """
@@ -6428,18 +6428,18 @@ def _get_numba_cs_block():
 
 def block_lms(
     samples: ArrayType,
-    training_symbols: Optional[ArrayType] = None,
+    training_symbols: ArrayType | None = None,
     num_taps: int = 21,
     sps: int = 2,
     step_size: float = 2e-4,
     block_size: int = 256,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    w_init: Optional[ArrayType] = None,
-    pmf: Optional[Any] = None,
-    cpr_type: Optional[str] = None,
+    w_init: ArrayType | None = None,
+    pmf: Any | None = None,
+    cpr_type: str | None = None,
     cpr_bps_test_phases: int = 64,
     cpr_bps_block_size: int = 32,
     cpr_joint_channels: bool = False,
@@ -6449,8 +6449,8 @@ def block_lms(
     debug_plot: bool = False,
     plot_smoothing: int = 50,
     cpr_state: Optional["CPRState"] = None,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     cuda_graph: bool = True,
 ) -> EqualizerResult:
@@ -7361,7 +7361,7 @@ def block_lms(
         and _n_dd_full >= 2  # need ≥1 warmup block + ≥1 captured block to pay off
     )
     try:
-        import cupy as _cp_graph  # noqa: PLC0415
+        import cupy as _cp_graph
 
         _graph_stream = _cp_graph.cuda.Stream(non_blocking=True) if _use_graph else None
     except Exception:
@@ -7398,7 +7398,7 @@ def block_lms(
             b_end = min(b_start + block_size, n_sym)
             B = b_end - b_start  # symbols this block (may be < block_size for last)
             n_train_blk = max(0, min(n_train_aligned - b_start, B))
-            _capturable = _use_graph and B == block_size and n_train_blk == 0
+            _capturable = _use_graph and block_size == B and n_train_blk == 0
 
             _fill_x_win(b_start)
 
@@ -7775,16 +7775,16 @@ def block_cma(
     sps: int = 2,
     step_size: float = 2e-4,
     block_size: int = 256,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
-    w_init: Optional[ArrayType] = None,
-    pilot_ref: Optional[ArrayType] = None,
-    pilot_mask: Optional[np.ndarray] = None,
+    w_init: ArrayType | None = None,
+    pilot_ref: ArrayType | None = None,
+    pilot_mask: np.ndarray | None = None,
     pilot_gain_db: float = 0.0,
-    pmf: Optional[Any] = None,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    pmf: Any | None = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     debug_plot: bool = False,
     plot_smoothing: int = 50,
@@ -7844,16 +7844,16 @@ def block_rde(
     sps: int = 2,
     step_size: float = 2e-4,
     block_size: int = 256,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
-    w_init: Optional[ArrayType] = None,
-    pilot_ref: Optional[ArrayType] = None,
-    pilot_mask: Optional[np.ndarray] = None,
+    w_init: ArrayType | None = None,
+    pilot_ref: ArrayType | None = None,
+    pilot_mask: np.ndarray | None = None,
     pilot_gain_db: float = 0.0,
-    pmf: Optional[Any] = None,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    pmf: Any | None = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     debug_plot: bool = False,
     plot_smoothing: int = 50,
@@ -7973,22 +7973,22 @@ def cma(
     num_taps: int = 21,
     sps: int = 2,
     step_size: float = 1e-3,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    device: Optional[str] = "cpu",
-    center_tap: Optional[int] = None,
+    device: str | None = "cpu",
+    center_tap: int | None = None,
     backend: str = "numba",
-    w_init: Optional[ArrayType] = None,
-    pilot_ref: Optional[ArrayType] = None,
-    pilot_mask: Optional[np.ndarray] = None,
+    w_init: ArrayType | None = None,
+    pilot_ref: ArrayType | None = None,
+    pilot_mask: np.ndarray | None = None,
     pilot_gain_db: float = 0.0,
-    pmf: Optional[Any] = None,
+    pmf: Any | None = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     update_mode: str = "sequential",
     block_len: int = 16,
@@ -8442,22 +8442,22 @@ def rde(
     num_taps: int = 21,
     sps: int = 2,
     step_size: float = 1e-3,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     store_weights: bool = False,
-    device: Optional[str] = "cpu",
-    center_tap: Optional[int] = None,
+    device: str | None = "cpu",
+    center_tap: int | None = None,
     backend: str = "numba",
-    w_init: Optional[ArrayType] = None,
-    pilot_ref: Optional[ArrayType] = None,
-    pilot_mask: Optional[np.ndarray] = None,
+    w_init: ArrayType | None = None,
+    pilot_ref: ArrayType | None = None,
+    pilot_mask: np.ndarray | None = None,
     pilot_gain_db: float = 0.0,
-    pmf: Optional[Any] = None,
+    pmf: Any | None = None,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
     update_mode: str = "sequential",
     block_len: int = 16,
@@ -9025,8 +9025,8 @@ def apply_taps(
     weights: ArrayType,
     sps: int = 2,
     normalize: bool = True,
-    input_norm_factor: Optional[Union[float, np.ndarray]] = None,
-    samples_prefix: Optional[ArrayType] = None,
+    input_norm_factor: float | np.ndarray | None = None,
+    samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
 ) -> ArrayType:
     """Apply frozen equalizer taps to a signal (inference pass, no weight updates).
@@ -9157,10 +9157,10 @@ def demultiplex_polarization_tones_static(
     tone_frequencies: Sequence[float],
     *,
     refine_tones: bool = True,
-    search_band: Optional[float] = None,
+    search_band: float | None = None,
     normalize: bool = True,
     return_matrix: bool = False,
-) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
+) -> ArrayType | tuple[ArrayType, ArrayType]:
     r"""
     One-shot polarization demux from distinct per-stream CW pilot tones.
 
@@ -9348,15 +9348,15 @@ def demultiplex_polarization_tones_dynamic(
     tone_frequencies: Sequence[float],
     *,
     track_bandwidth: float,
-    num_taps: Optional[int] = None,
-    grid_step: Optional[int] = None,
+    num_taps: int | None = None,
+    grid_step: int | None = None,
     refine_tones: bool = True,
-    search_band: Optional[float] = None,
+    search_band: float | None = None,
     normalize: bool = True,
     trim_edges: bool = False,
     return_matrix: bool = False,
     apply: bool = True,
-) -> Union[ArrayType, Tuple[Any, ...]]:
+) -> ArrayType | tuple[Any, ...]:
     r"""
     Time-varying polarization demux from distinct per-stream CW pilot tones.
 
@@ -9669,7 +9669,7 @@ def demultiplex_polarization_tones_dynamic(
         N,
     )
 
-    out: Tuple[Any, ...] = (demuxed,)
+    out: tuple[Any, ...] = (demuxed,)
     if trim_edges:
         out = out + (valid,)
     if return_matrix:

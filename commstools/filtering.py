@@ -32,12 +32,11 @@ compensate_chromatic_dispersion :
 
 import numpy as np
 import scipy
-from typing import Optional
 
 from .backend import ArrayType, dispatch
+from .helpers import normalize
 from .logger import logger
 from .multirate import expand
-from .helpers import normalize
 
 # -----------------------------------------------------------------------------
 # FILTER DESIGN - TAP GENERATORS
@@ -628,7 +627,7 @@ def _ols_backward(X_hat_f: ArrayType, meta: dict) -> ArrayType:
 def ols_fir_filter(
     samples: ArrayType,
     taps: ArrayType,
-    N_fft: Optional[int] = None,
+    N_fft: int | None = None,
     center: bool = True,
 ) -> ArrayType:
     """

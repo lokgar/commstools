@@ -21,12 +21,11 @@ import pytest
 
 from commstools.backend import to_device
 from commstools.equalization import CPRState, lms, rls
-from commstools.mapping import gray_constellation
 from commstools.frequency import (
     correct_frequency_offset_blockwise,
     estimate_frequency_offset_mth_power,
 )
-
+from commstools.mapping import gray_constellation
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

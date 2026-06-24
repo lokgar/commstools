@@ -5,9 +5,9 @@ at that size is prohibitively slow, which is rather the point).
 """
 
 import pytest
+from workloads import bps_workload
 
 from commstools import recovery
-from workloads import bps_workload
 
 ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
 

@@ -19,8 +19,6 @@ CPR precision rule); and return scalar estimates as Python ``float`` / NumPy
 arrays regardless of the input backend.
 """
 
-from typing import Dict, Optional, Tuple, Union
-
 import numpy as np
 
 from .backend import ArrayType, dispatch, to_device
@@ -28,14 +26,14 @@ from .logger import logger
 from .spectral import welch_psd
 
 __all__ = [
-    "carrier_phase_trajectory",
-    "separate_drift_phase_noise",
-    "frequency_drift_metrics",
-    "linewidth_increment",
-    "fm_noise_psd",
-    "linewidth_beta_separation",
     "allan_deviation",
+    "carrier_phase_trajectory",
     "characterize_carrier_phase",
+    "fm_noise_psd",
+    "frequency_drift_metrics",
+    "linewidth_beta_separation",
+    "linewidth_increment",
+    "separate_drift_phase_noise",
 ]
 
 # β-separation-line slope (Di Domenico 2010): S_f(f) = (8 ln2 / π²) · f
@@ -148,7 +146,7 @@ def separate_drift_phase_noise(
     method: str = "butterworth",
     order: int = 4,
     debug_plot: bool = False,
-) -> Tuple[ArrayType, ArrayType]:
+) -> tuple[ArrayType, ArrayType]:
     r"""Split a phase trajectory into slow drift and fast phase-noise residual.
 
     Applies a **zero-phase** low-pass (default 4th-order Butterworth in
@@ -251,9 +249,9 @@ def frequency_drift_metrics(
     symbol_rate: float,
     *,
     edge_trim: int = 0,
-    amp_ref: Optional[float] = None,
+    amp_ref: float | None = None,
     debug_plot: bool = False,
-) -> Dict[str, Union[float, np.ndarray]]:
+) -> dict[str, float | np.ndarray]:
     r"""Residual frequency-wander statistics from a smoothed phase ramp.
 
     The instantaneous residual frequency offset is the phase slope
@@ -322,12 +320,12 @@ def linewidth_increment(
     symbol_rate: float,
     *,
     method: str = "slope",
-    lags: Tuple[int, ...] = (1, 2, 3, 4, 5),
-    noise_var: Optional[float] = None,
-    snr_db: Optional[Union[float, np.ndarray]] = None,
-    ref_symbols: Optional[ArrayType] = None,
+    lags: tuple[int, ...] = (1, 2, 3, 4, 5),
+    noise_var: float | None = None,
+    snr_db: float | np.ndarray | None = None,
+    ref_symbols: ArrayType | None = None,
     edge_trim: int = 0,
-) -> Dict[str, Union[float, np.ndarray, bool]]:
+) -> dict[str, float | np.ndarray | bool]:
     r"""Wiener linewidth from the phase-increment variance.
 
     For a Wiener phase + AWGN angle noise, the variance of the lag-``k``
@@ -449,10 +447,10 @@ def fm_noise_psd(
     phi: ArrayType,
     symbol_rate: float,
     *,
-    nperseg: Optional[int] = None,
-    detrend: Union[str, bool] = "constant",
+    nperseg: int | None = None,
+    detrend: str | bool = "constant",
     debug_plot: bool = False,
-) -> Tuple[ArrayType, ArrayType]:
+) -> tuple[ArrayType, ArrayType]:
     r"""One-sided frequency-noise PSD S_f(f) [Hz²/Hz] from the phase.
 
     Differentiates the phase to the instantaneous frequency
@@ -517,11 +515,11 @@ def linewidth_beta_separation(
     phi: ArrayType,
     symbol_rate: float,
     *,
-    nperseg: Optional[int] = None,
-    f_min: Optional[float] = None,
-    f_max: Optional[float] = None,
+    nperseg: int | None = None,
+    f_min: float | None = None,
+    f_max: float | None = None,
     debug_plot: bool = False,
-) -> Dict[str, Union[float, np.ndarray]]:
+) -> dict[str, float | np.ndarray]:
     r"""Linewidth via the Di Domenico β-separation line (canonical method).
 
     Integrates the frequency-noise PSD S_f(f) only over the band where
@@ -613,10 +611,10 @@ def allan_deviation(
     df: ArrayType,
     symbol_rate: float,
     *,
-    taus: Optional[np.ndarray] = None,
+    taus: np.ndarray | None = None,
     n_taus: int = 30,
     debug_plot: bool = False,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     r"""Overlapping Allan deviation of an instantaneous-frequency series.
 
     The log-log slope of sigma_y(tau) classifies the dominant noise
@@ -695,17 +693,17 @@ def characterize_carrier_phase(
     symbol_rate: float,
     *,
     drift_cutoff: float,
-    noise_var: Optional[float] = None,
-    snr_db: Optional[Union[float, np.ndarray]] = None,
-    nperseg: Optional[int] = None,
-    f_min: Optional[float] = None,
-    f_max: Optional[float] = None,
+    noise_var: float | None = None,
+    snr_db: float | np.ndarray | None = None,
+    nperseg: int | None = None,
+    f_min: float | None = None,
+    f_max: float | None = None,
     channel_pairing: str = "auto",
     detrend_method: str = "butterworth",
     increment_method: str = "slope",
-    amp_ref: Optional[float] = None,
+    amp_ref: float | None = None,
     debug_plot: bool = False,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     r"""End-to-end carrier-phase characterization report.
 
     Runs the full chain — ``carrier_phase_trajectory`` →

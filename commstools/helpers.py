@@ -1,6 +1,6 @@
 """General library utility functions."""
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -13,7 +13,7 @@ except ImportError:
     cp = None
 
 
-def random_bits(length: int, seed: Optional[int] = None) -> ArrayType:
+def random_bits(length: int, seed: int | None = None) -> ArrayType:
     """
     Generates a sequence of random binary bits (0s and 1s).
 
@@ -47,7 +47,7 @@ def random_symbols(
     num_symbols: int,
     modulation: str,
     order: int,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     unipolar: bool = False,
 ) -> ArrayType:
     """
@@ -82,7 +82,7 @@ def random_symbols(
     return mapping.map_bits(bits, modulation, order, unipolar=unipolar)
 
 
-def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> ArrayType:
+def rms(x: ArrayType, axis: int | None = None, keepdims: bool = False) -> ArrayType:
     """
     Computes the Root-Mean-Square (RMS) value of an array.
 
@@ -114,7 +114,7 @@ def rms(x: ArrayType, axis: Optional[int] = None, keepdims: bool = False) -> Arr
 
 
 def normalize(
-    x: ArrayType, mode: str = "unity_gain", axis: Optional[int] = None, sps: int = 1
+    x: ArrayType, mode: str = "unity_gain", axis: int | None = None, sps: int = 1
 ) -> ArrayType:
     """
     Normalizes an array according to the specified strategy.
@@ -216,7 +216,7 @@ def normalize(
     return xp.where(norm_factor == 0, xp.zeros(x.shape, dtype=x.dtype), result)
 
 
-def format_si(value: Optional[float], unit: str = "Hz") -> str:
+def format_si(value: float | None, unit: str = "Hz") -> str:
     """
     Formats a numeric value into a human-readable string with SI prefixes.
 
@@ -302,8 +302,10 @@ def validate_array(
     if not isinstance(v, (np.ndarray, getattr(cp, "ndarray", type(None)))):
         try:
             v = np.asarray(v)
-        except Exception:
-            raise ValueError(f"Could not convert {name} of type {type(v)} to array.")
+        except Exception as err:
+            raise ValueError(
+                f"Could not convert {name} of type {type(v)} to array."
+            ) from err
 
     # Ensure it's a numeric array (not object, string, etc.)
     if v.dtype.kind not in "biufc":
@@ -461,7 +463,7 @@ def cpr_pll_gains(bandwidth: float):
     return mu, beta
 
 
-def resolve_pll_gains(bandwidth: float, mu: Optional[float], beta: Optional[float]):
+def resolve_pll_gains(bandwidth: float, mu: float | None, beta: float | None):
     """Resolve decision-directed PLL PI gains from a raw/bandwidth parameterization.
 
     Shared by the inline equalizer PLL (``lms``/``rls`` with ``cpr_type='pll'``)

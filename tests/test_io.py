@@ -7,7 +7,7 @@ import numpy.testing as npt
 import pytest
 
 import commstools
-from commstools import Signal, SingleCarrierFrame, Preamble
+from commstools import Preamble, Signal, SingleCarrierFrame
 from commstools.io import load_npz, save_npz
 
 try:

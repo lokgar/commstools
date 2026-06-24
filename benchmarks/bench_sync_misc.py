@@ -1,8 +1,9 @@
 """Benchmarks: recovery/metrics functions with per-channel host syncs."""
 
+from workloads import bps_workload, rotated_symbols_workload
+
 from commstools import recovery
 from commstools.metrics import evm
-from workloads import bps_workload, rotated_symbols_workload
 
 ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
 N_SYM = 100_000

@@ -26,7 +26,7 @@ correct_static_frequency_offset :
     Not suitable for streaming sub-block correction (phasor restarts at n=0).
 """
 
-from typing import Callable, Optional, Tuple, Union
+from collections.abc import Callable
 
 import numpy as np
 
@@ -101,7 +101,7 @@ def _get_numba_mm_bootstrap():
         Numba-compiled ``_mm_bootstrap_loop``.
     """
     if "mm" not in _NUMBA_MM:
-        import numba  # noqa: PLC0415
+        import numba
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _mm_bootstrap_loop(theta, amp, M_val, fs):
@@ -164,12 +164,12 @@ def estimate_frequency_offset_mth_power(
     sampling_rate: float,
     modulation: str,
     order: int,
-    search_range: Optional[Tuple[float, float]] = None,
-    nfft: Optional[int] = None,
+    search_range: tuple[float, float] | None = None,
+    nfft: int | None = None,
     interpolation: str = "jacobsen",
     combine_channels: bool = False,
     debug_plot: bool = False,
-) -> Union[float, np.ndarray]:
+) -> float | np.ndarray:
     """
     Estimates frequency offset using the M-th power law (nonlinear spectral method).
 
@@ -380,13 +380,13 @@ def estimate_frequency_offset_mth_power(
 def estimate_frequency_offset_mengali_morelli(
     samples: ArrayType,
     sampling_rate: float,
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-    ref_signal: Optional[ArrayType] = None,
-    max_lag: Optional[int] = None,
+    modulation: str | None = None,
+    order: int | None = None,
+    ref_signal: ArrayType | None = None,
+    max_lag: int | None = None,
     combine_channels: bool = False,
     debug_plot: bool = False,
-) -> Union[float, np.ndarray]:
+) -> float | np.ndarray:
     """
     Estimates frequency offset via the Mengali-Morelli multi-lag autocorrelation.
 
@@ -548,7 +548,7 @@ def estimate_frequency_offset_pilots(
     snr_weighted: bool = True,
     combine_channels: bool = False,
     debug_plot: bool = False,
-) -> Union[float, np.ndarray]:
+) -> float | np.ndarray:
     """
     Estimates frequency offset from pilot symbols via phase slope fitting.
 
@@ -722,8 +722,8 @@ def estimate_frequency_offset_pilots(
 def find_bias_tone(
     seg: ArrayType,
     sampling_rate: float,
-    target_frequency: Optional[float] = None,
-    search_band: Optional[float] = None,
+    target_frequency: float | None = None,
+    search_band: float | None = None,
 ) -> float:
     """
     Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment.
@@ -953,13 +953,13 @@ def correct_frequency_offset_blockwise(
 
     # Pre-import PCHIP once if multiple blocks
     if B > 1:
-        from scipy.interpolate import PchipInterpolator  # noqa: PLC0415
+        from scipy.interpolate import PchipInterpolator
 
         n_clamped = np.clip(n_grid, t_centers[0], t_centers[-1])
 
     # PCHIP interpolation + cumulative integration → (C_interp, N) phase array
     theta_np = np.empty((C_interp, N), dtype=np.float64)
-    df_dense_plot: Optional[np.ndarray] = None
+    df_dense_plot: np.ndarray | None = None
     for c in range(C_interp):
         df_est = df_for_interp[c]
         if B == 1:
@@ -1000,7 +1000,7 @@ def correct_frequency_offset_blockwise(
     )
 
     if debug_plot and df_dense_plot is not None:
-        from . import plotting as _plotting  # noqa: PLC0415
+        from . import plotting as _plotting
 
         title = (
             f"correct_frequency_offset_blockwise — channel 0 of {C}"
@@ -1023,7 +1023,7 @@ def correct_frequency_offset_blockwise(
 def correct_static_frequency_offset(
     samples: ArrayType,
     sampling_rate: float,
-    offset: Union[float, np.ndarray],
+    offset: float | np.ndarray,
 ) -> ArrayType:
     """
     Applies a **constant** frequency offset correction via exact complex mixing.

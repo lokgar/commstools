@@ -15,7 +15,8 @@ welch_psd :
     Estimates the Power Spectral Density using Welch's method.
 """
 
-from typing import Any, List, Optional, Sequence, Tuple, Union, cast
+from collections.abc import Sequence
+from typing import Any, cast
 
 import numpy as np
 
@@ -25,7 +26,7 @@ from .logger import logger
 
 def shift_frequency(
     samples: ArrayType, offset: float, sampling_rate: float
-) -> Tuple[ArrayType, float]:
+) -> tuple[ArrayType, float]:
     """
     Applies a frequency offset (complex mixing) to a signal.
 
@@ -105,11 +106,11 @@ def shift_frequency(
 def add_pilot_tone(
     samples: ArrayType,
     sampling_rate: float,
-    frequency: Union[float, Sequence[float]],
-    power_ratio_db: Union[float, Sequence[float]] = -15.0,
+    frequency: float | Sequence[float],
+    power_ratio_db: float | Sequence[float] = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
-) -> Tuple[ArrayType, Union[float, List[float]]]:
+) -> tuple[ArrayType, float | list[float]]:
     r"""
     Add a continuous-wave (CW) pilot tone to a baseband waveform.
 
@@ -265,7 +266,7 @@ def add_pilot_tone(
     )
 
     out = out[0] if was_1d else out
-    actual_frequency: Union[float, List[float]] = actual[0] if scalar_input else actual
+    actual_frequency: float | list[float] = actual[0] if scalar_input else actual
     return out, actual_frequency
 
 
@@ -273,15 +274,15 @@ def welch_psd(
     samples: ArrayType,
     sampling_rate: float,
     nperseg: int = 256,
-    detrend: Optional[Union[str, bool]] = False,
-    average: Optional[str] = "mean",
-    window: Union[str, Tuple[Any, ...], Any] = "hann",
-    noverlap: Optional[int] = None,
-    nfft: Optional[int] = None,
+    detrend: str | bool | None = False,
+    average: str | None = "mean",
+    window: str | tuple[Any, ...] | Any = "hann",
+    noverlap: int | None = None,
+    nfft: int | None = None,
     scaling: str = "density",
-    return_onesided: Optional[bool] = None,
+    return_onesided: bool | None = None,
     axis: int = -1,
-) -> Tuple[ArrayType, ArrayType]:
+) -> tuple[ArrayType, ArrayType]:
     """
     Estimates the Power Spectral Density (PSD) using Welch's method.
 
@@ -376,16 +377,16 @@ def welch_psd(
 def spectrogram(
     samples: ArrayType,
     sampling_rate: float,
-    window: Union[str, Tuple[Any, ...], Any] = "hann",
+    window: str | tuple[Any, ...] | Any = "hann",
     nperseg: int = 256,
-    noverlap: Optional[int] = None,
-    nfft: Optional[int] = None,
-    detrend: Optional[Union[str, bool]] = False,
-    return_onesided: Optional[bool] = None,
+    noverlap: int | None = None,
+    nfft: int | None = None,
+    detrend: str | bool | None = False,
+    return_onesided: bool | None = None,
     scaling: str = "density",
     axis: int = -1,
     mode: str = "psd",
-) -> Tuple[ArrayType, ArrayType, ArrayType]:
+) -> tuple[ArrayType, ArrayType, ArrayType]:
     """
     Computes a spectrogram with consecutive Fourier transforms.
 

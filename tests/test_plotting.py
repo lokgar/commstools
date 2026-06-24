@@ -509,8 +509,7 @@ def test_constellation_siso_show(backend_device, xp):
 
 def test_equalizer_result_mimo_weights(backend_device, xp):
     """equalizer_result with MIMO error/weights plots per-channel error curves and weight matrices."""
-    from commstools import equalization
-    from commstools import Signal
+    from commstools import Signal, equalization
     from commstools.plotting import equalizer_result
 
     n_symbols = 400
@@ -544,7 +543,7 @@ def test_equalizer_result_mimo_weights(backend_device, xp):
 
 def test_equalizer_result_custom_axes(backend_device, xp):
     """equalizer_result with pre-existing axes uses them rather than creating new figures."""
-    from commstools import equalization, Signal
+    from commstools import Signal, equalization
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
@@ -568,7 +567,7 @@ def test_equalizer_result_custom_axes(backend_device, xp):
 
 def test_equalizer_result_show(backend_device, xp):
     """equalizer_result with show=True calls plt.show() and returns None."""
-    from commstools import equalization, Signal
+    from commstools import Signal, equalization
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
@@ -773,7 +772,7 @@ def test_constellation_vmin_vmax(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_siso(backend_device, xp):
     """equalizer_result() SISO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import equalization, Signal
+    from commstools import Signal, equalization
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(
@@ -796,7 +795,7 @@ def test_equalizer_result_short_smoothing_siso(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
     """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import equalization, Signal
+    from commstools import Signal, equalization
     from commstools.plotting import equalizer_result
 
     sig = Signal.psk(

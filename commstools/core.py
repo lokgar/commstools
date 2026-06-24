@@ -21,7 +21,8 @@ SingleCarrierFrame :
 """
 
 import types
-from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Literal
 
 import numpy as np
 from pydantic import (
@@ -184,17 +185,17 @@ class Signal(BaseModel):
     sampling_rate: float = Field(..., gt=0)
     symbol_rate: float = Field(..., gt=0)
 
-    mod_scheme: Optional[str] = None
-    mod_order: Optional[int] = None
-    mod_unipolar: Optional[bool] = None
-    mod_rz: Optional[bool] = None
+    mod_scheme: str | None = None
+    mod_order: int | None = None
+    mod_unipolar: bool | None = None
+    mod_rz: bool | None = None
 
-    source_bits: Optional[Any] = None
-    source_symbols: Optional[Any] = None
-    ps_pmf: Optional[Any] = None  # (M,) PMF over constellation; set only for PS-QAM
-    ps_nu: Optional[float] = None  # MB shaping parameter ν; set only for PS-QAM
+    source_bits: Any | None = None
+    source_symbols: Any | None = None
+    ps_pmf: Any | None = None  # (M,) PMF over constellation; set only for PS-QAM
+    ps_nu: float | None = None  # MB shaping parameter ν; set only for PS-QAM
 
-    pulse_shape: Optional[str] = None
+    pulse_shape: str | None = None
     filter_span: int = Field(default=10, ge=1)
     rrc_rolloff: float = Field(default=0.35, ge=0, le=1)
     rc_rolloff: float = Field(default=0.35, ge=0, le=1)
@@ -205,33 +206,29 @@ class Signal(BaseModel):
     physical_domain: Literal["DIG", "RF", "OPT"] = "DIG"
 
     center_frequency: float = Field(default=0, ge=0)
-    digital_frequency_offset: Optional[float] = None
-    pilot_tone_frequency: Optional[Any] = None
-    pilot_tone_power_ratio_db: Optional[Any] = None
+    digital_frequency_offset: float | None = None
+    pilot_tone_frequency: Any | None = None
+    pilot_tone_power_ratio_db: Any | None = None
 
     # Human-readable label for the signal structure
-    signal_type: Optional[Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"]] = (
-        None
-    )
+    signal_type: Literal["Single-Carrier Frame", "OFDM Frame", "Preamble"] | None = None
 
     # Back-reference to the SingleCarrierFrame that generated this signal (set by
     # SingleCarrierFrame.to_signal()). Enables frame-aware convenience methods
     # (correct_timing, frame-aware equalizers) without requiring the caller to re-supply
     # the frame object.  Excluded from serialisation (numpy arrays inside frame
     # duplicate samples data and are not JSON-serialisable).
-    frame: Optional[Any] = Field(default=None, exclude=True, repr=False)
+    frame: Any | None = Field(default=None, exclude=True, repr=False)
 
     # Resolved data from processing (1 SPS, normalized — populated by resolve_symbols())
-    resolved_symbols: Optional[Any] = Field(default=None, repr=False)
-    resolved_bits: Optional[Any] = Field(default=None, repr=False)
+    resolved_symbols: Any | None = Field(default=None, repr=False)
+    resolved_bits: Any | None = Field(default=None, repr=False)
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
     # -------------------------------------------------------------------------
 
-    @field_validator(
-        "pilot_tone_frequency", "pilot_tone_power_ratio_db", mode="before"
-    )
+    @field_validator("pilot_tone_frequency", "pilot_tone_power_ratio_db", mode="before")
     @classmethod
     def _coerce_pilot_field(cls, v: Any) -> Any:
         """Coerce pilot metadata to a 1-D per-channel ``float64`` array.
@@ -361,9 +358,6 @@ class Signal(BaseModel):
         attached (determines which of ``ber()``, ``evm()``
         can be called without extra arguments).
         """
-        import pandas as pd
-        from IPython import get_ipython
-        from IPython.display import display
 
         # ── helpers ──────────────────────────────────────────────────────────
         def _yn(v) -> str:
@@ -526,12 +520,27 @@ class Signal(BaseModel):
         rows.append(("resolved_bits", _yn(self.resolved_bits)))
 
         # ── Render ────────────────────────────────────────────────────────
-        df = pd.DataFrame(rows, columns=["Property", "Value"])
+        # Rich HTML table in Jupyter; plain-text table everywhere else. IPython
+        # is an optional dependency (the ``notebook`` extra) — degrade
+        # gracefully to the plain-text path when it is not installed.
+        try:
+            from IPython import get_ipython
+            from IPython.display import HTML, display
 
-        if get_ipython() is not None and "IPKernelApp" in get_ipython().config:
-            display(df.style.hide(axis="index"))
+            ipy = get_ipython()
+            in_kernel = ipy is not None and "IPKernelApp" in ipy.config
+        except ImportError:
+            in_kernel = False
+
+        if in_kernel:
+            body = "".join(
+                f"<tr><td><b>{prop}</b></td><td>{val}</td></tr>" for prop, val in rows
+            )
+            display(HTML(f"<table>{body}</table>"))
         else:
-            logger.info("\n" + df.to_string(index=False))
+            width = max(len(prop) for prop, _ in rows)
+            text = "\n".join(f"{prop.ljust(width)}  {val}" for prop, val in rows)
+            logger.info("\n" + text)
 
     def copy(self) -> "Signal":  # type: ignore[override]
         """
@@ -566,7 +575,7 @@ class Signal(BaseModel):
         self.samples = to_device(self.samples, device)
         return self
 
-    def export_samples_to_jax(self, device: Optional[str] = None) -> Any:
+    def export_samples_to_jax(self, device: str | None = None) -> Any:
         """
         Exports the signal samples to a JAX array.
 
@@ -633,13 +642,13 @@ class Signal(BaseModel):
     def welch_psd(
         self,
         nperseg: int = 256,
-        detrend: Optional[Union[str, bool]] = False,
-        average: Optional[str] = "mean",
-        window: Union[str, Tuple[Any, ...], Any] = "hann",
-        noverlap: Optional[int] = None,
-        nfft: Optional[int] = None,
+        detrend: str | bool | None = False,
+        average: str | None = "mean",
+        window: str | tuple[Any, ...] | Any = "hann",
+        noverlap: int | None = None,
+        nfft: int | None = None,
         scaling: str = "density",
-    ) -> Tuple[ArrayType, ArrayType]:
+    ) -> tuple[ArrayType, ArrayType]:
         """
         Compute the Power Spectral Density (PSD) using Welch's method.
 
@@ -685,15 +694,15 @@ class Signal(BaseModel):
 
     def spectrogram(
         self,
-        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        window: str | tuple[Any, ...] | Any = "hann",
         nperseg: int = 256,
-        noverlap: Optional[int] = None,
-        nfft: Optional[int] = None,
-        detrend: Optional[Union[str, bool]] = False,
-        return_onesided: Optional[bool] = None,
+        noverlap: int | None = None,
+        nfft: int | None = None,
+        detrend: str | bool | None = False,
+        return_onesided: bool | None = None,
         scaling: str = "density",
         mode: str = "psd",
-    ) -> Tuple[ArrayType, ArrayType, ArrayType]:
+    ) -> tuple[ArrayType, ArrayType, ArrayType]:
         """
         Compute the spectrogram using consecutive Fourier transforms.
 
@@ -826,7 +835,7 @@ class Signal(BaseModel):
         return self.sampling_rate / self.symbol_rate
 
     @property
-    def bits_per_symbol(self) -> Optional[int]:
+    def bits_per_symbol(self) -> int | None:
         """
         Bits per symbol for the active modulation scheme.
 
@@ -846,18 +855,18 @@ class Signal(BaseModel):
     def plot_psd(
         self,
         nperseg: int = 128,
-        detrend: Optional[Union[str, bool]] = False,
-        average: Optional[str] = "mean",
-        window: Union[str, Tuple[Any, ...], Any] = "hann",
-        noverlap: Optional[int] = None,
-        nfft: Optional[int] = None,
+        detrend: str | bool | None = False,
+        average: str | None = "mean",
+        window: str | tuple[Any, ...] | Any = "hann",
+        noverlap: int | None = None,
+        nfft: int | None = None,
         scaling: str = "density",
-        ax: Optional[Any] = None,
-        title: Optional[str] = "Power Spectral Density",
-        x_axis: Optional[str] = "frequency",
+        ax: Any | None = None,
+        title: str | None = "Power Spectral Density",
+        x_axis: str | None = "frequency",
         show: bool = False,
         **kwargs: Any,
-    ) -> Optional[Tuple[Any, Any]]:
+    ) -> tuple[Any, Any] | None:
         """
         Plots the Power Spectral Density (PSD) of the signal.
 
@@ -916,22 +925,22 @@ class Signal(BaseModel):
 
     def plot_spectrogram(
         self,
-        window: Union[str, Tuple[Any, ...], Any] = "hann",
+        window: str | tuple[Any, ...] | Any = "hann",
         nperseg: int = 256,
-        noverlap: Optional[int] = None,
-        nfft: Optional[int] = None,
-        detrend: Optional[Union[str, bool]] = False,
-        return_onesided: Optional[bool] = None,
+        noverlap: int | None = None,
+        nfft: int | None = None,
+        detrend: str | bool | None = False,
+        return_onesided: bool | None = None,
         scaling: str = "density",
         mode: str = "psd",
-        ax: Optional[Any] = None,
-        xlim: Optional[Tuple[float, float]] = None,
-        ylim: Optional[Tuple[float, float]] = None,
-        title: Optional[str] = "Spectrogram",
+        ax: Any | None = None,
+        xlim: tuple[float, float] | None = None,
+        ylim: tuple[float, float] | None = None,
+        title: str | None = "Spectrogram",
         cmap: str = "viridis",
         show: bool = False,
         **kwargs: Any,
-    ) -> Optional[Tuple[Any, Any]]:
+    ) -> tuple[Any, Any] | None:
         """
         Plots the spectrogram of the signal.
 
@@ -1001,12 +1010,12 @@ class Signal(BaseModel):
     def plot_waveform(
         self,
         start_symbol: int = 0,
-        num_symbols: Optional[int] = None,
-        ax: Optional[Any] = None,
-        title: Optional[str] = "Waveform",
+        num_symbols: int | None = None,
+        ax: Any | None = None,
+        title: str | None = "Waveform",
         show: bool = False,
         **kwargs: Any,
-    ) -> Optional[Tuple[Any, Any]]:
+    ) -> tuple[Any, Any] | None:
         """
         Plots the time-domain waveform of the signal samples,
         starting from the specified symbol and for the specified number of symbols,
@@ -1048,14 +1057,14 @@ class Signal(BaseModel):
 
     def plot_eye(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         type: str = "hist",
-        title: Optional[str] = "Eye Diagram",
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        title: str | None = "Eye Diagram",
+        vmin: float | None = None,
+        vmax: float | None = None,
         show: bool = False,
         **kwargs: Any,
-    ) -> Optional[Tuple[Any, Any]]:
+    ) -> tuple[Any, Any] | None:
         """
         Plots the eye diagram of the signal.
 
@@ -1110,13 +1119,13 @@ class Signal(BaseModel):
         cmap: str = "inferno",
         overlay_ideal: bool = False,
         overlay_source: bool = False,
-        ax: Optional[Any] = None,
-        title: Optional[str] = "Constellation",
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        ax: Any | None = None,
+        title: str | None = "Constellation",
+        vmin: float | None = None,
+        vmax: float | None = None,
         show: bool = False,
         **kwargs: Any,
-    ) -> Optional[Tuple[Any, Any]]:
+    ) -> tuple[Any, Any] | None:
         """
         Plots the constellation diagram of the signal.
 
@@ -1370,9 +1379,9 @@ class Signal(BaseModel):
 
     def resample(
         self,
-        up: Optional[int] = None,
-        down: Optional[int] = None,
-        sps_out: Optional[float] = None,
+        up: int | None = None,
+        down: int | None = None,
+        sps_out: float | None = None,
         correct_power: bool = True,
     ) -> "Signal":
         """
@@ -1469,8 +1478,8 @@ class Signal(BaseModel):
 
     def add_pilot_tone(
         self,
-        frequency: Union[float, Sequence[float]],
-        power_ratio_db: Union[float, Sequence[float]] = -15.0,
+        frequency: float | Sequence[float],
+        power_ratio_db: float | Sequence[float] = -15.0,
         phase_init: float = 0.0,
         renormalize: bool = False,
     ) -> "Signal":
@@ -1663,7 +1672,7 @@ class Signal(BaseModel):
         rz: bool = False,
         pulse_shape: str = "none",
         num_streams: int = 1,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         duty_cycle: float = 1.0,
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
@@ -1809,7 +1818,7 @@ class Signal(BaseModel):
         rz: bool = False,
         pulse_shape: Literal["rect", "smoothrect"] = "rect",
         num_streams: int = 1,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         duty_cycle: float = 1.0,
         filter_span: int = 10,
         rise_time: float = 0.0,
@@ -1898,7 +1907,7 @@ class Signal(BaseModel):
         rz: bool = False,
         pulse_shape: str = "rrc",
         num_streams: int = 1,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
         rc_rolloff: float = 0.35,
@@ -1981,7 +1990,7 @@ class Signal(BaseModel):
         rz: bool = False,
         pulse_shape: str = "rrc",
         num_streams: int = 1,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
         rc_rolloff: float = 0.35,
@@ -2061,11 +2070,11 @@ class Signal(BaseModel):
         symbol_rate: float,
         order: int,
         *,
-        nu: Optional[float] = None,
-        entropy: Optional[float] = None,
+        nu: float | None = None,
+        entropy: float | None = None,
         pulse_shape: str = "rrc",
         num_streams: int = 1,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         filter_span: int = 10,
         rrc_rolloff: float = 0.35,
         rc_rolloff: float = 0.35,
@@ -2419,13 +2428,13 @@ class Signal(BaseModel):
 
     def evm(
         self,
-        reference_symbols: Optional[ArrayType] = None,
-        num_train_symbols: Optional[int] = None,
+        reference_symbols: ArrayType | None = None,
+        num_train_symbols: int | None = None,
         *,
         mode: str = "data_aided",
-        modulation: Optional[str] = None,
-        order: Optional[int] = None,
-    ) -> Optional[Tuple[Any, Any]]:
+        modulation: str | None = None,
+        order: int | None = None,
+    ) -> tuple[Any, Any] | None:
         """
         Computes the Error Vector Magnitude (EVM).
 
@@ -2525,9 +2534,9 @@ class Signal(BaseModel):
 
     def snr(
         self,
-        reference_symbols: Optional[ArrayType] = None,
-        num_train_symbols: Optional[int] = None,
-    ) -> Optional[Any]:
+        reference_symbols: ArrayType | None = None,
+        num_train_symbols: int | None = None,
+    ) -> Any | None:
         """
         Estimates the Signal-to-Noise Ratio (SNR) using a Data-Aided method.
 
@@ -2597,9 +2606,9 @@ class Signal(BaseModel):
 
     def ber(
         self,
-        reference_bits: Optional[ArrayType] = None,
-        num_train_symbols: Optional[int] = None,
-    ) -> Optional[Union[float, ArrayType]]:
+        reference_bits: ArrayType | None = None,
+        num_train_symbols: int | None = None,
+    ) -> float | ArrayType | None:
         """
         Computes the Bit Error Rate (BER).
 
@@ -2672,12 +2681,12 @@ class Signal(BaseModel):
 
     def ser(
         self,
-        reference_symbols: Optional[ArrayType] = None,
-        num_train_symbols: Optional[int] = None,
+        reference_symbols: ArrayType | None = None,
+        num_train_symbols: int | None = None,
         *,
-        modulation: Optional[str] = None,
-        order: Optional[int] = None,
-    ) -> Optional[Union[float, ArrayType]]:
+        modulation: str | None = None,
+        order: int | None = None,
+    ) -> float | ArrayType | None:
         """
         Computes the Symbol Error Rate (SER) using ML hard decisions.
 
@@ -2820,7 +2829,8 @@ class Signal(BaseModel):
             # resolved_symbols therefore lives on {c·s_m}, not {s_m}.
             # Rescale back to {s_m} so distances against gray_constellation are
             # correct; noise_var scales by the same factor (c^2 = 1/E_PS).
-            from .mapping import constellation_power, gray_constellation as _gc
+            from .mapping import constellation_power
+            from .mapping import gray_constellation as _gc
 
             const = _gc(mod, ord_)
             e_ps = constellation_power(const, effective_pmf)
@@ -2867,8 +2877,8 @@ class Signal(BaseModel):
             modulation metadata is missing.
         """
         from . import metrics
-        from .mapping import compute_llr
         from .backend import to_device
+        from .mapping import compute_llr
 
         if self.resolved_symbols is None:
             raise ValueError(
@@ -2898,7 +2908,8 @@ class Signal(BaseModel):
             # unit symbol power, placing resolved_symbols on {c·s_m} with
             # c = 1/√E_PS.  Rescale to {s_m} before LLR computation so that
             # distances against gray_constellation are correct.
-            from .mapping import constellation_power, gray_constellation as _gc
+            from .mapping import constellation_power
+            from .mapping import gray_constellation as _gc
 
             const = _gc(mod, ord_)
             e_ps = constellation_power(const, effective_pmf)
@@ -3197,10 +3208,10 @@ class SingleCarrierFrame(BaseModel):
     payload_mod_scheme: str = "PSK"
     payload_mod_order: int = Field(default=4, ge=1)
     payload_mod_unipolar: bool = False
-    payload_nu: Optional[float] = Field(default=None, ge=0)
-    payload_entropy: Optional[float] = Field(default=None, gt=0)
+    payload_nu: float | None = Field(default=None, ge=0)
+    payload_entropy: float | None = Field(default=None, gt=0)
 
-    preamble: Optional[Preamble] = None
+    preamble: Preamble | None = None
 
     pilot_pattern: Literal["none", "block", "comb"] = "none"
     pilot_period: int = Field(default=0, ge=0)
@@ -3217,11 +3228,11 @@ class SingleCarrierFrame(BaseModel):
     num_streams: int = Field(default=1, ge=1)
 
     # Internal cache
-    _payload_bits: Optional[Any] = PrivateAttr(default=None)
-    _payload_symbols: Optional[Any] = PrivateAttr(default=None)
-    _payload_ps_pmf: Optional[Any] = PrivateAttr(default=None)
-    _pilot_bits: Optional[Any] = PrivateAttr(default=None)
-    _pilot_symbols: Optional[Any] = PrivateAttr(default=None)
+    _payload_bits: Any | None = PrivateAttr(default=None)
+    _payload_symbols: Any | None = PrivateAttr(default=None)
+    _payload_ps_pmf: Any | None = PrivateAttr(default=None)
+    _pilot_bits: Any | None = PrivateAttr(default=None)
+    _pilot_symbols: Any | None = PrivateAttr(default=None)
 
     # -------------------------------------------------------------------------
     # Validators and Post-Initialization Hooks
@@ -3299,7 +3310,7 @@ class SingleCarrierFrame(BaseModel):
     # Mask Generation and Internal Data Preparation Methods
     # -------------------------------------------------------------------------
 
-    def _generate_pilot_mask(self) -> Tuple[ArrayType, int]:
+    def _generate_pilot_mask(self) -> tuple[ArrayType, int]:
         """
         Calculates the pilot placement mask and total frame length.
 
@@ -3505,7 +3516,7 @@ class SingleCarrierFrame(BaseModel):
         return self._payload_symbols
 
     @property
-    def payload_ps_pmf(self) -> Optional[Any]:
+    def payload_ps_pmf(self) -> Any | None:
         """
         Returns the Maxwell-Boltzmann PMF used for PS-QAM payload generation.
 
@@ -3522,7 +3533,7 @@ class SingleCarrierFrame(BaseModel):
         return self._payload_ps_pmf
 
     @property
-    def pilot_bits(self) -> Optional[ArrayType]:
+    def pilot_bits(self) -> ArrayType | None:
         """
         Returns the raw pilot bits, if pilots are enabled.
 
@@ -3537,7 +3548,7 @@ class SingleCarrierFrame(BaseModel):
         return self._pilot_bits
 
     @property
-    def pilot_symbols(self) -> Optional[ArrayType]:
+    def pilot_symbols(self) -> ArrayType | None:
         """
         Returns the modulated pilot symbols.
 
@@ -3604,7 +3615,7 @@ class SingleCarrierFrame(BaseModel):
         unit: Literal["symbols", "samples"] = "symbols",
         sps: int = 1,
         include_preamble: bool = True,
-    ) -> Dict[str, ArrayType]:
+    ) -> dict[str, ArrayType]:
         """
         Generates boolean masks identifying the segments of the frame.
 
@@ -3859,7 +3870,7 @@ class SingleCarrierFrame(BaseModel):
         # Resolve ν: payload_nu is set directly; for entropy-specified frames call optimal_nu.
         # payload_ps_pmf is already computed above (body_symbols triggers _ensure_payload_generated).
         if self.payload_nu is not None:
-            ps_nu_val: Optional[float] = self.payload_nu
+            ps_nu_val: float | None = self.payload_nu
         elif self.payload_entropy is not None:
             ps_nu_val, _ = mapping.optimal_nu(
                 self.payload_mod_order, self.payload_entropy

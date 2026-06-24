@@ -44,6 +44,7 @@ Run
 """
 
 import os
+
 import matplotlib
 
 # Headless backend for headless execution
@@ -57,8 +58,8 @@ from commstools.equalization import lms
 from commstools.impairments import (
     apply_awgn,
     apply_iq_imbalance,
-    apply_pmd,
     apply_phase_noise,
+    apply_pmd,
     compensate_iq_imbalance_lowdin,
 )
 from commstools.mapping import gray_constellation

@@ -160,7 +160,7 @@ def test_jax_conversions(backend_device, xp, xpt):
     except ImportError:
         pytest.skip("JAX not installed")
 
-    from commstools import backend, Signal
+    from commstools import Signal, backend
 
     # 1. Numpy -> JAX
     arr_np = np.array([1, 2, 3])

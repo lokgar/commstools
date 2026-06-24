@@ -18,8 +18,9 @@ given specialization, and cached in-process afterwards. Cross-process
 reuse comes from CuPy's on-disk kernel cache (``~/.cupy/kernel_cache``).
 """
 
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from typing import Any
 
 from ..backend import is_cupy_available
 from ..logger import logger
@@ -69,7 +70,7 @@ def is_available() -> bool:
     return _device_supported()
 
 
-def get_kernel(name: str, **spec: Any) -> Optional[Callable]:
+def get_kernel(name: str, **spec: Any) -> Callable | None:
     """Returns a launchable kernel wrapper, or ``None`` if unavailable.
 
     ``None`` means the caller **must** fall back to the existing ``xp``

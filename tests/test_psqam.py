@@ -3,19 +3,18 @@
 import numpy as np
 import pytest
 
+from commstools import metrics
+from commstools.backend import to_device
+from commstools.core import Signal
+from commstools.impairments import apply_awgn
 from commstools.mapping import (
-    maxwell_boltzmann,
-    ps_entropy,
-    optimal_nu,
-    sample_ps_symbols,
     compute_llr,
     gray_constellation,
+    maxwell_boltzmann,
+    optimal_nu,
+    ps_entropy,
+    sample_ps_symbols,
 )
-from commstools.core import Signal
-from commstools import metrics
-from commstools.impairments import apply_awgn
-from commstools.backend import to_device
-
 
 # ---------------------------------------------------------------------------
 # maxwell_boltzmann

@@ -24,7 +24,7 @@ correct_timing :
     Combined integer and fractional timing correction.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Union
 
 import numpy as np
 
@@ -317,7 +317,7 @@ def estimate_fractional_delay(
 
 def fft_fractional_delay(
     samples: ArrayType,
-    delay: Union[float, ArrayType],
+    delay: float | ArrayType,
 ) -> ArrayType:
     """
     Applies fractional sample delay using FFT-based frequency-domain method.
@@ -396,16 +396,16 @@ def fft_fractional_delay(
 
 def estimate_timing(
     samples: ArrayType,
-    reference: Optional[Union[ArrayType, "Preamble"]] = None,
+    reference: Union[ArrayType, "Preamble"] | None = None,
     threshold: float = 3.0,
-    sps: Optional[int] = None,
-    pulse_shape: Optional[str] = None,
-    filter_params: Optional[dict] = None,
-    search_range: Optional[Tuple[int, int]] = None,
+    sps: int | None = None,
+    pulse_shape: str | None = None,
+    filter_params: dict | None = None,
+    search_range: tuple[int, int] | None = None,
     dft_upsample: int = 1,
     fractional_method: str = "log-parabolic",
     debug_plot: bool = False,
-) -> Tuple[ArrayType, ArrayType]:
+) -> tuple[ArrayType, ArrayType]:
     """
     Estimates integer and fractional timing offsets via cross-correlation.
 
@@ -699,8 +699,8 @@ def estimate_timing(
 
 def correct_timing(
     samples: ArrayType,
-    integer_offset: Union[int, ArrayType],
-    fractional_offset: Union[float, ArrayType] = 0.0,
+    integer_offset: int | ArrayType,
+    fractional_offset: float | ArrayType = 0.0,
     mode: str = "circular",
 ) -> ArrayType:
     """

@@ -71,7 +71,7 @@ or use ``helpers.normalize`` after the fact.
 """
 
 from fractions import Fraction
-from typing import Any, Optional
+from typing import Any
 
 from .backend import ArrayType, dispatch
 from .logger import logger
@@ -253,10 +253,10 @@ def decimate(
 
 def resample(
     samples: ArrayType,
-    up: Optional[int] = None,
-    down: Optional[int] = None,
-    sps_in: Optional[float] = None,
-    sps_out: Optional[float] = None,
+    up: int | None = None,
+    down: int | None = None,
+    sps_in: float | None = None,
+    sps_out: float | None = None,
     axis: int = -1,
 ) -> ArrayType:
     """

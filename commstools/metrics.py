@@ -21,7 +21,6 @@ mi :
 """
 
 import logging
-from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -31,13 +30,13 @@ from .logger import logger
 
 def evm(
     rx_symbols: ArrayType,
-    tx_symbols: Optional[ArrayType] = None,
+    tx_symbols: ArrayType | None = None,
     *,
     mode: str = "data_aided",
-    modulation: Optional[str] = None,
-    order: Optional[int] = None,
-    pmf: Optional[np.ndarray] = None,
-) -> Tuple[Union[float, ArrayType], Union[float, ArrayType]]:
+    modulation: str | None = None,
+    order: int | None = None,
+    pmf: np.ndarray | None = None,
+) -> tuple[float | ArrayType, float | ArrayType]:
     """
     Computes Error Vector Magnitude (EVM).
 
@@ -199,7 +198,7 @@ def evm(
 def snr(
     rx_symbols: ArrayType,
     tx_symbols: ArrayType,
-) -> Union[float, ArrayType]:
+) -> float | ArrayType:
     """
     Estimates SNR from received symbols using a known reference (Data-Aided).
 
@@ -290,7 +289,7 @@ def snr(
 def ber(
     bits_rx: ArrayType,
     bits_tx: ArrayType,
-) -> Union[float, ArrayType]:
+) -> float | ArrayType:
     """
     Computes the Bit Error Rate (BER) between two bit sequences.
 
@@ -349,8 +348,8 @@ def ser(
     tx_symbols: ArrayType,
     modulation: str,
     order: int,
-    pmf: Optional[np.ndarray] = None,
-) -> Union[float, ArrayType]:
+    pmf: np.ndarray | None = None,
+) -> float | ArrayType:
     """
     Computes the Symbol Error Rate (SER) using ML hard decisions.
 
@@ -531,7 +530,7 @@ def mi(
     modulation: str,
     order: int,
     noise_var: float,
-    pmf: Optional[np.ndarray] = None,
+    pmf: np.ndarray | None = None,
 ) -> float:
     r"""
     Estimates the Mutual Information (MI) under a Gaussian channel assumption.

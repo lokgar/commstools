@@ -26,9 +26,9 @@ they measure the eager loop on both backends regardless of ``cuda_graph``.
 """
 
 import pytest
+from workloads import mimo_equalizer_workload
 
 from commstools.equalization import block_lms
-from workloads import mimo_equalizer_workload
 
 ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
 N_SYM = 100_000

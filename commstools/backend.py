@@ -28,8 +28,8 @@ use_cpu_only :
 """
 
 import types
-from functools import lru_cache
-from typing import Any, Optional, Tuple, Union
+from functools import cache, lru_cache
+from typing import Any
 
 import numpy as np
 
@@ -58,17 +58,14 @@ except ImportError:
     cp = None
     logger.debug("CuPy is not available, falling back to NumPy.")
 
-ArrayType = Union[
-    np.ndarray, Any
-]  # Any for CuPy array to avoid hard dependency in type hint if not installed
+# Any for CuPy array to avoid a hard dependency in the type hint if not installed
+ArrayType = np.ndarray | Any
 
 # JAX lazy loading cache
 _JAX_CACHE: dict[str, Any] = {}
 
 
-def _get_jax() -> Tuple[
-    Optional[types.ModuleType], Optional[types.ModuleType], Optional[Any]
-]:
+def _get_jax() -> tuple[types.ModuleType | None, types.ModuleType | None, Any | None]:
     """
     Lazy loader for JAX modules and its DLPack interface.
 
@@ -97,7 +94,7 @@ def _get_jax() -> Tuple[
 
 
 @lru_cache(maxsize=8)
-def _get_jax_device(platform: str) -> Optional[Any]:
+def _get_jax_device(platform: str) -> Any | None:
     """
     Retrieves a specific JAX device by platform name.
 
@@ -178,7 +175,7 @@ def get_array_module(data: Any) -> types.ModuleType:
     return np
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_scipy_module(xp: types.ModuleType) -> types.ModuleType:
     """
     Returns the signal processing library compatible with the given array module.
@@ -263,7 +260,7 @@ def to_device(data: Any, device: str) -> ArrayType:
 
 def dispatch(
     data: Any,
-) -> Tuple[ArrayType, types.ModuleType, types.ModuleType]:
+) -> tuple[ArrayType, types.ModuleType, types.ModuleType]:
     """
     Inspects data and returns appropriate backend modules.
 
@@ -293,7 +290,7 @@ def dispatch(
     return data, xp, sp
 
 
-def to_jax(data: Any, device: Optional[str] = None, dtype: Optional[Any] = None) -> Any:
+def to_jax(data: Any, device: str | None = None, dtype: Any | None = None) -> Any:
     """
     Converts data to a JAX array with optimized device placement.
 

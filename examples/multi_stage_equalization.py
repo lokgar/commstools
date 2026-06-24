@@ -44,12 +44,10 @@ Run
 
 import numpy as np
 
-from commstools import Signal
-from commstools import equalization, frequency, recovery
-from commstools.timing import estimate_timing, correct_timing
+from commstools import Signal, equalization, frequency, recovery
 from commstools.backend import dispatch
 from commstools.impairments import apply_awgn
-
+from commstools.timing import correct_timing, estimate_timing
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Parameters
@@ -463,10 +461,12 @@ _print_sep("10. Visualization — Saving Constellation Diagnostics")
 
 try:
     import os
+
     import matplotlib
 
     matplotlib.use("Agg")  # Headless backend
     import matplotlib.pyplot as plt
+
     from commstools.plotting import apply_default_theme
 
     print("  Applying CommsTools premium dark-theme...")

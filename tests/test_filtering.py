@@ -317,7 +317,7 @@ def test_fir_filter_preserves_complex_dtype(backend_device, xp):
 
 def test_matched_filter_preserves_dtype(backend_device, xp):
     """matched_filter with rrc_taps (float64) on complex64 signal → complex64."""
-    from commstools.filtering import rrc_taps, matched_filter
+    from commstools.filtering import matched_filter, rrc_taps
 
     rng = np.random.default_rng(11)
     sig = xp.asarray(

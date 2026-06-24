@@ -564,6 +564,7 @@ class TestRDE:
     def test_radii_extraction(self, backend_device, xp):
         """Unique radii should match known 16-QAM ring structure."""
         import numpy as _np
+
         from commstools.mapping import gray_constellation
 
         const = gray_constellation("qam", 16)
@@ -2274,8 +2275,8 @@ class TestCmaPilotAided:
     """Tests for cma()/rde() with pilot_ref/pilot_mask (hybrid PA mode)."""
 
     def _make_comb_frame_and_samples(self, xp):
-        from commstools.core import SingleCarrierFrame, Preamble
         from commstools.backend import to_device
+        from commstools.core import Preamble, SingleCarrierFrame
 
         preamble = Preamble(sequence_type="barker", length=13)
         frame = SingleCarrierFrame(
@@ -2461,6 +2462,7 @@ class TestNormalizationLengthIndependence:
     def test_training_output_finite(self, algo, backend, backend_device, xp):
         """y_hat training region is finite and non-trivial."""
         import numpy as np
+
         from commstools.equalization import lms, rls
         from commstools.mapping import gray_constellation
 

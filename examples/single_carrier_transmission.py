@@ -18,6 +18,7 @@ Run:
 """
 
 import os
+
 import matplotlib
 
 # Headless backend for headless execution
@@ -27,17 +28,17 @@ import numpy as np
 
 from commstools import Signal
 from commstools.backend import to_device
-from commstools.impairments import apply_awgn
-from commstools.timing import estimate_timing, correct_timing, fft_fractional_delay
 from commstools.frequency import (
-    estimate_frequency_offset_mengali_morelli,
     correct_static_frequency_offset,
+    estimate_frequency_offset_mengali_morelli,
 )
-from commstools.recovery import (
-    recover_carrier_phase_viterbi_viterbi,
-    correct_carrier_phase,
-)
+from commstools.impairments import apply_awgn
 from commstools.plotting import apply_default_theme
+from commstools.recovery import (
+    correct_carrier_phase,
+    recover_carrier_phase_viterbi_viterbi,
+)
+from commstools.timing import correct_timing, estimate_timing, fft_fractional_delay
 
 
 def main():

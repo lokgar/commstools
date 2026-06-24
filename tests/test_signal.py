@@ -1,9 +1,10 @@
 """Tests for the base Signal class and its core signal processing methods."""
 
+from unittest.mock import patch
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-import matplotlib.pyplot as plt
-from unittest.mock import patch
 
 from commstools.core import Signal
 

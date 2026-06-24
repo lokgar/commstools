@@ -37,14 +37,13 @@ sample_ps_symbols :
     Draws shaped QAM symbols on the normalized grid from a given PMF.
 """
 
+from functools import lru_cache
+from typing import Any
+
 import numpy as np
 
-from functools import lru_cache
-from typing import Any, Optional
-
-from .backend import ArrayType, dispatch, is_jax_array, to_jax, to_device, _get_jax
+from .backend import ArrayType, _get_jax, dispatch, is_jax_array, to_device, to_jax
 from .logger import logger
-
 
 # Lazy cache for JIT-compiled soft demapping kernels
 _JITTED_SOFT_DEMAP: dict[str, Any] = {}
@@ -600,7 +599,7 @@ def demap_symbols_hard(
     modulation: str,
     order: int,
     unipolar: bool = False,
-    pmf: Optional[np.ndarray] = None,
+    pmf: np.ndarray | None = None,
 ) -> ArrayType:
     """
     Maps complex symbols back to a sequence of bits (hard decisions).
@@ -725,7 +724,7 @@ def compute_llr(
     method: str = "maxlog",
     unipolar: bool = False,
     output: str = "jax",
-    pmf: Optional[np.ndarray] = None,
+    pmf: np.ndarray | None = None,
 ) -> ArrayType:
     """
     Compute Log-Likelihood Ratios (LLRs) for soft-decision decoding.
@@ -885,7 +884,7 @@ def compute_llr(
 
 
 def constellation_power(
-    constellation: ArrayType, pmf: Optional[ArrayType] = None
+    constellation: ArrayType, pmf: ArrayType | None = None
 ) -> float:
     r"""Average symbol power ``E[|s|^2]`` of a constellation.
 
@@ -1050,7 +1049,7 @@ def sample_ps_symbols(
     num_symbols: int,
     order: int,
     pmf: np.ndarray,
-    seed: Optional[int] = None,
+    seed: int | None = None,
 ) -> np.ndarray:
     """
     Draws QAM symbols from a Maxwell-Boltzmann distribution.

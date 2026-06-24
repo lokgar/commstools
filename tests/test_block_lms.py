@@ -21,9 +21,8 @@ import pytest
 
 from commstools.backend import to_device
 from commstools.equalization import CPRState, block_lms
-from commstools.mapping import gray_constellation
 from commstools.helpers import normalize
-
+from commstools.mapping import gray_constellation
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers (NumPy only — tests convert to xp before calling block_lms)

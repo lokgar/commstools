@@ -475,19 +475,26 @@ class TestCprPilotTones:
             num_streams=2,
             seed=seed,
         )
-        samples = apply_awgn(xp.asarray(sig.samples), esn0_db=snr_db, sps=self.SPS, seed=seed)
+        samples = apply_awgn(
+            xp.asarray(sig.samples), esn0_db=snr_db, sps=self.SPS, seed=seed
+        )
         # One tone per channel (channel c gets frequency[c]); tone 1 gets a static
         # phase offset δ so the inter-tone differential is non-trivial.
         samples, _ = spectral.add_pilot_tone(
-            samples, fs, [self.F0, self.F1],
-            power_ratio_db=list(psr_db), phase_init=0.0,
+            samples,
+            fs,
+            [self.F0, self.F1],
+            power_ratio_db=list(psr_db),
+            phase_init=0.0,
         )
         n = xp.arange(samples.shape[-1], dtype=xp.float64)
         samples[1] = samples[1] * xp.exp(1j * float(delta)).astype(samples.dtype)
 
         if linewidth > 0.0:
             rng = xp.random.RandomState(seed)
-            incr = rng.normal(0.0, float(np.sqrt(2 * np.pi * linewidth / fs)), samples.shape[-1])
+            incr = rng.normal(
+                0.0, float(np.sqrt(2 * np.pi * linewidth / fs)), samples.shape[-1]
+            )
             pn = xp.cumsum(incr)
         else:
             pn = xp.zeros(samples.shape[-1], dtype=xp.float64)
@@ -504,8 +511,12 @@ class TestCprPilotTones:
         """Two-pilot MRC tracks the shared FOE + phase noise to < 0.15 rad RMS."""
         samples, fs, common = self._setup(xp, df=df, linewidth=5e3)
         phi = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0, 1],
         )
         assert self._interior_rms(xp, phi[0], common) < 0.15
 
@@ -517,14 +528,26 @@ class TestCprPilotTones:
         into δ and the combine can lose to single-tone.
         """
         samples, fs, common = self._setup(
-            xp, df=0.0, linewidth=0.0, snr_db=6, psr_db=(-10.0, -10.0),
+            xp,
+            df=0.0,
+            linewidth=0.0,
+            snr_db=6,
+            psr_db=(-10.0, -10.0),
         )
         single = recovery.recover_carrier_phase_pilot_tone(
-            samples, fs, self.F0, bandwidth=self.BW, joint_channels=False,
+            samples,
+            fs,
+            self.F0,
+            bandwidth=self.BW,
+            joint_channels=False,
         )
         both, diag = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0, 1],
             return_diagnostics=True,
         )
         assert diag["used"] == [0, 1]  # both tones genuinely combined
@@ -537,8 +560,12 @@ class TestCprPilotTones:
         """(C, N) input → (C, N) output; the common track is identical on all rows."""
         samples, fs, _ = self._setup(xp, df=0.05e6)
         phi = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0, 1],
         )
         assert phi.shape == samples.shape
         assert bool(xp.allclose(phi[0], phi[1]))
@@ -551,9 +578,14 @@ class TestCprPilotTones:
         """
         samples, fs, _ = self._setup(xp, psr_db=(-12.0, -60.0))
         _, diag = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
-            snr_gate_db=3.0, return_diagnostics=True,
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0, 1],
+            snr_gate_db=3.0,
+            return_diagnostics=True,
         )
         assert diag["used"] == [diag["ref"]]
         assert diag["ref"] == 0  # the strong tone
@@ -562,8 +594,12 @@ class TestCprPilotTones:
         """K=1 reduces to a single-tone tracker and still recovers the phase."""
         samples, fs, common = self._setup(xp, df=0.05e6)
         phi = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0],
+            samples,
+            fs,
+            [self.F0],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0],
         )
         assert self._interior_rms(xp, phi[0], common) < 0.15
 
@@ -571,16 +607,24 @@ class TestCprPilotTones:
         """per_tone_channel=None coherently sums each tone across channels."""
         samples, fs, common = self._setup(xp, df=0.05e6)
         phi = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=None,
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=None,
         )
         assert self._interior_rms(xp, phi[0], common) < 0.15
 
     def test_diagnostics_keys(self, backend_device, xp):
         samples, fs, _ = self._setup(xp)
         _, diag = recovery.recover_carrier_phase_pilot_tones(
-            samples, fs, [self.F0, self.F1], bandwidth=self.BW,
-            differential_bandwidth=self.DIFF_BW, per_tone_channel=[0, 1],
+            samples,
+            fs,
+            [self.F0, self.F1],
+            bandwidth=self.BW,
+            differential_bandwidth=self.DIFF_BW,
+            per_tone_channel=[0, 1],
             return_diagnostics=True,
         )
         assert set(diag) == {"delta", "snr_db", "ref", "used", "f_centers"}
@@ -590,7 +634,10 @@ class TestCprPilotTones:
         samples, fs, _ = self._setup(xp, n_symbols=256)
         with pytest.raises(ValueError, match="per_tone_channel must have one entry"):
             recovery.recover_carrier_phase_pilot_tones(
-                samples, fs, [self.F0, self.F1], bandwidth=self.BW,
+                samples,
+                fs,
+                [self.F0, self.F1],
+                bandwidth=self.BW,
                 per_tone_channel=[0],
             )
 
@@ -598,14 +645,20 @@ class TestCprPilotTones:
         samples, fs, _ = self._setup(xp, n_symbols=256)
         with pytest.raises(ValueError, match="bandwidth must be > 0"):
             recovery.recover_carrier_phase_pilot_tones(
-                samples, fs, [self.F0, self.F1], bandwidth=0.0,
+                samples,
+                fs,
+                [self.F0, self.F1],
+                bandwidth=0.0,
             )
 
     def test_empty_tone_list_raises(self, backend_device, xp):
         samples, fs, _ = self._setup(xp, n_symbols=256)
         with pytest.raises(ValueError, match="at least one frequency"):
             recovery.recover_carrier_phase_pilot_tones(
-                samples, fs, [], bandwidth=self.BW,
+                samples,
+                fs,
+                [],
+                bandwidth=self.BW,
             )
 
 
@@ -653,10 +706,14 @@ class TestWienerPhaseSmoother:
 
     def test_shape_siso_and_mimo(self, backend_device, xp):
         truth, q = self._random_walk(xp, N=4000)
-        phi1d = recovery.smooth_phase_wiener(truth, process_variance=q, measurement_variance=0.05)
+        phi1d = recovery.smooth_phase_wiener(
+            truth, process_variance=q, measurement_variance=0.05
+        )
         assert phi1d.shape == truth.shape
         phi2d_in = xp.stack([truth, truth + 0.3])
-        phi2d = recovery.smooth_phase_wiener(phi2d_in, process_variance=q, measurement_variance=0.05)
+        phi2d = recovery.smooth_phase_wiener(
+            phi2d_in, process_variance=q, measurement_variance=0.05
+        )
         assert phi2d.shape == phi2d_in.shape
 
     def test_derive_variances_from_physical_params(self, backend_device, xp):
@@ -681,7 +738,9 @@ class TestWienerPhaseSmoother:
     def test_invalid_variance_raises(self, backend_device, xp):
         truth, _ = self._random_walk(xp, N=512)
         with pytest.raises(ValueError, match="must be > 0"):
-            recovery.smooth_phase_wiener(truth, process_variance=0.0, measurement_variance=0.05)
+            recovery.smooth_phase_wiener(
+                truth, process_variance=0.0, measurement_variance=0.05
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1295,6 +1354,7 @@ class TestViterbiViterbi:
 
     def _qam16_symbols(self, xp, N=512, seed=1):
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         rng = np.random.default_rng(seed)
@@ -1382,6 +1442,7 @@ class TestBPS:
 
     def _qam16_symbols(self, xp, N=512, seed=2):
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         rng = np.random.default_rng(seed)
@@ -1391,6 +1452,7 @@ class TestBPS:
 
     def _qpsk_symbols(self, xp, N=512, seed=3):
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         rng = np.random.default_rng(seed)
@@ -1465,6 +1527,7 @@ class TestDDPLL:
 
     def _qpsk_symbols(self, xp, N=512, seed=10):
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         rng = np.random.default_rng(seed)
@@ -1519,6 +1582,7 @@ class TestDDPLL:
     def test_bandwidth_shortcut_equals_raw_gains(self, backend_device, xp):
         """mu=None, bandwidth=B is identical to raw mu=4B, beta=4B² (the resolver mapping)."""
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         N = 512
@@ -1542,6 +1606,7 @@ class TestDDPLL:
         """Under a frequency offset, a 1st-order loop (beta=0) settles to a constant
         phase lag; a 2nd-order loop (beta>0) nulls it to ~zero steady-state error."""
         import numpy as np
+
         from commstools.mapping import gray_constellation
 
         N = 4000

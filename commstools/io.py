@@ -31,7 +31,7 @@ The .npz file contains the following named entries:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Union, Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import yaml
@@ -89,7 +89,7 @@ _CACHE_FIELDS: tuple[str, ...] = ("resolved_symbols", "resolved_bits")
 
 def save_npz(
     signal: Signal,
-    path: Union[str, Path],
+    path: str | Path,
     *,
     compressed: bool = True,
     include_cache: bool = False,
@@ -197,7 +197,7 @@ def save_npz(
 
 
 def load_npz(
-    path: Union[str, Path],
+    path: str | Path,
     *,
     device: str = "auto",
 ) -> Signal:
@@ -270,7 +270,7 @@ def load_npz(
     # Reconstruct originating frame (if serialised)
     # -------------------------------------------------------------------------
     if "__frame_metadata__" in data:
-        from . import core as _core  # noqa: PLC0415
+        from . import core as _core
 
         frame_dict = yaml.safe_load(str(data["__frame_metadata__"]))
         frame_type_name = frame_dict.pop("_frame_type", "SingleCarrierFrame")

@@ -6,9 +6,9 @@ block-update mode is gated against (≥ 10x at D=16).
 """
 
 import pytest
+from workloads import mimo_equalizer_workload
 
 from commstools.equalization import cma, lms, rls
-from workloads import mimo_equalizer_workload
 
 ROUNDS = dict(rounds=3, warmup_rounds=1, iterations=1)
 

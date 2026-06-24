@@ -13,15 +13,15 @@ cross-process reuse comes from CuPy's on-disk NVRTC cache.
 """
 
 from importlib import resources
-from typing import Any, Tuple
+from typing import Any
 
-DEFAULT_OPTIONS: Tuple[str, ...] = ("-std=c++17", "--use_fast_math")
+DEFAULT_OPTIONS: tuple[str, ...] = ("-std=c++17", "--use_fast_math")
 
 _SOURCE_CACHE: dict[str, str] = {}
 # (source_name, options, name_expression) -> (RawModule, RawKernel).
 # The module is cached alongside the kernel to keep the loaded CUmodule
 # alive for the process lifetime.
-_KERNEL_CACHE: dict[Tuple[str, Tuple[str, ...], str], Tuple[Any, Any]] = {}
+_KERNEL_CACHE: dict[tuple[str, tuple[str, ...], str], tuple[Any, Any]] = {}
 
 
 def read_source(source_name: str) -> str:
@@ -52,7 +52,7 @@ def read_source(source_name: str) -> str:
 def get_raw_kernel(
     source_name: str,
     name_expression: str,
-    options: Tuple[str, ...] = DEFAULT_OPTIONS,
+    options: tuple[str, ...] = DEFAULT_OPTIONS,
 ) -> Any:
     """Compiles (or retrieves from cache) one kernel specialization.
 

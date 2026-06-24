@@ -46,7 +46,6 @@ correct_phase_rotation :
 """
 
 import logging
-from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -67,7 +66,7 @@ def _get_numba_dd_pll():
         Numba-compiled ``_dd_pll_loop``.
     """
     if "dd_pll" not in _NUMBA_PLL:
-        import numba  # noqa: PLC0415
+        import numba
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_loop(
@@ -191,7 +190,7 @@ def _get_numba_dd_pll_joint():
         Numba-compiled ``_dd_pll_joint_loop``.
     """
     if "dd_pll_joint" not in _NUMBA_PLL:
-        import numba  # noqa: PLC0415
+        import numba
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _dd_pll_joint_loop(
@@ -293,7 +292,7 @@ def _get_numba_rts_smoother():
         Numba-compiled ``_rts_loop``.
     """
     if "rts" not in _NUMBA_RTS:
-        import numba  # noqa: PLC0415
+        import numba
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _rts_loop(phi_obs, sigma_p2, sigma_v2):
@@ -341,8 +340,8 @@ def recover_carrier_phase_pll(
     symbols: ArrayType,
     modulation: str,
     order: int,
-    mu: Optional[float] = 1e-2,
-    beta: Optional[float] = None,
+    mu: float | None = 1e-2,
+    beta: float | None = None,
     phase_init: float = 0.0,
     loop_bandwidth_normalized: float = 1e-3,
     joint_channels: bool = False,
@@ -433,7 +432,7 @@ def recover_carrier_phase_pll(
     A global M-fold phase ambiguity always remains — resolve via a pilot or
     preamble reference after CPR.
     """
-    from .helpers import resolve_pll_gains, normalize
+    from .helpers import normalize, resolve_pll_gains
     from .mapping import gray_constellation
 
     # Resolve PI gains: raw mu/beta if given, else the critically-damped
@@ -464,7 +463,7 @@ def recover_carrier_phase_pll(
     # Square-QAM O(1) decision parameters.  For square QAM (order a perfect
     # square, e.g. 4/16/64/256/1024) the constellation is a uniform grid and
     # the nearest point can be found by rounding to the closest axis level.
-    import math as _math  # noqa: PLC0415
+    import math as _math
 
     _sq_root = _math.isqrt(order)
     _is_sq_qam = ("qam" in modulation.lower()) and (_sq_root * _sq_root == order)
@@ -795,7 +794,7 @@ def recover_carrier_phase_bps(
     cycle_slip_correction: bool = False,
     cycle_slip_history: int = 100,
     cycle_slip_threshold: float = np.pi / 4,
-    pmf: Optional[np.ndarray] = None,
+    pmf: np.ndarray | None = None,
     debug_plot: bool = False,
 ) -> ArrayType:
     """
@@ -869,9 +868,8 @@ def recover_carrier_phase_bps(
     Memory: the distance tensor scales as N * B * M * 8 bytes; reduce
     ``num_test_phases`` or segment length for high-order constellations.
     """
-    from .mapping import constellation_power, gray_constellation
-
     from .helpers import normalize
+    from .mapping import constellation_power, gray_constellation
 
     symbols, xp, _ = dispatch(symbols)
     was_1d = symbols.ndim == 1
@@ -1196,7 +1194,7 @@ def recover_carrier_phase_tikhonov(
     order: int,
     linewidth_symbol_periods: float,
     block_size: int = 32,
-    snr_db: Optional[float] = None,
+    snr_db: float | None = None,
     method: str = "exact",
     joint_channels: bool = False,
     cycle_slip_correction: bool = False,
@@ -1635,10 +1633,10 @@ def _extract_pilot_phasor(
     tone_frequency: float,
     bandwidth: float,
     xp,
-    search_band: Optional[float] = None,
+    search_band: float | None = None,
     refine_tone: bool = True,
-    window: Union[str, Tuple] = "tukey",
-) -> Tuple[ArrayType, np.ndarray, np.ndarray, np.ndarray, ArrayType, ArrayType]:
+    window: str | tuple = "tukey",
+) -> tuple[ArrayType, np.ndarray, np.ndarray, np.ndarray, ArrayType, ArrayType]:
     """Isolate a CW pilot tone and return its carrier-stripped complex phasor.
 
     Shared core of the pilot-tone CPR functions
@@ -1702,7 +1700,7 @@ def _extract_pilot_phasor(
     X = xp.fft.fft(samples_c, axis=-1)  # (C, N)
 
     # 3) Zero-phase extraction window placed circularly at each channel's tone bin.
-    from scipy.signal import get_window  # noqa: PLC0415
+    from scipy.signal import get_window
 
     half = int(bandwidth // df)  # bins from centre to band edge
     n_win = 2 * half + 1
@@ -1754,9 +1752,9 @@ def recover_carrier_phase_pilot_tone(
     sampling_rate: float,
     tone_frequency: float,
     bandwidth: float,
-    search_band: Optional[float] = None,
+    search_band: float | None = None,
     refine_tone: bool = True,
-    window: Union[str, Tuple] = "tukey",
+    window: str | tuple = "tukey",
     remove_frequency_offset: bool = True,
     joint_channels: bool = False,
     debug_plot: bool = False,
@@ -1950,12 +1948,12 @@ def recover_carrier_phase_pilot_tones(
     tone_frequencies,
     bandwidth: float,
     differential_bandwidth: float = 5e3,
-    search_band: Optional[float] = None,
-    per_tone_channel: Optional[list] = None,
+    search_band: float | None = None,
+    per_tone_channel: list | None = None,
     snr_gate_db: float = 3.0,
     coherence_gate: float = 0.3,
     refine_tone: bool = True,
-    window: Union[str, Tuple] = "tukey",
+    window: str | tuple = "tukey",
     return_diagnostics: bool = False,
     debug_plot: bool = False,
 ):
@@ -2056,8 +2054,14 @@ def recover_carrier_phase_pilot_tones(
     z_tones, sig, noise, f_centers = [], [], [], []
     for k, f_k in enumerate(tone_frequencies):
         ph, fc, s_c, n_c, _, _ = _extract_pilot_phasor(
-            samples, sampling_rate, f_k, bandwidth, xp,
-            search_band=search_band, refine_tone=refine_tone, window=window,
+            samples,
+            sampling_rate,
+            f_k,
+            bandwidth,
+            xp,
+            search_band=search_band,
+            refine_tone=refine_tone,
+            window=window,
         )
         if per_tone_channel is None:
             z_k = xp.sum(ph, axis=0)  # joint across channels (pre-demux)
@@ -2084,8 +2088,10 @@ def recover_carrier_phase_pilot_tones(
             # Self-product: LPF(|z|²) ≈ |A|² + σ²; subtract the floor so the
             # reference weight is the true |A|² (its phase is 0 ⇒ no de-rotation).
             c_k = _lowpass_fft(
-                (xp.abs(z_ref) ** 2).astype(xp.complex128), sampling_rate,
-                differential_bandwidth, xp,
+                (xp.abs(z_ref) ** 2).astype(xp.complex128),
+                sampling_rate,
+                differential_bandwidth,
+                xp,
             )
             c_k = xp.clip(xp.real(c_k) - noise[ref], 1e-30, None).astype(xp.complex128)
             coh = 1.0
@@ -2093,8 +2099,10 @@ def recover_carrier_phase_pilot_tones(
             # Cross-product: the two tones' noises are independent ⇒ the LPF
             # rejects them, so c_k ≈ A_k A_0* — carries |A_k||A_0| and e^{jδ_k}.
             c_k = _lowpass_fft(
-                z_tones[k] * xp.conj(z_ref), sampling_rate,
-                differential_bandwidth, xp,
+                z_tones[k] * xp.conj(z_ref),
+                sampling_rate,
+                differential_bandwidth,
+                xp,
             )
             coh = float(xp.mean(xp.abs(c_k))) / np.sqrt(max(sig[k] * sig[ref], 1e-30))
             if snr[k] < snr_gate or coh < coherence_gate:
@@ -2147,11 +2155,11 @@ def recover_carrier_phase_pilot_tones(
 
 def smooth_phase_wiener(
     phase: ArrayType,
-    process_variance: Optional[float] = None,
-    measurement_variance: Optional[float] = None,
-    linewidth: Optional[float] = None,
-    sampling_rate: Optional[float] = None,
-    tone_snr: Optional[float] = None,
+    process_variance: float | None = None,
+    measurement_variance: float | None = None,
+    linewidth: float | None = None,
+    sampling_rate: float | None = None,
+    tone_snr: float | None = None,
     detrend: bool = True,
 ) -> ArrayType:
     r"""
@@ -2306,7 +2314,7 @@ def _get_numba_cycle_slip():
         Numba-compiled ``_cycle_slip_loop``.
     """
     if "cs" not in _NUMBA_CYCLE_SLIP:
-        import numba  # noqa: PLC0415
+        import numba
 
         @numba.njit(cache=True, fastmath=True, nogil=True)
         def _cycle_slip_loop(phi_u, symmetry, history_length, threshold):
@@ -2589,9 +2597,9 @@ def resolve_phase_ambiguity(
     ref_symbols: ArrayType,
     modulation: str,
     order: int,
-    symmetry_order: Optional[int] = None,
+    symmetry_order: int | None = None,
     num_skip_symbols: int = 0,
-    pmf: Optional[np.ndarray] = None,
+    pmf: np.ndarray | None = None,
 ) -> ArrayType:
     """
     Resolves rotational phase ambiguity after blind carrier phase recovery.

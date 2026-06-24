@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from commstools import metrics
-from commstools.impairments import apply_awgn
 from commstools.helpers import random_symbols
+from commstools.impairments import apply_awgn
 
 
 def test_evm_perfect_signal(backend_device, xp):
@@ -276,8 +276,8 @@ def test_evm_blind_perfect_signal(backend_device, xp):
 
 def test_evm_blind_decreases_with_snr(backend_device, xp):
     """Blind EVM at high SNR should be lower than at low SNR."""
-    from commstools.mapping import gray_constellation
     from commstools.impairments import apply_awgn
+    from commstools.mapping import gray_constellation
 
     const = np.asarray(gray_constellation("qam", 16))
     rng = np.random.default_rng(7)
@@ -294,8 +294,8 @@ def test_evm_blind_decreases_with_snr(backend_device, xp):
 
 def test_evm_blind_vs_data_aided_converge(backend_device, xp):
     """At high SNR blind and data-aided EVM should agree closely."""
-    from commstools.mapping import map_bits
     from commstools.impairments import apply_awgn
+    from commstools.mapping import map_bits
 
     rng = np.random.default_rng(42)
     bits = rng.integers(0, 2, 4000).astype("int32")
@@ -378,8 +378,8 @@ def test_ser_perfect_signal(backend_device, xp):
 
 def test_ser_high_snr_near_zero(backend_device, xp):
     """SER should be negligible at very high SNR."""
-    from commstools.mapping import map_bits
     from commstools.impairments import apply_awgn
+    from commstools.mapping import map_bits
 
     rng = np.random.default_rng(1)
     bits = rng.integers(0, 2, 2000).astype("int32")
@@ -430,7 +430,7 @@ def test_signal_ser_method(backend_device, xp):
 
 def test_gmi_high_snr_approaches_log2m(backend_device, xp):
     """At infinite SNR (perfect LLRs), GMI → log2(M)."""
-    from commstools.mapping import map_bits, compute_llr
+    from commstools.mapping import compute_llr, map_bits
 
     k = 4  # bits per symbol for QAM-16
     M = 16
@@ -449,7 +449,7 @@ def test_gmi_high_snr_approaches_log2m(backend_device, xp):
 
 def test_gmi_low_snr_approaches_zero(backend_device, xp):
     """At very low SNR, LLRs collapse to zero → GMI → 0."""
-    from commstools.mapping import map_bits, compute_llr
+    from commstools.mapping import compute_llr, map_bits
 
     k = 4
     M = 16
@@ -467,7 +467,7 @@ def test_gmi_low_snr_approaches_zero(backend_device, xp):
 
 def test_gmi_flat_input_returns_per_bit(backend_device, xp):
     """Flat 1D input: gmi() treats k=1 and returns per-bit GMI in [0, 1]."""
-    from commstools.mapping import map_bits, compute_llr
+    from commstools.mapping import compute_llr, map_bits
 
     bits = np.array([0, 1, 1, 0, 0, 1, 1, 0], dtype="int32")
     symbols = map_bits(xp.asarray(bits), "qam", 4)
@@ -480,7 +480,7 @@ def test_gmi_flat_input_returns_per_bit(backend_device, xp):
 
 def test_gmi_returns_scalar_float(backend_device, xp):
     """gmi() must return a Python float."""
-    from commstools.mapping import map_bits, compute_llr
+    from commstools.mapping import compute_llr, map_bits
 
     k = 2
     N = 4
@@ -502,7 +502,7 @@ def test_gmi_shape_mismatch_raises(backend_device, xp):
 
 def test_gmi_2d_bounded_by_log2m(backend_device, xp):
     """For (N, k) input, GMI ∈ [0, k]."""
-    from commstools.mapping import map_bits, compute_llr
+    from commstools.mapping import compute_llr, map_bits
 
     k = 2  # QPSK
     N = 100
