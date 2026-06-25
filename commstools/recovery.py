@@ -531,7 +531,7 @@ def recover_carrier_phase_pll(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.carrier_phase_trajectory(
+        _plotting.plot_carrier_phase_trajectory(
             phi_full=phi_full if xp is np else to_device(phi_full, "cpu"),
             show=True,
             title=f"CPR — DD-PLL ({loop_desc})",
@@ -734,7 +734,7 @@ def recover_carrier_phase_viterbi_viterbi(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.carrier_phase_trajectory(
+        _plotting.plot_carrier_phase_trajectory(
             phi_full=phi_full_np,
             block_centers=to_device(block_centers, "cpu"),
             phi_blocks=to_device(phi_blocks_out, "cpu"),
@@ -1052,7 +1052,7 @@ def recover_carrier_phase_bps(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.carrier_phase_trajectory(
+        _plotting.plot_carrier_phase_trajectory(
             phi_full=phi_full_np,
             show=True,
             title="CPR — Blind Phase Search",
@@ -1394,7 +1394,7 @@ def recover_carrier_phase_tikhonov(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.carrier_phase_trajectory(
+        _plotting.plot_carrier_phase_trajectory(
             phi_full=phi_full_np,
             block_centers=to_device(block_centers, "cpu"),
             phi_blocks=phi_smooth_np,
@@ -1577,7 +1577,7 @@ def recover_carrier_phase_pilots(
         from . import plotting as _plotting
 
         phi_pilots_u_np = to_device(phi_pilots_u, "cpu")
-        _plotting.pilot_phase_estimate(
+        _plotting.plot_pilot_phase_estimate(
             pilot_indices=pilot_indices_np,
             phi_pilots_u=phi_pilots_u_np,
             phi_full=phi_full_np,
@@ -1877,7 +1877,7 @@ def recover_carrier_phase_pilot_tone(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.pilot_tone_phase_estimate(
+        _plotting.plot_pilot_tone_phase_estimate(
             freqs=np.fft.fftfreq(N, d=1.0 / sampling_rate),
             mag_spectrum=to_device(xp.abs(X), "cpu"),
             window=to_device(W, "cpu"),
@@ -2095,7 +2095,7 @@ def recover_carrier_phase_pilot_tones(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.pilot_tones_phase_estimate(
+        _plotting.plot_pilot_tones_phase_estimate(
             delta=delta_diag,
             phi=phi_np,
             ref=ref,
@@ -2749,7 +2749,7 @@ def correct_phase_rotation(
     constant phase offset on each output channel — not limited to the discrete
     ``k·π/M`` grid that ``resolve_phase_ambiguity`` tests.  This function
     estimates the continuous rotation per channel via the ML inner-product
-    estimator ``θ = −∠(Σ y·s*)`` over a known reference sequence and applies
+    estimator ``θ = -∠(Σ y·s*)`` over a known reference sequence and applies
     the correction to the full symbol block.
 
     The reference may be shorter than ``symbols`` (e.g. a transmitted preamble

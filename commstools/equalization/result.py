@@ -173,6 +173,6 @@ def _log_equalizer_exit(
     if debug_plot:
         from .. import plotting as _plotting  # lazy import avoids circular dep
 
-        _plotting.equalizer_result(result, smoothing=plot_smoothing)
+        _plotting.plot_equalizer_result(result, smoothing=plot_smoothing)
 
     return result

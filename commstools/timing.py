@@ -656,7 +656,7 @@ def estimate_timing(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.timing_correlation(
+        _plotting.plot_timing_correlation(
             corr_mag=to_device(corr_mag, "cpu"),
             peak_indices=to_device(peak_indices, "cpu"),
             norm_factors=to_device(mean_vals, "cpu"),

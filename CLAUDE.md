@@ -139,7 +139,7 @@ Since `bump-my-version` is defined in the project's development dependencies, al
 > The previous `examples/` directory (notebooks, end-to-end scripts, and
 > generated images) was removed during the Phase 3 refactor. New examples
 > targeting the free-function API (`metrics.evm(sig)`, `multirate.resample(sig)`,
-> `plotting.constellation(sig)`, `qam(...)`, …) will be added once the
+> `plotting.plot_constellation(sig)`, `qam(...)`, …) will be added once the
 > restructuring settles. Until then, `tests/` is the most current usage
 > reference for every public function.
 
@@ -208,6 +208,29 @@ Inside library code, **never extract a scalar from a possibly-GPU array inside a
 
 * **SISO**: 1-D array: `(N_samples,)`
 * **MIMO**: 2-D array: `(N_channels, N_samples)` — **time is always on the last axis**.
+
+### Naming Conventions
+
+* **Verb prefixes for processing functions.** Recovery/correction routines follow a
+  fixed verb vocabulary so the call site reads as a pipeline:
+  * `estimate_*` — measure an impairment without altering the signal
+    (returns the estimate, e.g. `estimate_carrier_frequency_offset`).
+  * `correct_*` — apply a (possibly externally supplied) correction
+    (e.g. `correct_carrier_phase`, `correct_cycle_slips`).
+  * `recover_*` — the combined estimate-then-correct convenience entry point
+    (e.g. `recover_carrier_phase_bps`).
+  * `resolve_*` — disambiguate a discrete/structural unknown
+    (e.g. `resolve_phase_ambiguity`, `resolve_channel_permutation`).
+* **Compute vs. plot.** A computation keeps the plain noun
+  (`analysis.carrier_phase_trajectory`, `analysis.allan_deviation`,
+  `spectral.spectrogram`). **Every** public function in `plotting` takes a
+  `plot_` prefix (`plot_constellation`, `plot_eye_diagram`, `plot_psd`,
+  `plot_carrier_phase_trajectory`, `plot_allan_deviation`, `plot_spectrogram`,
+  …) — the only exception is the non-plot theme helper `apply_default_theme`.
+  This makes the layer obvious at the call site and removes every same-name
+  collision between the `analysis`/`spectral`/`timing`/`frequency` compute
+  modules and `plotting`. Never add a bare-noun plot function that shadows a
+  compute function.
 
 ---
 

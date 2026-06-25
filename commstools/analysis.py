@@ -226,7 +226,7 @@ def separate_drift_phase_noise(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.carrier_phase_decomposition(
+        _plotting.plot_carrier_phase_decomposition(
             phi, drift, symbol_rate=symbol_rate, show=True
         )
 
@@ -292,7 +292,7 @@ def frequency_drift_metrics(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.frequency_drift(
+        _plotting.plot_frequency_drift(
             df_out, symbol_rate=symbol_rate, amp_ref=amp_ref, show=True
         )
 
@@ -495,7 +495,7 @@ def fm_noise_psd(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.frequency_noise_psd(f, S_out, show=True)
+        _plotting.plot_frequency_noise_psd(f, S_out, show=True)
 
     return f, S_out
 
@@ -584,7 +584,7 @@ def linewidth_beta_separation(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.frequency_noise_psd(
+        _plotting.plot_frequency_noise_psd(
             f_cpu,
             S_cpu,
             beta_line=beta_cpu,
@@ -671,7 +671,7 @@ def allan_deviation(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.allan_deviation(tau_s_cpu, adev_out, show=True)
+        _plotting.plot_allan_deviation(tau_s_cpu, adev_out, show=True)
 
     return {"tau_s": tau_s_cpu, "adev": adev_out}
 
@@ -770,7 +770,7 @@ def characterize_carrier_phase(
         band = None
         if f_min is not None and f_max is not None:
             band = (float(f_min), float(f_max))
-        _plotting.carrier_phase_characterization(
+        _plotting.plot_carrier_phase_characterization(
             report,
             symbol_rate=symbol_rate,
             drift_cutoff=drift_cutoff,

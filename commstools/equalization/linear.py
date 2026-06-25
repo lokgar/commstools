@@ -120,7 +120,7 @@ def zf_equalizer(
     if debug_plot:
         from .. import plotting as _plotting  # lazy import avoids circular dep
 
-        _plotting.zf_equalizer_response(
+        _plotting.plot_zf_equalizer_response(
             channel_estimate=to_device(channel_estimate, "cpu"),
             noise_variance=noise_variance,
             show=True,

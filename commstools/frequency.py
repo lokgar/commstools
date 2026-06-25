@@ -335,7 +335,7 @@ def estimate_frequency_offset_mth_power(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.frequency_offset_spectrum(
+        _plotting.plot_frequency_offset_spectrum(
             mag_spectrum=to_device(mag, "cpu"),
             freqs=freqs_np,
             M=M,
@@ -499,7 +499,7 @@ def estimate_frequency_offset_mengali_morelli(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.mm_autocorrelation(
+        _plotting.plot_mm_autocorrelation(
             R_np=R_per_ch_np,
             f_est=f_per_ch,
             sampling_rate=sampling_rate,
@@ -677,7 +677,7 @@ def estimate_frequency_offset_pilots(
     if debug_plot:
         from . import plotting as _plotting
 
-        _plotting.pilot_phase_estimate(
+        _plotting.plot_pilot_phase_estimate(
             pilot_indices=pilot_indices_np,
             phi_pilots_u=to_device(phi_pilots_u, "cpu"),
             f_est=f_per_ch,
@@ -988,7 +988,7 @@ def correct_frequency_offset_blockwise(
             if C > 1 and not combine_channels
             else "correct_frequency_offset_blockwise"
         )
-        _plotting.frequency_offset_blockwise_result(
+        _plotting.plot_frequency_offset_blockwise_result(
             t_centers=t_centers,
             df_estimates=df_for_interp[0],
             n_grid=n_grid,

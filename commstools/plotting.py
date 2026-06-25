@@ -161,7 +161,7 @@ def _decimate_minmax(
     return x_out, y_out
 
 
-def psd(
+def plot_psd(
     samples: Any,
     sampling_rate: float = 1.0,
     nperseg: int = 256,
@@ -240,7 +240,7 @@ def psd(
     """
     if isinstance(samples, Signal):
         sig = samples
-        return psd(
+        return plot_psd(
             sig.samples,
             sampling_rate=sig.sampling_rate,
             nperseg=nperseg,
@@ -301,7 +301,7 @@ def psd(
 
             ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
 
-            psd(
+            plot_psd(
                 channel_samples,
                 sampling_rate=sampling_rate,
                 nperseg=nperseg,
@@ -414,7 +414,7 @@ def psd(
     return fig, ax
 
 
-def time_domain(
+def plot_time_domain(
     samples: Any,
     sampling_rate: float = 1.0,
     start_symbol: int = 0,
@@ -461,7 +461,7 @@ def time_domain(
     """
     if isinstance(samples, Signal):
         sig = samples
-        return time_domain(
+        return plot_time_domain(
             sig.samples,
             sampling_rate=sig.sampling_rate,
             start_symbol=start_symbol,
@@ -507,7 +507,7 @@ def time_domain(
 
             ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
 
-            time_domain(
+            plot_time_domain(
                 channel_samples,
                 sampling_rate=sampling_rate,
                 start_symbol=start_symbol,
@@ -771,7 +771,7 @@ def _plot_eye_traces(
         ax.set_title(title)
 
 
-def eye_diagram(
+def plot_eye_diagram(
     samples: Any,
     sps: float | None = None,
     ax: Any | tuple[Any, Any] | None = None,
@@ -828,7 +828,7 @@ def eye_diagram(
     """
     if isinstance(samples, Signal):
         sig = samples
-        return eye_diagram(
+        return plot_eye_diagram(
             sig.samples,
             sps=sig.sps,
             ax=ax,
@@ -841,7 +841,7 @@ def eye_diagram(
         )
 
     if sps is None:
-        raise ValueError("eye_diagram() requires sps for array input.")
+        raise ValueError("plot_eye_diagram() requires sps for array input.")
 
     logger.debug(f"Generating eye diagram ({type} mode).")
 
@@ -894,7 +894,7 @@ def eye_diagram(
             ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
 
             # Recursive call with 1D sample
-            eye_diagram(
+            plot_eye_diagram(
                 channel_samples,
                 sps=sps,
                 ax=ch_axes,
@@ -977,7 +977,7 @@ def eye_diagram(
     return fig, ax
 
 
-def filter_response(
+def plot_filter_response(
     taps: Any, sps: float = 1.0, ax: Any | None = None, show: bool = False
 ) -> tuple[Any, tuple[Any, Any, Any]] | None:
     """
@@ -1088,7 +1088,7 @@ def filter_response(
     return fig, (ax1, ax2, ax3)
 
 
-def ideal_constellation(
+def plot_ideal_constellation(
     modulation: str,
     order: int,
     pmf: Any | None = None,
@@ -1134,7 +1134,7 @@ def ideal_constellation(
     show : bool, default False
         If True, calls `plt.show()`.
     unipolar : bool, default False
-        If True, use unipolar constellation (ASK/PAM).
+        If True, use unipolar plot_constellation (ASK/PAM).
 
     Returns
     -------
@@ -1249,7 +1249,7 @@ def ideal_constellation(
     return fig, ax
 
 
-def constellation(
+def plot_constellation(
     samples: Any,
     bins: int = 100,
     cmap: str = "inferno",
@@ -1309,7 +1309,7 @@ def constellation(
     """
     if isinstance(samples, Signal):
         sig = samples
-        result = constellation(
+        result = plot_constellation(
             sig.samples,
             bins=bins,
             cmap=cmap,
@@ -1404,7 +1404,7 @@ def constellation(
 
             ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
 
-            constellation(
+            plot_constellation(
                 channel_samples,
                 bins=bins,
                 cmap=cmap,
@@ -1550,7 +1550,7 @@ def constellation(
 # -----------------------------------------------------------------------------
 
 
-def equalizer_result(
+def plot_equalizer_result(
     result,
     smoothing: int = 50,
     ax=None,
@@ -1701,7 +1701,7 @@ def equalizer_result(
 # -----------------------------------------------------------------------------
 
 
-def timing_correlation(
+def plot_timing_correlation(
     corr_mag,
     peak_indices,
     norm_factors,
@@ -1803,7 +1803,7 @@ def timing_correlation(
     return fig, axes
 
 
-def mm_autocorrelation(
+def plot_mm_autocorrelation(
     R_np,
     f_est,
     sampling_rate: float,
@@ -1917,7 +1917,7 @@ def mm_autocorrelation(
     return fig, (axes_per_ch[0] if C == 1 else axes_per_ch)
 
 
-def frequency_offset_spectrum(
+def plot_frequency_offset_spectrum(
     mag_spectrum,
     freqs,
     M: int,
@@ -2015,7 +2015,7 @@ def frequency_offset_spectrum(
     return fig, (axes_list[0] if C == 1 else axes_list)
 
 
-def carrier_phase_trajectory(
+def plot_carrier_phase_trajectory(
     phi_full,
     block_centers=None,
     phi_blocks=None,
@@ -2100,7 +2100,7 @@ def carrier_phase_trajectory(
     return fig, axi
 
 
-def frequency_offset_blockwise_result(
+def plot_frequency_offset_blockwise_result(
     t_centers,
     df_estimates,
     n_grid,
@@ -2193,7 +2193,7 @@ def frequency_offset_blockwise_result(
     return fig, axes
 
 
-def pilot_phase_estimate(
+def plot_pilot_phase_estimate(
     pilot_indices,
     phi_pilots_u,
     phi_full=None,
@@ -2336,7 +2336,7 @@ def pilot_phase_estimate(
     return fig, axes
 
 
-def pilot_tone_phase_estimate(
+def plot_pilot_tone_phase_estimate(
     freqs,
     mag_spectrum,
     window,
@@ -2476,7 +2476,7 @@ def pilot_tone_phase_estimate(
     return fig, (ax_spec, ax_phase)
 
 
-def pilot_tones_phase_estimate(
+def plot_pilot_tones_phase_estimate(
     delta,
     phi,
     ref: int,
@@ -2575,7 +2575,7 @@ def pilot_tones_phase_estimate(
     return fig, (ax_delta, ax_phase)
 
 
-def zf_equalizer_response(
+def plot_zf_equalizer_response(
     channel_estimate,
     noise_variance: float = 0.0,
     nfft: int = 1024,
@@ -2714,7 +2714,7 @@ def _as_channels(arr) -> np.ndarray:
     return arr
 
 
-def carrier_phase_decomposition(
+def plot_carrier_phase_decomposition(
     phi,
     drift=None,
     *,
@@ -2805,7 +2805,7 @@ def carrier_phase_decomposition(
     return fig, axi
 
 
-def frequency_drift(
+def plot_frequency_drift(
     df,
     *,
     symbol_rate: float,
@@ -2871,7 +2871,7 @@ def frequency_drift(
     return fig, axi
 
 
-def frequency_noise_psd(
+def plot_frequency_noise_psd(
     f,
     S_f,
     *,
@@ -2975,7 +2975,7 @@ def frequency_noise_psd(
     return fig, axi
 
 
-def allan_deviation(
+def plot_allan_deviation(
     tau_s,
     adev,
     *,
@@ -3057,7 +3057,7 @@ def allan_deviation(
     return fig, axi
 
 
-def carrier_phase_characterization(
+def plot_carrier_phase_characterization(
     report: dict,
     *,
     symbol_rate: float,
@@ -3100,14 +3100,14 @@ def carrier_phase_characterization(
     fig, axes = plt.subplots(2, 2, figsize=(10, 7))
 
     lp = f"  (LP {drift_cutoff / 1e6:.1f} MHz)" if drift_cutoff else ""
-    carrier_phase_decomposition(
+    plot_carrier_phase_decomposition(
         report["phi"],
         report.get("drift"),
         symbol_rate=symbol_rate,
         ax=axes[0, 0],
         title=f"Recovered carrier phase{lp}",
     )
-    frequency_drift(
+    plot_frequency_drift(
         report["drift_metrics"]["df"],
         symbol_rate=symbol_rate,
         amp_ref=amp_ref,
@@ -3117,7 +3117,7 @@ def carrier_phase_characterization(
     lw_beta = report["linewidth_beta"]
     if floor is None:
         floor = lw_beta.get("linewidth_floor")
-    frequency_noise_psd(
+    plot_frequency_noise_psd(
         lw_beta["f"],
         lw_beta["S_f"],
         beta_line=lw_beta.get("beta_line"),
@@ -3125,7 +3125,7 @@ def carrier_phase_characterization(
         band=band,
         ax=axes[1, 0],
     )
-    allan_deviation(
+    plot_allan_deviation(
         report["allan"]["tau_s"],
         report["allan"]["adev"],
         ax=axes[1, 1],
@@ -3140,7 +3140,7 @@ def carrier_phase_characterization(
     return fig, axes
 
 
-def spectrogram(
+def plot_spectrogram(
     samples: Any,
     sampling_rate: float = 1.0,
     window: str | tuple[Any, ...] | Any = "hann",
@@ -3223,7 +3223,7 @@ def spectrogram(
     """
     if isinstance(samples, Signal):
         sig = samples
-        return spectrogram(
+        return plot_spectrogram(
             sig.samples,
             sampling_rate=sig.sampling_rate,
             window=window,
@@ -3277,7 +3277,7 @@ def spectrogram(
             target_ax = axes[row, col] if row < axes.shape[0] else axes.flat[-1]
             ch_title = f"{title} (Ch {i})" if title else f"Channel {i}"
 
-            spectrogram(
+            plot_spectrogram(
                 channel_samples,
                 sampling_rate=sampling_rate,
                 window=window,

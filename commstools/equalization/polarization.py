@@ -307,7 +307,7 @@ def demultiplex_polarization_tones_dynamic(
         samples of each record end (the convolution averages in zero-padding
         there).  The **data is never filtered**, so timing is unaffected, but
         those edge samples carry residual crosstalk.  If ``True``, drop them:
-        ``demuxed`` is returned as the reliable interior ``(K, N − 2·g)`` with
+        ``demuxed`` is returned as the reliable interior ``(K, N - 2·g)`` with
         ``g = num_taps//2``, together with a ``valid`` slice giving the retained
         sample range in **original** coordinates (so full-length references align
         as ``ref[..., valid]``).
@@ -332,10 +332,10 @@ def demultiplex_polarization_tones_dynamic(
     demuxed : array_like
         Demultiplexed streams. Same complex dtype and backend as the input; row
         ``j`` carried ``tone_frequencies[j]``.  Shape ``(K, N)``, or
-        ``(K, N − 2·(num_taps//2))`` when ``trim_edges=True``.  **Omitted** when
+        ``(K, N - 2·(num_taps//2))`` when ``trim_edges=True``.  **Omitted** when
         ``apply=False`` (the return is then ``(W_grid, grid_positions)``).
     valid : slice, optional
-        Returned only if ``trim_edges=True``: the ``slice(g, N − g)`` of original
+        Returned only if ``trim_edges=True``: the ``slice(g, N - g)`` of original
         sample indices retained in ``demuxed`` (``g = num_taps//2``).  Always
         precedes ``W_grid`` in the output tuple.
     W_grid : array_like, optional
