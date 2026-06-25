@@ -136,16 +136,12 @@ Since `bump-my-version` is defined in the project's development dependencies, al
 
 ## 3. Reference Implementation Files
 
-For complete end-to-end digital transceiver pipelines and visualization setups, refer to the high-quality Python simulation scripts under the `examples/` directory:
-
-* **Single-Carrier Transmission & Recovery**:
-  * [single_carrier_transmission.py](file:///home/lokgar/commstools/examples/single_carrier_transmission.py): End-to-end timing synchronization (integer/fractional), frequency offset recovery (Mengali-Morelli), matched filtering, carrier phase recovery (Viterbi-Viterbi), phase ambiguity resolution, and performance analysis (EVM, BER) on a 16-QAM baseband signal.
-* **Multi-Stage & Cascaded Equalization**:
-  * [multi_stage_equalization.py](file:///home/lokgar/commstools/examples/multi_stage_equalization.py): Detailed coherent receiver DSP chain illustrating cascaded fractionally-spaced blind CMA, pilot-aided LMS, frequency/phase synchronization, and residual symbol-spaced LMS equalization.
-* **End-to-End Coherent Optical Pipeline**:
-  * [psqam_intradyne_pipeline.py](file:///home/lokgar/commstools/examples/psqam_intradyne_pipeline.py): High-fidelity simulation of a coherent optical intradyne transceiver system modeling IQ imbalance, PMD polarization mixing, chromatic dispersion, frequency/phase recovery, and butterfly MIMO equalization with probabilistic constellation shaping.
-* **Visualization and Diagnostic Plots**:
-  * [generate_plots.py](file:///home/lokgar/commstools/examples/generate_plots.py): Script utilizing the library's styling and plotting theme to generate constellation density plots, PSD spectra, and high-density 2D eye diagrams.
+> The previous `examples/` directory (notebooks, end-to-end scripts, and
+> generated images) was removed during the Phase 3 refactor. New examples
+> targeting the free-function API (`metrics.evm(sig)`, `multirate.resample(sig)`,
+> `plotting.constellation(sig)`, `qam(...)`, …) will be added once the
+> restructuring settles. Until then, `tests/` is the most current usage
+> reference for every public function.
 
 ---
 
