@@ -110,6 +110,8 @@ ignore = [
 # Numba/JAX kernel factories rely on closures and loop-variable rebinding that
 # trip bugbear's B023; tests intentionally use broad constructs.
 "commstools/equalization/_kernels_*.py" = ["B023"]
+# Package re-export hubs deliberately import names for the public namespace.
+"commstools/equalization/__init__.py" = ["F401"]
 "tests/**" = ["B011", "E741"]
 
 [tool.mypy]

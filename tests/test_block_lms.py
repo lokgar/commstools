@@ -813,7 +813,9 @@ def test_block_lms_bps_loop_transfer_count_constant(
         if _cuda.get_kernel("cs_block") is None:
             pytest.skip("cs_block CUDA kernel unavailable — fallback transfers")
 
-    import commstools.equalization as eqmod
+    # block_lms lives in the equalization._block submodule and resolves
+    # to_device in that namespace; spy there to count host-device transfers.
+    import commstools.equalization._block as eqmod
 
     real_to_device = eqmod.to_device
     counts = {"n": 0}

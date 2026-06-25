@@ -1933,7 +1933,7 @@ class TestImportErrorBranches:
     def test_lms_jax_not_installed(self, backend_device, xp):
         """LMS raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization.sequential._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
                 equalization.lms(rx, modulation="psk", order=4, backend="jax")
 
@@ -1941,7 +1941,7 @@ class TestImportErrorBranches:
         """RLS raises ImportError when backend='numba' but Numba is not available."""
         rx, sig = self._make_rx(xp)
         train = xp.asarray(sig.source_symbols)
-        with patch("commstools.equalization._get_numba", return_value=None):
+        with patch("commstools.equalization.sequential._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
                 equalization.rls(
                     rx,
@@ -1956,7 +1956,7 @@ class TestImportErrorBranches:
         """RLS raises ImportError when backend='jax' but JAX is not available."""
         rx, sig = self._make_rx(xp)
         train = xp.asarray(sig.source_symbols)
-        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization.sequential._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
                 equalization.rls(
                     rx,
@@ -1970,28 +1970,28 @@ class TestImportErrorBranches:
     def test_cma_numba_not_installed(self, backend_device, xp):
         """CMA raises ImportError when backend='numba' but Numba is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalization._get_numba", return_value=None):
+        with patch("commstools.equalization.sequential._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
                 equalization.cma(rx, modulation="psk", order=4, backend="numba")
 
     def test_cma_jax_not_installed(self, backend_device, xp):
         """CMA raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization.sequential._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
                 equalization.cma(rx, modulation="psk", order=4, backend="jax")
 
     def test_rde_numba_not_installed(self, backend_device, xp):
         """RDE raises ImportError when backend='numba' but Numba is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalization._get_numba", return_value=None):
+        with patch("commstools.equalization.sequential._get_numba", return_value=None):
             with pytest.raises(ImportError, match="Numba is required"):
                 equalization.rde(rx, modulation="qam", order=16, backend="numba")
 
     def test_rde_jax_not_installed(self, backend_device, xp):
         """RDE raises ImportError when backend='jax' but JAX is not available."""
         rx, _ = self._make_rx(xp)
-        with patch("commstools.equalization._get_jax", return_value=(None, None, None)):
+        with patch("commstools.equalization.sequential._get_jax", return_value=(None, None, None)):
             with pytest.raises(ImportError, match="JAX is required"):
                 equalization.rde(rx, modulation="qam", order=16, backend="jax")
 
