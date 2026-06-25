@@ -1154,7 +1154,7 @@ class TestResolvePhaseAmbiguity:
         sig.samples = apply_awgn(sig.samples, esn0_db=30, sps=1, seed=9)
         sym = normalize(sig.samples, "average_power")
         sig.resolved_symbols = sym * xp.exp(1j * np.pi / 2).astype(sym.dtype)
-        sig.resolve_phase_ambiguity()
+        sig = recovery.resolve_phase_ambiguity(sig)
         assert sig.resolved_symbols is not None
         ref = normalize(xp.asarray(sig.source_symbols), "average_power")
         assert float(ser(sig.resolved_symbols, ref, "qam", 16)) < 0.1
@@ -1163,7 +1163,7 @@ class TestResolvePhaseAmbiguity:
         """Raises ValueError when resolved_symbols is None."""
         sig = Signal.qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
         with pytest.raises(ValueError, match="resolved_symbols"):
-            sig.resolve_phase_ambiguity()
+            sig = recovery.resolve_phase_ambiguity(sig)
 
     def test_signal_method_raises_without_source(self, backend_device, xp):
         """Raises ValueError when source_symbols is None."""
@@ -1171,7 +1171,7 @@ class TestResolvePhaseAmbiguity:
         sig.resolved_symbols = sig.samples
         sig.source_symbols = None
         with pytest.raises(ValueError, match="source_symbols"):
-            sig.resolve_phase_ambiguity()
+            sig = recovery.resolve_phase_ambiguity(sig)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

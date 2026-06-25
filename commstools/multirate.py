@@ -416,3 +416,72 @@ def resample(
         # sps_after / sps_before = up / down  ->  gain = sqrt(down/up).
         out = out * (down / up) ** 0.5
     return out
+
+
+def resolve_symbols(
+    samples: ArrayType | Signal,
+    sps: int | None = None,
+    offset: int = 0,
+) -> ArrayType | Signal:
+    """
+    Decimate to symbol rate (1 sps) and normalize to unit average power.
+
+    This is the canonical receive-side symbol-extraction step: it slices the
+    matched-filtered signal to one sample per symbol and renormalizes to
+    ``E[|x|²]=1`` (absorbing channel/equalizer/filter gain).
+
+    Parameters
+    ----------
+    samples : array_like or Signal
+        Oversampled (matched-filtered) signal, or a :class:`Signal`.  For a
+        :class:`Signal`, a new :class:`Signal` is returned with
+        ``resolved_symbols`` populated (the samples themselves are unchanged);
+        ``sps`` is taken from the signal and frame-generated signals are
+        skipped with a warning.
+    sps : int, optional
+        Input samples per symbol.  Required for array input; derived from the
+        signal otherwise.
+    offset : int, default 0
+        Integer sampling-phase offset applied before decimation.
+
+    Returns
+    -------
+    array_like or Signal
+        Unit-average-power symbols at 1 sps (array), or a new :class:`Signal`
+        with ``resolved_symbols`` set.
+
+    Raises
+    ------
+    ValueError
+        If ``sps`` is missing/invalid (array), or the signal's ``sps`` is not a
+        positive integer.
+    """
+    if isinstance(samples, Signal):
+        sig = samples
+        if sig.signal_type is not None:
+            logger.warning(
+                "resolve_symbols() called on a frame-generated signal — skipping. "
+                "Frame signals mix preamble, pilots, and payload segments that may "
+                "have different modulations or gains. Extract the desired segment "
+                "via frame.get_structure_map(), build a plain Signal, then call "
+                "resolve_symbols() on that."
+            )
+            return sig.copy()
+        s = sig.sps
+        if s is None:
+            raise ValueError("Symbol rate or sampling rate missing.")
+        if s < 1:
+            raise ValueError("Symbol rate must be >= 1.")
+        if s % 1 != 0:
+            raise ValueError("Symbol rate must be an integer.")
+        new = sig.copy()
+        new.resolved_symbols = resolve_symbols(sig.samples, sps=int(s), offset=offset)
+        return new
+
+    if sps is None:
+        raise ValueError("resolve_symbols() requires sps for array input.")
+    # decimate_to_symbol_rate slices [offset::sps] (identity when sps==1) then
+    # normalizes to unit average power.
+    return decimate_to_symbol_rate(
+        samples, sps=int(sps), offset=int(offset), normalize=True
+    )

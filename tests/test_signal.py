@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering, metrics, multirate, plotting, spectral
+from commstools import filtering, mapping, metrics, multirate, plotting, spectral
 from commstools.core import Signal
 
 
@@ -237,16 +237,16 @@ def test_signal_resolution_and_demap(backend_device, xp, xpt):
 
     # Calling demap_symbols_hard before resolve_symbols should raise ValueError
     with pytest.raises(ValueError, match="No resolved symbols available"):
-        sig.demap_symbols_hard()
+        sig = mapping.demap_symbols_hard(sig)
 
     # Resolve symbols with offset
-    sig.resolve_symbols(offset=0)
+    sig = multirate.resolve_symbols(sig, offset=0)
     assert sig.resolved_symbols is not None
     assert len(sig.resolved_symbols) == num_symbols
     assert isinstance(sig.resolved_symbols, xp.ndarray)
 
     # Demap
-    sig.demap_symbols_hard()
+    sig = mapping.demap_symbols_hard(sig)
     assert sig.resolved_bits is not None
     assert len(sig.resolved_bits) == num_symbols
 
@@ -504,14 +504,14 @@ def test_resolve_symbols_sps_errors(backend_device, xp):
         samples=xp.ones(10, dtype="complex64"), sampling_rate=1.0, symbol_rate=2.0
     )
     with pytest.raises(ValueError, match="Symbol rate must be >= 1"):
-        s.resolve_symbols()
+        s = multirate.resolve_symbols(s)
 
     # Non-integer SPS
     s2 = Signal(
         samples=xp.ones(10, dtype="complex64"), sampling_rate=3.0, symbol_rate=2.0
     )
     with pytest.raises(ValueError, match="Symbol rate must be an integer"):
-        s2.resolve_symbols()
+        s2 = multirate.resolve_symbols(s2)
 
 
 def test_demap_without_modulation(backend_device, xp):
@@ -521,7 +521,7 @@ def test_demap_without_modulation(backend_device, xp):
     )
     s.resolved_symbols = xp.ones(10, dtype="complex64")
     with pytest.raises(ValueError, match="Modulation scheme and order required"):
-        s.demap_symbols_hard()
+        s = mapping.demap_symbols_hard(s)
 
 
 def test_evm_no_reference(backend_device, xp):
@@ -631,7 +631,7 @@ def test_evm_with_explicit_num_train_symbols(backend_device, xp):
         mod_order=4,
         source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
     )
-    rx.resolve_symbols()
+    rx = multirate.resolve_symbols(rx)
 
     evm_pct, evm_db = metrics.evm(rx, num_train_symbols=n_train)
     assert np.isfinite(float(evm_db))
@@ -669,7 +669,7 @@ def test_snr_with_explicit_num_train_symbols(backend_device, xp):
         mod_order=4,
         source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
     )
-    rx.resolve_symbols()
+    rx = multirate.resolve_symbols(rx)
 
     snr_val = metrics.snr(rx, num_train_symbols=result.num_train_symbols)
     assert np.isfinite(snr_val)
@@ -707,8 +707,8 @@ def test_ber_with_explicit_num_train_symbols(backend_device, xp):
         source_symbols=orig.source_symbols[..., : result.y_hat.shape[-1]],
         source_bits=orig.source_bits[..., : result.y_hat.shape[-1] * 2],
     )
-    rx.resolve_symbols()
-    rx.demap_symbols_hard()
+    rx = multirate.resolve_symbols(rx)
+    rx = mapping.demap_symbols_hard(rx)
 
     ber_val = metrics.ber(rx, num_train_symbols=result.num_train_symbols)
     assert np.isfinite(float(ber_val))

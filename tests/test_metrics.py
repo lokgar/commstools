@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools import metrics
+from commstools import mapping, metrics, multirate
 from commstools.helpers import random_symbols
 from commstools.impairments import apply_awgn
 
@@ -97,7 +97,7 @@ def test_signal_evm_method(backend_device, xp):
     )
 
     # Must resolve symbols before EVM
-    sig.resolve_symbols()
+    sig = multirate.resolve_symbols(sig)
     evm_pct, evm_db = metrics.evm(sig)
     # Relaxed slightly for robustness logic which might have tiny epsilon effects
     assert evm_pct < 1e-4  # Near-zero EVM for perfect signal
@@ -113,8 +113,8 @@ def test_signal_ber_method(backend_device, xp):
     )
 
     # Must resolve symbols then demap symbols before BER
-    sig.resolve_symbols()
-    sig.demap_symbols_hard()
+    sig = multirate.resolve_symbols(sig)
+    sig = mapping.demap_symbols_hard(sig)
     ber_val = metrics.ber(sig)
     assert ber_val == 0.0  # Perfect signal, no errors
 
@@ -128,9 +128,9 @@ def test_signal_demap_hard(backend_device, xp, xpt):
     )
 
     # Must resolve symbols before demapping
-    sig.resolve_symbols()
+    sig = multirate.resolve_symbols(sig)
     # Demap to bits
-    sig.demap_symbols_hard()
+    sig = mapping.demap_symbols_hard(sig)
 
     # Should match source_bits
     xpt.assert_array_equal(sig.resolved_bits.flatten(), sig.source_bits.flatten())
@@ -354,7 +354,7 @@ def test_signal_evm_blind(backend_device, xp):
     sig = Signal.qam(
         order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
-    sig.resolve_symbols()
+    sig = multirate.resolve_symbols(sig)
 
     pct, db = metrics.evm(sig, mode="blind")
     assert pct < 3.0
@@ -418,7 +418,7 @@ def test_signal_ser_method(backend_device, xp):
     sig = Signal.qam(
         order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none"
     )
-    sig.resolve_symbols()
+    sig = multirate.resolve_symbols(sig)
 
     assert metrics.ser(sig) == 0.0
 

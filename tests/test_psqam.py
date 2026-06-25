@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools import metrics
+from commstools import mapping, metrics, multirate
 from commstools.backend import to_device
 from commstools.core import Signal
 from commstools.impairments import apply_awgn
@@ -217,8 +217,8 @@ def test_psqam_ber_computable():
     )
     noisy = apply_awgn(sig.samples, esn0_db=20.0, sps=1)
     sig.samples = noisy
-    sig.resolve_symbols()
-    sig.demap_symbols_hard()
+    sig = multirate.resolve_symbols(sig)
+    sig = mapping.demap_symbols_hard(sig)
     ber_val = metrics.ber(sig.resolved_bits, sig.source_bits)
     assert 0.0 <= ber_val <= 1.0
 

@@ -7,7 +7,7 @@ import numpy.testing as npt
 import pytest
 
 import commstools
-from commstools import Preamble, Signal, SingleCarrierFrame
+from commstools import Preamble, Signal, SingleCarrierFrame, multirate
 from commstools.io import load_npz, save_npz
 
 try:
@@ -215,7 +215,7 @@ def test_no_source_arrays_when_none(tmp_path):
 
 def test_include_cache_false_by_default(tmp_path):
     sig = _siso_signal()
-    sig.resolve_symbols()  # populate cache
+    sig = multirate.resolve_symbols(sig)  # populate cache
     assert sig.resolved_symbols is not None
 
     p = tmp_path / "sig.npz"
@@ -228,7 +228,7 @@ def test_include_cache_false_by_default(tmp_path):
 
 def test_include_cache_roundtrip(tmp_path):
     sig = _siso_signal()
-    sig.resolve_symbols()
+    sig = multirate.resolve_symbols(sig)
     assert sig.resolved_symbols is not None
 
     p = tmp_path / "sig_cache.npz"

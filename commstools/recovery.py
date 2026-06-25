@@ -50,6 +50,7 @@ import logging
 import numpy as np
 
 from .backend import ArrayType, dispatch, to_device
+from .core.signal import Signal
 from .frequency import _modulation_power_m, find_bias_tone
 from .logger import logger
 
@@ -2502,11 +2503,11 @@ def correct_cycle_slips(
 
 
 def resolve_channel_permutation(
-    symbols: ArrayType,
-    ref_symbols: ArrayType,
+    symbols: ArrayType | Signal,
+    ref_symbols: ArrayType | None = None,
     *,
     num_skip_symbols: int = 0,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """Resolve a polarization (channel) permutation after MIMO equalization.
 
     A MIMO (butterfly) equalizer has a **polarization-permutation ambiguity**:
@@ -2541,7 +2542,32 @@ def resolve_channel_permutation(
     array_like
         ``symbols`` with channels reordered to match ``ref_symbols``; same
         shape, dtype, and backend.
+    When ``symbols`` is a :class:`Signal`, ``resolved_symbols`` is reordered
+    against ``source_symbols`` and a new :class:`Signal` is returned.
     """
+    if isinstance(symbols, Signal):
+        sig = symbols
+        if sig.resolved_symbols is None:
+            raise ValueError(
+                "resolved_symbols is not set. Call resolve_symbols(sig) or assign "
+                "resolved_symbols before calling resolve_channel_permutation()."
+            )
+        if sig.source_symbols is None:
+            raise ValueError(
+                "source_symbols is not set. Populate source_symbols (the known TX "
+                "symbol sequence) before calling resolve_channel_permutation()."
+            )
+        new = sig.copy()
+        new.resolved_symbols = resolve_channel_permutation(
+            sig.resolved_symbols,
+            sig.source_symbols,
+            num_skip_symbols=num_skip_symbols,
+        )
+        return new
+
+    if ref_symbols is None:
+        raise ValueError("resolve_channel_permutation() requires ref_symbols.")
+
     from scipy.optimize import linear_sum_assignment
 
     symbols, xp, _ = dispatch(symbols)
@@ -2593,14 +2619,14 @@ def resolve_channel_permutation(
 
 
 def resolve_phase_ambiguity(
-    symbols: ArrayType,
-    ref_symbols: ArrayType,
-    modulation: str,
-    order: int,
+    symbols: ArrayType | Signal,
+    ref_symbols: ArrayType | None = None,
+    modulation: str | None = None,
+    order: int | None = None,
     symmetry_order: int | None = None,
     num_skip_symbols: int = 0,
     pmf: np.ndarray | None = None,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Resolves rotational phase ambiguity after blind carrier phase recovery.
 
@@ -2646,7 +2672,42 @@ def resolve_phase_ambiguity(
     -------
     array_like
         Phase-ambiguity-resolved symbols, same shape and dtype as ``symbols``.
+
+    When ``symbols`` is a :class:`Signal`, ``resolved_symbols`` is resolved
+    against ``source_symbols`` (using the signal's modulation/order/pmf) and a
+    new :class:`Signal` is returned.
     """
+    if isinstance(symbols, Signal):
+        sig = symbols
+        if sig.resolved_symbols is None:
+            raise ValueError(
+                "resolved_symbols is not set. Call resolve_symbols(sig) or assign "
+                "resolved_symbols before calling resolve_phase_ambiguity()."
+            )
+        if sig.source_symbols is None:
+            raise ValueError(
+                "source_symbols is not set. Populate source_symbols (the known TX "
+                "symbol sequence) before calling resolve_phase_ambiguity()."
+            )
+        if sig.mod_scheme is None or sig.mod_order is None:
+            raise ValueError("mod_scheme and mod_order must be set.")
+        new = sig.copy()
+        new.resolved_symbols = resolve_phase_ambiguity(
+            sig.resolved_symbols,
+            sig.source_symbols,
+            sig.mod_scheme,
+            sig.mod_order,
+            symmetry_order=symmetry_order,
+            num_skip_symbols=num_skip_symbols,
+            pmf=sig.ps_pmf,
+        )
+        return new
+
+    if ref_symbols is None or modulation is None or order is None:
+        raise ValueError(
+            "resolve_phase_ambiguity() requires ref_symbols, modulation, and order."
+        )
+
     from .metrics import ser as _ser
 
     symbols, xp, _ = dispatch(symbols)

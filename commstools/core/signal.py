@@ -21,7 +21,7 @@ SingleCarrierFrame :
 """
 
 import types
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from pydantic import (
@@ -1247,8 +1247,11 @@ class Signal(BaseModel):
         # Sample symbols from MB distribution (NumPy, CPU)
         symbols_flat = mapping.sample_ps_symbols(total_symbols, order, pmf, seed=seed)
 
-        # Derive source bits by demapping noiseless shaped symbols (lossless)
-        bits_flat = mapping.demap_symbols_hard(symbols_flat, "qam", order)
+        # Derive source bits by demapping noiseless shaped symbols (lossless).
+        # Array input -> array output (the Signal-dispatch branch is not taken).
+        bits_flat = cast(
+            ArrayType, mapping.demap_symbols_hard(symbols_flat, "qam", order)
+        )
 
         if num_streams > 1:
             symbols = symbols_flat.reshape(num_streams, num_symbols)
@@ -1286,215 +1289,4 @@ class Signal(BaseModel):
             rrc_rolloff=rrc_rolloff,
             rc_rolloff=rc_rolloff,
             duty_cycle=duty_cycle,
-        )
-
-    # -------------------------------------------------------------------------
-    # Resolving and Demapping Methods
-    # -------------------------------------------------------------------------
-
-    def resolve_symbols(self, offset: int = 0) -> None:
-        """Decimate to symbol rate and populate ``resolved_symbols``.
-
-        Decimates ``self.samples`` to 1 SPS and normalises to unit average
-        power (Es = 1), writing the result to ``self.resolved_symbols``.
-
-        Parameters
-        ----------
-        offset : int, default 0
-            Sample offset applied before decimation (integer only).
-            Use after timing correction to select the optimal sampling instant.
-
-        Notes
-        -----
-        The normalisation step absorbs any gain introduced by the channel,
-        equaliser, or matched filter.  It does not change the constellation
-        shape, only the scale.
-
-        Designed for plain (non-frame) signals at a single modulation/gain.
-        Frame signals contain preamble, pilots, and payload packed together,
-        potentially with different modulations or pilot boosts.  Calling
-        this on a frame signal is skipped with a warning; extract the
-        desired segment, create a plain ``Signal``, then call
-        ``resolve_symbols()`` on that.
-
-        Raises
-        ------
-        ValueError
-            If ``symbol_rate`` or ``sampling_rate`` are missing, or SPS is
-            not a positive integer.
-        """
-        if self.signal_type is not None:
-            logger.warning(
-                "resolve_symbols() called on a frame-generated signal — skipping. "
-                "Frame signals mix preamble, pilots, and payload segments that may "
-                "have different modulations or gains. Extract the desired segment "
-                "via frame.get_structure_map(), build a plain Signal, then call "
-                "resolve_symbols() on that."
-            )
-            return
-
-        sps = self.sps
-        if sps is None:
-            raise ValueError("Symbol rate or sampling rate missing.")
-
-        if sps < 1:
-            raise ValueError("Symbol rate must be >= 1.")
-
-        if sps % 1 != 0:
-            raise ValueError("Symbol rate must be an integer.")
-
-        if sps == 1:
-            logger.info("Signal already at 1 sps, no downsampling needed.")
-            res = self.samples
-        else:
-            from .. import multirate
-
-            logger.info(
-                f"SpS is not 1. Decimating to symbol rate with sps={sps} and offset={offset}."
-            )
-            res = multirate.decimate_to_symbol_rate(
-                self.samples, sps=int(sps), offset=int(offset), axis=-1
-            )
-
-        self.resolved_symbols = helpers.normalize(res, "average_power", axis=-1)
-
-    def demap_symbols_hard(
-        self,
-        **kwargs: Any,
-    ) -> None:
-        """Map resolved symbols to bits and store in ``self.resolved_bits``.
-
-        Performs hard-decision demapping via minimum Euclidean distance and
-        writes the result to ``self.resolved_bits``.  Call
-        ``resolve_symbols()`` first.
-
-        Parameters
-        ----------
-        **kwargs : Any
-            Additional arguments forwarded to ``mapping.demap_symbols_hard``
-            (e.g. ``unipolar``).
-
-        Raises
-        ------
-        ValueError
-            If modulation metadata is missing or ``resolve_symbols()`` has
-            not been called yet.
-        """
-        from ..mapping import demap_symbols_hard
-
-        if self.signal_type is not None:
-            logger.warning(
-                "demap_symbols_hard() called on a frame-generated signal — skipping. "
-                "Extract the payload segment via frame.get_structure_map() and build "
-                "a plain Signal before demapping."
-            )
-            return
-
-        if self.mod_scheme is None or self.mod_order is None:
-            raise ValueError("Modulation scheme and order required for demapping.")
-
-        if self.resolved_symbols is None:
-            raise ValueError(
-                "No resolved symbols available. Please call `resolve_symbols()` "
-                "first to decimate the signal to symbol rate."
-            )
-
-        # Auto-forward ps_pmf for PS-QAM: receive-path symbols at unit avg
-        # power live on ``{s_m/sqrt(E_PS)}``; demap_symbols_hard rescales
-        # them to the ``{s_m}`` grid expected by ``gray_constellation``.
-        kwargs.setdefault("pmf", self.ps_pmf)
-        bits = demap_symbols_hard(
-            symbols=self.resolved_symbols,
-            modulation=self.mod_scheme,
-            order=self.mod_order,
-            unipolar=self.mod_unipolar or False,
-            **kwargs,
-        )
-        self.resolved_bits = bits
-
-    def resolve_phase_ambiguity(self) -> None:
-        """
-        Resolves rotational phase ambiguity in ``resolved_symbols`` in place.
-
-        After blind CPR (VV, BPS, Tikhonov) a global pi/2 (QAM) or
-        2pi/M (PSK) phase ambiguity remains per stream.  This method tests
-        all symmetry rotations, scores each against ``source_symbols`` by SER,
-        and overwrites ``resolved_symbols`` with the best rotation.
-
-        For MIMO (``resolved_symbols`` shape ``(C, N)``), each channel is
-        resolved independently — after MIMO equalisation different output
-        streams may land on different ambiguity branches.
-
-        The result is written to ``self.resolved_symbols`` in place.
-
-        Raises
-        ------
-        ValueError
-            If ``resolved_symbols``, ``source_symbols``, ``mod_scheme``, or
-            ``mod_order`` are not populated.
-        """
-        from ..recovery import resolve_phase_ambiguity as _resolve
-
-        if self.resolved_symbols is None:
-            raise ValueError(
-                "resolved_symbols is not set. Call resolve_symbols() or assign "
-                "resolved_symbols directly before calling resolve_phase_ambiguity()."
-            )
-        if self.source_symbols is None:
-            raise ValueError(
-                "source_symbols is not set. Populate source_symbols (the known TX "
-                "symbol sequence) before calling resolve_phase_ambiguity()."
-            )
-        if self.mod_scheme is None or self.mod_order is None:
-            raise ValueError("mod_scheme and mod_order must be set.")
-
-        self.resolved_symbols = _resolve(
-            symbols=self.resolved_symbols,
-            ref_symbols=self.source_symbols,
-            modulation=self.mod_scheme,
-            order=self.mod_order,
-            pmf=self.ps_pmf,
-        )
-
-    def resolve_channel_permutation(self, num_skip_symbols: int = 0) -> None:
-        """Resolve a polarization (channel) permutation in ``resolved_symbols``.
-
-        A MIMO equalizer may emit the polarizations in swapped output order; per
-        channel metrics would then score a valid demux as random.  This matches
-        each output stream to the ``source_symbols`` stream it carries and
-        reorders ``resolved_symbols`` in place to reference order.
-
-        Run **before** ``resolve_phase_ambiguity()`` (it is rotation
-        invariant) and before SER/BER.  No-op for SISO or a converged
-        data-aided equalizer; the fix for blind MIMO whose output order is
-        arbitrary.
-
-        Parameters
-        ----------
-        num_skip_symbols : int, default 0
-            Leading symbols excluded from the correlation scoring.
-
-        Raises
-        ------
-        ValueError
-            If ``resolved_symbols`` or ``source_symbols`` are not populated.
-        """
-        from ..recovery import resolve_channel_permutation as _resolve_perm
-
-        if self.resolved_symbols is None:
-            raise ValueError(
-                "resolved_symbols is not set. Call resolve_symbols() or assign "
-                "resolved_symbols directly before calling "
-                "resolve_channel_permutation()."
-            )
-        if self.source_symbols is None:
-            raise ValueError(
-                "source_symbols is not set. Populate source_symbols (the known TX "
-                "symbol sequence) before calling resolve_channel_permutation()."
-            )
-
-        self.resolved_symbols = _resolve_perm(
-            self.resolved_symbols,
-            self.source_symbols,
-            num_skip_symbols=num_skip_symbols,
         )

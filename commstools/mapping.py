@@ -43,6 +43,7 @@ from typing import Any
 import numpy as np
 
 from .backend import ArrayType, _get_jax, dispatch, is_jax_array, to_device, to_jax
+from .core.signal import Signal
 from .logger import logger
 
 # Lazy cache for JIT-compiled soft demapping kernels
@@ -595,12 +596,12 @@ def map_bits(
 
 
 def demap_symbols_hard(
-    symbols: ArrayType,
-    modulation: str,
-    order: int,
+    symbols: ArrayType | Signal,
+    modulation: str | None = None,
+    order: int | None = None,
     unipolar: bool = False,
     pmf: np.ndarray | None = None,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Maps complex symbols back to a sequence of bits (hard decisions).
 
@@ -633,6 +634,34 @@ def demap_symbols_hard(
         Sequence of bits (0s and 1s). Shape: (..., N_symbols * log2(order)).
         The backend (NumPy/CuPy) matches the input `symbols`.
     """
+    if isinstance(symbols, Signal):
+        sig = symbols
+        if sig.signal_type is not None:
+            logger.warning(
+                "demap_symbols_hard() called on a frame-generated signal — skipping. "
+                "Extract the payload segment via frame.get_structure_map() and build "
+                "a plain Signal before demapping."
+            )
+            return sig.copy()
+        if sig.mod_scheme is None or sig.mod_order is None:
+            raise ValueError("Modulation scheme and order required for demapping.")
+        if sig.resolved_symbols is None:
+            raise ValueError(
+                "No resolved symbols available. Call resolve_symbols(sig) first."
+            )
+        new = sig.copy()
+        new.resolved_bits = demap_symbols_hard(
+            sig.resolved_symbols,
+            sig.mod_scheme,
+            sig.mod_order,
+            unipolar=sig.mod_unipolar or False,
+            pmf=sig.ps_pmf if pmf is None else pmf,
+        )
+        return new
+
+    if modulation is None or order is None:
+        raise ValueError("demap_symbols_hard() requires modulation and order.")
+
     logger.debug(f"Demapping {modulation.upper()} {order}-level symbols to bits.")
     symbols, xp, _ = dispatch(symbols)
 

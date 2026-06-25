@@ -49,7 +49,9 @@ from commstools import (
     equalization,
     filtering,
     frequency,
+    mapping,
     metrics,
+    multirate,
     plotting,
     recovery,
     spectral,
@@ -172,12 +174,12 @@ sig_s1_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
 sig_s1_eval.source_bits = sig_tx.source_bits[
     ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
 ]
-sig_s1_eval.resolve_symbols()
+sig_s1_eval = multirate.resolve_symbols(sig_s1_eval)
 
 evm_pct_s1, evm_db_s1 = metrics.evm(sig_s1_eval)
 snr_val_s1 = metrics.snr(sig_s1_eval)
 ser_val_s1 = metrics.ser(sig_s1_eval)
-sig_s1_eval.demap_symbols_hard()
+sig_s1_eval = mapping.demap_symbols_hard(sig_s1_eval)
 ber_val_s1 = metrics.ber(sig_s1_eval)
 
 print("\n  Stage 1 (RDE FSE) Raw Metrics (Before FOE/CPR/Sync):")
@@ -323,12 +325,12 @@ sig_cpr_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
 sig_cpr_eval.source_bits = sig_tx.source_bits[
     ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
 ]
-sig_cpr_eval.resolve_symbols()
+sig_cpr_eval = multirate.resolve_symbols(sig_cpr_eval)
 
 evm_pct_cpr, evm_db_cpr = metrics.evm(sig_cpr_eval)
 snr_val_cpr = metrics.snr(sig_cpr_eval)
 ser_val_cpr = metrics.ser(sig_cpr_eval)
-sig_cpr_eval.demap_symbols_hard()
+sig_cpr_eval = mapping.demap_symbols_hard(sig_cpr_eval)
 ber_val_cpr = metrics.ber(sig_cpr_eval)
 
 print("\n  Post-CPR (FOE + CPR + Timing Sync) Metrics:")
@@ -376,12 +378,12 @@ sig_s2_eval.source_symbols = sig_tx.source_symbols[..., idx_eval]
 sig_s2_eval.source_bits = sig_tx.source_bits[
     ..., N_TRAIN * bits_per_sym : -100 * bits_per_sym
 ]
-sig_s2_eval.resolve_symbols()
+sig_s2_eval = multirate.resolve_symbols(sig_s2_eval)
 
 evm_pct_s2, evm_db_s2 = metrics.evm(sig_s2_eval)
 snr_val_s2 = metrics.snr(sig_s2_eval)
 ser_val_s2 = metrics.ser(sig_s2_eval)
-sig_s2_eval.demap_symbols_hard()
+sig_s2_eval = mapping.demap_symbols_hard(sig_s2_eval)
 ber_val_s2 = metrics.ber(sig_s2_eval)
 
 print("\n  Stage 2 (LMS SSE) Metrics (Direct against Reference):")
@@ -487,7 +489,8 @@ try:
     rx_1sps = rx[::SPS]
     sig_rx_impaired = sig_tx.copy()
     sig_rx_impaired.samples = rx_1sps
-    plotting.constellation(sig_rx_impaired, 
+    plotting.constellation(
+        sig_rx_impaired,
         ax=axes[0, 0],
         bins=80,
         title="1. Raw RX Constellation\n(Smeared dispersion + Spinning CFO)",
@@ -497,7 +500,8 @@ try:
     # B. Stage 1 RDE Output (concentric rings showing opened amplitude rings but spinning phase)
     sig_rde = sig_tx.copy()
     sig_rde.samples = y_s1
-    plotting.constellation(sig_rde, 
+    plotting.constellation(
+        sig_rde,
         ax=axes[0, 1],
         bins=100,
         title=f"2. Stage 1 RDE FSE Output\n(Concentric Rings, EVM = {evm_pct_s1:.1f}%)",
@@ -507,7 +511,8 @@ try:
     # C. Post-CPR (despun, timing-synchronized, ambiguity-resolved)
     sig_cpr = sig_tx.copy()
     sig_cpr.samples = y_cpr_resolved
-    plotting.constellation(sig_cpr, 
+    plotting.constellation(
+        sig_cpr,
         ax=axes[1, 0],
         bins=100,
         overlay_ideal=True,
@@ -518,7 +523,8 @@ try:
     # D. Stage 2 LMS SSE (residual ISI cleaned up)
     sig_final = sig_tx.copy()
     sig_final.samples = y_final
-    plotting.constellation(sig_final, 
+    plotting.constellation(
+        sig_final,
         ax=axes[1, 1],
         bins=120,
         overlay_ideal=True,

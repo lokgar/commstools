@@ -26,7 +26,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, filtering, metrics, plotting, spectral
+from commstools import (
+    Signal,
+    filtering,
+    mapping,
+    metrics,
+    multirate,
+    plotting,
+    recovery,
+    spectral,
+)
 from commstools.backend import to_device
 from commstools.frequency import (
     correct_static_frequency_offset,
@@ -175,8 +184,8 @@ def main():
     # F. Resolve Phase Ambiguity
     # Blind CPR leaves a residual π/2 (90 degree) phase ambiguity; resolve it against Tx symbols
     print("    - Resolving Phase Ambiguity...")
-    sig_symbols.resolve_symbols()
-    sig_symbols.resolve_phase_ambiguity()
+    sig_symbols = multirate.resolve_symbols(sig_symbols)
+    sig_symbols = recovery.resolve_phase_ambiguity(sig_symbols)
 
     # ──────────────────────────────────────────────────────────────────────────────
     # 5. METRICS ANALYSIS
@@ -188,7 +197,7 @@ def main():
 
     # Bit Error Rate (BER)
     # Map recovered symbols back to bits and compare with sig_tx.source_bits
-    sig_symbols.demap_symbols_hard()
+    sig_symbols = mapping.demap_symbols_hard(sig_symbols)
     ber_val = metrics.ber(sig_symbols)
 
     # Calculate bit errors for display purposes

@@ -52,7 +52,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, filtering, metrics, plotting
+from commstools import (
+    Signal,
+    filtering,
+    mapping,
+    metrics,
+    multirate,
+    plotting,
+    recovery,
+)
 from commstools.backend import to_device
 from commstools.equalization import lms
 from commstools.impairments import (
@@ -289,9 +297,9 @@ eq.sampling_rate = rx.symbol_rate  # 1 SPS
 eq.source_symbols = to_device(rx.source_symbols, "cpu")
 eq.source_bits = to_device(rx.source_bits, "cpu")
 
-eq.resolve_symbols()  # avg-power=1 on {s_m / √E_PS}
-eq.resolve_phase_ambiguity()  # auto-forwards self.ps_pmf
-eq.demap_symbols_hard()  # auto-forwards self.ps_pmf
+eq = multirate.resolve_symbols(eq)  # avg-power=1 on {s_m / √E_PS}
+eq = recovery.resolve_phase_ambiguity(eq)  # auto-forwards ps_pmf
+eq = mapping.demap_symbols_hard(eq)  # auto-forwards ps_pmf
 
 os.makedirs("examples/images", exist_ok=True)
 fig_and_ax = plotting.constellation(eq, show=False, overlay_source=True)
