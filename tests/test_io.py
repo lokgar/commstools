@@ -7,7 +7,17 @@ import numpy.testing as npt
 import pytest
 
 import commstools
-from commstools import Preamble, Signal, SingleCarrierFrame, multirate, psqam, qam
+from commstools import (
+    Preamble,
+    Signal,
+    SingleCarrierFrame,
+    filtering,
+    mapping,
+    metrics,
+    multirate,
+    psqam,
+    qam,
+)
 from commstools.io import load_npz, save_npz
 
 try:
@@ -362,3 +372,37 @@ def test_psqam_pmf_roundtrip(tmp_path):
     npt.assert_allclose(np.asarray(loaded.ps_pmf), np.asarray(sig.ps_pmf), rtol=1e-6)
     assert loaded.mod_scheme == "PS-QAM"
     assert loaded.mod_order == 64
+
+
+# -----------------------------------------------------------------------------
+# Free-function pipeline survives a save/load round-trip
+# -----------------------------------------------------------------------------
+
+
+def test_free_function_pipeline_metrics_survive_roundtrip(tmp_path):
+    """A signal processed/measured via the free-function API round-trips with
+    identical metrics, guarding the Signal-container <-> io.py contract after the
+    dispatch refactor (methods -> free functions)."""
+    sig = qam(num_symbols=2000, sps=4, symbol_rate=10e9, order=16, seed=7)
+    sig = filtering.matched_filter(sig)
+    sig = multirate.resolve_symbols(sig)
+    sig = mapping.demap_symbols_hard(sig)
+
+    evm_before = metrics.evm(sig)
+    ber_before = metrics.ber(sig)
+
+    p = tmp_path / "pipeline.npz"
+    save_npz(sig, p, include_cache=True)
+    loaded = load_npz(p, device="cpu")
+
+    # Cache + source arrays round-trip ...
+    npt.assert_array_almost_equal(
+        _np(sig.resolved_symbols), _np(loaded.resolved_symbols)
+    )
+    npt.assert_array_equal(_np(sig.resolved_bits), _np(loaded.resolved_bits))
+    npt.assert_array_equal(_np(sig.source_bits), _np(loaded.source_bits))
+
+    # ... so the same free-function metrics reproduce on the reloaded signal.
+    assert metrics.evm(loaded) is not None
+    npt.assert_allclose(metrics.evm(loaded)[0], evm_before[0], rtol=1e-5)
+    npt.assert_allclose(float(metrics.ber(loaded)), float(ber_before), rtol=1e-9)

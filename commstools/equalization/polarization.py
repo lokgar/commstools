@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -451,7 +451,10 @@ def demultiplex_polarization_tones_dynamic(
     ph = ph - xp.round(ph / two_pi) * two_pi
     mixed = samples_c[:, None, :] * xp.exp(-1j * ph)[None, :, :]  # (C, K, N)
     # One batched linear-phase FIR over (C·K) rows instead of K separate calls.
-    T_t = fir_filter(mixed.reshape(C * K, N), h, axis=-1).reshape(C, K, N)
+    # Array input -> array output (fir_filter's Signal-dispatch branch not taken).
+    T_t = cast(ArrayType, fir_filter(mixed.reshape(C * K, N), h, axis=-1)).reshape(
+        C, K, N
+    )
 
     # --- Invert on a decimated grid -----------------------------------------
     if grid_step is None:
