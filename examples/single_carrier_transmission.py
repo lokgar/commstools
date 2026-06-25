@@ -27,12 +27,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from commstools import (
-    Signal,
     filtering,
     mapping,
     metrics,
     multirate,
     plotting,
+    qam,
     recovery,
     spectral,
 )
@@ -76,7 +76,7 @@ def main():
     # 2. TRANSMITTER
     # ──────────────────────────────────────────────────────────────────────────────
     print("\n[1] Transmitter: Generating 16-QAM pulse-shaped signal...")
-    sig_tx = Signal.qam(
+    sig_tx = qam(
         order=ORDER,
         num_symbols=N_SYM,
         sps=SPS,

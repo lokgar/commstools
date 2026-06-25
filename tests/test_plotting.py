@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering, plotting, spectral
+from commstools import filtering, plotting, psk, spectral
 from commstools.plotting import (
     _create_subplot_grid,
     _plot_eye_traces,
@@ -509,11 +509,11 @@ def test_constellation_siso_show(backend_device, xp):
 
 def test_equalizer_result_mimo_weights(backend_device, xp):
     """equalizer_result with MIMO error/weights plots per-channel error curves and weight matrices."""
-    from commstools import Signal, equalization
+    from commstools import equalization
     from commstools.plotting import equalizer_result
 
     n_symbols = 400
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=4,
@@ -543,10 +543,10 @@ def test_equalizer_result_mimo_weights(backend_device, xp):
 
 def test_equalizer_result_custom_axes(backend_device, xp):
     """equalizer_result with pre-existing axes uses them rather than creating new figures."""
-    from commstools import Signal, equalization
+    from commstools import equalization
     from commstools.plotting import equalizer_result
 
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
     result = equalization.lms(
@@ -567,10 +567,10 @@ def test_equalizer_result_custom_axes(backend_device, xp):
 
 def test_equalizer_result_show(backend_device, xp):
     """equalizer_result with show=True calls plt.show() and returns None."""
-    from commstools import Signal, equalization
+    from commstools import equalization
     from commstools.plotting import equalizer_result
 
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
     result = equalization.lms(
@@ -772,10 +772,10 @@ def test_constellation_vmin_vmax(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_siso(backend_device, xp):
     """equalizer_result() SISO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import Signal, equalization
+    from commstools import equalization
     from commstools.plotting import equalizer_result
 
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=50, order=4, pulse_shape="rrc", sps=2, seed=0
     )
     result = equalization.lms(
@@ -795,10 +795,10 @@ def test_equalizer_result_short_smoothing_siso(backend_device, xp):
 
 def test_equalizer_result_short_smoothing_mimo(backend_device, xp):
     """equalizer_result() MIMO where len(mse) <= smoothing uses raw mse without smoothing."""
-    from commstools import Signal, equalization
+    from commstools import equalization
     from commstools.plotting import equalizer_result
 
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6,
         num_symbols=50,
         order=4,
@@ -871,10 +871,9 @@ def test_spectrogram_plot_mimo(backend_device, xp):
 
 def test_signal_spectrogram_convenience(backend_device, xp):
     """Verify core.Signal.spectrogram and plot_spectrogram convenience methods."""
-    from commstools import Signal
 
     fs = 100.0
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=10.0,
         num_symbols=100,
         order=4,

@@ -2,13 +2,13 @@
 
 import pytest
 
-from commstools import filtering
+from commstools import filtering, pam, qam
 from commstools.core import Signal
 
 
 def test_signal_pulse_params(backend_device, xp):
     """Verify that pulse shaping parameters (e.g., rolloff) are correctly stored and utilized."""
-    sig = Signal.qam(
+    sig = qam(
         order=4,
         num_symbols=10,
         sps=4,
@@ -28,7 +28,7 @@ def test_signal_pulse_params(backend_device, xp):
 
 def test_matched_filter_auto_taps(backend_device, xp):
     """Verify that matched_filter correctly auto-generates and applies the correct taps."""
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         unipolar=False,
         num_symbols=100,
@@ -49,7 +49,7 @@ def test_matched_filter_auto_taps(backend_device, xp):
 
 def test_rzpam_pulse_params(backend_device, xp):
     """Verify pulse parameters for Return-to-Zero (RZ) PAM signals."""
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         unipolar=False,
         num_symbols=10,
@@ -69,7 +69,7 @@ def test_rzpam_pulse_params(backend_device, xp):
 def test_rz_rect_taps_length(backend_device, xp, xpt):
     """Verify that RZ rectangular pulse taps have the correct half-symbol length."""
     # RZ rect with sps=4 should have length 2 (sps * 0.5)
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         unipolar=False,
         num_symbols=10,
@@ -98,7 +98,7 @@ def test_unknown_pulse_shape(backend_device, xp):
 def test_rect_pulse_taps(backend_device, xp, xpt):
     """Verify that standard rectangular pulse shaping produces all-ones taps."""
     # Rect pulse should return ones
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         unipolar=False,
         num_symbols=10,

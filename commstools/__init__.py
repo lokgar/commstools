@@ -59,7 +59,16 @@ from . import (
     spectral,
     timing,
 )
-from .core import Preamble, Signal, SingleCarrierFrame
+from .core import (
+    Preamble,
+    Signal,
+    SingleCarrierFrame,
+    generate,
+    pam,
+    psk,
+    psqam,
+    qam,
+)
 from .io import load_npz, save_npz
 from .logger import set_log_level
 from .plotting import apply_default_theme
@@ -75,9 +84,14 @@ __all__ = [
     "analysis",
     "equalization",
     "frequency",
+    "generate",
     "impairments",
     "load_npz",
     "metrics",
+    "pam",
+    "psk",
+    "psqam",
+    "qam",
     "recovery",
     "save_npz",
     "set_log_level",

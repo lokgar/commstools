@@ -6,7 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from commstools import Signal, plotting
+from commstools import plotting, qam
 from commstools.impairments import apply_awgn
 from commstools.plotting import apply_default_theme
 
@@ -20,7 +20,7 @@ def main():
 
     print("Generating Signal objects...")
     # Generate a clean 16-QAM signal, RRC pulse shaped
-    sig = Signal.qam(
+    sig = qam(
         order=16,
         num_symbols=5000,
         sps=4,

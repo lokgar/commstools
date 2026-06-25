@@ -53,12 +53,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from commstools import (
-    Signal,
     filtering,
     mapping,
     metrics,
     multirate,
     plotting,
+    psqam,
     recovery,
 )
 from commstools.backend import to_device
@@ -127,7 +127,7 @@ def _fmt(x):
 
 _sep("1. Transmitter — PS-QAM")
 
-tx = Signal.psqam(
+tx = psqam(
     num_symbols=N_SYM,
     sps=SPS,
     symbol_rate=SYMBOL_RATE,

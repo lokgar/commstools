@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools import mapping, metrics, multirate
+from commstools import mapping, metrics, multirate, qam
 from commstools.helpers import random_symbols
 from commstools.impairments import apply_awgn
 
@@ -89,12 +89,9 @@ def test_ber_all_errors(backend_device, xp):
 
 def test_signal_evm_method(backend_device, xp):
     """Test Signal.evm() method using source_symbols as reference."""
-    from commstools.core import Signal
 
     # Create signal with known source_symbols
-    sig = Signal.qam(
-        order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none"
-    )
+    sig = qam(order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none")
 
     # Must resolve symbols before EVM
     sig = multirate.resolve_symbols(sig)
@@ -105,12 +102,9 @@ def test_signal_evm_method(backend_device, xp):
 
 def test_signal_ber_method(backend_device, xp):
     """Test Signal.ber() method using source_bits as reference."""
-    from commstools.core import Signal
 
     # Create signal with known source_bits
-    sig = Signal.qam(
-        order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none"
-    )
+    sig = qam(order=4, num_symbols=100, sps=1, symbol_rate=1e6, pulse_shape="none")
 
     # Must resolve symbols then demap symbols before BER
     sig = multirate.resolve_symbols(sig)
@@ -121,11 +115,8 @@ def test_signal_ber_method(backend_device, xp):
 
 def test_signal_demap_hard(backend_device, xp, xpt):
     """Test Signal.demap_symbols_hard() hard decision."""
-    from commstools.core import Signal
 
-    sig = Signal.qam(
-        order=4, num_symbols=50, sps=1, symbol_rate=1e6, pulse_shape="none"
-    )
+    sig = qam(order=4, num_symbols=50, sps=1, symbol_rate=1e6, pulse_shape="none")
 
     # Must resolve symbols before demapping
     sig = multirate.resolve_symbols(sig)
@@ -349,11 +340,8 @@ def test_signal_evm_blind(backend_device, xp):
     N=2000, the std of the empirical mean is ≈ 1.3%, so blind EVM can be up to
     ~0.65%.  The tolerance of 3% safely covers 3σ without masking real errors.
     """
-    from commstools.core import Signal
 
-    sig = Signal.qam(
-        order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none"
-    )
+    sig = qam(order=16, num_symbols=2000, sps=1, symbol_rate=1e6, pulse_shape="none")
     sig = multirate.resolve_symbols(sig)
 
     pct, db = metrics.evm(sig, mode="blind")
@@ -413,11 +401,8 @@ def test_ser_shape_mismatch_raises(backend_device, xp):
 
 def test_signal_ser_method(backend_device, xp):
     """Signal.ser() returns 0 for a clean signal."""
-    from commstools.core import Signal
 
-    sig = Signal.qam(
-        order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none"
-    )
+    sig = qam(order=16, num_symbols=200, sps=1, symbol_rate=1e6, pulse_shape="none")
     sig = multirate.resolve_symbols(sig)
 
     assert metrics.ser(sig) == 0.0

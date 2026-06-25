@@ -3,8 +3,7 @@
 import numpy as np
 import pytest
 
-from commstools import frequency, spectral
-from commstools.core import Signal
+from commstools import frequency, psk, qam, spectral
 from commstools.impairments import apply_awgn
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -17,9 +16,7 @@ SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 
 def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
-    sig = Signal.qam(
-        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
-    )
+    sig = qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -28,9 +25,7 @@ def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
 
 def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
-    sig = Signal.psk(
-        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
-    )
+    sig = psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -302,7 +297,7 @@ class TestFoeMengaliMorelli:
     @pytest.mark.parametrize("fo_hz", [4_000.0, -8_000.0])
     def test_data_aided_accuracy(self, backend_device, xp, fo_hz):
         """Data-aided mode: estimate within 1 % using known reference (exact mixing)."""
-        sig = Signal.psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
+        sig = psk(order=4, num_symbols=4096, sps=1, symbol_rate=FS)
         ideal = sig.samples.copy()
         sig.samples = apply_awgn(sig.samples, esn0_db=25, sps=1)
         n = xp.arange(sig.samples.shape[-1], dtype=xp.float64)

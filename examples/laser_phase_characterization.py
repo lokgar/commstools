@@ -35,7 +35,7 @@ matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, analysis, filtering, plotting
+from commstools import analysis, filtering, plotting, qam
 from commstools.backend import to_device
 from commstools.equalization import apply_taps, lms
 from commstools.impairments import apply_awgn, apply_phase_noise
@@ -88,7 +88,7 @@ def _fmt(x) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 _sep("1. Transmitter — 16-QAM dual-pol")
 
-tx = Signal.qam(
+tx = qam(
     num_symbols=N_SYM,
     sps=SPS,
     symbol_rate=SYMBOL_RATE,

@@ -3,9 +3,8 @@
 import numpy as np
 import pytest
 
-from commstools import recovery, spectral
+from commstools import psk, qam, recovery, spectral
 from commstools.backend import to_device
-from commstools.core import Signal
 from commstools.impairments import apply_awgn
 from commstools.mapping import gray_constellation
 
@@ -19,9 +18,7 @@ SNR_DB = 30  # generous SNR so numerical algorithms converge reliably
 
 def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS QAM signal with optional frequency offset and AWGN."""
-    sig = Signal.qam(
-        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
-    )
+    sig = qam(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -30,9 +27,7 @@ def _qam_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
 
 def _psk_signal(xp, order, n_symbols, fo_hz=0.0, snr_db=SNR_DB, fs=FS, seed=42):
     """Generate a 1-SPS PSK signal with optional frequency offset and AWGN."""
-    sig = Signal.psk(
-        order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed
-    )
+    sig = psk(order=order, num_symbols=n_symbols, sps=1, symbol_rate=fs, seed=seed)
     sig.samples = apply_awgn(sig.samples, esn0_db=snr_db, sps=1, seed=seed)
     if fo_hz != 0.0:
         sig.samples, _ = spectral.shift_frequency(sig.samples, fo_hz, fs)
@@ -176,7 +171,7 @@ class TestCprBps:
 class TestCprPilots:
     def _pilot_setup(self, xp, n_symbols=512, pilot_period=16, phase_per_sym=0.001):
         """Return (noisy+rotated samples, pilot_indices, pilot_values, true_phase)."""
-        sig = Signal.qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS)
+        sig = qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS)
         # Save ideal symbols before adding noise
         ideal_symbols = xp.asarray(sig.samples.copy())
         sig.samples = apply_awgn(sig.samples, esn0_db=SNR_DB, sps=1)
@@ -287,7 +282,7 @@ class TestCprPilotTone:
         *after* the tone, so the tone carries exactly the phase to be recovered.
         """
         fs = self.SPS * FS  # symbol rate = FS
-        sig = Signal.qam(
+        sig = qam(
             order=16,
             num_symbols=n_symbols,
             sps=self.SPS,
@@ -466,7 +461,7 @@ class TestCprPilotTones:
         ``(samples, fs, common)``.
         """
         fs = self.SPS * FS
-        sig = Signal.qam(
+        sig = qam(
             order=16,
             num_symbols=n_symbols,
             sps=self.SPS,
@@ -1150,7 +1145,7 @@ class TestResolvePhaseAmbiguity:
         from commstools.helpers import normalize
         from commstools.metrics import ser
 
-        sig = Signal.qam(order=16, num_symbols=self.N, sps=1, symbol_rate=1e6, seed=9)
+        sig = qam(order=16, num_symbols=self.N, sps=1, symbol_rate=1e6, seed=9)
         sig.samples = apply_awgn(sig.samples, esn0_db=30, sps=1, seed=9)
         sym = normalize(sig.samples, "average_power")
         sig.resolved_symbols = sym * xp.exp(1j * np.pi / 2).astype(sym.dtype)
@@ -1161,13 +1156,13 @@ class TestResolvePhaseAmbiguity:
 
     def test_signal_method_raises_without_resolved(self, backend_device, xp):
         """Raises ValueError when resolved_symbols is None."""
-        sig = Signal.qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
+        sig = qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
         with pytest.raises(ValueError, match="resolved_symbols"):
             sig = recovery.resolve_phase_ambiguity(sig)
 
     def test_signal_method_raises_without_source(self, backend_device, xp):
         """Raises ValueError when source_symbols is None."""
-        sig = Signal.qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
+        sig = qam(order=16, num_symbols=256, sps=1, symbol_rate=1e6, seed=0)
         sig.resolved_symbols = sig.samples
         sig.source_symbols = None
         with pytest.raises(ValueError, match="source_symbols"):
@@ -1250,9 +1245,7 @@ class TestPilotsCPREnhancements:
         self, xp, n_symbols=512, pilot_period=8, phase_per_sym=0.001, seed=42
     ):
         """Return (samples, pilot_indices, pilot_values) for a 16-QAM signal."""
-        sig = Signal.qam(
-            order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS, seed=seed
-        )
+        sig = qam(order=16, num_symbols=n_symbols, sps=1, symbol_rate=FS, seed=seed)
         ideal = xp.asarray(sig.samples.copy())
         sig.samples = apply_awgn(sig.samples, esn0_db=SNR_DB, sps=1, seed=seed)
         sig.samples = _apply_phase_ramp(xp, sig.samples, phase_per_sym)

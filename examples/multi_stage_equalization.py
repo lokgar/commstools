@@ -45,7 +45,6 @@ Run
 import numpy as np
 
 from commstools import (
-    Signal,
     equalization,
     filtering,
     frequency,
@@ -53,6 +52,7 @@ from commstools import (
     metrics,
     multirate,
     plotting,
+    qam,
     recovery,
     spectral,
 )
@@ -102,7 +102,7 @@ def _mse_db(error, window=200):
 
 _print_sep("1. Transmitter")
 
-sig_tx = Signal.qam(
+sig_tx = qam(
     num_symbols=N_SYM,
     sps=SPS,
     symbol_rate=SYMBOL_RATE,

@@ -7,7 +7,7 @@ import numpy.testing as npt
 import pytest
 
 import commstools
-from commstools import Preamble, Signal, SingleCarrierFrame, multirate
+from commstools import Preamble, Signal, SingleCarrierFrame, multirate, psqam, qam
 from commstools.io import load_npz, save_npz
 
 try:
@@ -32,13 +32,11 @@ def _np(arr) -> np.ndarray:
 
 
 def _siso_signal() -> Signal:
-    return Signal.qam(num_symbols=256, sps=4, symbol_rate=1e9, order=16, seed=0)
+    return qam(num_symbols=256, sps=4, symbol_rate=1e9, order=16, seed=0)
 
 
 def _mimo_signal() -> Signal:
-    return Signal.qam(
-        num_symbols=128, sps=4, symbol_rate=1e9, order=4, num_streams=2, seed=1
-    )
+    return qam(num_symbols=128, sps=4, symbol_rate=1e9, order=4, num_streams=2, seed=1)
 
 
 def _frame_signal() -> Signal:
@@ -357,7 +355,7 @@ def test_auto_device_uses_gpu_when_available(tmp_path):
 
 
 def test_psqam_pmf_roundtrip(tmp_path):
-    sig = Signal.psqam(1000, sps=4, symbol_rate=10e9, order=64, entropy=5.0)
+    sig = psqam(1000, sps=4, symbol_rate=10e9, order=64, entropy=5.0)
     save_npz(sig, tmp_path / "psqam")
     loaded = load_npz(tmp_path / "psqam.npz", device="cpu")
     assert loaded.ps_pmf is not None

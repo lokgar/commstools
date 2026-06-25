@@ -3,9 +3,8 @@
 import numpy as np
 import pytest
 
-from commstools import mapping, metrics, multirate
+from commstools import mapping, metrics, multirate, psqam, qam
 from commstools.backend import to_device
-from commstools.core import Signal
 from commstools.impairments import apply_awgn
 from commstools.mapping import (
     compute_llr,
@@ -157,7 +156,7 @@ def test_sample_ps_symbols_seed_reproducibility():
 
 
 def test_psqam_source_fields_set():
-    sig = Signal.psqam(500, sps=2, symbol_rate=32e9, order=16, nu=0.5)
+    sig = psqam(500, sps=2, symbol_rate=32e9, order=16, nu=0.5)
     assert sig.source_bits is not None
     assert sig.source_symbols is not None
     assert sig.ps_pmf is not None
@@ -167,7 +166,7 @@ def test_psqam_source_fields_set():
 
 def test_psqam_via_entropy():
     target = 3.5
-    sig = Signal.psqam(1000, sps=2, symbol_rate=32e9, order=16, entropy=target)
+    sig = psqam(1000, sps=2, symbol_rate=32e9, order=16, entropy=target)
     pmf = np.asarray(sig.ps_pmf)
     nz = pmf > 0
     achieved = float(-np.sum(pmf[nz] * np.log2(pmf[nz])))
@@ -176,18 +175,16 @@ def test_psqam_via_entropy():
 
 def test_psqam_requires_exactly_one_of_nu_entropy():
     with pytest.raises(ValueError):
-        Signal.psqam(100, sps=2, symbol_rate=1e9, order=16)  # neither
+        psqam(100, sps=2, symbol_rate=1e9, order=16)  # neither
     with pytest.raises(ValueError):
-        Signal.psqam(100, sps=2, symbol_rate=1e9, order=16, nu=0.3, entropy=3.5)  # both
+        psqam(100, sps=2, symbol_rate=1e9, order=16, nu=0.3, entropy=3.5)  # both
 
 
 def test_psqam_lower_average_energy_than_uniform():
     """PS-QAM symbols must have lower average energy than uniform at same order."""
     order = 64
     nu = 0.3
-    sig = Signal.psqam(
-        10_000, sps=1, symbol_rate=32e9, order=order, nu=nu, pulse_shape="none"
-    )
+    sig = psqam(10_000, sps=1, symbol_rate=32e9, order=order, nu=nu, pulse_shape="none")
     src = to_device(sig.source_symbols, "cpu")
     avg_energy_ps = float(np.mean(np.abs(src) ** 2))
 
@@ -201,9 +198,7 @@ def test_psqam_source_bits_match_symbols():
     """Hard-demapping source_symbols should recover source_bits exactly."""
     from commstools.mapping import demap_symbols_hard
 
-    sig = Signal.psqam(
-        2000, sps=1, symbol_rate=32e9, order=16, nu=0.5, pulse_shape="none"
-    )
+    sig = psqam(2000, sps=1, symbol_rate=32e9, order=16, nu=0.5, pulse_shape="none")
     src_sym = to_device(sig.source_symbols, "cpu")
     src_bits = to_device(sig.source_bits, "cpu")
     recovered_bits = demap_symbols_hard(src_sym, "qam", 16)
@@ -212,9 +207,7 @@ def test_psqam_source_bits_match_symbols():
 
 def test_psqam_ber_computable():
     """BER should be computable end-to-end (source_bits is not None)."""
-    sig = Signal.psqam(
-        5000, sps=1, symbol_rate=32e9, order=16, nu=0.5, pulse_shape="none"
-    )
+    sig = psqam(5000, sps=1, symbol_rate=32e9, order=16, nu=0.5, pulse_shape="none")
     noisy = apply_awgn(sig.samples, esn0_db=20.0, sps=1)
     sig.samples = noisy
     sig = multirate.resolve_symbols(sig)
@@ -231,7 +224,7 @@ def test_psqam_ber_computable():
 def test_mi_uniform_pmf_matches_none():
     """Passing explicit uniform PMF must give the same result as pmf=None."""
     order = 16
-    sig = Signal.qam(5000, sps=1, symbol_rate=32e9, order=order, pulse_shape="none")
+    sig = qam(5000, sps=1, symbol_rate=32e9, order=order, pulse_shape="none")
     noisy = apply_awgn(sig.samples, esn0_db=15.0, sps=1)
 
     mi_none = metrics.mi(noisy, "qam", order, noise_var=10 ** (-15.0 / 10))
@@ -251,9 +244,7 @@ def test_mi_ps_bounded_by_entropy():
     nz = pmf > 0
     h_x = float(-np.sum(pmf[nz] * np.log2(pmf[nz])))
 
-    sig = Signal.psqam(
-        10_000, sps=1, symbol_rate=32e9, order=order, nu=nu, pulse_shape="none"
-    )
+    sig = psqam(10_000, sps=1, symbol_rate=32e9, order=order, nu=nu, pulse_shape="none")
     noisy = apply_awgn(sig.samples, esn0_db=25.0, sps=1)
     mi_val = metrics.mi(noisy, "qam", order, noise_var=10 ** (-25.0 / 10), pmf=pmf)
 
@@ -269,7 +260,7 @@ def test_mi_ps_bounded_by_entropy():
 def test_compute_llr_uniform_pmf_matches_none():
     """log_pmf = zeros (uniform) must produce the same LLRs as pmf=None."""
     order = 16
-    sig = Signal.qam(200, sps=1, symbol_rate=32e9, order=order, pulse_shape="none")
+    sig = qam(200, sps=1, symbol_rate=32e9, order=order, pulse_shape="none")
     noisy = apply_awgn(sig.samples, esn0_db=12.0, sps=1)
     noise_var = 10 ** (-12.0 / 10)
 

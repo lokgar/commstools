@@ -8,7 +8,7 @@ driven by the Godard / ring-radius error instead of a trained/DD slicer.
 import numpy as np
 import pytest
 
-from commstools import Signal
+from commstools import psk, qam
 from commstools.equalization import (
     block_cma,
     block_lms,
@@ -23,7 +23,7 @@ def _to_np(arr):
 
 
 def _isi_signal(xp, mod, order, n_symbols, seed, channel, noise=0.02):
-    factory = Signal.qam if mod == "qam" else Signal.psk
+    factory = qam if mod == "qam" else psk
     sig = factory(
         symbol_rate=1e6,
         num_symbols=n_symbols,

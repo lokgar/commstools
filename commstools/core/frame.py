@@ -32,6 +32,7 @@ except ImportError:
 from .. import helpers
 from ..backend import ArrayType, is_cupy_available, to_device
 from ..logger import logger
+from . import generation
 from .signal import Signal
 
 
@@ -487,7 +488,7 @@ class SingleCarrierFrame(BaseModel):
         )
 
         if is_ps:
-            sig = Signal.psqam(
+            sig = generation.psqam(
                 order=self.payload_mod_order,
                 nu=self.payload_nu,
                 entropy=self.payload_entropy,
@@ -495,24 +496,24 @@ class SingleCarrierFrame(BaseModel):
             )
             self._payload_ps_pmf = sig.ps_pmf
         elif "qam" in scheme:
-            sig = Signal.qam(
+            sig = generation.qam(
                 order=self.payload_mod_order,
                 unipolar=self.payload_mod_unipolar,
                 **common,
             )
         elif "psk" in scheme:
-            sig = Signal.psk(
+            sig = generation.psk(
                 order=self.payload_mod_order,
                 **common,
             )
         elif "pam" in scheme or "ask" in scheme:
-            sig = Signal.pam(
+            sig = generation.pam(
                 order=self.payload_mod_order,
                 unipolar=self.payload_mod_unipolar,
                 **common,
             )
         else:
-            sig = Signal.generate(
+            sig = generation.generate(
                 modulation=self.payload_mod_scheme,
                 order=self.payload_mod_order,
                 unipolar=self.payload_mod_unipolar,
@@ -550,24 +551,24 @@ class SingleCarrierFrame(BaseModel):
         )
 
         if "qam" in scheme:
-            sig = Signal.qam(
+            sig = generation.qam(
                 order=self.pilot_mod_order,
                 unipolar=self.pilot_mod_unipolar,
                 **common,
             )
         elif "psk" in scheme:
-            sig = Signal.psk(
+            sig = generation.psk(
                 order=self.pilot_mod_order,
                 **common,
             )
         elif "pam" in scheme or "ask" in scheme:
-            sig = Signal.pam(
+            sig = generation.pam(
                 order=self.pilot_mod_order,
                 unipolar=self.pilot_mod_unipolar,
                 **common,
             )
         else:
-            sig = Signal.generate(
+            sig = generation.generate(
                 modulation=self.pilot_mod_scheme,
                 order=self.pilot_mod_order,
                 unipolar=self.pilot_mod_unipolar,

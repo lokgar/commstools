@@ -6,7 +6,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering, mapping, metrics, multirate, plotting, spectral
+from commstools import (
+    filtering,
+    generate,
+    mapping,
+    metrics,
+    multirate,
+    pam,
+    plotting,
+    psk,
+    psqam,
+    qam,
+    spectral,
+)
 from commstools.core import Signal
 
 
@@ -82,7 +94,7 @@ def test_signal_properties(backend_device, xp):
 
 def test_signal_add_pilot_tone(backend_device, xp):
     """add_pilot_tone returns a new Signal with the tone and snapped freq recorded."""
-    sig = Signal.qam(num_symbols=256, sps=8, symbol_rate=1e6, order=16, seed=3)
+    sig = qam(num_symbols=256, sps=8, symbol_rate=1e6, order=16, seed=3)
     fs = sig.sampling_rate
     df = fs / sig.samples.shape[-1]
     before = sig.samples.copy()
@@ -223,7 +235,7 @@ def test_signal_resolution_and_demap(backend_device, xp, xpt):
     symbol_rate = 1e6
     sps = 4
     num_symbols = 100
-    sig = Signal.psk(
+    sig = psk(
         order=2,
         num_symbols=num_symbols,
         sps=sps,
@@ -301,7 +313,7 @@ def test_signal_mimo_fir_coverage(backend_device, xp):
 def test_signal_gaussian_coverage(backend_device, xp):
     """Verify Gaussian Signal generation."""
     # Use PSK with Gaussian pulse shaping
-    s = Signal.psk(
+    s = psk(
         order=2,
         pulse_shape="gaussian",
         symbol_rate=1e6,
@@ -426,7 +438,7 @@ def test_signal_bits_per_symbol_set(backend_device, xp):
 def test_rzpam_odd_sps(backend_device, xp):
     """Verify RZ-PAM raises error for odd SPS."""
     with pytest.raises(ValueError, match="sps.*must be even"):
-        Signal.pam(
+        pam(
             order=2,
             num_symbols=10,
             sps=3,
@@ -437,7 +449,7 @@ def test_rzpam_odd_sps(backend_device, xp):
 
 def test_rzpam_multi_stream(backend_device, xp):
     """Verify RZ-PAM multi-stream reshape produces correctly shaped multichannel output."""
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         num_symbols=10,
         sps=4,
@@ -457,7 +469,7 @@ def test_rzpam_multi_stream(backend_device, xp):
     "factory,kwargs",
     [
         (
-            Signal.generate,
+            generate,
             dict(
                 num_symbols=10,
                 sps=3.5,
@@ -467,19 +479,19 @@ def test_rzpam_multi_stream(backend_device, xp):
             ),
         ),
         (
-            Signal.psk,
+            psk,
             dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=4),
         ),
         (
-            Signal.qam,
+            qam,
             dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=16),
         ),
         (
-            Signal.pam,
+            pam,
             dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=4),
         ),
         (
-            Signal.psqam,
+            psqam,
             dict(num_symbols=10, sps=3.5, symbol_rate=1e6, order=64, nu=0.3),
         ),
     ],
@@ -492,7 +504,7 @@ def test_noninteger_sps_raises(backend_device, factory, kwargs):
 
 def test_integer_valued_float_sps_accepted(backend_device):
     """sps=4.0 (integer-valued float) must succeed and produce correct sample count."""
-    sig = Signal.qam(num_symbols=100, sps=4.0, symbol_rate=1e6, order=16)
+    sig = qam(num_symbols=100, sps=4.0, symbol_rate=1e6, order=16)
     assert sig.samples.shape[-1] == 100 * 4
     assert sig.sps == 4.0
 
@@ -607,7 +619,7 @@ def test_evm_with_explicit_num_train_symbols(backend_device, xp):
 
     n_symbols = 600
     n_train = 100
-    orig = Signal.psk(
+    orig = psk(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=4,
@@ -646,7 +658,7 @@ def test_snr_with_explicit_num_train_symbols(backend_device, xp):
     from commstools import equalization
 
     n_symbols = 600
-    orig = Signal.psk(
+    orig = psk(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=4,
@@ -683,7 +695,7 @@ def test_ber_with_explicit_num_train_symbols(backend_device, xp):
     from commstools import equalization
 
     n_symbols = 600
-    orig = Signal.psk(
+    orig = psk(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=4,
@@ -725,7 +737,7 @@ def test_rls_tail_trim_field(backend_device, xp):
 
     n_symbols = 400
     num_taps = 7
-    orig = Signal.psk(
+    orig = psk(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=4,
@@ -750,7 +762,7 @@ def test_plot_constellation_at_symbol_rate(backend_device, xp):
     """plot_constellation on a 1-SPS Signal (built from lms y_hat) should succeed."""
     from commstools import equalization
 
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
     )
     result = equalization.lms(
@@ -774,7 +786,7 @@ def test_plot_constellation_at_symbol_rate(backend_device, xp):
 
 def test_plot_constellation_overlay_source_mimo(backend_device, xp):
     """Signal.plot_constellation with MIMO signal and overlay_source=True."""
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6,
         num_symbols=200,
         order=4,
@@ -790,7 +802,7 @@ def test_plot_constellation_overlay_source_mimo(backend_device, xp):
 
 def test_plot_constellation_show(backend_device, xp):
     """Signal.plot_constellation(show=True) should call plt.show() and return None."""
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=1, seed=0
     )
     with patch("matplotlib.pyplot.show"):
@@ -801,7 +813,7 @@ def test_plot_constellation_show(backend_device, xp):
 
 def test_plot_constellation_overlay_source_siso(backend_device, xp):
     """SISO signal with overlay_source=True uses the single-axes scatter path."""
-    sig = Signal.psk(
+    sig = psk(
         symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=1, seed=0
     )
     assert sig.num_streams == 1
@@ -819,7 +831,7 @@ def test_plot_constellation_overlay_source_siso(backend_device, xp):
 
 def test_pam_waveform(backend_device, xp):
     """Verify basic PAM signal generation produces samples on the active device."""
-    sig = Signal.pam(order=2, unipolar=False, num_symbols=10, sps=4, symbol_rate=1e3)
+    sig = pam(order=2, unipolar=False, num_symbols=10, sps=4, symbol_rate=1e3)
     assert sig.samples.size > 0
     assert isinstance(sig.samples, xp.ndarray)
     assert sig.mod_scheme is not None
@@ -827,7 +839,7 @@ def test_pam_waveform(backend_device, xp):
 
 def test_rzpam_waveform(backend_device, xp):
     """Verify Return-to-Zero PAM signal generation and pulse-shape validation."""
-    sig = Signal.pam(
+    sig = pam(
         order=2,
         unipolar=False,
         num_symbols=10,
@@ -840,7 +852,7 @@ def test_rzpam_waveform(backend_device, xp):
     assert isinstance(sig.samples, xp.ndarray)
 
     with pytest.raises(ValueError, match="not allowed for RZ PAM"):
-        Signal.pam(
+        pam(
             order=2,
             unipolar=False,
             num_symbols=10,
@@ -853,7 +865,7 @@ def test_rzpam_waveform(backend_device, xp):
 
 def test_qam_waveform(backend_device, xp):
     """Verify QAM signal generation populates samples and modulation metadata."""
-    sig = Signal.qam(order=16, num_symbols=10, sps=4, symbol_rate=1e3)
+    sig = qam(order=16, num_symbols=10, sps=4, symbol_rate=1e3)
     assert sig.samples.size > 0
     assert isinstance(sig.samples, xp.ndarray)
     assert sig.mod_order == 16
@@ -861,7 +873,7 @@ def test_qam_waveform(backend_device, xp):
 
 def test_psk_waveform(backend_device, xp, xpt):
     """Verify PSK signal generation, metadata, and unit-magnitude constellation."""
-    sig = Signal.psk(order=8, num_symbols=50, sps=2, symbol_rate=1e6, seed=0)
+    sig = psk(order=8, num_symbols=50, sps=2, symbol_rate=1e6, seed=0)
     assert sig.samples.size > 0
     assert isinstance(sig.samples, xp.ndarray)
     assert sig.mod_order == 8
@@ -874,8 +886,8 @@ def test_psk_waveform(backend_device, xp, xpt):
 
 
 def test_signal_generate(backend_device, xp):
-    """Verify Signal.generate() produces correct metadata for any modulation."""
-    sig = Signal.generate(
+    """Verify generate() produces correct metadata for any modulation."""
+    sig = generate(
         num_symbols=100,
         sps=4,
         symbol_rate=1e6,

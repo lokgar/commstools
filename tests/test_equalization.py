@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from commstools import equalization
+from commstools import equalization, psk, qam
 from commstools.equalization import EqualizerResult
 from commstools.mapping import gray_constellation
 
@@ -56,9 +56,7 @@ class TestLMS:
         # Generate bits and symbols on device
         # Generate symbols and RRC pulse-shaped waveform
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -111,9 +109,7 @@ class TestLMS:
 
         # Generate symbols and RRC pulse-shaped waveform
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -146,9 +142,7 @@ class TestLMS:
         """LMS SISO output shapes should be correct."""
         n = 500
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=n, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         tx = xp.asarray(sig.source_symbols)
@@ -172,9 +166,7 @@ class TestLMS:
         n = 200
         num_taps = 7
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=n, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         tx = xp.asarray(sig.source_symbols)
@@ -196,9 +188,7 @@ class TestLMS:
     def test_no_weights_by_default(self, backend_device, xp):
         """Weight history should be None by default."""
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         tx = xp.asarray(sig.source_symbols)
@@ -216,9 +206,8 @@ class TestLMS:
 
     def test_requires_constellation_or_training(self, backend_device, xp):
         """LMS should raise if neither training nor constellation is given."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -239,9 +228,7 @@ class TestRLS:
         n_symbols = 500
         channel = xp.array([0.2, 1.0, 0.3], dtype=xp.complex64)
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -273,9 +260,7 @@ class TestRLS:
         n_symbols = 300
         channel = xp.array([0.3, 1.0, 0.2], dtype=xp.complex64)
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -318,9 +303,8 @@ class TestRLS:
 
     def test_output_shape_siso(self, backend_device, xp):
         """RLS SISO output shapes should match LMS convention."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         tx = xp.asarray(sig.source_symbols)
@@ -348,9 +332,8 @@ class TestAPIRegression:
 
     def test_lms_has_no_normalize_param(self, backend_device, xp):
         """lms() must not accept a 'normalize' keyword — always NLMS."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -367,9 +350,8 @@ class TestAPIRegression:
 
     def test_cma_has_no_normalize_param(self, backend_device, xp):
         """cma() must not accept a 'normalize' keyword."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -390,9 +372,7 @@ class TestCMA:
         n_symbols = 2000
         channel = xp.array([0.2, 1.0, 0.3], dtype=xp.complex64)
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -439,9 +419,8 @@ class TestCMA:
 
     def test_r2_default(self, backend_device, xp):
         """CMA should work with default R2=1.0."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=500, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -453,9 +432,8 @@ class TestCMA:
 
     def test_output_shape_siso(self, backend_device, xp):
         """CMA SISO output should be 1D."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=200, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -479,9 +457,7 @@ class TestRDE:
         n_symbols = 2000
         channel = xp.array([0.2, 1.0, 0.3], dtype=xp.complex64)
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -526,12 +502,10 @@ class TestRDE:
         compensation.  Therefore: mean(|e_RDE|) << mean(|e_CMA|) at steady state.
         """
 
-        from commstools import Signal
-
         n_symbols = 5000
         channel = xp.array([0.15, 1.0, 0.25], dtype=xp.complex64)
 
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=16,
@@ -577,9 +551,8 @@ class TestRDE:
 
     def test_output_shape_siso(self, backend_device, xp):
         """RDE SISO output should be 1D with correct length."""
-        from commstools import Signal
 
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6, num_symbols=300, order=16, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -717,12 +690,10 @@ class TestButterflyMIMO:
         """LMS butterfly should recover 2 streams through a 2x2 mixing channel."""
         n_symbols = 3000
 
-        from commstools import Signal
-
         # 2x2 channel mixing matrix
         H = xp.array([[1.0, 0.3], [0.2, 1.0]], dtype=xp.complex64)
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -769,9 +740,7 @@ class TestButterflyMIMO:
         """CMA butterfly should demux 2 mixed polarizations."""
         n_symbols = 3000
 
-        from commstools import Signal
-
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -878,10 +847,9 @@ class TestJAXBackend:
 
     def _make_qpsk_rx(self, xp, n_symbols=1000, seed=0):
         """Helper: generate RRC-shaped QPSK at 2 SPS through mild ISI."""
-        from commstools import Signal
 
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -894,10 +862,9 @@ class TestJAXBackend:
 
     def _make_qam16_rx(self, xp, n_symbols=2000, seed=0):
         """Helper: generate RRC-shaped 16-QAM at 2 SPS through mild ISI."""
-        from commstools import Signal
 
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=16,
@@ -988,10 +955,9 @@ class TestJAXBackend:
 
     def test_lms_jax_mimo(self, backend_device, xp):
         """LMS JAX butterfly should handle 2x2 MIMO input."""
-        from commstools import Signal
 
         n_symbols = 1000
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1185,10 +1151,9 @@ class TestJAXBackend:
 
     def test_rde_jax_mimo(self, backend_device, xp):
         """RDE JAX butterfly should handle 2x2 MIMO input."""
-        from commstools import Signal
 
         n_symbols = 1000
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=16,
@@ -1251,9 +1216,8 @@ class TestStoreWeights:
     """Tests that store_weights=True produces correct weight history shapes."""
 
     def _qpsk_rx(self, xp, n_symbols=600, seed=0):
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1340,9 +1304,8 @@ class TestStoreWeights:
 
     def test_mimo_store_weights_numba(self, backend_device, xp):
         """LMS Numba MIMO: weights_history has shape (N_sym, C, C, num_taps)."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=600, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -1388,9 +1351,8 @@ class TestEdgeCases:
     """Tests for error paths, warnings, and edge-case inputs."""
 
     def _qpsk_rx(self, xp, n_symbols=500, seed=0):
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1455,9 +1417,8 @@ class TestEdgeCases:
 
     def test_rde_mimo_no_modulation(self, backend_device, xp):
         """RDE MIMO path with no modulation should run (unit radius, 2-ch)."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=600, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -1594,10 +1555,9 @@ class TestButterflyMIMOExtended:
 
     def test_rde_2x2_butterfly_numba(self, backend_device, xp):
         """RDE Numba butterfly should handle 2x2 cross-polarization without error."""
-        from commstools import Signal
 
         n_symbols = 2000
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=16,
@@ -1632,12 +1592,11 @@ class TestButterflyMIMOExtended:
 
     def test_lms_jax_2x2_cross_channel(self, backend_device, xp):
         """LMS JAX butterfly should cancel cross-channel interference."""
-        from commstools import Signal
 
         pytest.importorskip("jax")
 
         n_symbols = 2000
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1675,10 +1634,9 @@ class TestNumbaBackendCoverage:
     """Tests targeting uncovered numba-backend code paths in LMS/RLS/CMA/RDE."""
 
     def _make_qpsk_rx(self, xp, n_symbols=1000, seed=0):
-        from commstools import Signal
 
         channel = xp.array([0.1, 1.0, 0.15], dtype=xp.complex64)
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1739,10 +1697,9 @@ class TestNumbaBackendCoverage:
 
     def test_rls_numba_mimo(self, backend_device, xp):
         """RLS numba MIMO path correctly handles (num_channels, n_samples) input shape."""
-        from commstools import Signal
 
         n_symbols = 600
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1824,9 +1781,8 @@ class TestNumbaBackendCoverage:
 
     def test_cma_numba_store_weights(self, backend_device, xp):
         """CMA numba backend with store_weights=True."""
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=400, order=4, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -1845,9 +1801,8 @@ class TestNumbaBackendCoverage:
 
     def test_rde_numba_store_weights(self, backend_device, xp):
         """RDE numba backend with store_weights=True."""
-        from commstools import Signal
 
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6, num_symbols=400, order=16, pulse_shape="rrc", sps=2, seed=0
         )
         rx = xp.asarray(sig.samples)
@@ -1880,10 +1835,9 @@ class TestRLSJAXConstellationFromTraining:
     def test_rls_jax_constellation_from_training(self, backend_device, xp):
         """RLS JAX with training only (no modulation) infers constellation from training."""
         pytest.importorskip("jax")
-        from commstools import Signal
 
         n_symbols = 800
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -1918,9 +1872,8 @@ class TestImportErrorBranches:
     """Tests for ImportError branches when Numba/JAX are unavailable (uses mocking)."""
 
     def _make_rx(self, xp, n_symbols=400):
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6,
             num_symbols=n_symbols,
             order=4,
@@ -2019,9 +1972,8 @@ class TestLMSJAXPureDD:
     def test_lms_jax_pure_dd_no_training(self, backend_device, xp):
         """LMS JAX with modulation but no training_symbols runs in pure decision-directed mode from the start."""
         pytest.importorskip("jax")
-        from commstools import Signal
 
-        sig = Signal.psk(
+        sig = psk(
             symbol_rate=1e6, num_symbols=800, order=4, pulse_shape="rrc", sps=2, seed=42
         )
         rx = xp.ascontiguousarray(xp.asarray(sig.samples))
@@ -2048,10 +2000,9 @@ class TestLMSJAXPureDD:
 
 def _make_qam16_rx(xp, n_symbols=2000, seed=0):
     """Generate a simple AWGN-impaired 16-QAM signal at 2 SPS."""
-    from commstools import Signal
     from commstools.impairments import apply_awgn
 
-    sig = Signal.qam(
+    sig = qam(
         symbol_rate=1e6,
         num_symbols=n_symbols,
         order=16,
@@ -2086,9 +2037,8 @@ class TestWInit:
 
     def test_rls_accepts_w_init(self, backend_device, xp):
         """rls() accepts w_init array with correct shape."""
-        from commstools import Signal
 
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6, num_symbols=1000, order=4, pulse_shape="rrc", sps=2, seed=1
         )
         rx = xp.asarray(sig.samples)
@@ -2174,10 +2124,9 @@ class TestWInit:
 
     def test_warm_start_rde_same_or_better_evm(self, backend_device, xp):
         """RDE warm-started from LMS achieves same or better EVM than cold-start."""
-        from commstools import Signal
         from commstools.impairments import apply_awgn
 
-        sig = Signal.qam(
+        sig = qam(
             symbol_rate=1e6,
             num_symbols=4000,
             order=16,

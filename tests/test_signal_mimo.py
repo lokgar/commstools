@@ -7,14 +7,14 @@ Covers factory generation, frame structure, validation, and DSP operations
 import pytest
 from pydantic import ValidationError
 
-from commstools import filtering, multirate, spectral
+from commstools import filtering, multirate, qam, spectral
 from commstools.core import Preamble, Signal, SingleCarrierFrame
 
 
 def test_signal_generate_mimo(backend_device, xp):
     """Verify MIMO signal generation via high-level factories."""
     # Test MIMO generation via factories
-    sig = Signal.qam(order=4, num_symbols=100, sps=4, symbol_rate=1e6, num_streams=2)
+    sig = qam(order=4, num_symbols=100, sps=4, symbol_rate=1e6, num_streams=2)
 
     # Check shape: (num_streams, num_symbols * sps)
     expected_samples = 100 * 4
