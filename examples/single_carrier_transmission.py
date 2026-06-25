@@ -26,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, metrics
+from commstools import Signal, filtering, metrics, spectral
 from commstools.backend import to_device
 from commstools.frequency import (
     correct_static_frequency_offset,
@@ -101,7 +101,7 @@ def main():
     sig_rx.samples = fft_fractional_delay(sig_rx.samples, frac_delay)
 
     # B. Frequency Offset (using Signal method)
-    sig_rx.shift_frequency(FREQ_OFFSET)
+    sig_rx = spectral.shift_frequency(sig_rx, FREQ_OFFSET)
 
     # C. AWGN Noise (respecting SPS energy normalization)
     sig_rx.samples = apply_awgn(sig_rx.samples, sps=SPS, esn0_db=ESN0_DB, seed=seed)
@@ -158,7 +158,7 @@ def main():
 
     # C. Matched Filtering
     print("    - Applying Matched Filter...")
-    sig_matched = sig_rx.matched_filter()
+    sig_matched = filtering.matched_filter(sig_rx)
 
     # D. Decimate to Symbol Rate (1 SPS)
     print("    - Decimating to Symbol Rate (1 SPS)...")

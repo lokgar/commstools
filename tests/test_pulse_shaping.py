@@ -2,6 +2,7 @@
 
 import pytest
 
+from commstools import filtering
 from commstools.core import Signal
 
 
@@ -20,7 +21,7 @@ def test_signal_pulse_params(backend_device, xp):
     assert sig.rrc_rolloff == 0.5
 
     # Check if taps generation works
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     assert taps is not None
     assert len(taps) > 0
 
@@ -40,7 +41,7 @@ def test_matched_filter_auto_taps(backend_device, xp):
     sig_before = sig.copy()
 
     # Apply matched filter (should auto-generate taps)
-    sig.matched_filter()
+    sig = filtering.matched_filter(sig)
 
     # Check that samples changed (filtering happened)
     assert not xp.allclose(sig.samples, sig_before.samples)
@@ -61,7 +62,7 @@ def test_rzpam_pulse_params(backend_device, xp):
     assert sig.pulse_shape == "smoothrect"
     assert sig.rise_time == 0.1
 
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     assert len(taps) > 0
 
 
@@ -77,7 +78,7 @@ def test_rz_rect_taps_length(backend_device, xp, xpt):
         rz=True,
         pulse_shape="rect",
     )
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     assert len(taps) == 2
     xpt.assert_allclose(taps, xp.ones(2))
 
@@ -87,11 +88,11 @@ def test_unknown_pulse_shape(backend_device, xp):
     sig = Signal(samples=[1, 2], sampling_rate=10, symbol_rate=5)
     # No pulse shape
     with pytest.raises(ValueError, match="No pulse shape defined"):
-        sig.shaping_filter_taps()
+        filtering.shaping_filter_taps(sig)
 
     sig.pulse_shape = "unknown_shape"
     with pytest.raises(ValueError, match="Unknown pulse shape"):
-        sig.shaping_filter_taps()
+        filtering.shaping_filter_taps(sig)
 
 
 def test_rect_pulse_taps(backend_device, xp, xpt):
@@ -105,7 +106,7 @@ def test_rect_pulse_taps(backend_device, xp, xpt):
         symbol_rate=1e3,
         pulse_shape="rect",
     )
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     xpt.assert_allclose(taps, xp.ones(4))
 
 
@@ -119,7 +120,7 @@ def test_gaussian_shaping_filter_taps(backend_device, xp):
         filter_span=4,
         duty_cycle=0.5,
     )
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     assert taps is not None
     assert len(taps) > 0
 
@@ -134,19 +135,20 @@ def test_rc_shaping_filter_taps(backend_device, xp):
         filter_span=4,
         rc_rolloff=0.5,
     )
-    taps = sig.shaping_filter_taps()
+    taps = filtering.shaping_filter_taps(sig)
     assert taps is not None
     assert len(taps) > 0
 
 
 def test_matched_filter_logs_error_for_no_pulse_shape(backend_device, xp):
-    """matched_filter() with no pulse_shape logs an error and returns self unchanged."""
+    """matched_filter() with no pulse_shape logs an error and returns a copy unchanged."""
     sig = Signal(
         samples=xp.ones(10, dtype="complex64"),
         sampling_rate=4e3,
         symbol_rate=1e3,
         # No pulse_shape set
     )
-    # Should NOT raise, but log an error and return self unchanged
-    result = sig.matched_filter()
-    assert result is sig
+    # Should NOT raise, but log an error and return an unchanged copy
+    result = filtering.matched_filter(sig)
+    assert result is not sig
+    assert bool(xp.all(result.samples == sig.samples))

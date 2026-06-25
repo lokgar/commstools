@@ -21,12 +21,15 @@ from typing import Any, cast
 import numpy as np
 
 from .backend import ArrayType, dispatch
+from .core.signal import Signal
 from .logger import logger
 
 
 def shift_frequency(
-    samples: ArrayType, offset: float, sampling_rate: float
-) -> tuple[ArrayType, float]:
+    samples: ArrayType | Signal,
+    offset: float,
+    sampling_rate: float | None = None,
+) -> tuple[ArrayType, float] | Signal:
     """
     Applies a frequency offset (complex mixing) to a signal.
 
@@ -61,7 +64,26 @@ def shift_frequency(
     The quantization ensures that the applied shift corresponds to an
     integer number of cycles over the signal duration, which is critical
     for preserving the circularity of the signal's phase.
+
+    When ``samples`` is a :class:`Signal`, a new :class:`Signal` is returned
+    with the shift applied and ``digital_frequency_offset`` accumulated;
+    ``sampling_rate`` is taken from the signal.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        new = sig.copy()
+        out = shift_frequency(sig.samples, offset, sig.sampling_rate)
+        assert isinstance(out, tuple)  # array input -> (samples, actual_offset)
+        shifted, actual = out
+        new.samples = shifted
+        if new.digital_frequency_offset is None:
+            new.digital_frequency_offset = 0.0
+        new.digital_frequency_offset += actual
+        return new
+
+    if sampling_rate is None:
+        raise ValueError("shift_frequency() requires sampling_rate for array input.")
+
     samples, xp, _ = dispatch(samples)
 
     # Axis -1 is time
@@ -104,13 +126,13 @@ def shift_frequency(
 
 
 def add_pilot_tone(
-    samples: ArrayType,
-    sampling_rate: float,
-    frequency: float | Sequence[float],
+    samples: ArrayType | Signal,
+    sampling_rate: float | None = None,
+    frequency: float | Sequence[float] | None = None,
     power_ratio_db: float | Sequence[float] = -15.0,
     phase_init: float = 0.0,
     renormalize: bool = False,
-) -> tuple[ArrayType, float | list[float]]:
+) -> tuple[ArrayType, float | list[float]] | Signal:
     r"""
     Add a continuous-wave (CW) pilot tone to a baseband waveform.
 
@@ -178,7 +200,37 @@ def add_pilot_tone(
     playback on an AWG/DAC.  The quantization error is at most fs/(2N).
     The phase ramp is accumulated in float64 to avoid trig argument-reduction
     error for large N.
+
+    When ``samples`` is a :class:`Signal`, the sampling rate is taken from the
+    signal, so the **second positional argument is the frequency** (i.e. call
+    ``add_pilot_tone(sig, freq, ...)``).  A new :class:`Signal` is returned with
+    ``pilot_tone_frequency`` / ``pilot_tone_power_ratio_db`` recorded.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        # Signal rate is implicit; the second positional carries the frequency.
+        freq = frequency if frequency is not None else sampling_rate
+        if freq is None:
+            raise ValueError("add_pilot_tone() requires a frequency.")
+        new = sig.copy()
+        out = add_pilot_tone(
+            sig.samples,
+            sig.sampling_rate,
+            freq,
+            power_ratio_db=power_ratio_db,
+            phase_init=phase_init,
+            renormalize=renormalize,
+        )
+        assert isinstance(out, tuple)  # array input -> (samples, actual_frequency)
+        new.samples, new.pilot_tone_frequency = out
+        new.pilot_tone_power_ratio_db = power_ratio_db
+        return new
+
+    if sampling_rate is None or frequency is None:
+        raise ValueError(
+            "add_pilot_tone() requires sampling_rate and frequency for array input."
+        )
+
     samples, xp, _ = dispatch(samples)
     was_1d = samples.ndim == 1
     if was_1d:
@@ -271,8 +323,8 @@ def add_pilot_tone(
 
 
 def welch_psd(
-    samples: ArrayType,
-    sampling_rate: float,
+    samples: ArrayType | Signal,
+    sampling_rate: float | None = None,
     nperseg: int = 256,
     detrend: str | bool | None = False,
     average: str | None = "mean",
@@ -335,6 +387,25 @@ def welch_psd(
     ValueError
         If `return_onesided` set to True for complex-valued inputs.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return welch_psd(
+            sig.samples,
+            sig.sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
+            window=window,
+            noverlap=noverlap,
+            nfft=nfft,
+            scaling=scaling,
+            return_onesided=return_onesided,
+            axis=-1,
+        )
+
+    if sampling_rate is None:
+        raise ValueError("welch_psd() requires sampling_rate for array input.")
+
     samples, xp, sp = dispatch(samples)
     is_complex = xp.iscomplexobj(samples)
 
@@ -375,8 +446,8 @@ def welch_psd(
 
 
 def spectrogram(
-    samples: ArrayType,
-    sampling_rate: float,
+    samples: ArrayType | Signal,
+    sampling_rate: float | None = None,
     window: str | tuple[Any, ...] | Any = "hann",
     nperseg: int = 256,
     noverlap: int | None = None,
@@ -438,6 +509,25 @@ def spectrogram(
     ValueError
         If `return_onesided` set to True for complex-valued inputs.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return spectrogram(
+            sig.samples,
+            sig.sampling_rate,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=-1,
+            mode=mode,
+        )
+
+    if sampling_rate is None:
+        raise ValueError("spectrogram() requires sampling_rate for array input.")
+
     samples, xp, sp = dispatch(samples)
     is_complex = xp.iscomplexobj(samples)
 

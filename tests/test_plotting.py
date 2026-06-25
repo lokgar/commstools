@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering
+from commstools import filtering, spectral
 from commstools.plotting import (
     _create_subplot_grid,
     _plot_eye_traces,
@@ -885,7 +885,7 @@ def test_signal_spectrogram_convenience(backend_device, xp):
     sig.samples = xp.asarray(sig.samples)
 
     # 1. Calculation convenience method
-    f, t, Sxx = sig.spectrogram(nperseg=64, noverlap=32)
+    f, t, Sxx = spectral.spectrogram(sig, nperseg=64, noverlap=32)
     assert isinstance(f, xp.ndarray)
     assert isinstance(t, xp.ndarray)
     assert isinstance(Sxx, xp.ndarray)

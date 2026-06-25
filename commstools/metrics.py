@@ -326,9 +326,7 @@ def snr(
             raise ValueError(
                 "No resolved symbols available. Call resolve_symbols(sig) first."
             )
-        return snr(
-            sig.resolved_symbols, ref, num_train_symbols=num_train_symbols
-        )
+        return snr(sig.resolved_symbols, ref, num_train_symbols=num_train_symbols)
 
     from . import helpers
 

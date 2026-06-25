@@ -73,16 +73,19 @@ or use ``helpers.normalize`` after the fact.
 from fractions import Fraction
 from typing import Any
 
+from . import helpers
 from .backend import ArrayType, dispatch
+from .core.signal import Signal
 from .logger import logger
 
 
 def decimate_to_symbol_rate(
-    samples: ArrayType,
-    sps: int,
+    samples: ArrayType | Signal,
+    sps: int | None = None,
     offset: int = 0,
+    normalize: bool | None = None,
     axis: int = -1,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Decimates an oversampled signal to symbol-rate by direct slicing.
 
@@ -93,29 +96,57 @@ def decimate_to_symbol_rate(
 
     Parameters
     ----------
-    samples : array_like
-        Input matched-filtered signal. Shape: (..., N_samples).
-    sps : int
-        Input samples per symbol (decimation factor).
+    samples : array_like or Signal
+        Input matched-filtered signal. Shape: (..., N_samples).  When a
+        :class:`Signal` is passed, ``sps`` defaults to the signal's integer
+        ``sps`` and a new :class:`Signal` at the symbol rate is returned.
+    sps : int, optional
+        Input samples per symbol (decimation factor).  Required for array
+        input; derived from the Signal otherwise.
     offset : int, default 0
         Sampling phase offset in samples [0, sps-1]. Adjust this to
         sample at the peak of the impulse response (center of the eye).
+    normalize : bool, optional
+        Normalize the output to unit average power (``mean(|x|²)=1``) after
+        slicing.  Absorbs channel/equalizer/filter gain uncertainty.  Defaults
+        to ``True`` for :class:`Signal` input (the canonical receive path) and
+        ``False`` for raw arrays (the unmodified slicing primitive).
     axis : int, default -1
         The axis along which to downsample.
 
     Returns
     -------
-    array_like
+    array_like or Signal
         Symbols at 1 sps. Shape: (..., N_samples / sps).
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        do_norm = True if normalize is None else normalize
+        sps_int = int(sig.sps)
+        new = sig.copy()
+        if sps_int <= 1:
+            logger.info("Signal already at 1 sps, no downsampling needed.")
+        else:
+            new.samples = decimate_to_symbol_rate(
+                sig.samples, sps=sps_int, offset=offset, normalize=False, axis=-1
+            )
+            new.sampling_rate = sig.symbol_rate
+        if do_norm:
+            new.samples = helpers.normalize(new.samples, "average_power", axis=-1)
+        return new
+
+    if sps is None:
+        raise ValueError("decimate_to_symbol_rate() requires sps for array input.")
     logger.debug(f"Downsampling to symbols: sps={sps}, offset={offset}")
-    samples, xp, _ = dispatch(samples)
+    arr, xp, _ = dispatch(samples)
 
     # Build slicing for arbitrary axis
-    slices = [slice(None)] * samples.ndim
+    slices = [slice(None)] * arr.ndim
     slices[axis] = slice(offset, None, sps)
-
-    return samples[tuple(slices)]
+    out = arr[tuple(slices)]
+    if normalize:
+        out = helpers.normalize(out, "average_power", axis=axis)
+    return out
 
 
 def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
@@ -164,7 +195,12 @@ def expand(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
     return out
 
 
-def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
+def upsample(
+    samples: ArrayType | Signal,
+    factor: int,
+    correct_power: bool | None = None,
+    axis: int = -1,
+) -> ArrayType | Signal:
     """
     Increases the sampling rate by an integer factor with filtering.
 
@@ -174,30 +210,51 @@ def upsample(samples: ArrayType, factor: int, axis: int = -1) -> ArrayType:
 
     Parameters
     ----------
-    samples : array_like
-        Input signal samples. Shape: (..., N_samples).
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).  A :class:`Signal`
+        returns a new :class:`Signal` with ``sampling_rate`` scaled by *factor*.
     factor : int
         The interpolation factor.
+    correct_power : bool, optional
+        Apply the deterministic amplitude gain ``factor**-0.5`` to preserve the
+        ``"symbol_power"`` invariant (``E[|x|²]=1/sps``).  Defaults to ``True``
+        for :class:`Signal` input, ``False`` for raw arrays.
     axis : int, default -1
         The axis along which to perform upsampling.
 
     Returns
     -------
-    array_like
+    array_like or Signal
         The upsampled signal. Shape: (..., N_samples * factor).
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        new = sig.copy()
+        new.samples = upsample(
+            sig.samples,
+            factor,
+            correct_power=True if correct_power is None else correct_power,
+            axis=-1,
+        )
+        new.sampling_rate = sig.sampling_rate * factor
+        return new
+
     logger.debug(f"Upsampling by factor {factor} (polyphase, axis={axis}).")
-    samples, xp, sp = dispatch(samples)
-    return sp.signal.resample_poly(samples, factor, 1, axis=axis)
+    arr, xp, sp = dispatch(samples)
+    out = sp.signal.resample_poly(arr, factor, 1, axis=axis)
+    if correct_power:
+        out = out * (factor**-0.5)
+    return out
 
 
 def decimate(
-    samples: ArrayType,
+    samples: ArrayType | Signal,
     factor: int,
     method: str = "decimate",
+    correct_power: bool | None = None,
     axis: int = -1,
     **kwargs: Any,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Reduces the sampling rate with anti-aliasing filtering.
 
@@ -206,14 +263,19 @@ def decimate(
 
     Parameters
     ----------
-    samples : array_like
-        Input signal samples. Shape: (..., N_samples).
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).  A :class:`Signal`
+        returns a new :class:`Signal` with ``sampling_rate`` divided by *factor*.
     factor : int
         The decimation factor.
     method : {"decimate", "polyphase"}, default "decimate"
         The implementation strategy:
         - "decimate": Uses `scipy.signal.decimate` (Chebyshev I or FIR).
         - "polyphase": Uses `resample_poly` for filter-and-sample.
+    correct_power : bool, optional
+        Apply the deterministic amplitude gain ``factor**0.5`` to preserve the
+        ``"symbol_power"`` invariant.  Defaults to ``True`` for :class:`Signal`
+        input, ``False`` for raw arrays.
     axis : int, default -1
         The axis along which to perform decimation.
     **kwargs : Any
@@ -222,7 +284,7 @@ def decimate(
 
     Returns
     -------
-    array_like
+    array_like or Signal
         The decimated signal. Shape: (..., N_samples / factor).
 
     Notes
@@ -232,33 +294,50 @@ def decimate(
     anti-aliasing; adding an extra decimation filter will degrade the
     signal. Use `decimate_to_symbol_rate` instead.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        new = sig.copy()
+        new.samples = decimate(
+            sig.samples,
+            factor,
+            method=method,
+            correct_power=True if correct_power is None else correct_power,
+            axis=-1,
+            **kwargs,
+        )
+        new.sampling_rate = sig.sampling_rate / factor
+        return new
+
     logger.debug(f"Decimating by factor {factor} (method: {method}).")
-    samples, _, sp = dispatch(samples)
+    arr, _, sp = dispatch(samples)
 
     if method == "decimate":
         # scipy.signal.decimate (includes antialiasing)
         zero_phase = kwargs.get("zero_phase", True)
         ftype = kwargs.get("ftype", "fir")
-        return sp.signal.decimate(
-            samples, int(factor), ftype=ftype, axis=axis, zero_phase=zero_phase
+        out = sp.signal.decimate(
+            arr, int(factor), ftype=ftype, axis=axis, zero_phase=zero_phase
         )
-
     elif method == "polyphase":
         # resample_poly with up=1
-        return sp.signal.resample_poly(samples, 1, int(factor), axis=axis)
-
+        out = sp.signal.resample_poly(arr, 1, int(factor), axis=axis)
     else:
         raise ValueError(f"Unknown decimation method: {method}")
 
+    if correct_power:
+        out = out * (factor**0.5)
+    return out
+
 
 def resample(
-    samples: ArrayType,
+    samples: ArrayType | Signal,
     up: int | None = None,
     down: int | None = None,
     sps_in: float | None = None,
     sps_out: float | None = None,
+    correct_power: bool | None = None,
     axis: int = -1,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Performs rational resampling of a signal.
 
@@ -268,8 +347,10 @@ def resample(
 
     Parameters
     ----------
-    samples : array_like
-        Input signal samples. Shape: (..., N_samples).
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).  A :class:`Signal`
+        returns a new :class:`Signal` with updated ``sampling_rate``; ``sps_in``
+        is taken from the signal when ``sps_out`` is given.
     up : int, optional
         Integer upsampling factor.
     down : int, optional
@@ -278,12 +359,17 @@ def resample(
         Input samples per symbol.
     sps_out : float, optional
         Target samples per symbol.
+    correct_power : bool, optional
+        Apply the deterministic amplitude gain ``sqrt(down/up)`` (=
+        ``sqrt(sps_before/sps_after)``) to preserve the ``"symbol_power"``
+        invariant.  Defaults to ``True`` for :class:`Signal` input, ``False``
+        for raw arrays.
     axis : int, default -1
         The axis along which to perform resampling.
 
     Returns
     -------
-    array_like
+    array_like or Signal
         The resampled signal. Shape: (..., N_samples * Ratio).
 
     Raises
@@ -291,6 +377,26 @@ def resample(
     ValueError
         If parameters are insufficient or contradictory.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        new = sig.copy()
+        # When sps_out is given, the input sps comes from the signal itself.
+        sig_sps_in = sig.sps if sps_out is not None else None
+        new.samples = resample(
+            sig.samples,
+            up=up,
+            down=down,
+            sps_in=sig_sps_in,
+            sps_out=sps_out,
+            correct_power=True if correct_power is None else correct_power,
+            axis=-1,
+        )
+        if sps_out is not None:
+            new.sampling_rate = sps_out * sig.symbol_rate
+        elif up is not None and down is not None:
+            new.sampling_rate = sig.sampling_rate * up / down
+        return new
+
     if (up is not None or down is not None) and (
         sps_in is not None or sps_out is not None
     ):
@@ -304,5 +410,9 @@ def resample(
         raise ValueError("Must specify either (up, down) or (sps_in, sps_out).")
 
     logger.debug(f"Resampling by rational factor {up}/{down} (polyphase, axis={axis}).")
-    samples, xp, sp = dispatch(samples)
-    return sp.signal.resample_poly(samples, int(up), int(down), axis=axis)
+    arr, xp, sp = dispatch(samples)
+    out = sp.signal.resample_poly(arr, int(up), int(down), axis=axis)
+    if correct_power:
+        # sps_after / sps_before = up / down  ->  gain = sqrt(down/up).
+        out = out * (down / up) ** 0.5
+    return out

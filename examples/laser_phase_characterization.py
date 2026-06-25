@@ -35,7 +35,7 @@ matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, analysis, plotting
+from commstools import Signal, analysis, filtering, plotting
 from commstools.backend import to_device
 from commstools.equalization import apply_taps, lms
 from commstools.impairments import apply_awgn, apply_phase_noise
@@ -113,7 +113,7 @@ rx = tx.copy()
 
 # (a) light residual ISI for the FSE
 h_ch = np.array([0.95, 0.0, 0.08 + 0.05j, 0.0, 0.03 - 0.02j], dtype=np.complex64)
-rx.fir_filter(h_ch)
+rx = filtering.fir_filter(rx, h_ch)
 
 # (b) deterministic sinusoidal frequency wander Δf(t), shared across pols.
 #     φ_wander(t) = 2π ∫ Δf dt — applied at the sample rate.

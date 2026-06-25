@@ -33,7 +33,8 @@ compensate_chromatic_dispersion :
 import numpy as np
 import scipy
 
-from .backend import ArrayType, dispatch
+from .backend import ArrayType, dispatch, to_device
+from .core.signal import Signal
 from .helpers import normalize
 from .logger import logger
 from .multirate import expand
@@ -737,7 +738,63 @@ def ols_fir_filter(
     return out[0] if was_1d else out
 
 
-def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType:
+def shaping_filter_taps(sig: Signal) -> ArrayType:
+    """
+    Compute pulse-shaping filter taps from a :class:`Signal`'s metadata.
+
+    Reconstructs the transmit pulse-shaping taps from ``pulse_shape`` and the
+    associated parameters (``sps``, ``filter_span``, roll-offs, ``duty_cycle``,
+    ``rise_time``) stored on the signal.  The taps are returned on the signal's
+    current backend.
+
+    Parameters
+    ----------
+    sig : Signal
+        Signal carrying valid ``pulse_shape`` metadata.
+
+    Returns
+    -------
+    array_like
+        Generated filter taps on the signal's device.
+
+    Raises
+    ------
+    ValueError
+        If ``pulse_shape`` is missing or unsupported.
+    """
+    if not sig.pulse_shape or sig.pulse_shape == "none":
+        raise ValueError("No pulse shape defined for this signal.")
+    logger.info(f"Generating shaping filter taps (shape: {sig.pulse_shape}).")
+
+    # Use stored duty_cycle for RZ; NRZ always uses the full symbol period.
+    duty_cycle = sig.duty_cycle if sig.mod_rz else 1.0
+
+    if sig.pulse_shape == "rect":
+        taps = rect_taps(int(sig.sps), duty_cycle=duty_cycle, rise_time=sig.rise_time)
+    elif sig.pulse_shape == "smoothrect":
+        taps = smoothrect_taps(
+            sps=int(sig.sps),
+            span=sig.filter_span,
+            rise_time=sig.rise_time,
+            duty_cycle=duty_cycle,
+        )
+    elif sig.pulse_shape == "gaussian":
+        taps = gaussian_taps(
+            sps=sig.sps, span=sig.filter_span, duty_cycle=sig.duty_cycle
+        )
+    elif sig.pulse_shape == "rrc":
+        taps = rrc_taps(sps=sig.sps, span=sig.filter_span, rolloff=sig.rrc_rolloff)
+    elif sig.pulse_shape == "rc":
+        taps = rc_taps(sps=sig.sps, span=sig.filter_span, rolloff=sig.rc_rolloff)
+    else:
+        raise ValueError(f"Unknown pulse shape: {sig.pulse_shape}")
+
+    return to_device(taps, sig.backend)
+
+
+def fir_filter(
+    samples: ArrayType | Signal, taps: ArrayType, axis: int = -1
+) -> ArrayType | Signal:
     """
     Apply a Finite Impulse Response (FIR) filter to signal samples.
 
@@ -746,8 +803,9 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
 
     Parameters
     ----------
-    samples : array_like
-        Input signal samples. Shape: (..., N_samples).
+    samples : array_like or Signal
+        Input signal samples. Shape: (..., N_samples).  A :class:`Signal`
+        returns a new filtered :class:`Signal`.
     taps : array_like
         FIR filter coefficients (impulse response). Shape: (N_taps,).
     axis : int, default -1
@@ -755,9 +813,15 @@ def fir_filter(samples: ArrayType, taps: ArrayType, axis: int = -1) -> ArrayType
 
     Returns
     -------
-    array_like
+    array_like or Signal
         Filtered samples with the same shape as `samples` (mode='same').
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        new = sig.copy()
+        new.samples = fir_filter(sig.samples, taps, axis=-1)
+        return new
+
     logger.debug(
         f"Applying FIR filter via convolution ({len(taps)} taps, axis={axis})."
     )
@@ -909,11 +973,11 @@ def shape_pulse(
 
 
 def matched_filter(
-    samples: ArrayType,
-    pulse_taps: ArrayType,
+    samples: ArrayType | Signal,
+    pulse_taps: ArrayType | None = None,
     taps_normalization: str = "unit_energy",
     axis: int = -1,
-) -> ArrayType:
+) -> ArrayType | Signal:
     """
     Applies a matched filter to the received signal.
 
@@ -923,11 +987,14 @@ def matched_filter(
 
     Parameters
     ----------
-    samples : array_like
-        Input received samples. Shape: (..., N_samples).
-    pulse_taps : array_like
+    samples : array_like or Signal
+        Input received samples. Shape: (..., N_samples).  A :class:`Signal`
+        returns a new matched-filtered :class:`Signal`; when ``pulse_taps`` is
+        omitted, the taps are derived from the signal's ``pulse_shape`` metadata
+        via :func:`shaping_filter_taps`.
+    pulse_taps : array_like, optional
         Taps of the pulse-shaping filter used at the transmitter.
-        Shape: (N_taps,).
+        Shape: (N_taps,).  Required for raw-array input.
     taps_normalization : {"unit_energy", "unity_gain"}, default "unit_energy"
         Designates how the matched filter taps are normalized.
     axis : int, default -1
@@ -935,9 +1002,27 @@ def matched_filter(
 
     Returns
     -------
-    array_like
+    array_like or Signal
         Matched filtered samples. Shape: (..., N_samples).
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        taps = pulse_taps
+        if taps is None:
+            try:
+                taps = shaping_filter_taps(sig)
+            except ValueError as e:
+                logger.error(f"Cannot apply matched filter: {e}")
+                return sig.copy()
+        new = sig.copy()
+        new.samples = matched_filter(
+            sig.samples, taps, taps_normalization=taps_normalization, axis=-1
+        )
+        return new
+
+    if pulse_taps is None:
+        raise ValueError("matched_filter() requires pulse_taps for array input.")
+
     logger.debug(f"Applying Matched Filter (taps length={len(pulse_taps)}).")
     samples, xp, _ = dispatch(samples)
 

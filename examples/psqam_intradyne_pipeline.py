@@ -52,7 +52,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, metrics
+from commstools import Signal, filtering, metrics
 from commstools.backend import to_device
 from commstools.equalization import lms
 from commstools.impairments import (
@@ -159,7 +159,7 @@ rx = tx.copy()
 
 # Per-pol 3-tap multipath (residual ISI for the FSE) using built-in fir_filter
 h_ch = np.array([0.92, 0.0, 0.10 + 0.06j, 0.0, 0.04 - 0.02j], dtype=np.complex64)
-rx.fir_filter(h_ch)
+rx = filtering.fir_filter(rx, h_ch)
 
 # Polarisation mode dispersion (frequency-dependent SOP rotation + DGD)
 rx.samples = apply_pmd(rx.samples, rx.sampling_rate, dgd=PMD_DGD_S, theta=PMD_THETA)

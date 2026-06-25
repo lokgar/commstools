@@ -44,7 +44,15 @@ Run
 
 import numpy as np
 
-from commstools import Signal, equalization, frequency, metrics, recovery
+from commstools import (
+    Signal,
+    equalization,
+    filtering,
+    frequency,
+    metrics,
+    recovery,
+    spectral,
+)
 from commstools.backend import dispatch
 from commstools.impairments import apply_awgn
 from commstools.timing import correct_timing, estimate_timing
@@ -121,8 +129,8 @@ h_ch = np.array([0.85, 0.0, 0.12 + 0.07j, 0.0, 0.05 - 0.03j], dtype=np.complex64
 
 # Apply impairments directly on the Signal object using library features!
 sig_rx = sig_tx.copy()
-sig_rx.fir_filter(h_ch)
-sig_rx.shift_frequency(FO_TRUE_HZ)
+sig_rx = filtering.fir_filter(sig_rx, h_ch)
+sig_rx = spectral.shift_frequency(sig_rx, FO_TRUE_HZ)
 sig_rx.samples = apply_awgn(sig_rx.samples, sps=SPS, esn0_db=SNR_DB, seed=42)
 rx = sig_rx.samples
 
@@ -226,8 +234,8 @@ _print_sep("6. apply_taps() — frozen weights on a second capture")
 
 # Simulate a second noisy capture (same channel, different noise realisation) using library features!
 sig_rx2 = sig_tx.copy()
-sig_rx2.fir_filter(h_ch)
-sig_rx2.shift_frequency(FO_TRUE_HZ)
+sig_rx2 = filtering.fir_filter(sig_rx2, h_ch)
+sig_rx2 = spectral.shift_frequency(sig_rx2, FO_TRUE_HZ)
 sig_rx2.samples = apply_awgn(sig_rx2.samples, sps=SPS, esn0_db=SNR_DB, seed=100)
 rx2 = sig_rx2.samples
 

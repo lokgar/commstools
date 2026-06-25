@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import metrics
+from commstools import filtering, metrics, multirate, spectral
 from commstools.core import Signal
 
 
@@ -81,26 +81,26 @@ def test_signal_properties(backend_device, xp):
 
 
 def test_signal_add_pilot_tone(backend_device, xp):
-    """Signal.add_pilot_tone adds the tone, records the snapped freq, chains."""
+    """add_pilot_tone returns a new Signal with the tone and snapped freq recorded."""
     sig = Signal.qam(num_symbols=256, sps=8, symbol_rate=1e6, order=16, seed=3)
     fs = sig.sampling_rate
     df = fs / sig.samples.shape[-1]
     before = sig.samples.copy()
 
-    ret = sig.add_pilot_tone(2.0e6, power_ratio_db=-12.0)
+    ret = spectral.add_pilot_tone(sig, 2.0e6, power_ratio_db=-12.0)
 
-    assert ret is sig  # chainable, in-place
-    assert sig.pilot_tone_frequency is not None
+    assert ret is not sig  # pure: a new Signal is returned
+    assert ret.pilot_tone_frequency is not None
     # Frequency and power are recorded as 1-D per-channel arrays (SISO -> len 1).
-    assert isinstance(sig.pilot_tone_frequency, np.ndarray)
-    assert sig.pilot_tone_frequency.shape == (1,)
-    np.testing.assert_array_equal(sig.pilot_tone_power_ratio_db, [-12.0])
-    f_p = float(sig.pilot_tone_frequency[0])
+    assert isinstance(ret.pilot_tone_frequency, np.ndarray)
+    assert ret.pilot_tone_frequency.shape == (1,)
+    np.testing.assert_array_equal(ret.pilot_tone_power_ratio_db, [-12.0])
+    f_p = float(ret.pilot_tone_frequency[0])
     # Recorded frequency is on the FFT grid and near the request.
     assert abs(round(f_p / df) - f_p / df) < 1e-9
     assert abs(f_p - 2.0e6) <= df / 2 + 1.0
     # Samples actually changed.
-    assert float(xp.max(xp.abs(sig.samples - before))) > 0.0
+    assert float(xp.max(xp.abs(ret.samples - before))) > 0.0
 
 
 def test_signal_methods(backend_device, xp):
@@ -109,13 +109,13 @@ def test_signal_methods(backend_device, xp):
     data = xp.array([1.0 + 0j, -1.0 + 0j])
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
 
-    s.upsample(2)
+    s = multirate.upsample(s, 2)
     assert s.sampling_rate == 2.0
     assert s.samples.shape[0] == 4
 
     # Test fir_filter
     taps = xp.array([1.0])
-    s.fir_filter(taps)
+    s = filtering.fir_filter(s, taps)
     # should be unchanged roughly
 
 
@@ -127,7 +127,7 @@ def test_signal_resample_sps(backend_device, xp):
     assert s.sps == 4.0
 
     # resample to sps=8
-    s.resample(sps_out=8.0)
+    s = multirate.resample(s, sps_out=8.0)
     assert s.sps == 8.0
     assert s.sampling_rate == 8.0
     assert s.samples.size == 200
@@ -138,12 +138,13 @@ def test_welch_psd(backend_device, xp):
     data = xp.random.randn(1000) + 1j * xp.random.randn(1000)
     s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0)
 
-    f, p = s.welch_psd(nperseg=64)
+    f, p = spectral.welch_psd(s, nperseg=64)
     assert f.shape == p.shape
     assert isinstance(f, xp.ndarray)
 
     # Test custom parameters
-    f2, p2 = s.welch_psd(
+    f2, p2 = spectral.welch_psd(
+        s,
         nperseg=64,
         window=("kaiser", 8.0),
         noverlap=32,
@@ -169,11 +170,11 @@ def test_shaping_filter_taps_error(backend_device, xp):
     s = Signal(samples=data, sampling_rate=100.0, symbol_rate=10.0)
 
     with pytest.raises(ValueError, match="No pulse shape defined"):
-        s.shaping_filter_taps()
+        filtering.shaping_filter_taps(s)
 
     s.pulse_shape = "invalid_shape"
     with pytest.raises(ValueError, match="Unknown pulse shape"):
-        s.shaping_filter_taps()
+        filtering.shaping_filter_taps(s)
 
 
 def test_signal_copy(backend_device, xp, xpt):
@@ -195,7 +196,7 @@ def test_signal_shift_frequency(backend_device, xp, xpt):
     s = Signal(samples=data, sampling_rate=fs, symbol_rate=10.0)
 
     # Offset by 20 Hz
-    s.shift_frequency(20.0)
+    s = spectral.shift_frequency(s, 20.0)
 
     # 1. Check metadata
     assert s.digital_frequency_offset == 20.0
@@ -206,11 +207,11 @@ def test_signal_shift_frequency(backend_device, xp, xpt):
     xpt.assert_allclose(s.samples, expected)
 
     # 3. Check accumulation
-    s.shift_frequency(5.0)
+    s = spectral.shift_frequency(s, 5.0)
     assert s.digital_frequency_offset == 25.0
 
     # Check approximate freq
-    f, p = s.welch_psd(nperseg=64)
+    f, p = spectral.welch_psd(s, nperseg=64)
     peak = f[xp.argmax(p)]
     # 25 Hz expected
     assert abs(peak - 25.0) < (fs / 64)
@@ -273,7 +274,7 @@ def test_signal_decimate_to_symbol_rate(backend_device, xp):
     """Verify downsampling Signal to symbols."""
     data = xp.ones(40, dtype="complex128")
     s = Signal(samples=data, sampling_rate=4.0, symbol_rate=1.0)
-    s.decimate_to_symbol_rate(offset=0)
+    s = multirate.decimate_to_symbol_rate(s, offset=0)
     assert len(s.samples) == 10
     assert s.sampling_rate == 1.0
 
@@ -282,7 +283,7 @@ def test_signal_downsample_warning(backend_device, xp):
     """Verify warning when downsampling already 1 SPS signal."""
     data = xp.ones(10, dtype="complex128")
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
-    s.decimate_to_symbol_rate()  # Should just warn
+    multirate.decimate_to_symbol_rate(s)  # Should just warn
 
 
 def test_signal_mimo_fir_coverage(backend_device, xp):
@@ -291,7 +292,7 @@ def test_signal_mimo_fir_coverage(backend_device, xp):
     s = Signal(samples=data, sampling_rate=1.0, symbol_rate=1.0)
     # Filter with delay
     taps = xp.array([1.0, 0.5])
-    s.fir_filter(taps)
+    s = filtering.fir_filter(s, taps)
     assert s.samples.shape == (2, 100)
     # y[1] should be 1.5
     assert abs(float(s.samples[0, 1].real) - 1.5) < 1e-10
@@ -380,7 +381,7 @@ def test_signal_wrappers(backend_device, xp):
 
     # wrappers
     # Use small nperseg to match signal length
-    f, p = sig.welch_psd(nperseg=32)
+    f, p = spectral.welch_psd(sig, nperseg=32)
     assert len(f) > 0
 
     # Clean up any existing figures from previous tests
