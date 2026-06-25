@@ -25,10 +25,9 @@ Low-risk, do first. No code logic touched.
 **Already in good shape (verified, no action needed):** stray `main.py` is
 deleted; `tmp/` is gitignored and untracked; `.gitignore` already covers `dist/`,
 `*.egg-info`, `__pycache__/`, `.venv`, `.mypy_cache/`, `.ruff_cache`,
-`.benchmarks`, and `*.pdf`/binaries; and the **committed**
-`examples/04-equalizers.ipynb` has zero embedded outputs (notebooks are
-effectively stripped — the large working-tree size is local output that won't be
-committed).
+`.benchmarks`, and `*.pdf`/binaries. (The old `examples/` directory — notebooks,
+scripts, and rendered images — was removed during Phase 3; new examples on the
+free-function API will be added later.)
 
 1. **Add `py.typed` marker** *(the one real action in this phase)*
    - Create empty `commstools/py.typed`.
@@ -53,9 +52,10 @@ committed).
    to ratchet strictness module-by-module (`[[tool.mypy.overrides]]` blocks).
    Start with the leaf modules that are already well-typed.
 3. **Move non-core deps to extras**
-   - `jupyter` → a `docs` / `examples` extra (it should not be a runtime dep).
-   - Audit whether `pandas` is used in library code or only examples; if
-     examples-only, move it to the extra too.
+   - `jupyter` is no longer needed now that the notebooks are gone — drop it (or
+     move it to a future `docs` extra if examples return). It must not be a
+     runtime dep.
+   - Audit whether `pandas` is used in library code at all; if not, drop it too.
 4. **Add CI** — a GitHub Actions workflow running, on push/PR:
    `uv sync`, `uv run ruff check .`, `uv run mypy commstools/`,
    `uv run pytest --device=cpu --cov=commstools --cov-fail-under=<current>`.
@@ -137,7 +137,7 @@ commstools/core/
 ### 3c. Migration order (one concern per commit, tests between each)
 1. **Generation** → move bodies to `core/generation.py`. Keep
    `Signal.qam(...)` etc. as one-line classmethod delegates for one release, OR
-   expose top-level `commstools.qam(...)`. Update examples/tests to the chosen form.
+   expose top-level `commstools.qam(...)`. Update tests to the chosen form.
 2. **Metrics** → make `metrics.evm/snr/ber/ser/mi/gmi(sig, ...)` the real API;
    drop the `Signal` methods (they're already thin wrappers).
 3. **Plotting** → `plotting.constellation(sig, ...)` etc.; drop `Signal.plot_*`.
@@ -147,8 +147,9 @@ commstools/core/
 6. **Delete all function-local `from . import` in `core/`.** This is the
    completion check for the whole phase — grep must return zero hits:
    `grep -rn "    from \. import" commstools/core/` → empty.
-7. Update `examples/*.py` and `tests/` to the free-function API. Update README
-   snippets (coordinate with README plan).
+7. Update `tests/` to the free-function API. (The old `examples/` were removed
+   rather than migrated; new examples will be written against the new API later.)
+   Update README snippets to match.
 
 ### 3d. Acceptance criteria for Phase 3
 - No lazy intra-package imports anywhere (`grep -rn "    from \. import" commstools/`).
