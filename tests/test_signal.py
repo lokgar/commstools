@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from commstools import metrics
 from commstools.core import Signal
 
 
@@ -249,25 +250,23 @@ def test_signal_resolution_and_demap(backend_device, xp, xpt):
     assert len(sig.resolved_bits) == num_symbols
 
     # Metrics should now work
-    evm_pct, evm_db = sig.evm()
+    evm_pct, evm_db = metrics.evm(sig)
     assert evm_pct >= 0
 
-    snr_db = sig.snr()
+    snr_db = metrics.snr(sig)
     assert snr_db > 0
 
     # Test BER with manual reference bits
     ref_bits = sig.source_bits
     if ref_bits is not None:
         # ber() requires resolved_bits (populated by demap_symbols_hard above)
-        ber = sig.ber(reference_bits=ref_bits)
+        ber = metrics.ber(sig, bits_tx=ref_bits)
         assert 0 <= ber <= 1
 
     # Test that BER raises if resolved_bits is missing
     sig.resolved_bits = None
-    with pytest.raises(
-        ValueError, match="Please call `demap_symbols_hard\\(\\)` first"
-    ):
-        sig.ber(reference_bits=ref_bits)
+    with pytest.raises(ValueError, match="No resolved bits available"):
+        metrics.ber(sig, bits_tx=ref_bits)
 
 
 def test_signal_decimate_to_symbol_rate(backend_device, xp):
@@ -530,7 +529,7 @@ def test_evm_no_reference(backend_device, xp):
     )
     s.resolved_symbols = xp.ones(10, dtype="complex64")
     with pytest.raises(ValueError, match="No reference available"):
-        s.evm()
+        metrics.evm(s)
 
 
 def test_evm_no_resolved(backend_device, xp):
@@ -542,7 +541,7 @@ def test_evm_no_resolved(backend_device, xp):
         source_symbols=xp.ones(10, dtype="complex64"),
     )
     with pytest.raises(ValueError, match="No resolved symbols available"):
-        s.evm()
+        metrics.evm(s)
 
 
 def test_snr_no_reference(backend_device, xp):
@@ -552,7 +551,7 @@ def test_snr_no_reference(backend_device, xp):
     )
     s.resolved_symbols = xp.ones(10, dtype="complex64")
     with pytest.raises(ValueError, match="No reference available"):
-        s.snr()
+        metrics.snr(s)
 
 
 def test_snr_no_resolved(backend_device, xp):
@@ -564,7 +563,7 @@ def test_snr_no_resolved(backend_device, xp):
         source_symbols=xp.ones(10, dtype="complex64"),
     )
     with pytest.raises(ValueError, match="No resolved symbols available"):
-        s.snr()
+        metrics.snr(s)
 
 
 def test_ber_no_reference(backend_device, xp):
@@ -574,7 +573,7 @@ def test_ber_no_reference(backend_device, xp):
     )
     s.resolved_bits = xp.array([0, 1, 0, 1])
     with pytest.raises(ValueError, match="No reference bits available"):
-        s.ber()
+        metrics.ber(s)
 
 
 def test_signal_rz_modscheme_flags(backend_device, xp):
@@ -632,11 +631,11 @@ def test_evm_with_explicit_num_train_symbols(backend_device, xp):
     )
     rx.resolve_symbols()
 
-    evm_pct, evm_db = rx.evm(num_train_symbols=n_train)
+    evm_pct, evm_db = metrics.evm(rx, num_train_symbols=n_train)
     assert np.isfinite(float(evm_db))
     assert float(evm_pct) > 0
 
-    evm_pct2, evm_db2 = rx.evm()
+    evm_pct2, evm_db2 = metrics.evm(rx)
     assert np.isfinite(float(evm_db2))
 
 
@@ -670,10 +669,10 @@ def test_snr_with_explicit_num_train_symbols(backend_device, xp):
     )
     rx.resolve_symbols()
 
-    snr_val = rx.snr(num_train_symbols=result.num_train_symbols)
+    snr_val = metrics.snr(rx, num_train_symbols=result.num_train_symbols)
     assert np.isfinite(snr_val)
 
-    snr_notrim = rx.snr()
+    snr_notrim = metrics.snr(rx)
     assert np.isfinite(snr_notrim)
 
 
@@ -709,11 +708,11 @@ def test_ber_with_explicit_num_train_symbols(backend_device, xp):
     rx.resolve_symbols()
     rx.demap_symbols_hard()
 
-    ber_val = rx.ber(num_train_symbols=result.num_train_symbols)
+    ber_val = metrics.ber(rx, num_train_symbols=result.num_train_symbols)
     assert np.isfinite(float(ber_val))
     assert 0.0 <= float(ber_val) <= 1.0
 
-    ber_notrim = rx.ber()
+    ber_notrim = metrics.ber(rx)
     assert np.isfinite(float(ber_notrim))
     assert 0.0 <= float(ber_notrim) <= 1.0
 

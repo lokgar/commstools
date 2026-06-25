@@ -26,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal
+from commstools import Signal, metrics
 from commstools.backend import to_device
 from commstools.frequency import (
     correct_static_frequency_offset,
@@ -184,12 +184,12 @@ def main():
     print("\n[4] Performance Analysis:")
 
     # EVM calculation (%), comparing recovered symbols to Tx symbols
-    evm_pct, evm_db = sig_symbols.evm()
+    evm_pct, evm_db = metrics.evm(sig_symbols)
 
     # Bit Error Rate (BER)
     # Map recovered symbols back to bits and compare with sig_tx.source_bits
     sig_symbols.demap_symbols_hard()
-    ber_val = sig_symbols.ber()
+    ber_val = metrics.ber(sig_symbols)
 
     # Calculate bit errors for display purposes
     rx_bits = to_device(sig_symbols.resolved_bits, "cpu")

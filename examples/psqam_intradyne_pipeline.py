@@ -52,7 +52,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal
+from commstools import Signal, metrics
 from commstools.backend import to_device
 from commstools.equalization import lms
 from commstools.impairments import (
@@ -311,16 +311,16 @@ _sep("7. Metrics")
 
 discard = NUM_TRAIN
 
-evm_pct, evm_db = eq.evm(num_train_symbols=discard, mode="data_aided")
-snr_db = eq.snr(num_train_symbols=discard)
-ser_val = eq.ser(num_train_symbols=discard)
-ber_val = eq.ber(num_train_symbols=discard)
+evm_pct, evm_db = metrics.evm(eq, num_train_symbols=discard, mode="data_aided")
+snr_db = metrics.snr(eq, num_train_symbols=discard)
+ser_val = metrics.ser(eq, num_train_symbols=discard)
+ber_val = metrics.ber(eq, num_train_symbols=discard)
 
 # AWGN-equivalent noise variance from per-channel SNR (referenced to {s_m}).
 snr_lin = 10 ** (np.asarray(snr_db, dtype=np.float64) / 10.0)
 noise_var = float(1.0 / np.mean(snr_lin))
-mi_val = eq.mi(noise_var=noise_var)
-gmi_val = eq.gmi(noise_var=noise_var, method="maxlog")
+mi_val = metrics.mi(eq, noise_var=noise_var)
+gmi_val = metrics.gmi(eq, noise_var=noise_var, method="maxlog")
 
 print(f"  EVM (data-aided) : {_fmt(evm_pct)} %   ({_fmt(evm_db)} dB)")
 print(f"  SNR              : {_fmt(snr_db)} dB")

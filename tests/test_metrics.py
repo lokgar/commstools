@@ -98,7 +98,7 @@ def test_signal_evm_method(backend_device, xp):
 
     # Must resolve symbols before EVM
     sig.resolve_symbols()
-    evm_pct, evm_db = sig.evm()
+    evm_pct, evm_db = metrics.evm(sig)
     # Relaxed slightly for robustness logic which might have tiny epsilon effects
     assert evm_pct < 1e-4  # Near-zero EVM for perfect signal
 
@@ -115,7 +115,7 @@ def test_signal_ber_method(backend_device, xp):
     # Must resolve symbols then demap symbols before BER
     sig.resolve_symbols()
     sig.demap_symbols_hard()
-    ber_val = sig.ber()
+    ber_val = metrics.ber(sig)
     assert ber_val == 0.0  # Perfect signal, no errors
 
 
@@ -356,7 +356,7 @@ def test_signal_evm_blind(backend_device, xp):
     )
     sig.resolve_symbols()
 
-    pct, db = sig.evm(mode="blind")
+    pct, db = metrics.evm(sig, mode="blind")
     assert pct < 3.0
 
 
@@ -420,7 +420,7 @@ def test_signal_ser_method(backend_device, xp):
     )
     sig.resolve_symbols()
 
-    assert sig.ser() == 0.0
+    assert metrics.ser(sig) == 0.0
 
 
 # =============================================================================

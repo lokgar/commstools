@@ -44,7 +44,7 @@ Run
 
 import numpy as np
 
-from commstools import Signal, equalization, frequency, recovery
+from commstools import Signal, equalization, frequency, metrics, recovery
 from commstools.backend import dispatch
 from commstools.impairments import apply_awgn
 from commstools.timing import correct_timing, estimate_timing
@@ -165,11 +165,11 @@ sig_s1_eval.source_bits = sig_tx.source_bits[
 ]
 sig_s1_eval.resolve_symbols()
 
-evm_pct_s1, evm_db_s1 = sig_s1_eval.evm()
-snr_val_s1 = sig_s1_eval.snr()
-ser_val_s1 = sig_s1_eval.ser()
+evm_pct_s1, evm_db_s1 = metrics.evm(sig_s1_eval)
+snr_val_s1 = metrics.snr(sig_s1_eval)
+ser_val_s1 = metrics.ser(sig_s1_eval)
 sig_s1_eval.demap_symbols_hard()
-ber_val_s1 = sig_s1_eval.ber()
+ber_val_s1 = metrics.ber(sig_s1_eval)
 
 print("\n  Stage 1 (RDE FSE) Raw Metrics (Before FOE/CPR/Sync):")
 print("  ───────────────────────────────────────────────────")
@@ -316,11 +316,11 @@ sig_cpr_eval.source_bits = sig_tx.source_bits[
 ]
 sig_cpr_eval.resolve_symbols()
 
-evm_pct_cpr, evm_db_cpr = sig_cpr_eval.evm()
-snr_val_cpr = sig_cpr_eval.snr()
-ser_val_cpr = sig_cpr_eval.ser()
+evm_pct_cpr, evm_db_cpr = metrics.evm(sig_cpr_eval)
+snr_val_cpr = metrics.snr(sig_cpr_eval)
+ser_val_cpr = metrics.ser(sig_cpr_eval)
 sig_cpr_eval.demap_symbols_hard()
-ber_val_cpr = sig_cpr_eval.ber()
+ber_val_cpr = metrics.ber(sig_cpr_eval)
 
 print("\n  Post-CPR (FOE + CPR + Timing Sync) Metrics:")
 print("  ───────────────────────────────────────────")
@@ -369,11 +369,11 @@ sig_s2_eval.source_bits = sig_tx.source_bits[
 ]
 sig_s2_eval.resolve_symbols()
 
-evm_pct_s2, evm_db_s2 = sig_s2_eval.evm()
-snr_val_s2 = sig_s2_eval.snr()
-ser_val_s2 = sig_s2_eval.ser()
+evm_pct_s2, evm_db_s2 = metrics.evm(sig_s2_eval)
+snr_val_s2 = metrics.snr(sig_s2_eval)
+ser_val_s2 = metrics.ser(sig_s2_eval)
 sig_s2_eval.demap_symbols_hard()
-ber_val_s2 = sig_s2_eval.ber()
+ber_val_s2 = metrics.ber(sig_s2_eval)
 
 print("\n  Stage 2 (LMS SSE) Metrics (Direct against Reference):")
 print("  ─────────────────────────────────────────────────────")
