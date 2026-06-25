@@ -1,13 +1,5 @@
 """
 Frame containers: structured preamble and single-carrier frame models.
-
-Classes
--------
-Preamble :
-    A structured container for frame synchronization sequences.
-SingleCarrierFrame :
-    A complex frame container supporting pilot patterns, guard intervals,
-    and spatial multiplexing (MIMO).
 """
 
 from typing import Any, Literal

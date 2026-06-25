@@ -3,21 +3,6 @@ Performance metrics for digital communications.
 
 This module provides high-performance routines for evaluating signal quality,
 error rates, and reliability across different computational backends.
-
-Functions
----------
-evm :
-    Error Vector Magnitude — data-aided or blind (decision-directed) mode.
-snr :
-    Data-aided SNR estimation.
-ber :
-    Bit Error Rate between bit sequences.
-ser :
-    Symbol Error Rate using ML hard decisions against a known constellation.
-gmi :
-    Generalised Mutual Information (GMI) from per-bit LLRs.
-mi :
-    Mutual Information (MI) under a Gaussian channel assumption.
 """
 
 import logging

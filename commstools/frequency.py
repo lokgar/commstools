@@ -5,25 +5,6 @@ This module provides routines for carrier frequency offset (FOE) estimation
 and correction, including blind spectral methods, multi-lag autocorrelation,
 pilot-aided estimation, blockwise time-varying FOE, and constant-offset
 complex mixing correction.
-
-Functions
----------
-estimate_frequency_offset_mth_power :
-    Blind FOE via M-th power spectral method with Jacobsen sub-bin interpolation.
-estimate_frequency_offset_mengali_morelli :
-    Blind or data-aided FOE via multi-lag autocorrelation (Mengali-Morelli); lock range
-    extends to full Nyquist [-fs/2, fs/2] regardless of block length.
-estimate_frequency_offset_pilots :
-    Scattered-pilot FOE via (optionally SNR-weighted) least-squares phase slope fitting.
-find_bias_tone :
-    Locate a CW pilot / bias tone in the spectrum of a 1-D complex segment via
-    log-parabolic sub-bin interpolation.  Modulation-agnostic.
-correct_frequency_offset_blockwise :
-    Estimate and correct a time-varying frequency offset in one call; uses a callable
-    estimator per block with PCHIP interpolation; fully MIMO-aware.
-correct_static_frequency_offset :
-    Applies a **constant** frequency offset correction via exact complex mixing.
-    Not suitable for streaming sub-block correction (phasor restarts at n=0).
 """
 
 from collections.abc import Callable

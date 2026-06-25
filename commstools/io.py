@@ -1,14 +1,6 @@
 """
 Signal I/O and file management utilities.
 
-Functions
----------
-save_npz(signal, path, *, compressed=True, include_cache=False)
-    Save a Signal to a compressed NumPy archive (.npz).
-
-load_npz(path, *, device="cpu") -> Signal
-    Load a Signal from a .npz archive written by save_npz.
-
 File layout
 -----------
 The .npz file contains the following named entries:

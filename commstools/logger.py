@@ -3,13 +3,6 @@ Logging utilities for the CommsTools library.
 
 This module provides a unified, colorized logging interface for monitoring
 signal processing workflows and debugging complex system failures.
-
-Functions
----------
-get_logger :
-    Retrieves or creates a colorized logger instance.
-set_log_level :
-    Dynamically adjusts the library's verbosity.
 """
 
 import logging

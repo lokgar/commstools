@@ -5,19 +5,6 @@ This module provides high-performance implementations of multirate
 operations, including interpolation, decimation, and rational rate
 conversion using polyphase filter banks.
 
-Functions
----------
-decimate_to_symbol_rate :
-    Optimized symbol extraction after matched filtering.
-expand :
-    Inserts zeros between samples (zero-stuffing).
-upsample :
-    Increases sampling rate by an integer factor with anti-imaging.
-decimate :
-    Reduces sampling rate with anti-aliasing filtering.
-resample :
-    High-level interface for arbitrary rate changes.
-
 Notes on power scaling
 ----------------------
 All rate-changing functions in this module delegate to

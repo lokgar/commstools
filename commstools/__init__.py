@@ -11,34 +11,6 @@ Main Features
 - **Impairments**: Simulation of AWGN, Phase Noise, and Frequency Offset.
 - **Synchronization**: Time and frequency synchronization algorithms.
 - **Execution backends**: Transparent NumPy, CuPy, and JAX support.
-
-Subpackages
------------
-core :
-    Primary data structures and signal analysis methods.
-impairments :
-    Channel models and signal degradation effects.
-metrics :
-    Quality assessment tools (BER, SNR, EVM).
-timing :
-    Timing synchronization: preamble sequences and fractional delay estimation.
-frequency :
-    Frequency offset estimation and correction algorithms.
-recovery :
-    Carrier phase recovery and cycle-slip correction.
-mapping :
-    Bits-to-symbols and LLR demapping logic.
-filtering :
-    Digital filter design and pulse shaping.
-multirate :
-    Resampling and polyphase filtering.
-equalization :
-    Adaptive and block channel equalization (LMS, RLS, CMA, ZF/MMSE).
-spectral :
-    Frequency domain analysis and transformations.
-analysis :
-    Signal analysis and characterization routines (e.g. carrier-phase /
-    laser characterization).
 """
 
 import warnings

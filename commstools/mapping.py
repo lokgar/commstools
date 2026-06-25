@@ -6,35 +6,6 @@ digital bits and physical IQ symbols. It supports standardized mapping
 strategies (Gray coding) and advanced demapping algorithms (Soft-decision LLR).
 
 Note: The codes and constellations are generated using numpy.
-
-Functions
----------
-gray_code :
-    Generates Gray code sequences for bit-to-symbol assignment.
-gray_to_binary :
-    Inverse Gray code mapping for bit retrieval.
-gray_constellation :
-    Primary interface for generating Gray-coded constellation arrays.
-constellation_power :
-    Average symbol power ``E[|s|^2]`` (pmf-weighted for PS-QAM); the single
-    source of truth for ``E_PS``.
-map_bits :
-    Maps bit sequences to complex/float symbols.
-demap_symbols_hard :
-    Performs hard-decision demapping from symbols to bits.
-compute_llr :
-    Computes Log-Likelihood Ratios (LLRs) for soft-decision decoding.
-
-Probabilistic constellation shaping (PS-QAM)
---------------------------------------------
-maxwell_boltzmann :
-    Maxwell-Boltzmann PMF over a QAM constellation (literature-scale ``nu``).
-ps_entropy :
-    Per-symbol Shannon entropy of a Maxwell-Boltzmann distribution.
-optimal_nu :
-    Solves for the shaping parameter ``nu`` that hits a target entropy.
-sample_ps_symbols :
-    Draws shaped QAM symbols on the normalized grid from a given PMF.
 """
 
 from functools import lru_cache

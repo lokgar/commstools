@@ -8,23 +8,6 @@ the input data resides.
 
 The backend system is designed to be stateless and transparent, requiring
 minimal explicit device management from the user.
-
-Functions
----------
-get_array_module :
-    Infers the correct array module (NumPy/CuPy) from data.
-get_scipy_module :
-    Retrieves the compatible signal processing library.
-to_device :
-    Moves data between CPU and GPU devices.
-dispatch :
-    Returns the resolved array and signal processing modules for given data.
-to_jax / from_jax :
-    Utilities for high-performance JAX interoperability.
-is_cupy_available :
-    Checks if NVIDIA GPU acceleration is functional via CuPy.
-use_cpu_only :
-    Explicitly disables GPU discovery.
 """
 
 import types

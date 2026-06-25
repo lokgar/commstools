@@ -7,17 +7,6 @@ layer metadata, and complex frame structures.
 
 All core classes are built on Pydantic for robust validation and support
 transparent backend switching between CPU (NumPy) and GPU (CuPy).
-
-Classes
--------
-Signal :
-    The primary container for IQ samples and signal-centric metadata.
-    Includes methods for filtering, resampling, and visualization.
-Preamble :
-    A structured container for frame synchronization sequences.
-SingleCarrierFrame :
-    A complex frame container supporting pilot patterns, guard intervals,
-    and spatial multiplexing (MIMO).
 """
 
 import types

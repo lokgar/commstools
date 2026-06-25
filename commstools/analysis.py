@@ -6,17 +6,6 @@ quantify their properties, as opposed to the DSP stages that *produce* those
 signals (synchronization, equalization, recovery, ...).  Functions here are
 grouped by the property they characterize; new analyses can be added as
 independent groups without disturbing the others.
-
-Currently provided
-------------------
-* **Carrier-phase characterization** — separating and quantifying carrier
-  frequency drift, phase noise / linewidth, and the AWGN floor from a recovered
-  carrier-phase trajectory.  See the section banner below.
-
-Conventions shared by all routines: accept SISO ``(N,)`` or MIMO ``(C, N)``
-(time on the last axis); perform phase arithmetic in ``float64`` (per the repo
-CPR precision rule); and return scalar estimates as Python ``float`` / NumPy
-arrays regardless of the input backend.
 """
 
 import numpy as np

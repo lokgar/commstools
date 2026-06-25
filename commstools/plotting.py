@@ -5,49 +5,6 @@ This module provides high-level plotting functions optimized for
 communication signals. It leverages Matplotlib to produce high-density,
 professional diagrams with automatic SI scaling and backend-agnostic data
 handling.
-
-Functions
----------
-apply_default_theme :
-    Sets the library's visual style (fonts, grid, colors).
-psd :
-    Plots Power Spectral Density with frequency/wavelength scaling.
-time_domain :
-    Plots I/Q waveforms or real-valued time-series data.
-eye_diagram :
-    Visualizes signal quality via vectorized traces or 2D density histograms.
-constellation :
-    Generates high-definition constellation density diagrams for noisy signals.
-ideal_constellation :
-    Draws theoretical constellations with Gray-coded bit annotations.
-filter_response :
-    Analyzes FIR filters in both time and frequency domains.
-equalizer_result :
-    Convergence curve and tap weight diagnostics for adaptive equalization.
-timing_correlation :
-    Cross-correlation magnitude with peak and threshold for timing diagnostics.
-frequency_offset_spectrum :
-    M-th power spectrum with detected tone for blind FOE diagnostics.
-carrier_phase_trajectory :
-    Per-symbol carrier phase trajectory for CPR algorithm diagnostics.
-frequency_offset_blockwise_result :
-    Block-wise FOE diagnostic: interpolated frequency and integrated phase.
-pilot_phase_estimate :
-    Pilot phase scatter, linear fit, and interpolated phase trajectory.
-pilot_tones_phase_estimate :
-    Two-pilot MRC diagnostic: per-tone differential δ_k[n] and combined φ̂[n].
-zf_equalizer_response :
-    Channel, equalizer, and combined frequency responses for ZF/MMSE.
-carrier_phase_decomposition :
-    Recovered carrier phase with its slow drift component overlaid.
-frequency_drift :
-    Instantaneous residual frequency offset (carrier wander) vs time.
-frequency_noise_psd :
-    Frequency-noise PSD with β-separation line and white-FM floor overlays.
-allan_deviation :
-    Allan deviation vs averaging time for frequency-stability classification.
-carrier_phase_characterization :
-    2x2 dashboard combining the four carrier-phase diagnostics above.
 """
 
 from collections.abc import Sequence

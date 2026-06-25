@@ -4,25 +4,6 @@ Channel impairments and signal degradation models.
 This module provides routines for simulating physical layer impairments,
 enabling the evaluation of receiver performance under realistic channel
 conditions.
-
-Functions
----------
-apply_awgn :
-    Adds Additive White Gaussian Noise based on Es/N0.
-apply_phase_noise :
-    Adds laser/oscillator phase noise modelled as a Wiener (random-walk) process.
-apply_pmd :
-    Applies first-order Polarization Mode Dispersion to a dual-pol signal.
-apply_iq_imbalance :
-    Applies IQ imbalance (amplitude and phase mismatch) to a complex signal.
-apply_chromatic_dispersion :
-    Applies chromatic dispersion (CD) to a signal in the frequency domain.
-apply_polarization_mixing :
-    Applies a static or time-varying polarization rotation (pure SOP mixing).
-compensate_iq_imbalance_lowdin :
-    Blind IQ imbalance compensation via Löwdin symmetric orthogonalisation.
-compensate_iq_imbalance_gram_schmidt :
-    Blind IQ imbalance compensation via Gram-Schmidt sequential orthogonalisation.
 """
 
 import math

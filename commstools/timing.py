@@ -5,23 +5,6 @@ This module provides routines for time synchronization, including the
 generation of optimal synchronization sequences (Barker, Zadoff-Chu),
 robust integer timing offset estimation via cross-correlation, and
 fractional timing offset estimation and correction.
-
-Functions
----------
-barker_sequence :
-    Generates Barker codes with optimal auto-correlation.
-zadoff_chu_sequence :
-    Generates Constant Amplitude Zero Auto-Correlation (CAZAC) sequences.
-estimate_fractional_delay :
-    Estimates sub-sample timing offset via parabolic interpolation.
-fft_fractional_delay :
-    Applies fractional sample delay using FFT-based frequency-domain method
-    (ideal for bandlimited signals, perfect power preservation).
-estimate_timing :
-    Estimates integer and fractional timing offsets via
-    cross-correlation with a known reference sequence.
-correct_timing :
-    Combined integer and fractional timing correction.
 """
 
 from typing import Union

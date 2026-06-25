@@ -5,44 +5,6 @@ This module provides routines for carrier phase recovery (CPR), including
 streaming decision-directed PLL, block-based Viterbi-Viterbi, Blind Phase
 Search, MAP Tikhonov-RTS, and pilot-aided methods, along with cycle-slip
 correction and phase ambiguity resolution.
-
-Functions
----------
-recover_carrier_phase_pll :
-    Streaming CPR via Decision-Directed PLL (1st/2nd-order loop); Numba-compiled
-    inner loop for CPU performance; GPU-transparent via CPU offload.
-recover_carrier_phase_viterbi_viterbi :
-    Block-based CPR via M-th power law (Viterbi-Viterbi) for PSK/QAM symbols.
-recover_carrier_phase_bps :
-    Blind Phase Search CPR for QAM constellations (Pfau et al.).
-recover_carrier_phase_tikhonov :
-    MAP CPR with Tikhonov/Wiener prior; RTS Kalman smoother on VV block phases.
-recover_carrier_phase_pilots :
-    Pilot-aided CPR with phase unwrapping and interpolation across the symbol grid.
-    Single-carrier only; for OFDM CPE tracking see 5G NR PTRS / DVB-T2.
-recover_carrier_phase_pilot_tone :
-    Pilot-tone-aided CPR: extracts a CW tone from a guard band of the
-    oversampled waveform and reads its phase to recover the common
-    frequency offset + phase noise. Operates before matched filtering.
-recover_carrier_phase_pilot_tones :
-    Multi-pilot common-phase CPR: SNR-weighted maximal-ratio combining of two
-    or more CW tones with slow inter-tone differential tracking (√K residual
-    reduction for a shared-LO link). Operates before matched filtering.
-smooth_phase_wiener :
-    Zero-phase Wiener smoother for a random-walk carrier phase; optimal
-    minimum-variance trade of tracking lag vs. additive noise for a given
-    linewidth and pilot SNR.
-correct_carrier_phase :
-    Applies per-symbol phase correction by complex rotation.
-correct_cycle_slips :
-    Detects and corrects cycle slips in a block-phase trajectory.
-resolve_channel_permutation :
-    Resolves polarization (channel) permutation ambiguity after MIMO equalization.
-resolve_phase_ambiguity :
-    Resolves rotational phase ambiguity after blind carrier phase recovery.
-correct_phase_rotation :
-    Corrects the arbitrary constant phase rotation left by a blind equalizer
-    (CMA, RDE) using a known reference symbol sequence.
 """
 
 import logging

@@ -4,15 +4,6 @@ Spectral analysis and frequency-domain processing.
 This module provides high-performance routines for spectral estimation and
 manipulation, optimized for both CPU and GPU backends. It supports Welch's
 Power Spectral Density (PSD) method and phase-continuous frequency shifting.
-
-Functions
----------
-shift_frequency :
-    Applies a complex frequency shift (mixing) to a signal.
-add_pilot_tone :
-    Superimposes a CW pilot tone for pilot-tone-aided carrier phase recovery.
-welch_psd :
-    Estimates the Power Spectral Density using Welch's method.
 """
 
 from collections.abc import Sequence

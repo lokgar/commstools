@@ -5,29 +5,6 @@ This module provides routines for design and application of digital filters
 commonly used in communication systems. It supports both standard FIR filters
 and specialized pulse-shaping filters, with high-performance execution on
 both CPU and GPU backends.
-
-Functions
----------
-rect_taps :
-    Hard or trapezoidal rectangular pulse design.
-gaussian_taps :
-    Gaussian pulse-shaping filter design.
-smoothrect_taps :
-    Gaussian-smoothed rectangular pulse design.
-rrc_taps :
-    Root Raised Cosine (RRC) filter design.
-rc_taps :
-    Raised Cosine (RC) filter design.
-lowpass_taps, highpass_taps, bandpass_taps, bandstop_taps :
-    Standard FIR filter design using the window method.
-fir_filter :
-    Generic FIR filtering operation via FFT convolution.
-shape_pulse :
-    Primary interface for applying pulse shaping to symbols.
-matched_filter :
-    Matched filtering operation maximizing SNR in AWGN.
-compensate_chromatic_dispersion :
-    Electronic dispersion compensation (EDC) for chromatic dispersion.
 """
 
 import numpy as np
