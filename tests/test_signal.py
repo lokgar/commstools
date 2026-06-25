@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering, metrics, multirate, spectral
+from commstools import filtering, metrics, multirate, plotting, spectral
 from commstools.core import Signal
 
 
@@ -389,8 +389,9 @@ def test_signal_wrappers(backend_device, xp):
 
     # Plotting wrappers (just call them, assume plotting logic tested elsewhere)
     # We pass show=False to avoid blocking
-    sig.plot_psd(show=False, nperseg=32)
-    sig.plot_psd(
+    plotting.psd(sig, show=False, nperseg=32)
+    plotting.psd(
+        sig,
         show=False,
         nperseg=32,
         window=("kaiser", 8.0),
@@ -398,9 +399,9 @@ def test_signal_wrappers(backend_device, xp):
         nfft=64,
         scaling="spectrum",
     )
-    sig.plot_waveform(num_symbols=10, show=False)
-    sig.plot_eye(show=False)
-    sig.plot_constellation(show=False)
+    plotting.time_domain(sig, num_symbols=10, show=False)
+    plotting.eye_diagram(sig, show=False)
+    plotting.constellation(sig, show=False)
 
     # Clean up figures to avoid RuntimeWarning
     plt.close("all")
@@ -766,7 +767,7 @@ def test_plot_constellation_at_symbol_rate(backend_device, xp):
         mod_scheme="psk",
         mod_order=4,
     )
-    plot_result = rx_1sps.plot_constellation(show=False)
+    plot_result = plotting.constellation(rx_1sps, show=False)
     assert plot_result is not None
     plt.close("all")
 
@@ -782,7 +783,7 @@ def test_plot_constellation_overlay_source_mimo(backend_device, xp):
         num_streams=2,
         seed=0,
     )
-    result = sig.plot_constellation(overlay_source=True, show=False)
+    result = plotting.constellation(sig, overlay_source=True, show=False)
     assert result is not None
     plt.close("all")
 
@@ -793,7 +794,7 @@ def test_plot_constellation_show(backend_device, xp):
         symbol_rate=1e6, num_symbols=100, order=4, pulse_shape="rrc", sps=1, seed=0
     )
     with patch("matplotlib.pyplot.show"):
-        result = sig.plot_constellation(show=True)
+        result = plotting.constellation(sig, show=True)
     assert result is None
     plt.close("all")
 
@@ -806,7 +807,7 @@ def test_plot_constellation_overlay_source_siso(backend_device, xp):
     assert sig.num_streams == 1
     assert sig.source_symbols is not None
 
-    result = sig.plot_constellation(overlay_source=True, show=False)
+    result = plotting.constellation(sig, overlay_source=True, show=False)
     assert result is not None
     plt.close("all")
 

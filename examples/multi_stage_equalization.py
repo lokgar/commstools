@@ -50,6 +50,7 @@ from commstools import (
     filtering,
     frequency,
     metrics,
+    plotting,
     recovery,
     spectral,
 )
@@ -486,7 +487,7 @@ try:
     rx_1sps = rx[::SPS]
     sig_rx_impaired = sig_tx.copy()
     sig_rx_impaired.samples = rx_1sps
-    sig_rx_impaired.plot_constellation(
+    plotting.constellation(sig_rx_impaired, 
         ax=axes[0, 0],
         bins=80,
         title="1. Raw RX Constellation\n(Smeared dispersion + Spinning CFO)",
@@ -496,7 +497,7 @@ try:
     # B. Stage 1 RDE Output (concentric rings showing opened amplitude rings but spinning phase)
     sig_rde = sig_tx.copy()
     sig_rde.samples = y_s1
-    sig_rde.plot_constellation(
+    plotting.constellation(sig_rde, 
         ax=axes[0, 1],
         bins=100,
         title=f"2. Stage 1 RDE FSE Output\n(Concentric Rings, EVM = {evm_pct_s1:.1f}%)",
@@ -506,7 +507,7 @@ try:
     # C. Post-CPR (despun, timing-synchronized, ambiguity-resolved)
     sig_cpr = sig_tx.copy()
     sig_cpr.samples = y_cpr_resolved
-    sig_cpr.plot_constellation(
+    plotting.constellation(sig_cpr, 
         ax=axes[1, 0],
         bins=100,
         overlay_ideal=True,
@@ -517,7 +518,7 @@ try:
     # D. Stage 2 LMS SSE (residual ISI cleaned up)
     sig_final = sig_tx.copy()
     sig_final.samples = y_final
-    sig_final.plot_constellation(
+    plotting.constellation(sig_final, 
         ax=axes[1, 1],
         bins=120,
         overlay_ideal=True,

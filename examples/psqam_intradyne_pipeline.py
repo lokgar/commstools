@@ -52,7 +52,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, filtering, metrics
+from commstools import Signal, filtering, metrics, plotting
 from commstools.backend import to_device
 from commstools.equalization import lms
 from commstools.impairments import (
@@ -294,7 +294,7 @@ eq.resolve_phase_ambiguity()  # auto-forwards self.ps_pmf
 eq.demap_symbols_hard()  # auto-forwards self.ps_pmf
 
 os.makedirs("examples/images", exist_ok=True)
-fig_and_ax = eq.plot_constellation(show=False, overlay_source=True)
+fig_and_ax = plotting.constellation(eq, show=False, overlay_source=True)
 if fig_and_ax is not None:
     fig, ax = fig_and_ax
     fig.savefig(

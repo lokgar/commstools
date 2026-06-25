@@ -60,6 +60,7 @@ import numpy as np
 
 from . import helpers
 from .backend import dispatch, to_device
+from .core.signal import Signal
 from .logger import logger
 
 
@@ -280,6 +281,29 @@ def psd(
     ax : matplotlib.axes.Axes or ndarray
         The axis or array of axes used for the plot.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return psd(
+            sig.samples,
+            sampling_rate=sig.sampling_rate,
+            nperseg=nperseg,
+            detrend=detrend,
+            average=average,
+            window=window,
+            noverlap=noverlap,
+            nfft=nfft,
+            scaling=scaling,
+            center_frequency=sig.center_frequency,
+            domain=sig.physical_domain or "RF",
+            x_axis=x_axis,
+            ax=ax,
+            xlim=xlim,
+            ylim=ylim,
+            title=title,
+            show=show,
+            **kwargs,
+        )
+
     logger.debug(f"Generating PSD plot (sampling_rate={sampling_rate} Hz).")
 
     samples, xp, _ = dispatch(samples)
@@ -478,6 +502,20 @@ def time_domain(
     ax : matplotlib.axes.Axes or ndarray
         The axis or array of axes used for the plot.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return time_domain(
+            sig.samples,
+            sampling_rate=sig.sampling_rate,
+            start_symbol=start_symbol,
+            num_symbols=num_symbols,
+            sps=sig.sps,
+            ax=ax,
+            title=title,
+            show=show,
+            **kwargs,
+        )
+
     logger.debug("Generating time-domain plot.")
 
     samples, xp, _ = dispatch(samples)
@@ -778,7 +816,7 @@ def _plot_eye_traces(
 
 def eye_diagram(
     samples: Any,
-    sps: float,
+    sps: float | None = None,
     ax: Any | tuple[Any, Any] | None = None,
     num_symbols: int = 2,
     type: str = "hist",
@@ -831,6 +869,23 @@ def eye_diagram(
     The signal should typically be synchronized (no CFO or timing offset)
     and matched-filtered before plotting to produce a clear "eye".
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return eye_diagram(
+            sig.samples,
+            sps=sig.sps,
+            ax=ax,
+            type=type,
+            title=title,
+            vmin=vmin,
+            vmax=vmax,
+            show=show,
+            **kwargs,
+        )
+
+    if sps is None:
+        raise ValueError("eye_diagram() requires sps for array input.")
+
     logger.debug(f"Generating eye diagram ({type} mode).")
 
     if sps % 1 != 0:
@@ -1243,6 +1298,7 @@ def constellation(
     cmap: str = "inferno",
     ax: Any | None = None,
     overlay_ideal: bool = False,
+    overlay_source: bool = False,
     modulation: str | None = None,
     order: int | None = None,
     unipolar: bool | None = None,
@@ -1294,6 +1350,69 @@ def constellation(
     ax : matplotlib.axes.Axes or ndarray
         The axis or array of axes used.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        result = constellation(
+            sig.samples,
+            bins=bins,
+            cmap=cmap,
+            ax=ax,
+            overlay_ideal=overlay_ideal,
+            modulation=sig.mod_scheme,
+            order=sig.mod_order,
+            unipolar=sig.mod_unipolar,
+            pmf=sig.ps_pmf,
+            title=title,
+            vmin=vmin,
+            vmax=vmax,
+            show=False,
+            **kwargs,
+        )
+
+        if overlay_source and sig.source_symbols is not None and result is not None:
+            _, axes = result
+            src = to_device(sig.source_symbols, "cpu")
+
+            # PS-QAM: source_symbols are on the {s_m} grid (avg power E_PS < 1)
+            # but received samples normalise to unit power ({s_m/sqrt(E_PS)}).
+            # Scale source symbols to match the received symbol scale.
+            if (
+                sig.ps_pmf is not None
+                and sig.mod_scheme is not None
+                and sig.mod_order is not None
+            ):
+                from .mapping import gray_constellation as _gc_src
+
+                _const_src = _gc_src(sig.mod_scheme, sig.mod_order)
+                _pmf_src = np.asarray(sig.ps_pmf, dtype=np.float64)
+                _e_ps = float(np.dot(_pmf_src, np.abs(_const_src) ** 2))
+                if 0 < _e_ps < 1.0 - 1e-6:
+                    src = src / np.sqrt(_e_ps)
+
+            def _scatter_source(axis, symbols):
+                axis.scatter(
+                    symbols.real,
+                    symbols.imag,
+                    c="lime",
+                    edgecolors="dimgray",
+                    linewidths=1.5,
+                    s=30,
+                    zorder=10,
+                    marker="o",
+                )
+
+            if src.ndim > 1:
+                ax_list = list(np.asarray(axes).flat)
+                for ch in range(min(src.shape[0], len(ax_list))):
+                    _scatter_source(ax_list[ch], src[ch])
+            else:
+                _scatter_source(axes, src)
+
+        if show:
+            plt.show()
+            return None
+        return result
+
     logger.debug("Generating constellation density plot.")
 
     samples, xp, sp = dispatch(samples)
@@ -3145,6 +3264,31 @@ def spectrogram(
     ax : matplotlib.axes.Axes or ndarray
         The axis or array of axes used for the plot.
     """
+    if isinstance(samples, Signal):
+        sig = samples
+        return spectrogram(
+            sig.samples,
+            sampling_rate=sig.sampling_rate,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            detrend=detrend,
+            return_onesided=return_onesided,
+            scaling=scaling,
+            axis=-1,
+            mode=mode,
+            center_frequency=sig.center_frequency,
+            domain=sig.physical_domain or "RF",
+            ax=ax,
+            xlim=xlim,
+            ylim=ylim,
+            title=title,
+            cmap=cmap,
+            show=show,
+            **kwargs,
+        )
+
     logger.debug(f"Generating spectrogram plot (sampling_rate={sampling_rate} Hz).")
 
     samples, xp, _ = dispatch(samples)

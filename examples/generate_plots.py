@@ -6,7 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from commstools import Signal
+from commstools import Signal, plotting
 from commstools.impairments import apply_awgn
 from commstools.plotting import apply_default_theme
 
@@ -42,7 +42,7 @@ def main():
     print("Generating constellation.png...")
     # Let's visualize the equalized/matched symbols at 1 sps
     const_sig = noisy_matched.copy().decimate_to_symbol_rate()
-    fig, ax = const_sig.plot_constellation(overlay_ideal=True, show=False)
+    fig, ax = plotting.constellation(const_sig, overlay_ideal=True, show=False)
     # fig.set_size_inches(6, 6)
     fig.savefig("examples/images/constellation.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -50,9 +50,13 @@ def main():
     # 3. Generate and save PSD Plot
     print("Generating psd.png...")
     fig, ax = plt.subplots()
-    sig.plot_psd(ax=ax, label="Clean Transmitter Spectrum", show=False)
-    noisy.plot_psd(
-        ax=ax, label="Noisy Channel Spectrum (16 dB Es/N0)", alpha=0.7, show=False
+    plotting.psd(sig, ax=ax, label="Clean Transmitter Spectrum", show=False)
+    plotting.psd(
+        noisy,
+        ax=ax,
+        label="Noisy Channel Spectrum (16 dB Es/N0)",
+        alpha=0.7,
+        show=False,
     )
     ax.legend(loc="lower left")
     ax.set_title("Power Spectral Density of 16-QAM Signal")
@@ -62,7 +66,7 @@ def main():
     # 4. Generate and save Eye Diagram (I and Q components)
     print("Generating eye_diagram.png...")
     # Eye diagram requires oversampled matched-filtered signal
-    fig, axes = noisy_matched.plot_eye(type="hist", show=False)
+    fig, axes = plotting.eye_diagram(noisy_matched, type="hist", show=False)
     axes[0].set_title("In-Phase (I) Component")
     axes[1].set_title("Quadrature (Q) Component")
     fig.suptitle(

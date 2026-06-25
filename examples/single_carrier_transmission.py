@@ -26,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from commstools import Signal, filtering, metrics, spectral
+from commstools import Signal, filtering, metrics, plotting, spectral
 from commstools.backend import to_device
 from commstools.frequency import (
     correct_static_frequency_offset,
@@ -209,9 +209,9 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(11, 9))
 
     # A. Spectrum (PSD) comparison
-    sig_tx.plot_psd(ax=axes[0, 0], label="Tx Clean", show=False)
-    sig_noisy.plot_psd(
-        ax=axes[0, 0], label="Rx Impaired & Noisy", alpha=0.6, show=False
+    plotting.psd(sig_tx, ax=axes[0, 0], label="Tx Clean", show=False)
+    plotting.psd(
+        sig_noisy, ax=axes[0, 0], label="Rx Impaired & Noisy", alpha=0.6, show=False
     )
     axes[0, 0].set_title("Power Spectral Density")
     axes[0, 0].legend(loc="lower left")
@@ -232,14 +232,14 @@ def main():
     # C. Constellation before synchronization
     # Decimate impaired signal to 1 sps directly (no matched filter or sync)
     sig_impaired_1sps = sig_noisy.copy().decimate_to_symbol_rate(normalize=True)
-    sig_impaired_1sps.plot_constellation(ax=axes[1, 0], bins=80, show=False)
+    plotting.constellation(sig_impaired_1sps, ax=axes[1, 0], bins=80, show=False)
     axes[1, 0].set_title("Constellation Before Sync (Spinning + Jitter)")
 
     # D. Constellation after full recovery
     sig_final_1sps = sig_symbols.copy()
     sig_final_1sps.samples = sig_symbols.resolved_symbols
-    sig_final_1sps.plot_constellation(
-        ax=axes[1, 1], bins=100, overlay_ideal=True, show=False
+    plotting.constellation(
+        sig_final_1sps, ax=axes[1, 1], bins=100, overlay_ideal=True, show=False
     )
     axes[1, 1].set_title(f"Constellation After Sync (EVM = {evm_pct:.2f}%)")
 

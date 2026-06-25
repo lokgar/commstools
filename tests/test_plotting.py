@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from commstools import filtering, spectral
+from commstools import filtering, plotting, spectral
 from commstools.plotting import (
     _create_subplot_grid,
     _plot_eye_traces,
@@ -893,7 +893,7 @@ def test_signal_spectrogram_convenience(backend_device, xp):
     assert Sxx.shape[-1] == len(t)
 
     # 2. Plotting convenience method
-    fig, ax = sig.plot_spectrogram(nperseg=64, show=False)
+    fig, ax = plotting.spectrogram(sig, nperseg=64, show=False)
     assert fig is not None
     assert ax is not None
     plt.close("all")
