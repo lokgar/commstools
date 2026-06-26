@@ -18,7 +18,7 @@ array) as their first argument.
 
 ---
 
-## Phase 0 — Repo hygiene (zero behavior change)
+## Phase 0 — Repo hygiene (zero behavior change) ✅ DONE
 
 Low-risk, do first. No code logic touched.
 
@@ -40,7 +40,12 @@ free-function API will be added later.)
 
 ---
 
-## Phase 1 — Tooling & packaging (still no logic change)
+## Phase 1 — Tooling & packaging (still no logic change) ✅ DONE
+
+*(Ruff `[tool.ruff]`/`[tool.ruff.lint]` pinned; mypy ratchet scaffolding in
+place; `jupyter` moved to the `notebook` optional extra and `pandas` dropped
+from runtime deps; `.github/workflows/ci.yml` runs sync + ruff + mypy + pytest.
+The `--cov-fail-under` gate from Phase 6 step 4 still needs wiring into CI.)*
 
 1. **Pin Ruff config** — add `[tool.ruff]` + `[tool.ruff.lint]` to `pyproject.toml`:
    - `line-length = 100` (or current de-facto width).
@@ -63,7 +68,7 @@ free-function API will be added later.)
 
 ---
 
-## Phase 2 — Split `equalization.py` (9,677 LOC → `equalization/` package)
+## Phase 2 — Split `equalization.py` (9,677 LOC → `equalization/` package) ✅ DONE
 
 Highest readability payoff, mechanical, fully guarded by existing tests.
 **No public symbol changes** — `equalization/__init__.py` re-exports everything
@@ -97,7 +102,7 @@ that is importable today.
 
 ---
 
-## Phase 3 — Thin `Signal` core + free functions (the architectural fix)
+## Phase 3 — Thin `Signal` core + free functions (the architectural fix) ✅ DONE
 
 This is the deliberate, higher-touch change. Do it after Phase 2 so the biggest
 module is already tamed. **Plan the call-site migration before moving code.**
@@ -159,7 +164,7 @@ commstools/core/
 
 ---
 
-## Phase 4 — Naming / API consistency
+## Phase 4 — Naming / API consistency ✅ DONE
 
 1. **Resolve same-name collisions** between compute and plot layers:
    - `analysis.carrier_phase_trajectory` (compute) vs
@@ -177,7 +182,7 @@ commstools/core/
 
 ---
 
-## Phase 5 — Split remaining mega-modules
+## Phase 5 — Split remaining mega-modules ✅ DONE
 
 Same mechanical pattern as Phase 2 (subpackage + stable `__init__` re-exports).
 
@@ -244,16 +249,160 @@ Original plan:
 
 ## Sequencing summary
 
-| Phase | Risk | Value | Behavior change |
-|---|---|---|---|
-| 0 — Hygiene | none | medium | none |
-| 1 — Tooling/packaging | low | medium | none (deps move to extras) |
-| 2 — Split equalization | low | **high** | none (re-exports) |
-| 3 — Thin Signal | medium | **high** | **yes — API: methods → free functions** |
-| 4 — Naming | low | medium | minor renames (plot fns) |
-| 5 — Split plotting/recovery | low | medium | none (re-exports) |
-| 6 — Test reorg | low | medium | none |
+| Phase | Risk | Value | Behavior change | Status |
+|---|---|---|---|---|
+| 0 — Hygiene | none | medium | none | ✅ done |
+| 1 — Tooling/packaging | low | medium | none (deps move to extras) | ✅ done |
+| 2 — Split equalization | low | **high** | none (re-exports) | ✅ done |
+| 3 — Thin Signal | medium | **high** | **yes — API: methods → free functions** | ✅ done |
+| 4 — Naming | low | medium | minor renames (plot fns) | ✅ done |
+| 5 — Split plotting/recovery | low | medium | none (re-exports) | ✅ done |
+| 6 — Test reorg | low | medium | none | ✅ done |
+| 7 — Domain-oriented packaging | low | medium | none (re-exports) | 📋 proposed |
 
 Phases 0–2 and 5–6 are non-breaking. Phase 3 is the one deliberate breaking
 change; consider shipping it as a single major version bump with the method→
-function migration documented in the changelog.
+function migration documented in the changelog. Phase 7 (below) is a proposed,
+non-breaking follow-up — documented but not yet implemented.
+
+---
+
+## Phase 7 — Domain-oriented packaging of the remaining leaves 📋 PROPOSED
+
+> **Status: design only — do not implement yet.** This phase is about
+> *extensibility and discoverability*, not raw line count. Phases 2 and 5 split
+> modules because they were painful to read (3k–9k LOC). The Phase 7 targets are
+> mostly 700–1,100 LOC — tolerable today — but each one mixes several **physical
+> or mathematical domains** under one flat namespace, so the next feature has no
+> obvious home and tends to get bolted onto an already-broad file. The win is a
+> clear slot for *future* work (fiber nonlinearity, new shaping schemes, more
+> estimators) and a 1:1 test mirror (per the Phase 6 rule).
+>
+> **Guiding rule (unchanged):** the public import surface stays stable. Every
+> split ships a package `__init__.py` that re-exports exactly today's names, so
+> `from commstools.impairments import apply_awgn` keeps working. Internals move;
+> user imports don't break.
+
+### 7.1 `impairments.py` (688 LOC, 8 fns) → `impairments/` package — *recommended first*
+
+Today's flat module bundles four unrelated physical effect domains. Group by
+**where in the link the effect originates**, which is also how a researcher
+reaches for them:
+
+```text
+impairments/
+  __init__.py     # re-export apply_*/compensate_* (stable surface)
+  noise.py        # apply_awgn                         (ASE / thermal — additive)
+  source.py       # apply_phase_noise                  (laser linewidth; room for RIN)
+  frontend.py     # apply_iq_imbalance,
+                  #   compensate_iq_imbalance_lowdin,
+                  #   compensate_iq_imbalance_gram_schmidt   (transceiver device)
+  channel/
+    __init__.py
+    linear.py     # apply_chromatic_dispersion, apply_pmd,
+                  #   apply_polarization_mixing               (fiber, linear)
+    nonlinear.py  # (FUTURE) Kerr SPM/XPM, split-step Fourier — empty placeholder
+```
+
+Rationale and trade-offs:
+
+- The `channel/linear.py` ↔ `channel/nonlinear.py` split is the real
+  forward-looking payoff: nonlinear fiber propagation (split-step) is the most
+  likely next addition and currently has nowhere natural to live. Creating the
+  `linear`/`nonlinear` boundary now means that feature lands as a new file, not
+  a 300-line append to a flat `impairments.py`.
+- `apply_awgn` placement is debatable (it can be read as a channel effect — ASE
+  — or as a generic measurement-noise utility). Recommend its own top-level
+  `noise.py` because it is the most-imported impairment and is modulation- and
+  medium-agnostic.
+- IQ-imbalance *application* and *compensation* deliberately share `frontend.py`
+  rather than being split apply-vs-compensate; they are one device model and are
+  read together. (Contrast with `frequency.py` below, where estimate/correct are
+  genuinely separable workflows.)
+- **Size is not the driver here** — 688 LOC is fine. Do this for the
+  `nonlinear` placeholder and the clean per-domain test mirror, or defer until
+  the first nonlinear-propagation PR actually needs the home.
+
+### 7.2 `mapping.py` (1,079 LOC, ~17 fns) → `mapping/` package — *highest cohesion payoff*
+
+`mapping.py` is the clearest case of one file wearing four hats: constellation
+geometry, hard bit mapping, soft (LLR) demapping, and probabilistic shaping.
+Split by mathematical concern:
+
+```text
+mapping/
+  __init__.py      # re-export the public names (stable surface)
+  gray.py          # gray_code, gray_to_binary, gray_constellation,
+                   #   _gray_psk/_ask/_qam_square/_qam_8_rect/_qam_cross  (geometry + labels)
+  bits.py          # map_bits, demap_symbols_hard                          (hard)
+  llr.py           # compute_llr, _get_jitted_soft_demap                   (soft)
+  shaping.py       # maxwell_boltzmann, ps_entropy, optimal_nu,
+                   #   sample_ps_symbols, constellation_power              (probabilistic shaping)
+```
+
+**The "smart" optional upgrade — a `Constellation` value object.** Right now
+`gray_constellation(order, modulation)` is recomputed at call sites scattered
+across `equalization`, `metrics`, and `recovery` (every CMA/RDE radius, every
+GMI/MI evaluation rebuilds points + bit labels). A small immutable
+`Constellation` dataclass in `mapping/constellation.py` — holding
+`points`, `bit_labels`, and an optional shaping `pmf`, with `gray_constellation`
+as its constructor and `power()`/`map()`/`demap()`/`llr()` as thin free
+functions over it — would:
+
+- centralize geometry + Gray labels + PS PMF that are currently passed around as
+  loose tuples/arrays;
+- remove repeated `gray_constellation(...)` rebuilds at hot call sites;
+- give PS-QAM a single object that carries `ν`/`pmf` alongside the grid (today
+  the PS scale conventions live in scattered rescale helpers — see the project
+  memory on PS-QAM scale conventions).
+
+This is **higher-touch** (it edits call sites, so it is mildly breaking unless
+the loose-array forms are kept as overloads) — propose it as an *optional 7.2b*
+to be done only if/when PS work expands, not as part of the mechanical split.
+
+### 7.3 `analysis.py` (782 LOC) — *keep as a cohesive leaf; promote only on growth*
+
+`analysis.py` is the counter-example: it is large-ish but **highly cohesive** —
+every function characterizes laser/carrier-phase behavior (drift, FM-noise PSD,
+linewidth, Allan deviation). It does **not** mix domains, so splitting now would
+add package overhead for no readability gain. Leave it flat. Document the
+trigger: **promote to `analysis/` (split by quantity — `drift.py`, `linewidth.py`,
+`allan.py`, `psd.py`) only when a second characterization domain lands** (e.g.
+RIN, timing-jitter, or polarization-state analysis), at which point the
+laser-phase functions become `analysis/phase_noise.py`. The matching plot side
+already lives in `plotting/analysis.py`, so the eventual package keeps the
+compute/plot mirror intact.
+
+### 7.4 Conditional: the other 1k-LOC flat leaves
+
+`filtering.py` (1,111), `frequency.py` (1,090), `metrics.py` (939), and
+`timing.py` (834) each mix separable workflows and are plausible future
+packages, but none is urgent. **Do not split speculatively** — apply the
+documented trigger (a module crosses ~1,000 LOC *and* contains ≥2 clearly
+separable concerns that don't share much state). Sketch of the natural seams if
+the trigger fires:
+
+- `filtering/` → `taps.py` (rect/gaussian/rrc/rc/lowpass/.../bandstop design),
+  `apply.py` (`fir_filter`, OLS engine, `shape_pulse`, `matched_filter`),
+  `dispersion.py` (`compensate_chromatic_dispersion`).
+- `frequency/` → `estimate.py` (mth-power, Mengali–Morelli, pilot, bias-tone) vs
+  `correct.py` (`correct_frequency_offset_blockwise`,
+  `correct_static_frequency_offset`) — estimate/correct *are* separable here.
+- `metrics/` → `quality.py` (evm/snr), `errors.py` (ber/ser),
+  `information.py` (mi/gmi).
+
+### 7.5 Test mirror (follows Phase 6 rule)
+
+Each promoted module gets a matching `tests/<pkg>/` directory, one test file per
+source module, split from today's `tests/test_impairments.py` (572 LOC),
+`tests/test_mapping.py` (550), etc. with the same AST splitter used in Phase 6.
+
+### Acceptance criteria for Phase 7 (when implemented)
+
+- Public import surface byte-identical (`__init__` re-exports verified by a
+  smoke test importing every name from `__all__`).
+- Full suite green and **test count unchanged** on `--device=cpu`.
+- `channel/nonlinear.py` exists as a documented placeholder so the next
+  nonlinear-propagation PR has an obvious home.
+- The size+cohesion trigger rule (7.4) recorded in `CLAUDE.md` so future leaves
+  are split on principle, not ad hoc.
