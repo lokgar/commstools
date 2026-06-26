@@ -29,6 +29,7 @@ def block_cma(
     input_norm_factor: float | np.ndarray | None = None,
     samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
+    cuda_graph: bool = True,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -54,8 +55,12 @@ def block_cma(
     The primary target is GPU (CuPy); on CPU :func:`cma` is usually faster.
 
     Parameters mirror :func:`cma` (no ``cpr_type`` — CMA is phase-blind, see
-    :func:`cma` Notes).  Returns an :class:`EqualizerResult` with ``y_hat``,
-    ``weights``, ``error`` on the input's device.
+    :func:`cma` Notes).  On GPU, ``cuda_graph=True`` (default) captures the
+    per-block FDAF body once and replays it, collapsing the per-block kernel
+    launches into a single graph launch (a large win at small ``block_size``);
+    it is ignored on CPU and silently disabled for the pilot-aided path.
+    Returns an :class:`EqualizerResult` with ``y_hat``, ``weights``, ``error``
+    on the input's device.
     """
     r2, c_ps = _godard_radius(modulation, order, unipolar, pmf)
     return _block_fdaf_blind(
@@ -75,6 +80,7 @@ def block_cma(
         pilot_mask=pilot_mask,
         pilot_gain_db=pilot_gain_db,
         c_ps=c_ps,
+        cuda_graph=cuda_graph,
         debug_plot=debug_plot,
         plot_smoothing=plot_smoothing,
         name="Block-CMA" if pilot_ref is None else "Block-CMA(PA)",
@@ -98,6 +104,7 @@ def block_rde(
     input_norm_factor: float | np.ndarray | None = None,
     samples_prefix: ArrayType | None = None,
     pad_mode: str = "zeros",
+    cuda_graph: bool = True,
     debug_plot: bool = False,
     plot_smoothing: int = 50,
 ) -> EqualizerResult:
@@ -115,8 +122,12 @@ def block_rde(
     ``step_size`` is on the same scale as :func:`rde`, with the
     ~``block_size``x-lower stability ceiling of frozen-block adaptation.
 
-    Parameters mirror :func:`rde`.  Returns an :class:`EqualizerResult` with
-    ``y_hat``, ``weights``, ``error`` on the input's device.
+    Parameters mirror :func:`rde`.  On GPU, ``cuda_graph=True`` (default)
+    captures the per-block FDAF body once and replays it, collapsing the
+    per-block kernel launches into a single graph launch (a large win at small
+    ``block_size``); it is ignored on CPU and silently disabled for the
+    pilot-aided path.  Returns an :class:`EqualizerResult` with ``y_hat``,
+    ``weights``, ``error`` on the input's device.
     """
     radii_np, c_ps = _rde_ring_radii(modulation, order, unipolar, pmf)
     return _block_fdaf_blind(
@@ -136,6 +147,7 @@ def block_rde(
         pilot_mask=pilot_mask,
         pilot_gain_db=pilot_gain_db,
         c_ps=c_ps,
+        cuda_graph=cuda_graph,
         debug_plot=debug_plot,
         plot_smoothing=plot_smoothing,
         name="Block-RDE" if pilot_ref is None else "Block-RDE(PA)",
