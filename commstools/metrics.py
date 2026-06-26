@@ -34,10 +34,9 @@ def _ps_unit_power_rescale(rx, xp, modulation, order, pmf, noise_var):
     """
     if pmf is None:
         return rx, noise_var
-    from .mapping import constellation_power, gray_constellation
+    from .mapping import Constellation
 
-    const = gray_constellation(modulation, order)
-    e_ps = constellation_power(const, pmf)
+    e_ps = Constellation.gray(modulation, order, pmf=pmf).power()
     if e_ps < 1.0 - 1e-6:
         rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
         noise_var = noise_var * e_ps
@@ -200,19 +199,20 @@ def evm(
                 "mode='blind' requires modulation and order. "
                 "Example: evm(rx, mode='blind', modulation='qam', order=16)."
             )
-        from .mapping import constellation_power, gray_constellation
+        from .mapping import Constellation
 
         # gray_constellation always returns unit-average-power constellations.
         # No gain correction of rx is applied here — the caller is responsible
         # for passing a gain-corrected signal at the expected constellation power.
-        constellation_np = gray_constellation(modulation, order)
+        c = Constellation.gray(modulation, order, pmf=pmf)
+        constellation_np = c.points
         constellation = xp.asarray(constellation_np)  # (M,) unit-avg-power
 
         # PS-QAM: receive-path symbols at unit average power live on the
         # ``{s_m/sqrt(E_PS)}`` grid.  Rescale rx by ``sqrt(E_PS)`` so the
         # nearest-neighbour decision against ``{s_m}`` is exact.
         if pmf is not None:
-            e_ps = constellation_power(constellation_np, pmf)
+            e_ps = c.power()
             if e_ps < 1.0 - 1e-6:
                 rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 
@@ -580,7 +580,7 @@ def ser(
     if tx_symbols is None:
         raise ValueError("ser() requires tx_symbols for array input.")
 
-    from .mapping import constellation_power, gray_constellation
+    from .mapping import Constellation
 
     rx, xp, _ = dispatch(rx_symbols)
     tx = xp.asarray(tx_symbols)
@@ -594,7 +594,8 @@ def ser(
     if rx.shape != tx.shape:
         raise ValueError(f"Shape mismatch: rx {rx.shape} != tx {tx.shape}")
 
-    constellation_np = gray_constellation(modulation, order)
+    c = Constellation.gray(modulation, order, pmf=pmf)
+    constellation_np = c.points
     constellation = xp.asarray(constellation_np)  # (M,)
 
     # PS-QAM: ``rx_symbols`` from ``resolved_symbols``
@@ -605,7 +606,7 @@ def ser(
     # ``gray_constellation`` is correct for both rx and tx.  Has no effect on
     # uniform modulations.
     if pmf is not None:
-        e_ps = constellation_power(constellation_np, pmf)
+        e_ps = c.power()
         if e_ps < 1.0 - 1e-6:
             rx = rx * xp.asarray(np.sqrt(e_ps), dtype=rx.real.dtype)
 

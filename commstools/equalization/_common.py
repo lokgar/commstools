@@ -574,13 +574,13 @@ def _godard_radius(modulation, order, unipolar, pmf):
     """Godard dispersion radius R2 and PS-QAM pilot scale (mirrors ``cma``)."""
     if modulation is None or order is None:
         return 1.0, None
-    from ..mapping import gray_constellation
+    from ..mapping import Constellation
 
-    const = gray_constellation(modulation, order, unipolar=unipolar)
+    c = Constellation.gray(modulation, order, unipolar=unipolar, pmf=pmf)
+    const = c.points
     if pmf is not None:
         _pmf = np.asarray(pmf, dtype=np.float64)
-        _abs2 = np.abs(const) ** 2
-        _e_ps = float(np.dot(_pmf, _abs2))
+        _e_ps = c.power()  # Σ P(s_m)|s_m|² — single source of truth for E_PS
         r2 = float(np.dot(_pmf, np.abs(const) ** 4)) / (_e_ps**2)
         c_ps = np.float32(1.0 / np.sqrt(_e_ps)) if _e_ps < 1.0 - 1e-6 else None
         return r2, c_ps
@@ -592,14 +592,13 @@ def _rde_ring_radii(modulation, order, unipolar, pmf):
     """Unique constellation ring radii and PS-QAM pilot scale (mirrors ``rde``)."""
     if modulation is None or order is None:
         return np.array([1.0], dtype=np.float32), None
-    from ..mapping import gray_constellation
+    from ..mapping import Constellation
 
-    const = gray_constellation(modulation, order, unipolar=unipolar)
-    raw = np.abs(const).astype(np.float32)
+    c = Constellation.gray(modulation, order, unipolar=unipolar, pmf=pmf)
+    raw = np.abs(c.points).astype(np.float32)
     c_ps = None
     if pmf is not None:
-        _pmf = np.asarray(pmf, dtype=np.float64)
-        _e_ps = float(np.dot(_pmf, raw.astype(np.float64) ** 2))
+        _e_ps = c.power()  # Σ P(s_m)|s_m|² — single source of truth for E_PS
         if _e_ps < 1.0 - 1e-6:
             c_ps = np.float32(1.0 / np.sqrt(_e_ps))
             raw = (raw * c_ps).astype(np.float32)

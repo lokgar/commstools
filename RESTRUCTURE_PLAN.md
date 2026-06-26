@@ -268,18 +268,31 @@ Original plan:
 | 4 — Naming | low | medium | minor renames (plot fns) | ✅ done |
 | 5 — Split plotting/recovery | low | medium | none (re-exports) | ✅ done |
 | 6 — Test reorg | low | medium | none | ✅ done |
-| 7 — Domain-oriented packaging | low | medium | none (re-exports) | 📋 proposed |
+| 7 — Domain-oriented packaging | low | medium | none (re-exports) + opt-in `Constellation` | ✅ done (7.4 deferred) |
 
 Phases 0–2 and 5–6 are non-breaking. Phase 3 is the one deliberate breaking
 change; consider shipping it as a single major version bump with the method→
-function migration documented in the changelog. Phase 7 (below) is a proposed,
-non-breaking follow-up — documented but not yet implemented.
+function migration documented in the changelog. Phase 7 (below) is implemented
+non-breakingly: `analysis/`, `impairments/`, and `mapping/` are now packages
+with byte-identical public surfaces, the `coding/` scaffold is in place (absent
+from the top-level surface), and the opt-in `Constellation` value object (7.2b)
+was added with the CMA/RDE-radius and EVM/SER/MI E_PS call sites migrated onto
+it. Only 7.4 (the other ~1k-LOC flat leaves) is deferred until the documented
+size+cohesion trigger fires.
 
 ---
 
-## Phase 7 — Domain-oriented packaging of the remaining leaves 📋 PROPOSED
+## Phase 7 — Domain-oriented packaging of the remaining leaves ✅ DONE (7.4 deferred)
 
-> **Status: design only — do not implement yet.** This phase is about
+> **Status: implemented (2026-06-26).** 7.1 `impairments/`, 7.2 `mapping/`
+> (+ 7.2b `Constellation`), 7.3 `analysis/`, and 7.3b the `coding/` scaffold are
+> done; tests were split to mirror each package. 7.4 (the other ~1k-LOC flat
+> leaves: `filtering`, `frequency`, `metrics`, `timing`) is intentionally left
+> untouched until the size+cohesion trigger fires — the trigger rule is now
+> recorded in `CLAUDE.md` §5. The original design notes below are retained for
+> reference.
+>
+> **Original framing —** This phase is about
 > *extensibility and discoverability*, not raw line count. Phases 2 and 5 split
 > modules because they were painful to read (3k–9k LOC). The Phase 7 targets are
 > mostly 700–1,100 LOC — tolerable today — but each one mixes several **physical

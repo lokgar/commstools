@@ -262,12 +262,32 @@ Inside library code, **never extract a scalar from a possibly-GPU array inside a
     joint-channel consistency checks.
   * `tests/core/` ↔ `commstools/core/` — `test_signal.py`, `test_signal_mimo.py`,
     `test_frame.py` (`Preamble`/`SingleCarrierFrame`), `test_psqam.py` (generation).
-  * Flat modules (`filtering`, `metrics`, `mapping`, `spectral`, `timing`,
-    `frequency`, …) keep a single top-level `tests/test_<module>.py`.
+  * `tests/analysis/` ↔ `commstools/analysis/` — `test_trajectory.py`,
+    `test_drift.py`, `test_linewidth.py`, `test_allan.py`, `test_characterize.py`.
+  * `tests/impairments/` ↔ `commstools/impairments/` — `test_noise.py`,
+    `test_source.py`, `test_frontend.py`, and `channel/test_channel_linear.py`
+    (the file basename is `test_channel_linear` rather than `test_linear`
+    because pytest's default prepend import-mode requires globally-unique test
+    basenames and `tests/equalization/test_linear.py` already exists).
+  * `tests/mapping/` ↔ `commstools/mapping/` — `test_gray.py`, `test_bits.py`,
+    `test_llr.py`, `test_constellation.py` (the `Constellation` value object).
+    Probabilistic-shaping tests live in `tests/core/test_psqam.py`.
+  * Flat modules (`filtering`, `metrics`, `spectral`, `timing`, `frequency`, …)
+    keep a single top-level `tests/test_<module>.py`.
 
   When a single module's test file grows unwieldy, split it by *concern* within
   the same subpackage (e.g. sequential vs. JAX vs. MIMO) rather than letting one
   multi-thousand-line file accumulate.
+
+* **Module-splitting trigger (when to promote a flat module to a package).**
+  Split a flat module into a subpackage when it crosses **~1,000 LOC** *and*
+  contains **≥2 clearly separable concerns** (distinct physical/mathematical
+  domains, or estimate-vs-correct workflows) that don't share much state. Size
+  alone is not the trigger — cohesive large modules can stay flat — and neither
+  is multiple concerns in a small file. When splitting, the package
+  `__init__.py` **must re-export exactly today's public names** so the import
+  surface (`from commstools.X import Y`) stays byte-identical; internals move,
+  user imports don't break. Mirror the split in `tests/` per the rule above.
 
 ---
 
