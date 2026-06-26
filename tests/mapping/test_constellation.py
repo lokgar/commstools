@@ -14,9 +14,7 @@ def test_gray_constructor_matches_free_functions():
     assert c.bit_labels.shape == (16, 4)
     assert c.bits_per_symbol == 4
     # Natural-binary labels: row i is the MSB-first bits of i.
-    expected = (
-        (np.arange(16)[:, None] >> np.arange(3, -1, -1)) & 1
-    ).astype(np.int8)
+    expected = ((np.arange(16)[:, None] >> np.arange(3, -1, -1)) & 1).astype(np.int8)
     np.testing.assert_array_equal(c.bit_labels, expected)
 
 
