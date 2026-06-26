@@ -142,6 +142,13 @@ def get_array_module(data: Any) -> types.ModuleType:
     """
     Infers the array module (NumPy or CuPy) for the given data.
 
+    The decision is made by inspecting the **actual type of the data**, not the
+    global availability/force flags.  A CuPy array is therefore always reported
+    as CuPy — even under :func:`use_cpu_only` — because that flag governs the
+    default *placement of new* arrays, not the module of data that already lives
+    on the GPU.  Reporting NumPy for a CuPy array would route GPU data into
+    NumPy code paths and raise ``TypeError`` (or silently mis-dispatch).
+
     Parameters
     ----------
     data : array_like or list
@@ -150,11 +157,15 @@ def get_array_module(data: Any) -> types.ModuleType:
     Returns
     -------
     module
-        `numpy` if the data is on CPU or is a basic sequence,
-        `cupy` if the data resides on a CUDA device.
+        `cupy` if the data is a CuPy device array, otherwise `numpy`
+        (CPU arrays, lists, and scalars).
     """
-    if is_cupy_available():
-        return cp.get_array_module(data)
+    # `cp is not None` ⟺ CuPy imported and passed the functional check at import
+    # time (it is set to None otherwise), so no CuPy array can exist when it is
+    # None.  This is intentionally independent of `is_cupy_available()`, which
+    # also returns False under `use_cpu_only()`.
+    if cp is not None and isinstance(data, cp.ndarray):
+        return cp
     return np
 
 
@@ -173,7 +184,10 @@ def get_scipy_module(xp: types.ModuleType) -> types.ModuleType:
     sp : module
         The corresponding signal processing module (`scipy` or `cupyx.scipy`).
     """
-    if is_cupy_available() and xp == cp:
+    # Match sp to the actual array module, independent of the force-CPU flag:
+    # if xp is CuPy we must return cupyx.scipy so dispatch() stays internally
+    # consistent (xp/sp paired) for GPU arrays passed under use_cpu_only().
+    if cp is not None and xp is cp:
         import cupyx.scipy
         import cupyx.scipy.ndimage
         import cupyx.scipy.signal

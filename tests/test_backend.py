@@ -76,6 +76,37 @@ def test_cpu_only_toggle():
     backend.use_cpu_only(original_force)
 
 
+def test_get_array_module_robust_under_force_cpu():
+    """A CuPy array must resolve to CuPy even under use_cpu_only().
+
+    use_cpu_only() governs default *placement* of new arrays (is_cupy_available()
+    -> False), not the module of data that already lives on the GPU. Reporting
+    NumPy for a CuPy array would mis-dispatch GPU data into NumPy code paths.
+    """
+    original_force = backend._FORCE_CPU
+    backend.use_cpu_only(False)
+    if not backend.is_cupy_available():
+        backend.use_cpu_only(original_force)
+        pytest.skip("CuPy not available")
+
+    import cupy as cp
+
+    arr = cp.arange(4)
+    try:
+        backend.use_cpu_only(True)
+        # Placement flag flips off...
+        assert backend.is_cupy_available() is False
+        # ...but type inspection still resolves the actual backend, and
+        # dispatch() keeps the array module and scipy module paired.
+        assert backend.get_array_module(arr) is cp
+        assert backend.get_scipy_module(cp).__name__.startswith("cupyx")
+        _, out_xp, out_sp = backend.dispatch(arr)
+        assert out_xp is cp
+        assert hasattr(out_sp, "signal")
+    finally:
+        backend.use_cpu_only(original_force)
+
+
 def test_jax_interop(backend_device, xp):
     """Verify interoperability between core backends and JAX using DLPack."""
     try:
