@@ -15,7 +15,7 @@ Main Features
 
 import warnings
 
-__version__ = "5.1.0"
+__version__ = "5.1.1"
 
 # Leaf modules import ``Signal`` from ``.core.signal`` at top level for
 # Signal/array dispatch.  ``core.signal`` is a leaf (it imports no sibling
