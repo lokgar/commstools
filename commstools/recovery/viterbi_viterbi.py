@@ -1,5 +1,7 @@
 """Viterbi-Viterbi (V&V) carrier phase recovery."""
 
+import logging
+
 import numpy as np
 
 from ..backend import ArrayType, dispatch, to_device
@@ -187,15 +189,21 @@ def recover_carrier_phase_viterbi_viterbi(
             phi_full[ch] = xp.interp(all_positions, block_centers, phi_u_ch)
             phi_blocks_out[ch] = phi_u_ch
 
-    phi_full_np = to_device(phi_full, "cpu")
-    phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
-    phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
-    mode_str = "joint" if (joint_channels and C > 1) else "independent"
-    logger.info(
-        f"CPR (Viterbi-Viterbi, M={M}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [{N_blocks} blocks x {block_size} symbols, C={C}, "
-        f"cycle_slip_correction={cycle_slip_correction}]"
-    )
+    # Host copy of the trajectory is needed only for the INFO summary and the
+    # optional debug plot; skip the transfer + reductions otherwise (the device
+    # phi_full drives the actual correction and is what gets returned).
+    _want_log = logger.isEnabledFor(logging.INFO)
+    if _want_log or debug_plot:
+        phi_full_np = to_device(phi_full, "cpu")
+    if _want_log:
+        phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
+        phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+        mode_str = "joint" if (joint_channels and C > 1) else "independent"
+        logger.info(
+            f"CPR (Viterbi-Viterbi, M={M}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
+            f"std={phi_std_deg:.2f}° [{N_blocks} blocks x {block_size} symbols, C={C}, "
+            f"cycle_slip_correction={cycle_slip_correction}]"
+        )
 
     if debug_plot:
         from .. import plotting as _plotting

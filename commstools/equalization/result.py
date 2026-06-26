@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -136,39 +137,51 @@ def _log_equalizer_exit(
 ) -> EqualizerResult:
     """Log exit MSE and optionally show a debug plot for an EqualizerResult."""
     if result.error is not None:
-        err = to_device(result.error, "cpu")
-        n_sym = err.shape[-1]  # time axis; correct for (N_sym,) and (C, N_sym)
-        window = max(1, min(100, n_sym))
+        n_sym = result.error.shape[-1]  # time axis; (N_sym,) or (C, N_sym)
+        want_log = logger.isEnabledFor(logging.INFO)
+        # The convergence check emits a WARNING (normally always enabled), but
+        # only runs when explicitly requested and the signal is long enough.
+        want_conv = check_convergence and n_sym >= 20
 
-        if err.ndim == 1:
-            # SISO
-            mse_final = float(np.mean(np.abs(err[-window:]) ** 2))
-            mse_db = 10.0 * np.log10(mse_final + 1e-30)
-            logger.info(f"{name}: exit MSE={mse_db:.1f} dB (final {window} symbols)")
-        else:
-            # MIMO: log per-channel MSE; keep mean for convergence check
-            per_ch_mse = [
-                float(np.mean(np.abs(err[c, -window:]) ** 2))
-                for c in range(err.shape[0])
-            ]
-            parts = ", ".join(
-                f"ch{c}={10.0 * np.log10(m + 1e-30):.1f}"
-                for c, m in enumerate(per_ch_mse)
-            )
-            logger.info(f"{name}: exit MSE (final {window} symbols): {parts} dB")
-            mse_final = float(np.mean(per_ch_mse))
-            mse_db = 10.0 * np.log10(mse_final + 1e-30)
+        # Skip the whole MSE computation — and its device→host transfer — when
+        # nothing will consume the result.  When it is needed, transfer only the
+        # tail (and head, for convergence) windows rather than the full error
+        # array: ≤100 samples/channel instead of N.
+        if want_log or want_conv:
+            window = max(1, min(100, n_sym))
+            tail = to_device(result.error[..., -window:], "cpu")
 
-        if check_convergence and n_sym >= 20:
-            init_window = max(1, min(100, n_sym // 10))
-            mse_init = float(np.mean(np.abs(err[..., :init_window]) ** 2))
-            if mse_init > 0 and mse_final > mse_init * 0.9:
-                logger.warning(
-                    f"{name}: convergence may be poor — "
-                    f"final MSE ({mse_db:.1f} dB) not significantly below "
-                    f"initial MSE ({10.0 * np.log10(mse_init + 1e-30):.1f} dB). "
-                    "Consider reducing step_size or increasing signal length."
-                )
+            if tail.ndim == 1:  # SISO
+                mse_final = float(np.mean(np.abs(tail) ** 2))
+                mse_db = 10.0 * np.log10(mse_final + 1e-30)
+                if want_log:
+                    logger.info(
+                        f"{name}: exit MSE={mse_db:.1f} dB (final {window} symbols)"
+                    )
+            else:  # MIMO: per-channel MSE; keep the mean for the convergence check
+                per_ch_mse = np.mean(np.abs(tail) ** 2, axis=-1)  # (C,)
+                if want_log:
+                    parts = ", ".join(
+                        f"ch{c}={10.0 * np.log10(m + 1e-30):.1f}"
+                        for c, m in enumerate(per_ch_mse)
+                    )
+                    logger.info(
+                        f"{name}: exit MSE (final {window} symbols): {parts} dB"
+                    )
+                mse_final = float(np.mean(per_ch_mse))
+                mse_db = 10.0 * np.log10(mse_final + 1e-30)
+
+            if want_conv:
+                init_window = max(1, min(100, n_sym // 10))
+                head = to_device(result.error[..., :init_window], "cpu")
+                mse_init = float(np.mean(np.abs(head) ** 2))
+                if mse_init > 0 and mse_final > mse_init * 0.9:
+                    logger.warning(
+                        f"{name}: convergence may be poor — "
+                        f"final MSE ({mse_db:.1f} dB) not significantly below "
+                        f"initial MSE ({10.0 * np.log10(mse_init + 1e-30):.1f} dB). "
+                        "Consider reducing step_size or increasing signal length."
+                    )
 
     if debug_plot:
         from .. import plotting as _plotting  # lazy import avoids circular dep

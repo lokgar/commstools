@@ -1,5 +1,7 @@
 """Decision-directed PLL carrier phase recovery."""
 
+import logging
+
 import numpy as np
 
 from ..backend import ArrayType, dispatch, to_device
@@ -454,12 +456,14 @@ def recover_carrier_phase_pll(
     if xp is not np:
         phi_full = xp.asarray(phi_full)
 
-    phi_mean_deg = float(np.mean(phi_full)) * 180.0 / np.pi
-    phi_std_deg = float(np.std(phi_full)) * 180.0 / np.pi
-    logger.info(
-        f"CPR (DD-PLL, {loop_desc}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [C={C}]"
-    )
+    if logger.isEnabledFor(logging.INFO):
+        # Two reductions + host syncs, needed only for the summary below.
+        phi_mean_deg = float(np.mean(phi_full)) * 180.0 / np.pi
+        phi_std_deg = float(np.std(phi_full)) * 180.0 / np.pi
+        logger.info(
+            f"CPR (DD-PLL, {loop_desc}): phase mean={phi_mean_deg:.2f}°, "
+            f"std={phi_std_deg:.2f}° [C={C}]"
+        )
 
     if debug_plot:
         from .. import plotting as _plotting

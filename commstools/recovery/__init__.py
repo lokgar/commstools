@@ -26,9 +26,9 @@ from .corrections import (
     smooth_phase_wiener,
 )
 from .pilots import (
+    recover_carrier_phase_pilot_symbols,
     recover_carrier_phase_pilot_tone,
     recover_carrier_phase_pilot_tones,
-    recover_carrier_phase_pilot_symbols,
 )
 from .pll import recover_carrier_phase_pll
 from .tikhonov import recover_carrier_phase_tikhonov

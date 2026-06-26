@@ -1,5 +1,7 @@
 """Pilot-symbol and pilot-tone aided carrier phase recovery."""
 
+import logging
+
 import numpy as np
 
 from ..backend import ArrayType, dispatch, to_device
@@ -166,13 +168,19 @@ def recover_carrier_phase_pilot_symbols(
             "Choose 'linear' or 'cubic'."
         )
 
-    phi_full_np = to_device(phi_full, "cpu")
-    phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
-    phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
-    logger.info(
-        f"CPR (pilot-aided, {interpolation}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [P={P} pilots, C={C}]"
-    )
+    # Host copy of the trajectory is needed only for the INFO summary and the
+    # optional debug plot; skip the transfer + reductions otherwise (the device
+    # phi_full drives the actual correction and is what gets returned).
+    _want_log = logger.isEnabledFor(logging.INFO)
+    if _want_log or debug_plot:
+        phi_full_np = to_device(phi_full, "cpu")
+    if _want_log:
+        phi_mean_deg = float(np.mean(phi_full_np)) * 180.0 / np.pi
+        phi_std_deg = float(np.std(phi_full_np)) * 180.0 / np.pi
+        logger.info(
+            f"CPR (pilot-aided, {interpolation}): phase mean={phi_mean_deg:.2f}°, "
+            f"std={phi_std_deg:.2f}° [P={P} pilots, C={C}]"
+        )
 
     if debug_plot:
         from .. import plotting as _plotting
@@ -686,12 +694,17 @@ def recover_carrier_phase_pilot_tones(
     phi = xp.unwrap(xp.angle(z_comb).astype(xp.float64))  # (N,)
     phi_full = xp.broadcast_to(phi[None, :], (C, N)).copy()
 
-    phi_np = to_device(phi, "cpu")
-    logger.info(
-        f"CPR (pilot-tones, MRC): phase std={float(np.std(phi_np)) * 180 / np.pi:.2f}°, "
-        f"[K={K}, used={used}, ref={ref}, B={bandwidth:.3g} Hz, "
-        f"diff_B={differential_bandwidth:.3g} Hz, C={C}]"
-    )
+    # Host copy of phi is needed only for the INFO summary and the optional
+    # debug plot; skip the transfer otherwise (phi_full drives the correction).
+    _want_log = logger.isEnabledFor(logging.INFO)
+    if _want_log or debug_plot:
+        phi_np = to_device(phi, "cpu")
+    if _want_log:
+        logger.info(
+            f"CPR (pilot-tones, MRC): phase std={float(np.std(phi_np)) * 180 / np.pi:.2f}°, "
+            f"[K={K}, used={used}, ref={ref}, B={bandwidth:.3g} Hz, "
+            f"diff_B={differential_bandwidth:.3g} Hz, C={C}]"
+        )
 
     if debug_plot:
         from .. import plotting as _plotting

@@ -110,12 +110,14 @@ def smooth_phase_wiener(
     phi_s = xp.real(xp.fft.ifft(xp.fft.fft(phi_c, axis=-1) * H[None, :], axis=-1))
     phi_s = phi_s + trend
 
-    std_in = float(xp.std(phi_c))
-    std_out = float(xp.std(phi_s - trend))
-    logger.info(
-        f"Wiener phase smoother: q={q:.3g}, r={r:.3g} rad², "
-        f"residual std {np.degrees(std_in):.2f}° → {np.degrees(std_out):.2f}°."
-    )
+    if logger.isEnabledFor(logging.INFO):
+        # Two std reductions + host syncs, needed only for the line below.
+        std_in = float(xp.std(phi_c))
+        std_out = float(xp.std(phi_s - trend))
+        logger.info(
+            f"Wiener phase smoother: q={q:.3g}, r={r:.3g} rad², "
+            f"residual std {np.degrees(std_in):.2f}° → {np.degrees(std_out):.2f}°."
+        )
 
     return phi_s[0] if was_1d else phi_s
 
@@ -692,9 +694,12 @@ def correct_phase_rotation(
     phasors = xp.exp(1j * thetas).astype(symbols.dtype)  # (C,) on device
     out = symbols * phasors[:, None]
 
-    thetas_deg = np.degrees(to_device(thetas, "cpu"))
-    for ch, deg in enumerate(thetas_deg.tolist()):
-        logger.info(f"correct_phase_rotation: ch={ch}, theta={deg:.2f}°")
+    if logger.isEnabledFor(logging.INFO):
+        # Host transfer of thetas is needed only for this per-channel log;
+        # the correction itself (phasors) is computed on-device above.
+        thetas_deg = np.degrees(to_device(thetas, "cpu"))
+        for ch, deg in enumerate(thetas_deg.tolist()):
+            logger.info(f"correct_phase_rotation: ch={ch}, theta={deg:.2f}°")
 
     if was_1d:
         return out[0]
