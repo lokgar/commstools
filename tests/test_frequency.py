@@ -179,7 +179,7 @@ class TestCorrectionFunctions:
 
 
 class TestFoePilots:
-    """Tests for estimate_frequency_offset_pilots (least-squares phase slope)."""
+    """Tests for estimate_frequency_offset_pilot_symbols (least-squares phase slope)."""
 
     N_SAMPLES = 4096
     PILOT_PERIOD = 16  # one pilot every 16 samples → lock range ±31.25 kHz
@@ -219,7 +219,7 @@ class TestFoePilots:
     def test_accuracy(self, backend_device, xp, fo_hz):
         """Estimated offset within 1 % of true offset at 30 dB SNR."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz)
-        est = frequency.estimate_frequency_offset_pilots(
+        est = frequency.estimate_frequency_offset_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -230,7 +230,7 @@ class TestFoePilots:
     def test_zero_offset(self, backend_device, xp):
         """Zero frequency offset: estimate is within ±20 Hz."""
         samples, pilot_indices, pilot_values = self._setup(xp, fo_hz=0.0)
-        est = frequency.estimate_frequency_offset_pilots(
+        est = frequency.estimate_frequency_offset_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -244,7 +244,7 @@ class TestFoePilots:
         s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
         s1, _, _ = self._setup(xp, fo_hz)
         samples_mimo = xp.stack([s0, s1], axis=0)  # (2, N)
-        est = frequency.estimate_frequency_offset_pilots(
+        est = frequency.estimate_frequency_offset_pilot_symbols(
             samples_mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -260,7 +260,7 @@ class TestFoePilots:
         s0, pilot_indices, pilot_values = self._setup(xp, fo_hz)
         s1, _, _ = self._setup(xp, fo_hz)
         samples_mimo = xp.stack([s0, s1], axis=0)
-        est = frequency.estimate_frequency_offset_pilots(
+        est = frequency.estimate_frequency_offset_pilot_symbols(
             samples_mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -431,7 +431,7 @@ class TestFoeRegression:
         samples = xp.asarray(
             symbols * np.exp(1j * 2 * np.pi * fo_hz * t).astype(np.complex64)
         )
-        est = frequency.estimate_frequency_offset_pilots(
+        est = frequency.estimate_frequency_offset_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,

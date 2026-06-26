@@ -51,7 +51,7 @@ class TestCprPilots:
         samples, pilot_indices, pilot_values, true_phase = self._pilot_setup(
             xp, n_symbols=512, pilot_period=pilot_period, phase_per_sym=0.001
         )
-        phase_est = recovery.recover_carrier_phase_pilots(
+        phase_est = recovery.recover_carrier_phase_pilot_symbols(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         err = _rms_phase_error(xp, phase_est, true_phase)
@@ -60,7 +60,7 @@ class TestCprPilots:
     def test_output_shape_siso(self, backend_device, xp):
         """Pilot CPR: 1D input → 1D phase output."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
-        phase = recovery.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilot_symbols(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         assert phase.shape == samples.shape
@@ -70,7 +70,7 @@ class TestCprPilots:
         samples_a, pilot_indices, pilot_values, _ = self._pilot_setup(xp, n_symbols=256)
         samples_b, _, _, _ = self._pilot_setup(xp, n_symbols=256)
         mimo = xp.stack([samples_a, samples_b])  # (2, 256)
-        phase = recovery.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilot_symbols(
             mimo, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         assert phase.shape == mimo.shape
@@ -83,7 +83,7 @@ class TestCprPilots:
         samples, pilot_indices, pilot_values, true_phase = self._pilot_setup(
             xp, n_symbols=n_symbols, pilot_period=8, phase_per_sym=phase_per_sym
         )
-        phase_est = recovery.recover_carrier_phase_pilots(
+        phase_est = recovery.recover_carrier_phase_pilot_symbols(
             samples, pilot_indices=pilot_indices, pilot_values=pilot_values
         )
         err = _rms_phase_error(xp, phase_est, true_phase)
@@ -92,7 +92,7 @@ class TestCprPilots:
     def test_cubic_interpolation(self, backend_device, xp):
         """Cubic interpolation works on both CPU and GPU."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
-        phase = recovery.recover_carrier_phase_pilots(
+        phase = recovery.recover_carrier_phase_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -104,7 +104,7 @@ class TestCprPilots:
         """Unknown interpolation method raises ValueError."""
         samples, pilot_indices, pilot_values, _ = self._pilot_setup(xp)
         with pytest.raises(ValueError, match="Unknown interpolation method"):
-            recovery.recover_carrier_phase_pilots(
+            recovery.recover_carrier_phase_pilot_symbols(
                 samples,
                 pilot_indices=pilot_indices,
                 pilot_values=pilot_values,
@@ -527,7 +527,7 @@ class TestPilotsCPREnhancements:
         samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=1)
         samples_b, _, _ = self._pilot_setup(xp, seed=2)
         mimo = xp.stack([samples_a, samples_b], axis=0)  # (2, N)
-        phi = recovery.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilot_symbols(
             mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -541,14 +541,14 @@ class TestPilotsCPREnhancements:
     def test_joint_siso_noop(self, backend_device, xp):
         """joint_channels=True on SISO returns identical result to False."""
         samples, pilot_indices, pilot_values = self._pilot_setup(xp, seed=3)
-        phi_a = recovery.recover_carrier_phase_pilots(
+        phi_a = recovery.recover_carrier_phase_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
             joint_channels=False,
             cycle_slip_correction=False,
         )
-        phi_b = recovery.recover_carrier_phase_pilots(
+        phi_b = recovery.recover_carrier_phase_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -562,7 +562,7 @@ class TestPilotsCPREnhancements:
     def test_cycle_slip_shape(self, backend_device, xp):
         """cycle_slip_correction=True returns correct shape."""
         samples, pilot_indices, pilot_values = self._pilot_setup(xp)
-        phi = recovery.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilot_symbols(
             samples,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,
@@ -586,7 +586,7 @@ class TestPilotsCPREnhancements:
         samples_a, pilot_indices, pilot_values = self._pilot_setup(xp, seed=4)
         samples_b, _, _ = self._pilot_setup(xp, seed=5)
         mimo = xp.stack([samples_a, samples_b], axis=0)
-        phi = recovery.recover_carrier_phase_pilots(
+        phi = recovery.recover_carrier_phase_pilot_symbols(
             mimo,
             pilot_indices=pilot_indices,
             pilot_values=pilot_values,

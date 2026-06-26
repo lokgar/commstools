@@ -520,8 +520,8 @@ def plot_pilot_phase_estimate(
     Plots pilot phase scatter, linear fit, and the full interpolated trajectory.
 
     Used as a diagnostic for both pilot-based frequency offset estimation
-    (``estimate_frequency_offset_pilots``) and pilot-aided carrier phase
-    recovery (``recover_carrier_phase_pilots``).
+    (``estimate_frequency_offset_pilot_symbols``) and pilot-aided carrier phase
+    recovery (``recover_carrier_phase_pilot_symbols``).
 
     Parameters
     ----------

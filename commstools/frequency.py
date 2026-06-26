@@ -521,7 +521,7 @@ def estimate_frequency_offset_mengali_morelli(
     return np.array(f_per_ch)
 
 
-def estimate_frequency_offset_pilots(
+def estimate_frequency_offset_pilot_symbols(
     samples: ArrayType,
     sampling_rate: float,
     pilot_indices: ArrayType,

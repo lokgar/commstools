@@ -8,7 +8,7 @@ from ..logger import logger
 from .corrections import correct_cycle_slips
 
 
-def recover_carrier_phase_pilots(
+def recover_carrier_phase_pilot_symbols(
     symbols: ArrayType,
     pilot_indices: ArrayType,
     pilot_values: ArrayType,
