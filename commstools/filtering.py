@@ -26,16 +26,6 @@ from .multirate import expand
 # rc_taps:       Raised Cosine filter taps
 # lowpass_taps, highpass_taps, bandpass_taps, bandstop_taps: FIR filters
 
-# Coefficient relating smoothrect rise_time to bt:
-#   rise_time = _SR_RISE_COEFF * duty_cycle / bt   [symbol periods, 10%-90%]
-#   bt        = _SR_RISE_COEFF * duty_cycle / rise_time
-#
-# Derivation: the smoothrect rising edge is 0.5*(erf((t+w/2)/(σ√2))+1).
-# 10%→90% transition: Δt = 2·√2·erfinv(0.8)·σ,  σ = duty_cycle·√(ln2)/(2π·bt)
-_SR_RISE_COEFF: float = float(
-    2 * np.sqrt(2) * scipy.special.erfinv(0.8) * np.sqrt(np.log(2)) / (2 * np.pi)
-)
-
 
 def rect_taps(sps: int, duty_cycle: float = 1.0, rise_time: float = 0.0) -> np.ndarray:
     """
@@ -195,8 +185,6 @@ def smoothrect_taps(
 
     # Convert rise_time to Gaussian sigma.
     # rise_time (10%-90%) = 2·√2·erfinv(0.8)·σ  →  σ = rise_time / (2·√2·erfinv(0.8))
-    # _SR_RISE_COEFF = 2·√2·erfinv(0.8)·√(ln2)/(2π), so
-    # bt = _SR_RISE_COEFF·duty_cycle / rise_time  and  σ = duty_cycle·√(ln2)/(2π·bt)
     sigma = rise_time / (2 * np.sqrt(2) * float(scipy.special.erfinv(0.8)))
 
     # Analytical Formula (Convolved Rect and Gaussian)
