@@ -11,6 +11,10 @@ dependencies = [
     "scipy>=1.17",
     "pydantic>=2.13",
     "numba>=0.65",
+    # JAX (CPU) is the soft-demap engine behind compute_llr/gmi and the
+    # equalizers' 'jax' backend — required on CPU, not just GPU. The 'gpu'
+    # extra below layers the CUDA plugins on top via jax[cuda13].
+    "jax>=0.10",
 ]
 
 [project.optional-dependencies]

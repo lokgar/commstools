@@ -412,6 +412,7 @@ name = "commstools"
 version = "5.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "jax" },
     { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy" },
@@ -444,6 +445,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cupy-cuda13x", marker = "extra == 'gpu'", specifier = ">=14.1" },
+    { name = "jax", specifier = ">=0.10" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'gpu'", specifier = ">=0.10" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.11" },
