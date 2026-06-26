@@ -235,10 +235,12 @@ def to_device(data: Any, device: str) -> ArrayType:
     logger.debug(f"Moving data to {device.upper()}.")
     device = device.lower()
     if device == "cpu":
-        # Verify both availability and force flag to behave safely
-        # But for conversion from GPU to CPU, we can be lenient if logic allows
-        # However, to avoid touching cp if forced off:
-        if is_cupy_available() and isinstance(data, cp.ndarray):
+        # Dispatch by the *actual array type*, independent of the force-CPU flag
+        # (mirrors get_array_module/get_scipy_module). An array that already lives
+        # on the GPU must always be brought to host; gating the ``.get()`` on
+        # is_cupy_available() means use_cpu_only() leaves a CuPy array unfetchable
+        # and the np.asarray() fallback raises "Implicit conversion ... use .get()".
+        if cp is not None and isinstance(data, cp.ndarray):
             return data.get()
         if isinstance(data, np.ndarray):
             return data

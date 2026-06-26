@@ -107,6 +107,36 @@ def test_get_array_module_robust_under_force_cpu():
         backend.use_cpu_only(original_force)
 
 
+def test_to_device_cpu_fetches_gpu_array_under_force():
+    """to_device(x, "cpu") must bring a CuPy array to host even under force.
+
+    Regression: the CPU path gated the ``.get()`` on ``is_cupy_available()``,
+    which use_cpu_only() forces to False, so an existing GPU array fell through
+    to ``np.asarray(cupy_array)`` and raised "Implicit conversion ... use .get()".
+    The transfer dispatches on the actual array type, like get_array_module, so a
+    GPU array stays fetchable regardless of the placement flag.  This off-diagonal
+    state (force CPU + a live CuPy array) is the one the device-parametrized
+    fixtures cannot reach, since they flip the flag and the array module together.
+    """
+    original_force = backend._FORCE_CPU
+    backend.use_cpu_only(False)
+    if not backend.is_cupy_available():
+        backend.use_cpu_only(original_force)
+        pytest.skip("CuPy not available")
+
+    import cupy as cp
+
+    arr = cp.arange(5)
+    try:
+        backend.use_cpu_only(True)
+        assert backend.is_cupy_available() is False
+        host = backend.to_device(arr, "cpu")
+        assert isinstance(host, np.ndarray)
+        assert np.array_equal(host, [0, 1, 2, 3, 4])
+    finally:
+        backend.use_cpu_only(original_force)
+
+
 def test_jax_interop(backend_device, xp):
     """Verify interoperability between core backends and JAX using DLPack."""
     try:
