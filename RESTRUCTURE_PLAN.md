@@ -75,7 +75,8 @@ Highest readability payoff, mechanical, fully guarded by existing tests.
 that is importable today.
 
 1. **Create the package skeleton** `commstools/equalization/`:
-   ```
+
+   ```text
    __init__.py          # re-export public API (see step 3)
    result.py            # EqualizerResult, CPRState, _log_equalizer_exit
    _kernels_numba.py    # _get_numba_lms/rls/cma/rde, *_cpr variants, cs_block
@@ -88,6 +89,7 @@ that is importable today.
    _common.py           # _normalize_inputs, _build_padded_samples,
                         #   weight init/validation, _cpr_symmetry, _validate_sps
    ```
+
 2. **Move code in dependency order** (leaves first): `_common` → `result` →
    `_kernels_*` → `_block` → `sequential`/`blind`/`linear`/`polarization`.
    Keep each move a separate commit and run tests between moves.
@@ -108,7 +110,9 @@ This is the deliberate, higher-touch change. Do it after Phase 2 so the biggest
 module is already tamed. **Plan the call-site migration before moving code.**
 
 ### 3a. Inventory current `Signal` responsibilities
+
 `Signal` today bundles five concerns (see `core.py`):
+
 - **Container/meta:** validation, `to`/`xp`/`sp`/`backend`, `sps`/`duration`/
   `num_streams`/`bits_per_symbol`, `copy`, jax export/import. → **stays.**
 - **Generation:** `generate`, `pam`, `psk`, `qam`, `psqam`. → move to `generation.py`.
@@ -124,13 +128,15 @@ module is already tamed. **Plan the call-site migration before moving code.**
   `plot_spectrogram`. → `plotting`.
 
 ### 3b. Target structure
-```
+
+```text
 commstools/core/
   __init__.py     # re-export Signal, Preamble, SingleCarrierFrame
   signal.py       # thin Signal: data, validation, device, rate props, copy
   generation.py   # qam()/psk()/pam()/psqam()/generate() as free functions
   frame.py        # Preamble, SingleCarrierFrame
 ```
+
 - Free functions live in their domain modules and take `sig: Signal` as the
   first arg, e.g. `metrics.evm(sig, ref)`, `plotting.constellation(sig)`,
   `recovery.recover_carrier_phase_viterbi_viterbi(sig, ...)`,
@@ -140,6 +146,7 @@ commstools/core/
   ~30 function-local `from . import …` calls are deleted.
 
 ### 3c. Migration order (one concern per commit, tests between each)
+
 1. **Generation** → move bodies to `core/generation.py`. Keep
    `Signal.qam(...)` etc. as one-line classmethod delegates for one release, OR
    expose top-level `commstools.qam(...)`. Update tests to the chosen form.
@@ -157,6 +164,7 @@ commstools/core/
    Update README snippets to match.
 
 ### 3d. Acceptance criteria for Phase 3
+
 - No lazy intra-package imports anywhere (`grep -rn "    from \. import" commstools/`).
 - Leaf modules import `Signal` at top level with no `ImportError`.
 - `Signal` class body fits in well under ~600 lines.
@@ -227,7 +235,8 @@ workflow and is tracked there.
 Original plan:
 
 1. **Mirror the new source layout** — one test file per source module:
-   ```
+
+   ```text
    tests/equalization/test_sequential.py   # lms/rls/cma/rde
    tests/equalization/test_block.py        # block_lms / FDAF
    tests/equalization/test_blind.py        # block_cma / block_rde
@@ -236,6 +245,7 @@ Original plan:
    tests/recovery/...
    tests/core/...
    ```
+
    This replaces the current fragmented set (`test_equalization`, `test_block_lms`,
    `test_block_update_equalizers`, `test_block_blind_equalizers`,
    `test_cpr_equalizer`, `test_bps_kernel`, `test_cs_kernel`).
@@ -250,7 +260,7 @@ Original plan:
 ## Sequencing summary
 
 | Phase | Risk | Value | Behavior change | Status |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 0 — Hygiene | none | medium | none | ✅ done |
 | 1 — Tooling/packaging | low | medium | none (deps move to extras) | ✅ done |
 | 2 — Split equalization | low | **high** | none (re-exports) | ✅ done |
@@ -360,18 +370,111 @@ This is **higher-touch** (it edits call sites, so it is mildly breaking unless
 the loose-array forms are kept as overloads) — propose it as an *optional 7.2b*
 to be done only if/when PS work expands, not as part of the mechanical split.
 
-### 7.3 `analysis.py` (782 LOC) — *keep as a cohesive leaf; promote only on growth*
+### 7.3 `analysis.py` (782 LOC, 8 public fns) → `analysis/` package — *package now*
 
-`analysis.py` is the counter-example: it is large-ish but **highly cohesive** —
-every function characterizes laser/carrier-phase behavior (drift, FM-noise PSD,
-linewidth, Allan deviation). It does **not** mix domains, so splitting now would
-add package overhead for no readability gain. Leave it flat. Document the
-trigger: **promote to `analysis/` (split by quantity — `drift.py`, `linewidth.py`,
-`allan.py`, `psd.py`) only when a second characterization domain lands** (e.g.
-RIN, timing-jitter, or polarization-state analysis), at which point the
-laser-phase functions become `analysis/phase_noise.py`. The matching plot side
-already lives in `plotting/analysis.py`, so the eventual package keeps the
-compute/plot mirror intact.
+`analysis.py` is cohesive (every function characterizes laser/carrier-phase
+behavior) but its routines are individually **large and non-trivial** — phase
+unwrapping, drift/phase-noise separation, FM-noise PSD, two independent
+linewidth estimators, Allan deviation — and the domain is expected to grow (RIN,
+timing-jitter, polarization-state characterization). Rather than wait for the
+size+cohesion trigger, package it now along the *quantity* it estimates, so each
+estimator gets an obvious home before the file gets unwieldy.
+
+Concrete layout (verified against the current call graph):
+
+```text
+analysis/
+  __init__.py        # re-export the 8 public names + the module docstring
+  _common.py         # _as_2d, _scalar_or_array, _pairing_variance,
+                     #   _BETA_SLOPE, _FWHM_FROM_AREA            (shared helpers/consts)
+  trajectory.py      # carrier_phase_trajectory                 (foundational extractor)
+  drift.py           # separate_drift_phase_noise, frequency_drift_metrics
+  linewidth.py       # fm_noise_psd, linewidth_increment, linewidth_beta_separation
+  allan.py           # allan_deviation
+  characterize.py    # characterize_carrier_phase               (orchestrator)
+```
+
+Dependency notes that fix the move order (leaves first):
+
+- `_common.py` is imported by everything; move it first.
+- `linewidth_beta_separation` calls `fm_noise_psd` — keep both in `linewidth.py`
+  so that edge stays intra-module.
+- `characterize.py` is the only cross-module consumer: it imports
+  `carrier_phase_trajectory`, `separate_drift_phase_noise`,
+  `frequency_drift_metrics`, `linewidth_increment`, `linewidth_beta_separation`,
+  and `allan_deviation` from their new homes. Move it last.
+- `__init__.py` re-exports exactly today's `__all__`
+  (`allan_deviation, carrier_phase_trajectory, characterize_carrier_phase,
+  fm_noise_psd, frequency_drift_metrics, linewidth_beta_separation,
+  linewidth_increment, separate_drift_phase_noise`) so
+  `from commstools.analysis import characterize_carrier_phase` and the top-level
+  `from . import analysis` in `commstools/__init__.py` are unchanged.
+
+The matching plot side already lives in `plotting/analysis.py`, so this keeps the
+compute/plot mirror intact, and `tests/test_analysis.py` splits into
+`tests/analysis/test_{trajectory,drift,linewidth,allan,characterize}.py` per the
+Phase 6 rule.
+
+### 7.3b New `coding/` package — *scaffold only, no implementation yet*
+
+Channel coding / FEC does not exist in the tree yet. When it lands it will be a
+large, multi-family domain (algebraic block codes, convolutional, and modern
+capacity-approaching LDPC/polar/turbo), so it should be **born as a package**
+rather than a flat module that immediately has to be split. The intent here is
+to commit the directory skeleton as **empty placeholder modules** — each a valid
+importable file carrying only a module docstring stating its scope and a
+`raise NotImplementedError`-free stub surface — so future work has a fixed home
+and the public layout is agreed up front. No algorithms are implemented in this
+phase.
+
+Where it sits in the pipeline: encoders turn information bits → coded bits, which
+`mapping.map_bits` then maps to symbols; soft decoders consume LLRs produced by
+`mapping.compute_llr` / `metrics`. So `coding` is the bits-layer neighbour of
+`mapping`, and its soft interface is defined in terms of the existing LLR
+convention (document the sign/scale agreement in `coding/base.py`).
+
+Proposed initial (flat-first) layout:
+
+```text
+coding/
+  __init__.py        # re-export public encode/decode entry points (empty for now)
+  base.py            # Encoder/Decoder protocols, CodewordResult dataclass,
+                     #   hard/soft (LLR) interface conventions shared by all codes
+  galois.py          # GF(2)/GF(2^m) + polynomial arithmetic (foundation for BCH/RS)
+  crc.py             # CRC generate/check — error *detection* (not correction)
+  interleaving.py    # block / convolutional / random interleavers + inverses
+  ratematch.py       # puncturing / shortening / repetition (rate adaptation)
+  hamming.py         # Hamming / extended Hamming (simplest block code)
+  bch.py             # BCH over GF(2^m)
+  reed_solomon.py    # Reed-Solomon over GF(2^m)
+  convolutional.py   # conv encoder + Viterbi (hard/soft) / BCJR (soft-out)
+  ldpc.py            # LDPC: parity-check construction + belief-propagation decode
+  polar.py           # polar: frozen-bit construction + SC / SCL (CRC-aided) decode
+  turbo.py           # turbo: parallel-concatenated encode + iterative BCJR
+```
+
+Promotion path (apply the §7.4 trigger as real code lands): the three modules
+most likely to outgrow a single file are the ones whose *construction* and
+*decoding* are both substantial — graduate them to subpackages when they cross
+the trigger:
+
+- `ldpc.py`  → `ldpc/{construction.py, decode.py}` (Gallager/PEG/QC builders vs
+  sum-product / min-sum / layered BP).
+- `polar.py` → `polar/{construction.py, decode.py}` (Bhattacharyya / Gaussian-
+  approximation frozen-set vs SC / SCL).
+- the algebraic block codes (`hamming.py`, `bch.py`, `reed_solomon.py`) →
+  `block/` once they share enough `galois.py`-backed machinery to be read
+  together.
+
+Integration checklist for whoever implements it:
+
+- add `coding` to `commstools/__init__.py` (`from . import coding`) and `__all__`
+  **only once at least one entry point is real** — an empty package should not
+  appear in the public surface prematurely;
+- keep `galois.py` backend-aware (`dispatch`) only where array math is hot;
+  GF tables are tiny and can stay NumPy/host-side;
+- mirror tests under `tests/coding/` (one file per module) as each module is
+  implemented — do not pre-create empty test files.
 
 ### 7.4 Conditional: the other 1k-LOC flat leaves
 
@@ -397,12 +500,31 @@ Each promoted module gets a matching `tests/<pkg>/` directory, one test file per
 source module, split from today's `tests/test_impairments.py` (572 LOC),
 `tests/test_mapping.py` (550), etc. with the same AST splitter used in Phase 6.
 
+### Suggested implementation order (for the agent picking this up)
+
+Independent units — can be done in any order or parallelised, each its own
+commit + test run:
+
+1. **7.3 `analysis/`** — lowest risk, real code move, fully guarded by
+   `tests/test_analysis.py`. Good first task.
+2. **7.3b `coding/` scaffold** — pure additive placeholder; no behaviour, no
+   test changes. Do **not** wire it into `commstools/__init__.py` until a real
+   entry point exists.
+3. **7.1 `impairments/`** and **7.2 `mapping/`** — mechanical splits guarded by
+   `tests/test_impairments.py` / `tests/test_mapping.py`. 7.2b (the
+   `Constellation` value object) is a separate, optional, mildly-breaking step.
+4. **7.4** — leave untouched; only act when the trigger fires.
+
 ### Acceptance criteria for Phase 7 (when implemented)
 
-- Public import surface byte-identical (`__init__` re-exports verified by a
-  smoke test importing every name from `__all__`).
-- Full suite green and **test count unchanged** on `--device=cpu`.
-- `channel/nonlinear.py` exists as a documented placeholder so the next
-  nonlinear-propagation PR has an obvious home.
+- Public import surface byte-identical for the *split* modules (`__init__`
+  re-exports verified by a smoke test importing every name from `__all__`).
+- The new `coding/` package imports cleanly (`python -c "import
+  commstools.coding"`) but is **absent from the top-level public surface** until
+  it has real entry points.
+- Full suite green and **test count unchanged** on `--device=cpu` (the `coding/`
+  scaffold adds no tests).
+- `impairments/channel/nonlinear.py` exists as a documented placeholder so the
+  next nonlinear-propagation PR has an obvious home.
 - The size+cohesion trigger rule (7.4) recorded in `CLAUDE.md` so future leaves
   are split on principle, not ad hoc.
