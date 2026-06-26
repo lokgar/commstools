@@ -48,13 +48,15 @@ Most research codebases accumulate loose arrays with ad-hoc metadata dictionarie
 
 **Requires Python 3.12+** and [`uv`](https://github.com/astral-sh/uv).
 
+**Core dependencies** (installed automatically): NumPy, SciPy, Numba, Matplotlib, PyYAML, Pydantic, and **JAX (CPU)**. JAX is a **mandatory** core dependency — it powers the soft-demapper (`compute_llr` / `gmi`) and the equalizers' `jax` backend, both of which run on CPU. The optional `gpu` extra layers the CUDA stacks (`jax[cuda13]`, `cupy-cuda13x`) on top.
+
 #### A. Direct Installation (For Users)
 
 Since the package is not yet registered on PyPI, you can install it directly from GitHub:
 
 ##### Using `uv` (Recommended)
 
-To install the core CPU-only package (fully lightweight and portable):
+To install the core package (CPU backends — NumPy, Numba, and JAX on CPU):
 ```bash
 uv pip install git+https://github.com/lokgar/commstools.git
 # or to add as a project dependency:
@@ -96,7 +98,7 @@ uv sync --all-extras
 
 ### GPU Support
 
-GPU execution requires CUDA 13.x drivers. The library supports hardware acceleration via `cupy-cuda13x` and `jax[cuda13]`, which are defined as **optional dependencies** under the `gpu` extra. If these dependencies are installed and a CUDA-capable GPU is detected at import time, new `Signal` objects will default to GPU placement.
+GPU execution requires CUDA 13.x drivers. The library supports hardware acceleration via `cupy-cuda13x` and the CUDA plugins for the already-required core JAX (`jax[cuda13]`), defined as **optional dependencies** under the `gpu` extra. If these are installed and a CUDA-capable GPU is detected at import time, new `Signal` objects will default to GPU placement.
 
 To force CPU-only mode regardless of hardware:
 
