@@ -147,6 +147,12 @@ def generate(
         rise_time=rise_time,
     )
 
+    logger.info(
+        f"Generated {modulation.upper()}-{order} signal: {num_symbols} symbols "
+        f"x {num_streams} stream(s), sps={sps}, pulse_shape={pulse_shape}, "
+        f"{samples.shape[-1]} samples/stream @ {symbol_rate * sps:.3g} Sa/s."
+    )
+
     return Signal(
         samples=samples,
         sampling_rate=symbol_rate * sps,
@@ -546,6 +552,14 @@ def psqam(
         rrc_rolloff=rrc_rolloff,
         rc_rolloff=rc_rolloff,
         duty_cycle=duty_cycle,
+    )
+
+    _ps_tag = f"entropy={entropy:.3g}" if entropy is not None else f"ν={nu_val:.3g}"
+    logger.info(
+        f"Generated PS-QAM-{order} signal: {num_symbols} symbols "
+        f"x {num_streams} stream(s), sps={sps}, {_ps_tag}, "
+        f"pulse_shape={pulse_shape}, {samples.shape[-1]} samples/stream "
+        f"@ {symbol_rate * sps:.3g} Sa/s."
     )
 
     return Signal(
