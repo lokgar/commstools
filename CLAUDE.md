@@ -46,11 +46,12 @@ uv run pytest --device=cpu
 # Run tests on GPU only (requires CuPy + CUDA)
 uv run pytest --device=gpu
 
-# Run a single test file
-uv run pytest tests/test_signal.py
+# Run a single test file (or a whole mirrored subpackage)
+uv run pytest tests/core/test_signal.py
+uv run pytest tests/equalization/
 
 # Run a specific test case
-uv run pytest tests/test_signal.py::test_signal_creation -v
+uv run pytest tests/core/test_signal.py::test_signal_initialization -v
 
 # Run with test coverage
 uv run pytest --cov=commstools
@@ -245,6 +246,28 @@ Inside library code, **never extract a scalar from a possibly-GPU array inside a
   xpt.assert_allclose(result, expected, rtol=1e-5)
   assert float(xp.mean(xp.abs(result))) > 0.0
   ```
+
+* **Layout mirrors the source tree.** Tests for a subpackage live in the
+  matching test subpackage and, as far as practical, **one test file maps to one
+  source module**:
+  * `tests/equalization/` ↔ `commstools/equalization/` — `test_sequential.py`
+    (lms/rls/cma/rde, Numba), `test_sequential_jax.py`, `test_mimo.py`,
+    `test_winit.py`, `test_linear.py` (zf/MMSE), `test_polarization.py`,
+    `test_blind.py` + `test_block_update.py` (block_cma/block_rde),
+    `test_block.py` (block_lms / FDAF), `test_cpr.py`, and the CUDA-kernel tests
+    `test_bps_kernel.py` / `test_cs_kernel.py`.
+  * `tests/recovery/` ↔ `commstools/recovery/` — `test_viterbi_viterbi.py`,
+    `test_bps.py`, `test_pilots.py`, `test_tikhonov.py`, `test_pll.py`,
+    `test_corrections.py`, plus `test_joint.py` for the cross-algorithm
+    joint-channel consistency checks.
+  * `tests/core/` ↔ `commstools/core/` — `test_signal.py`, `test_signal_mimo.py`,
+    `test_frame.py` (`Preamble`/`SingleCarrierFrame`), `test_psqam.py` (generation).
+  * Flat modules (`filtering`, `metrics`, `mapping`, `spectral`, `timing`,
+    `frequency`, …) keep a single top-level `tests/test_<module>.py`.
+
+  When a single module's test file grows unwieldy, split it by *concern* within
+  the same subpackage (e.g. sequential vs. JAX vs. MIMO) rather than letting one
+  multi-thousand-line file accumulate.
 
 ---
 

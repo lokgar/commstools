@@ -210,8 +210,8 @@ uv run pytest --device=gpu
 # Both backends
 uv run pytest --device=all
 
-# Single module
-uv run pytest tests/test_equalization.py -v
+# Single module / directory
+uv run pytest tests/equalization/ -v
 
 # With coverage
 uv run pytest --cov=commstools

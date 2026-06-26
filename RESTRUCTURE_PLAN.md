@@ -194,7 +194,32 @@ Same mechanical pattern as Phase 2 (subpackage + stable `__init__` re-exports).
 
 ---
 
-## Phase 6 — Test reorganization
+## Phase 6 — Test reorganization ✅ DONE
+
+Implemented: the two giants were split with an AST-based splitter (preserving
+parametrize/fixture decorators and pruning unreachable helpers per file), the
+already-focused equalization files were relocated, and the core tests moved
+under `tests/core/`. Test count is unchanged (944 collected / 919 passed / 25
+skipped on `--device=cpu`). Final layout:
+
+```text
+tests/equalization/   test_sequential.py  test_sequential_jax.py  test_mimo.py
+                      test_winit.py  test_linear.py  test_polarization.py
+                      test_blind.py  test_block_update.py  test_block.py
+                      test_cpr.py  test_bps_kernel.py  test_cs_kernel.py
+tests/recovery/       test_viterbi_viterbi.py  test_bps.py  test_pilots.py
+                      test_tikhonov.py  test_pll.py  test_corrections.py
+                      test_joint.py
+tests/core/           test_signal.py  test_signal_mimo.py  test_frame.py
+                      test_psqam.py
+```
+
+The largest file dropped from 2,817 LOC (`test_equalization.py`) to 1,166
+(`tests/equalization/test_sequential.py`). The layout rule is documented in
+`CLAUDE.md` §5. Step 4 (CI `--cov-fail-under`) remains tied to Phase 1's CI
+workflow and is tracked there.
+
+Original plan:
 
 1. **Mirror the new source layout** — one test file per source module:
    ```
