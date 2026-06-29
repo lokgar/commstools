@@ -190,3 +190,69 @@ class TestZF3x3:
         equalized = equalization.zf_equalizer(rx, channel, noise_variance=0.01)
 
         assert equalized.shape == (3, n)
+
+
+class TestEstimateTransferFunction:
+    """Welch-H1 data-aided (MIMO) channel estimator."""
+
+    def test_flat_gain_siso(self, backend_device, xp, xpt):
+        """A flat complex-gain channel y=g·x → B(f) ≈ g at every bin."""
+        rng = xp.random.RandomState(0)
+        n = 1 << 16
+        x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(xp.complex64)
+        g = 2.0 - 1.0j
+        y = (g * x).astype(xp.complex64)
+        B = equalization.estimate_transfer_function(x, y, n_fft=256, reg=1e-3)
+        assert B.shape == (256,)
+        xpt.assert_allclose(B, xp.full_like(B, g), rtol=2e-2, atol=2e-2)
+
+    def test_instantaneous_mimo_mix(self, backend_device, xp, xpt):
+        """A memoryless 2×2 mixing matrix → B(f) ≈ M at every bin (incl. crosstalk)."""
+        rng = xp.random.RandomState(1)
+        n = 1 << 16
+        x = (rng.standard_normal((2, n)) + 1j * rng.standard_normal((2, n))).astype(
+            xp.complex64
+        )
+        M = xp.asarray([[1.0, 0.3j], [-0.2, 0.9]], dtype=xp.complex64)
+        y = (M @ x).astype(xp.complex64)
+        B = equalization.estimate_transfer_function(x, y, n_fft=256, reg=1e-3)
+        assert B.shape == (256, 2, 2)
+        xpt.assert_allclose(B[64], M, rtol=3e-2, atol=3e-2)
+
+    def test_siso_memory_frequency_response(self, backend_device, xp, xpt):
+        """A short FIR channel → B(f) ≈ H(f) = fft(h)."""
+        rng = xp.random.RandomState(2)
+        n = 1 << 16
+        x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(xp.complex64)
+        h = xp.asarray([1.0, 0.5, -0.25], dtype=xp.complex64)
+        y = xp.convolve(x, h)[:n].astype(xp.complex64)
+        B = equalization.estimate_transfer_function(x, y, n_fft=256, reg=1e-3)
+        Hf = xp.fft.fft(h, n=256)
+        xpt.assert_allclose(B, Hf, rtol=0.1, atol=0.05)
+
+    def test_taps_form_centered_impulse(self, backend_device, xp, xpt):
+        """num_taps returns a centred, Hann-tapered impulse response (delta for flat)."""
+        rng = xp.random.RandomState(3)
+        n = 1 << 16
+        x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(xp.complex64)
+        y = (1.5 * x).astype(xp.complex64)
+        taps = equalization.estimate_transfer_function(x, y, n_fft=256, reg=1e-3, num_taps=65)
+        assert taps.shape == (65,)
+        peak = int(xp.argmax(xp.abs(taps)))
+        assert peak == 32  # centre of 65 taps
+        xpt.assert_allclose(taps[peak], xp.asarray(1.5 + 0j), rtol=0.1, atol=0.1)
+
+    def test_mimo_taps_shape_for_zf_equalizer(self, backend_device, xp):
+        """MIMO taps come back as (C, C, L) — the layout zf_equalizer consumes."""
+        rng = xp.random.RandomState(4)
+        n = 1 << 14
+        x = (rng.standard_normal((2, n)) + 1j * rng.standard_normal((2, n))).astype(
+            xp.complex64
+        )
+        M = xp.asarray([[1.0, 0.1], [0.0, 1.0]], dtype=xp.complex64)
+        y = (M @ x).astype(xp.complex64)
+        taps = equalization.estimate_transfer_function(x, y, n_fft=128, num_taps=63)
+        assert taps.shape == (2, 2, 63)
+        # taps drop straight into zf_equalizer without shape juggling
+        out = equalization.zf_equalizer(y, taps, noise_variance=1e-2)
+        assert out.shape == (2, n)

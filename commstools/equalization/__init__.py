@@ -20,8 +20,9 @@ from ._block import block_lms
 from ._kernels_jax import _JITTED_EQ
 from ._kernels_numba import _get_numba
 from .blind import block_cma, block_rde, build_pilot_ref
-from .linear import apply_taps, zf_equalizer
+from .linear import apply_taps, estimate_transfer_function, zf_equalizer
 from .polarization import (
+    apply_interpolated_matrix,
     demultiplex_polarization_tones_dynamic,
     demultiplex_polarization_tones_static,
 )
@@ -31,6 +32,7 @@ from .sequential import _check_rls_divergence, cma, lms, rde, rls
 __all__ = [
     "CPRState",
     "EqualizerResult",
+    "apply_interpolated_matrix",
     "apply_taps",
     "block_cma",
     "block_lms",
@@ -39,6 +41,7 @@ __all__ = [
     "cma",
     "demultiplex_polarization_tones_dynamic",
     "demultiplex_polarization_tones_static",
+    "estimate_transfer_function",
     "lms",
     "rde",
     "rls",

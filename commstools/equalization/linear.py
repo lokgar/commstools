@@ -253,3 +253,111 @@ def apply_taps(
     y = xp.einsum("ijt,jnt->in", xp.conj(weights), windows)  # (C, N_sym)
 
     return y[0] if was_1d else y
+
+
+# -----------------------------------------------------------------------------
+# DATA-AIDED CHANNEL ESTIMATION (Welch H1 transfer function)
+# -----------------------------------------------------------------------------
+
+
+def estimate_transfer_function(
+    reference: ArrayType,
+    received: ArrayType,
+    *,
+    n_fft: int = 512,
+    reg: float = 1e-2,
+    max_windows: int = 4096,
+    num_taps: int | None = None,
+) -> ArrayType:
+    r"""Data-aided (MIMO) channel estimate via Welch's H1 transfer-function method.
+
+    Estimates the frequency response :math:`B(f) \approx S_{yx}(f)\,S_{xx}(f)^{-1}`
+    mapping a known ``reference`` ``x`` to the measured ``received`` ``y``, where
+    :math:`S_{xx}` / :math:`S_{yx}` are the Welch auto/cross spectra — Hann-windowed,
+    averaged periodograms.  This is the classic H1 channel-sounding estimator,
+    generalised to a full ``(C, C)`` cross-spectral matrix so the MIMO response is
+    recovered in one shot (the reference is FFT'd once and every channel pair is
+    formed by a single einsum).
+
+    Pair it with :func:`zf_equalizer` / :func:`apply_taps` (which consume a
+    ``(C, C, L)`` impulse response) to invert the estimated channel, or use the
+    impulse response to seed an adaptive butterfly equalizer.
+
+    Parameters
+    ----------
+    reference, received : array_like
+        Time-aligned, same-rate input / output.  ``(N,)`` SISO or ``(C, N)`` MIMO.
+    n_fft : int, default 512
+        Welch segment length (frequency resolution ``fs / n_fft``).
+    reg : float, default 1e-2
+        Relative Tikhonov loading for the :math:`S_{xx}` inverse — a diagonal term
+        scaled to the mean auto-spectrum, so it stabilises the estimate where the
+        reference has little power (band edges) without depending on the absolute
+        signal level.  The H1 ratio is invariant to overall scale and window count.
+    max_windows : int, default 4096
+        Cap on the number of averaged segments.  An LTI channel is static, so a few
+        thousand windows spread over the record give a stable estimate; capping
+        bounds the vectorised FFT batch (the averaging only trades variance, not
+        bias, so the cap does not move the estimate).
+    num_taps : int, optional
+        If given, return the centred, Hann-tapered impulse response truncated to
+        ``num_taps`` taps — ``(C, C, num_taps)`` MIMO or ``(num_taps,)`` SISO, ready
+        for :func:`zf_equalizer`.  If ``None`` (default), return the frequency
+        response ``B(f)`` in FFT-bin order — ``(n_fft, C, C)`` MIMO or ``(n_fft,)``
+        SISO.
+
+    Returns
+    -------
+    array_like
+        Frequency response or impulse response (see ``num_taps``).
+    """
+    x, xp, _ = dispatch(reference)
+    y = xp.asarray(received)
+    single = x.ndim == 1
+    if single:
+        x, y = x[None, :], y[None, :]
+    x = x.astype(xp.complex128)
+    y = y.astype(xp.complex128)
+    C, N = x.shape
+    n_fft = int(min(n_fft, N))
+    win = xp.asarray(np.hanning(n_fft))
+
+    # Welch auto/cross spectra, vectorised over windows (capped). One batched FFT
+    # of the reference and the received, then every (C, C) cross term via einsum —
+    # no per-window Python loop, no redundant re-FFT of shared channels.
+    step = max(n_fft // 2, (N - n_fft) // max(max_windows - 1, 1))
+    starts = xp.arange(0, N - n_fft + 1, step)
+    idx = starts[:, None] + xp.arange(n_fft)[None, :]  # (n_win, n_fft)
+    X = xp.fft.fft(x[:, idx] * win, axis=-1)  # (C, n_win, n_fft)
+    Y = xp.fft.fft(y[:, idx] * win, axis=-1)
+    Sxx = xp.einsum("cwf,dwf->fcd", X, X.conj())  # (n_fft, C, C)
+    Syx = xp.einsum("cwf,dwf->fcd", Y, X.conj())
+
+    eye = xp.eye(C, dtype=xp.complex128)
+    reg_xx = reg * float(xp.einsum("fcc->f", Sxx).real.mean() / C)
+    B = Syx @ xp.linalg.inv(Sxx + reg_xx * eye)  # (n_fft, C, C), H1 estimate
+
+    logger.info(
+        "estimate_transfer_function (Welch H1): n_fft=%d, n_win=%d, reg=%.2e "
+        "[C=%d, N=%d, %s]",
+        n_fft,
+        int(starts.shape[0]),
+        reg,
+        C,
+        N,
+        "taps" if num_taps is not None else "freq-response",
+    )
+
+    if num_taps is None:
+        return B[:, 0, 0] if single else B
+
+    # Centred, Hann-tapered impulse response, truncated to num_taps.
+    n_taps = int(min(num_taps, n_fft))
+    b_t = xp.fft.fftshift(xp.fft.ifft(B, axis=0), axes=0)  # (n_fft, C, C), lag axis 0
+    center = n_fft // 2
+    half = n_taps // 2
+    taps = b_t[center - half : center + half + 1]  # (L, C, C)
+    taps = taps * xp.asarray(np.hanning(taps.shape[0]))[:, None, None]
+    if single:
+        return taps[:, 0, 0]  # (L,)
+    return xp.transpose(taps, (1, 2, 0))  # (C, C, L), matches zf_equalizer layout

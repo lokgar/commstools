@@ -12,6 +12,71 @@ from ..filtering import fir_filter, lowpass_taps
 from ..frequency import find_bias_tone
 from ..logger import logger
 
+
+def apply_interpolated_matrix(
+    samples: ArrayType,
+    matrix_grid: ArrayType,
+    grid_positions: ArrayType,
+) -> ArrayType:
+    r"""Apply a time-varying matrix ``M(n)`` to ``samples``, interpolated from a grid.
+
+    Output sample ``n`` is ``M(n) · samples[:, n]``, where ``M(n)`` is the exact
+    linear blend ``M[g] + (M[g+1]-M[g])·t`` inside grid cell ``g`` (``t`` ramps
+    ``0→1`` across the cell).  This is the apply half of the dynamic pilot demux,
+    but it is a generic operator: given any per-grid-point matrix stack (an inverse
+    ``W(n)``, a polar unitary ``Qᴴ(n)``, a butterfly seed, …) it interpolates and
+    applies it as a fixed forward pass.
+
+    Within each uniform cell the apply collapses to two batched ``(K, C)`` GEMMs —
+    ``M[g]·X`` and ``dM·(X·t)`` — instead of materialising a per-sample
+    ``(L, K, C)`` matrix and an einsum mat-vec, so the cost is a handful of batched
+    kernels rather than an ``O(N)`` Python/launch-bound loop.  The ``O(N)`` data
+    path runs in ``complex64`` (a well-conditioned mix with no long accumulation),
+    so a ``matrix_grid`` built by a double-precision inverse/SVD keeps its
+    precision while the bulk traffic moves at half the bandwidth.
+
+    Parameters
+    ----------
+    samples : (C, N) array
+        Input channels.
+    matrix_grid : (G, K, C) array
+        Per-grid-point matrices mapping the ``C`` inputs to ``K`` outputs.
+    grid_positions : (G,) array
+        Sample indices at which ``matrix_grid`` was evaluated.  The interior must
+        be uniformly spaced (the last point may be pinned to ``N-1``).
+
+    Returns
+    -------
+    (K, N) array
+        ``M(n) · samples[:, n]``, same dtype as ``samples``.
+    """
+    samples, xp, _ = dispatch(samples)
+    C, N = samples.shape
+    M = xp.asarray(matrix_grid, dtype=xp.complex64)  # (G, K, C)
+    gp = xp.asarray(grid_positions, dtype=xp.float64)  # (G,)
+    G, K = int(M.shape[0]), int(M.shape[1])
+    xc = samples.astype(xp.complex64)
+    step = int(round(float(gp[1] - gp[0]))) if G > 1 else N
+    out = xp.empty((K, N), dtype=xp.complex64)
+
+    nblk = (N - 1) // step if step > 0 else 0  # full uniform cells over [0, nblk·step)
+    bulk = nblk * step
+    if nblk > 0:
+        Xb = xc[:, :bulk].reshape(C, nblk, step).transpose(1, 0, 2)  # (nblk, C, step)
+        M0 = M[:nblk]  # (nblk, K, C)
+        dM = M[1 : nblk + 1] - M0
+        t = (xp.arange(step, dtype=xp.float32) / step).astype(xp.complex64)
+        y = M0 @ Xb + dM @ (Xb * t[None, None, :])  # (nblk, K, step)
+        out[:, :bulk] = y.transpose(1, 0, 2).reshape(K, bulk)
+    if bulk < N:  # tail (< step; spans the pinned last cell) — per-sample blend
+        nn = xp.arange(bulk, N, dtype=xp.float64)
+        lo = xp.clip(xp.searchsorted(gp, nn, side="right") - 1, 0, G - 2)
+        frac = ((nn - gp[lo]) / (gp[lo + 1] - gp[lo])).astype(xp.complex64)
+        M_full = M[lo] + (M[lo + 1] - M[lo]) * frac[:, None, None]  # (L, K, C)
+        out[:, bulk:] = xp.einsum("lkc,cl->kl", M_full, xc[:, bulk:])
+    return out.astype(samples.dtype)
+
+
 # -----------------------------------------------------------------------------
 # TONE-BASED POLARIZATION DEMULTIPLEXING
 # -----------------------------------------------------------------------------
@@ -505,33 +570,9 @@ def demultiplex_polarization_tones_dynamic(
         )
         return Wg, grid_positions
 
-    # --- Interpolate W to full rate and apply (block-vectorised over the grid) ---
-    # Within a grid cell W(n) is the exact linear blend W[g] + (W[g+1]-W[g])·t, so
-    # each uniform cell collapses to two batched C×C GEMMs — W[g]·X and dW·(X·t) —
-    # instead of materialising a per-sample (L,K,C) matrix and an einsum matvec.
-    # complex64 on this O(N) data path: the demux apply is a well-conditioned mix
-    # with no long accumulation, so single precision is exact enough (the grid
-    # inverse stayed double); the bulk traffic then moves at half the bandwidth.
-    Wc = Wg.astype(xp.complex64)  # (G, K, C)
-    xc = samples_c.astype(xp.complex64)  # (C, N)
-    demuxed = xp.empty((K, N), dtype=xp.complex64)
-    nblk = (N - 1) // grid_step  # full uniform cells cover [0, nblk·grid_step)
-    bulk = nblk * grid_step
-    if nblk > 0:
-        Xb = xc[:, :bulk].reshape(C, nblk, grid_step).transpose(1, 0, 2)  # (nblk,C,gs)
-        W0 = Wc[:nblk]  # (nblk, K, C)
-        dW = Wc[1 : nblk + 1] - W0
-        t = (xp.arange(grid_step, dtype=xp.float32) / grid_step).astype(xp.complex64)
-        y = W0 @ Xb + dW @ (Xb * t[None, None, :])  # (nblk, K, grid_step)
-        demuxed[:, :bulk] = y.transpose(1, 0, 2).reshape(K, bulk)
-    if bulk < N:  # tail (< grid_step, spans the pinned last cell) — per-sample blend
-        nn = n[bulk:]
-        lo = xp.clip(xp.searchsorted(grid_positions, nn, side="right") - 1, 0, G - 2)
-        frac = ((nn - grid_positions[lo]) / (grid_positions[lo + 1] - grid_positions[lo])).astype(
-            xp.complex64
-        )
-        W_full = Wc[lo] + (Wc[lo + 1] - Wc[lo]) * frac[:, None, None]  # (L, K, C)
-        demuxed[:, bulk:] = xp.einsum("lkc,cl->kl", W_full, xc[:, bulk:])
+    # Interpolate W(n) to full rate and apply it (block-vectorised GEMMs in the
+    # shared helper) as a fixed forward pass.
+    demuxed = apply_interpolated_matrix(samples, Wg, grid_positions)  # (K, N)
 
     # Drop the FIR edge transient (the data is untouched; only W is unreliable
     # there).  ``valid`` reports the retained range in original coordinates.

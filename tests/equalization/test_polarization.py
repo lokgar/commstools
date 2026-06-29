@@ -255,3 +255,46 @@ class TestDemultiplexPolarizationTonesDynamic:
         # W_grid / grid still span the full record.
         assert int(grid[-1]) == N - 1
         assert Wg.shape[1:] == (2, 2)
+
+
+class TestApplyInterpolatedMatrix:
+    """Generic grid-interpolated time-varying matrix apply (the demux apply core)."""
+
+    def test_matches_per_sample_reference(self, backend_device, xp, xpt):
+        """Block-GEMM apply == per-sample linear-interp einsum (to complex64)."""
+        rng = xp.random.RandomState(0)
+        N, step = 20000, 4096
+        idx = xp.arange(0, N, step)
+        if int(idx[-1]) != N - 1:
+            idx = xp.concatenate([idx, xp.asarray([N - 1])])
+        gp = idx.astype(xp.float64)
+        G = int(gp.shape[0])
+        M = (rng.standard_normal((G, 2, 2)) + 1j * rng.standard_normal((G, 2, 2))).astype(
+            xp.complex64
+        )
+        x = (rng.standard_normal((2, N)) + 1j * rng.standard_normal((2, N))).astype(
+            xp.complex64
+        )
+        # per-sample linear-interpolation reference (double precision)
+        Md = M.astype(xp.complex128)
+        n = xp.arange(N, dtype=xp.float64)
+        lo = xp.clip(xp.searchsorted(gp, n, side="right") - 1, 0, G - 2)
+        frac = (n - gp[lo]) / (gp[lo + 1] - gp[lo])
+        M_full = Md[lo] + (Md[lo + 1] - Md[lo]) * frac[:, None, None]
+        ref = xp.einsum("lkc,cl->kl", M_full, x.astype(xp.complex128))
+        out = equalization.apply_interpolated_matrix(x, M, gp)
+        assert out.shape == (2, N)
+        xpt.assert_allclose(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_constant_grid_is_static_matmul(self, backend_device, xp, xpt):
+        """A grid of identical matrices applies that one matrix everywhere."""
+        N = 10000
+        M2 = xp.asarray([[1.0, 0.5j], [0.2, -1.0]], dtype=xp.complex64)
+        M = xp.broadcast_to(M2, (5, 2, 2)).copy()
+        gp = xp.linspace(0.0, N - 1, 5)
+        rng = xp.random.RandomState(1)
+        x = (rng.standard_normal((2, N)) + 1j * rng.standard_normal((2, N))).astype(
+            xp.complex64
+        )
+        out = equalization.apply_interpolated_matrix(x, M, gp)
+        xpt.assert_allclose(out, M2 @ x, rtol=1e-4, atol=1e-4)
