@@ -447,11 +447,18 @@ def demultiplex_polarization_tones_dynamic(
     # fir_filter uses centred ('same') linear-phase convolution, so the LPF
     # group delay is compensated and z aligns in time with the input.
     f_arr = xp.asarray([float(fj) for fj in f_used], dtype=xp.float64)  # (K,)
-    ph = two_pi * f_arr[:, None] * n[None, :] / sampling_rate  # (K, N)
-    ph = ph - xp.round(ph / two_pi) * two_pi
-    mixed = samples_c[:, None, :] * xp.exp(-1j * ph)[None, :, :]  # (C, K, N)
+    # The phase ramp 2π·f·n/fs reaches ~1e7 rad over a long capture, so it MUST be
+    # formed and wrapped in float64 before the complex exp — float32 here loses the
+    # integer turn count and corrupts every tone phasor.  Everything downstream (the
+    # mix-down product and the averaging LPF) is well-conditioned, so it drops to
+    # complex64: half the bandwidth / temporary size on the (C, K, N) hot arrays,
+    # with FFT-FIR round-off (~√N_fft·ε ≈ 5e-5) far below the demux crosstalk floor.
+    ph = two_pi * f_arr[:, None] * n[None, :] / sampling_rate  # (K, N) float64
+    ph = ph - xp.round(ph / two_pi) * two_pi  # wrap in float64 (essential)
+    carrier = xp.exp(-1j * ph).astype(xp.complex64)  # (K, N)
+    mixed = samples_c.astype(xp.complex64)[:, None, :] * carrier[None, :, :]  # (C,K,N)
     # One batched linear-phase FIR over (C·K) rows instead of K separate calls.
-    # Array input -> array output (fir_filter's Signal-dispatch branch not taken).
+    # fir_filter is signal-driven precision, so a complex64 input stays complex64.
     T_t = cast(ArrayType, fir_filter(mixed.reshape(C * K, N), h, axis=-1)).reshape(
         C, K, N
     )
@@ -466,7 +473,10 @@ def demultiplex_polarization_tones_dynamic(
     G = int(idx.shape[0])
     grid_positions = idx.astype(xp.float64)
 
-    Tg = xp.moveaxis(T_t[:, :, idx], 2, 0)  # (G, C, K)
+    # Promote the grid samples back to double for the (sensitive) batched inverse —
+    # the Gram/inverse follows the RLS-style double-precision convention, while the
+    # O(N) tracker FIR above ran in complex64.  G is small, so this cast is cheap.
+    Tg = xp.moveaxis(T_t[:, :, idx], 2, 0).astype(xp.complex128)  # (G, C, K)
     Th = xp.conj(xp.swapaxes(Tg, -1, -2))  # (G, K, C)
     gram = Th @ Tg  # (G, K, K)
     # Tikhonov regularisation keeps the batched inverse well-conditioned when the
@@ -495,21 +505,33 @@ def demultiplex_polarization_tones_dynamic(
         )
         return Wg, grid_positions
 
-    # --- Interpolate W to full rate and apply (chunked over time) -----------
-    demuxed = xp.empty((K, N), dtype=xp.complex128)
-    chunk = 1 << 20
-    for start in range(0, N, chunk):
-        stop = min(start + chunk, N)
-        nn = n[start:stop]  # (L,) float64
-        seg = samples_c[:, start:stop]  # (C, L)
-        # The interpolation grid is shared across all (k, i), so locate each
-        # sample's bracketing grid points once and blend, instead of 2·K·C
-        # separate xp.interp binary searches. n spans [0, N-1] and the grid is
-        # pinned to both ends, so frac ∈ [0, 1] (matches xp.interp clamping).
+    # --- Interpolate W to full rate and apply (block-vectorised over the grid) ---
+    # Within a grid cell W(n) is the exact linear blend W[g] + (W[g+1]-W[g])·t, so
+    # each uniform cell collapses to two batched C×C GEMMs — W[g]·X and dW·(X·t) —
+    # instead of materialising a per-sample (L,K,C) matrix and an einsum matvec.
+    # complex64 on this O(N) data path: the demux apply is a well-conditioned mix
+    # with no long accumulation, so single precision is exact enough (the grid
+    # inverse stayed double); the bulk traffic then moves at half the bandwidth.
+    Wc = Wg.astype(xp.complex64)  # (G, K, C)
+    xc = samples_c.astype(xp.complex64)  # (C, N)
+    demuxed = xp.empty((K, N), dtype=xp.complex64)
+    nblk = (N - 1) // grid_step  # full uniform cells cover [0, nblk·grid_step)
+    bulk = nblk * grid_step
+    if nblk > 0:
+        Xb = xc[:, :bulk].reshape(C, nblk, grid_step).transpose(1, 0, 2)  # (nblk,C,gs)
+        W0 = Wc[:nblk]  # (nblk, K, C)
+        dW = Wc[1 : nblk + 1] - W0
+        t = (xp.arange(grid_step, dtype=xp.float32) / grid_step).astype(xp.complex64)
+        y = W0 @ Xb + dW @ (Xb * t[None, None, :])  # (nblk, K, grid_step)
+        demuxed[:, :bulk] = y.transpose(1, 0, 2).reshape(K, bulk)
+    if bulk < N:  # tail (< grid_step, spans the pinned last cell) — per-sample blend
+        nn = n[bulk:]
         lo = xp.clip(xp.searchsorted(grid_positions, nn, side="right") - 1, 0, G - 2)
-        frac = (nn - grid_positions[lo]) / (grid_positions[lo + 1] - grid_positions[lo])
-        W_full = Wg[lo] + (Wg[lo + 1] - Wg[lo]) * frac[:, None, None]  # (L, K, C)
-        demuxed[:, start:stop] = xp.einsum("lkc,cl->kl", W_full, seg)
+        frac = ((nn - grid_positions[lo]) / (grid_positions[lo + 1] - grid_positions[lo])).astype(
+            xp.complex64
+        )
+        W_full = Wc[lo] + (Wc[lo + 1] - Wc[lo]) * frac[:, None, None]  # (L, K, C)
+        demuxed[:, bulk:] = xp.einsum("lkc,cl->kl", W_full, xc[:, bulk:])
 
     # Drop the FIR edge transient (the data is untouched; only W is unreliable
     # there).  ``valid`` reports the retained range in original coordinates.
