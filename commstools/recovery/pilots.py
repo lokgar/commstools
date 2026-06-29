@@ -473,15 +473,21 @@ def recover_carrier_phase_pilot_tone(
         slope = xp.sum(theta_c * nc[None, :], axis=-1, keepdims=True) / denom  # (C, 1)
         theta = theta - slope * nc[None, :]
 
-    theta_np = to_device(theta, "cpu")
-    phi_mean_deg = float(np.mean(theta_np)) * 180.0 / np.pi
-    phi_std_deg = float(np.std(theta_np)) * 180.0 / np.pi
-    mode_str = "joint" if (joint_channels and C > 1) else "independent"
-    logger.info(
-        f"CPR (pilot-tone, {window}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
-        f"std={phi_std_deg:.2f}° [f_p={tone_frequency:.3g} Hz, B={bandwidth:.3g} Hz, "
-        f"refine={refine_tone}, remove_foe={remove_frequency_offset}, C={C}]"
-    )
+    # Host copy of theta is needed only for the INFO summary and the optional
+    # debug plot; skip the transfer + reductions otherwise (the device theta is
+    # what gets returned and applied).
+    _want_log = logger.isEnabledFor(logging.INFO)
+    if _want_log or debug_plot:
+        theta_np = to_device(theta, "cpu")
+    if _want_log:
+        phi_mean_deg = float(np.mean(theta_np)) * 180.0 / np.pi
+        phi_std_deg = float(np.std(theta_np)) * 180.0 / np.pi
+        mode_str = "joint" if (joint_channels and C > 1) else "independent"
+        logger.info(
+            f"CPR (pilot-tone, {window}, {mode_str}): phase mean={phi_mean_deg:.2f}°, "
+            f"std={phi_std_deg:.2f}° [f_p={tone_frequency:.3g} Hz, B={bandwidth:.3g} Hz, "
+            f"refine={refine_tone}, remove_foe={remove_frequency_offset}, C={C}]"
+        )
 
     if debug_plot:
         from .. import plotting as _plotting

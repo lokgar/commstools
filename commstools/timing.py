@@ -7,6 +7,7 @@ robust integer timing offset estimation via cross-correlation, and
 fractional timing offset estimation and correction.
 """
 
+import logging
 from typing import Union
 
 import numpy as np
@@ -670,12 +671,14 @@ def estimate_timing(
         corr, peak_indices, dft_upsample=dft_upsample, method=fractional_method
     )
 
-    logger.info(
-        "Timing estimated."
-        f"Integer: {integer_offsets.tolist()}, "
-        f"Fractional: {fractional_offsets.tolist()}, "
-        f"Metrics: {metrics.tolist()}"
-    )
+    if logger.isEnabledFor(logging.INFO):
+        # Three .tolist() host syncs, only for this summary line.
+        logger.info(
+            "Timing estimated. "
+            f"Integer: {integer_offsets.tolist()}, "
+            f"Fractional: {fractional_offsets.tolist()}, "
+            f"Metrics: {metrics.tolist()}"
+        )
 
     return integer_offsets, fractional_offsets
 
