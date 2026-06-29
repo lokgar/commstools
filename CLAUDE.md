@@ -93,6 +93,21 @@ uv run ruff format .
 uv run mypy commstools/
 ```
 
+> **CI gates on `ruff format --check .` *and* `ruff check .` (not just the
+> linter).** `ruff check` and `ruff format` are independent: the linter passing
+> does **not** mean the file is formatted. Before committing/pushing **any** edited
+> or newly added file — especially code appended programmatically (e.g. `cat >>`),
+> which bypasses editor auto-format — run the same gate CI runs:
+>
+> ```bash
+> uv run ruff format .        # apply formatting (or `--check .` to verify only)
+> uv run ruff check . --fix   # lint + autofix
+> uv run pytest               # CPU+GPU tests
+> ```
+>
+> A formatting-only diff (line wrapping, trailing commas) still fails CI — run
+> `ruff format` last so nothing slips through.
+
 ### Version Management & Release Workflow
 
 Since `bump-my-version` is defined in the project's development dependencies, always use `uv run bump-my-version` to run it directly from your local virtual environment (it is faster and avoids re-downloading packages compared to `uvx`).
