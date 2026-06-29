@@ -269,9 +269,9 @@ class TestApplyInterpolatedMatrix:
             idx = xp.concatenate([idx, xp.asarray([N - 1])])
         gp = idx.astype(xp.float64)
         G = int(gp.shape[0])
-        M = (rng.standard_normal((G, 2, 2)) + 1j * rng.standard_normal((G, 2, 2))).astype(
-            xp.complex64
-        )
+        M = (
+            rng.standard_normal((G, 2, 2)) + 1j * rng.standard_normal((G, 2, 2))
+        ).astype(xp.complex64)
         x = (rng.standard_normal((2, N)) + 1j * rng.standard_normal((2, N))).astype(
             xp.complex64
         )

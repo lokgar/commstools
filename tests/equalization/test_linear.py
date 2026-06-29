@@ -236,7 +236,9 @@ class TestEstimateTransferFunction:
         n = 1 << 16
         x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(xp.complex64)
         y = (1.5 * x).astype(xp.complex64)
-        taps = equalization.estimate_transfer_function(x, y, n_fft=256, reg=1e-3, num_taps=65)
+        taps = equalization.estimate_transfer_function(
+            x, y, n_fft=256, reg=1e-3, num_taps=65
+        )
         assert taps.shape == (65,)
         peak = int(xp.argmax(xp.abs(taps)))
         assert peak == 32  # centre of 65 taps
