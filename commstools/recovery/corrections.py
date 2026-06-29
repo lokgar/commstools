@@ -15,29 +15,33 @@ def smooth_phase_wiener(
     measurement_variance: float | None = None,
     linewidth: float | None = None,
     sampling_rate: float | None = None,
-    tone_snr: float | None = None,
     detrend: bool = True,
 ) -> ArrayType:
     r"""
     Zero-phase Wiener smoother for a random-walk (Wiener) carrier phase.
 
     Optimal minimum-variance estimate of a phase that random-walks with
-    per-sample increment variance q (set by the combined laser linewidth)
-    observed in white phase-estimation noise of variance r (set by the
-    pilot-tone SNR).  Applies the non-causal Wiener filter
+    per-sample increment variance ``q`` (the random-walk strength) observed in
+    white phase-estimation noise of variance ``r``.  Applies the non-causal
+    Wiener filter
 
         H(w)       = S_phi(w) / (S_phi(w) + r),
         S_phi(w)   = q / (2 - 2*cos(w)),
 
     in the frequency domain (FFT -> multiply by the real, even H -> IFFT), so it
     is zero-phase (no group delay) and O(N log N).  This is the principled way to
-    hit the smallest residual phase std for a given linewidth and pilot SNR — it
-    trades tracking lag against additive noise automatically, where a fixed
-    extraction bandwidth must be tuned by hand.
+    hit the smallest residual phase std for a given ``q`` and ``r`` — it trades
+    tracking lag against additive noise automatically, where a fixed extraction
+    bandwidth must be tuned by hand.
+
+    The smoother is agnostic to where the track came from: it needs only the two
+    scalars ``q`` and ``r``.  ``q`` may be given directly or derived from a
+    linewidth (see ``process_variance`` / ``linewidth`` below); ``r`` is supplied
+    as ``measurement_variance``, however the caller measured it.
 
     Because it only rescales the phase track (a deterministic, sample-independent
     low-pass), it stays a unit-modulus correction downstream and cannot hide
-    excess noise — it is applied to the common pilot phase, never to the quantum
+    excess noise when applied to a common reference phase rather than the data
     samples.
 
     Parameters
@@ -46,14 +50,17 @@ def smooth_phase_wiener(
         Unwrapped phase track (e.g. from a ``recover_carrier_phase_pilot_tone*``
         function), in radians.
     process_variance : float, optional
-        Per-sample phase-increment variance q [rad²].  If omitted it is derived
-        as q = 2*pi*linewidth / f_s from ``linewidth`` (combined TX+LO linewidth)
-        and ``sampling_rate``.
+        Per-sample phase-increment variance q [rad²] — the random-walk strength.
+        Provide this, or derive it from ``linewidth`` + ``sampling_rate`` (see
+        below).  Exactly one of the two routes is required.
     measurement_variance : float, optional
-        Phase-estimation noise variance r [rad²].  If omitted it is derived as
-        r = 1/(2*SNR) from ``tone_snr`` (linear, in-band tone SNR).
-    linewidth, sampling_rate, tone_snr : float, optional
-        Convenience inputs to derive ``process_variance`` / ``measurement_variance``.
+        Phase-estimation noise variance r [rad²] — the per-sample variance of the
+        additive phase-measurement noise, however it was measured.  Required.
+    linewidth, sampling_rate : float, optional
+        Convenience route to ``process_variance``: q = 2*pi*linewidth / f_s, where
+        ``linewidth`` is the combined oscillator linewidth [Hz] and
+        ``sampling_rate`` is f_s [Hz] of the ``phase`` track.  Both must be given
+        together, and only when ``process_variance`` is omitted.
     detrend : bool, default True
         Remove the per-channel mean + linear trend before filtering and add it
         back after.  Recommended: the random-walk PSD diverges at DC, so a raw
@@ -72,9 +79,7 @@ def smooth_phase_wiener(
             )
         process_variance = 2.0 * np.pi * float(linewidth) / float(sampling_rate)
     if measurement_variance is None:
-        if tone_snr is None:
-            raise ValueError("Provide measurement_variance, or tone_snr.")
-        measurement_variance = 1.0 / (2.0 * float(tone_snr))
+        raise ValueError("Provide measurement_variance.")
     q, r = float(process_variance), float(measurement_variance)
     if q <= 0.0 or r <= 0.0:
         raise ValueError(f"process/measurement variance must be > 0, got q={q}, r={r}.")

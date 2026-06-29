@@ -88,10 +88,10 @@ class TestWienerPhaseSmoother:
         assert phi2d.shape == phi2d_in.shape
 
     def test_derive_variances_from_physical_params(self, backend_device, xp):
-        """linewidth + sampling_rate + tone_snr derive q and r internally."""
+        """linewidth + sampling_rate derive q internally; r is given directly."""
         truth, _ = self._random_walk(xp, N=4000)
         smoothed = recovery.smooth_phase_wiener(
-            truth, linewidth=1e5, sampling_rate=4e9, tone_snr=100.0
+            truth, linewidth=1e5, sampling_rate=4e9, measurement_variance=5e-3
         )
         assert smoothed.shape == truth.shape
         assert bool(xp.all(xp.isfinite(smoothed)))
@@ -103,7 +103,7 @@ class TestWienerPhaseSmoother:
 
     def test_missing_measurement_params_raise(self, backend_device, xp):
         truth, q = self._random_walk(xp, N=512)
-        with pytest.raises(ValueError, match="measurement_variance, or tone_snr"):
+        with pytest.raises(ValueError, match="measurement_variance"):
             recovery.smooth_phase_wiener(truth, process_variance=q)
 
     def test_invalid_variance_raises(self, backend_device, xp):
